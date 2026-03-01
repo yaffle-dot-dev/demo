@@ -36,6 +36,17 @@ export async function getInstallationOctokit(installationId: number): ReturnType
   return app.getInstallationOctokit(installationId)
 }
 
+/**
+ * Get an installation access token for git clone authentication.
+ * This token can be used as: https://x-access-token:{token}@github.com/...
+ */
+export async function getInstallationToken(installationId: number): Promise<string> {
+  const octokit = await getInstallationOctokit(installationId)
+  // The octokit instance already has the token from auth, extract it
+  const auth = (await octokit.auth({ type: "installation" })) as { token: string }
+  return auth.token
+}
+
 export interface CheckRunParams {
   owner: string
   repo: string

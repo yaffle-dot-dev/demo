@@ -50,6 +50,7 @@ webhooksRoute.post("/github", async (c) => {
 
   const context: WebhookContext = {
     installationId: payload.installation?.id,
+    ownerGithubId: payload.repository.owner.id,
     owner: payload.repository.owner.login,
     repo: payload.repository.name,
     prNumber: payload.pull_request.number,

@@ -56,6 +56,7 @@ export const tfRuns = pgTable("tf_runs", {
     .notNull(),
   runType: text("run_type").notNull(),
   status: text("status").notNull(),
+  checkRunId: bigint("check_run_id", { mode: "number" }),
   ecsTaskArn: text("ecs_task_arn"),
   planSummary: text("plan_summary"),
   planJson: jsonb("plan_json"),
