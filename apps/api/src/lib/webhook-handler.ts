@@ -204,6 +204,9 @@ async function handlePrOpenedOrUpdated(
     return
   }
 
+  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
+  console.log(`[${tag}] config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`)
+
   const statePrefix = previewStatePrefix(ctx.prNumber)
   const varCtx = prVariableContext({
     prNumber: ctx.prNumber,
@@ -296,6 +299,9 @@ async function handlePrClosed(
     return
   }
 
+  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
+  console.log(`[${tag}] config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`)
+
   const statePrefix = previewStatePrefix(ctx.prNumber)
 
   for (const ws of config.workspaces) {
@@ -354,6 +360,9 @@ async function handlePushEvent(
     console.error(`failed to load config for ${tag}:`, err)
     return
   }
+
+  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
+  console.log(`[${tag}] config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`)
 
   // Determine default branch
   const defaultBranch = config.default_branch ?? ctx.defaultBranch
