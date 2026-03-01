@@ -21,7 +21,11 @@ export type PullRequestAction =
   | "closed"
   | "reopened"
 
-export interface WebhookContext {
+/**
+ * Context for a pull_request webhook event.
+ */
+export interface PullRequestContext {
+  kind: "pull_request"
   installationId: number
   ownerGithubId: number
   owner: string
@@ -31,7 +35,24 @@ export interface WebhookContext {
   headSha: string
   branch: string
   merged: boolean
+  defaultBranch: string
 }
+
+/**
+ * Context for a push webhook event (push to default branch).
+ */
+export interface PushContext {
+  kind: "push"
+  installationId: number
+  ownerGithubId: number
+  owner: string
+  repo: string
+  headSha: string
+  branch: string
+  defaultBranch: string
+}
+
+export type WebhookContext = PullRequestContext | PushContext
 
 export interface TerraformResult {
   success: boolean

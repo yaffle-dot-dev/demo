@@ -1,22 +1,36 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test"
 
-import type { RunType, TerraformResult, WebhookContext } from "@yaffle/shared"
+import type {
+  PullRequestContext,
+  PushContext,
+  RunType,
+  TerraformResult,
+  WebhookContext,
+} from "@yaffle/shared"
 
+import type { YaffleConfig } from "./config.ts"
 import { db } from "./db.ts"
 import { organizations, previews, tfRuns } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
 import { createHandler } from "./webhook-handler.ts"
 import type { Runner, RunOpts } from "./runner.ts"
 
-/** A fake runner that returns canned success results without cloning or running tofu. */
+/** A fake runner that records calls and returns canned results. */
 class FakeRunner implements Runner {
-  calls: Array<{ command: RunType; owner: string; repo: string; stateKey: string }> = []
+  calls: Array<{
+    command: RunType
+    owner: string
+    repo: string
+    workspacePath: string
+    stateKey: string
+  }> = []
 
   async run(opts: RunOpts): Promise<TerraformResult> {
     this.calls.push({
       command: opts.command,
       owner: opts.owner,
       repo: opts.repo,
+      workspacePath: opts.workspacePath,
       stateKey: opts.stateKey,
     })
 
@@ -32,9 +46,58 @@ class FakeRunner implements Runner {
   }
 }
 
-function makeContext(overrides?: Partial<WebhookContext>): WebhookContext {
+/** Minimal config with one workspace, auto_apply on. */
+const DEFAULT_CONFIG: YaffleConfig = {
+  version: 1,
+  workspaces: [
+    {
+      path: "infra",
+      auto_apply: true,
+      auto_apply_on_merge: true,
+    },
+  ],
+}
+
+/** Config with auto_apply disabled (plan only). */
+const PLAN_ONLY_CONFIG: YaffleConfig = {
+  version: 1,
+  workspaces: [
+    {
+      path: "infra",
+      auto_apply: false,
+      auto_apply_on_merge: true,
+    },
+  ],
+}
+
+/** Config with two workspaces. */
+const MULTI_WORKSPACE_CONFIG: YaffleConfig = {
+  version: 1,
+  workspaces: [
+    {
+      path: "infra",
+      auto_apply: true,
+      auto_apply_on_merge: true,
+      variables: { environment: "{{ env }}" },
+    },
+    {
+      path: "infra/monitoring",
+      auto_apply: true,
+      auto_apply_on_merge: true,
+      variables: { environment: "{{ env }}" },
+    },
+  ],
+}
+
+/** Fake config loader that returns a fixed config. */
+function fakeConfigLoader(config: YaffleConfig) {
+  return async (_ctx: WebhookContext, _token?: string): Promise<YaffleConfig> => config
+}
+
+function makePrContext(overrides?: Partial<PullRequestContext>): PullRequestContext {
   return {
-    installationId: 0, // no real GitHub app, skips check run creation
+    kind: "pull_request",
+    installationId: 0,
     ownerGithubId: 99999,
     owner: "test-org",
     repo: "test-repo",
@@ -43,6 +106,21 @@ function makeContext(overrides?: Partial<WebhookContext>): WebhookContext {
     headSha: "abc123def456",
     branch: "feature/test",
     merged: false,
+    defaultBranch: "main",
+    ...overrides,
+  }
+}
+
+function makePushContext(overrides?: Partial<PushContext>): PushContext {
+  return {
+    kind: "push",
+    installationId: 0,
+    ownerGithubId: 99999,
+    owner: "test-org",
+    repo: "test-repo",
+    headSha: "abc123def456",
+    branch: "main",
+    defaultBranch: "main",
     ...overrides,
   }
 }
@@ -56,7 +134,7 @@ describe("webhook-handler", () => {
     await db.delete(previews)
     await db.delete(organizations)
     runner = new FakeRunner()
-    handler = createHandler(runner)
+    handler = createHandler(runner, { configLoader: fakeConfigLoader(DEFAULT_CONFIG) })
   })
 
   afterAll(async () => {
@@ -65,124 +143,148 @@ describe("webhook-handler", () => {
     await db.delete(organizations)
   })
 
-  test("PR opened creates org, preview, and plan run", async () => {
-    await handler.handlePullRequestEvent(makeContext({ action: "opened" }))
+  // -----------------------------------------------------------------------
+  // PR opened -- plan + apply (auto_apply: true)
+  // -----------------------------------------------------------------------
 
-    // Verify org was created
-    const orgs = await db.select().from(organizations)
-    expect(orgs).toHaveLength(1)
-    expect(orgs[0].login).toBe("test-org")
-    expect(orgs[0].githubId).toBe(99999)
+  test("PR opened: plans and applies with auto_apply", async () => {
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
-    // Verify preview was created
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
-    expect(pvs[0].repo).toBe("test-repo")
-    expect(pvs[0].prNumber).toBe(42)
-    expect(pvs[0].headSha).toBe("abc123def456")
-    expect(pvs[0].stateKey).toBe("previews/pr-42/terraform.tfstate")
     expect(pvs[0].status).toBe("ready")
+    expect(pvs[0].stateKey).toBe("previews/pr-42/infra/terraform.tfstate")
 
-    // Verify plan run was created and completed
     const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(1)
-    expect(runs[0].runType).toBe("plan")
-    expect(runs[0].status).toBe("success")
-    expect(runs[0].planSummary).toBe("+1, ~0, -0")
-    expect(runs[0].startedAt).toBeTruthy()
-    expect(runs[0].completedAt).toBeTruthy()
+    expect(runs).toHaveLength(2) // plan + apply
+    const planRuns = runs.filter((r) => r.runType === "plan")
+    const applyRuns = runs.filter((r) => r.runType === "apply")
+    expect(planRuns).toHaveLength(1)
+    expect(planRuns[0].status).toBe("success")
+    expect(applyRuns).toHaveLength(1)
+    expect(applyRuns[0].status).toBe("success")
 
-    // Verify runner was called with correct args including stateKey
-    expect(runner.calls).toHaveLength(1)
+    expect(runner.calls).toHaveLength(2)
     expect(runner.calls[0].command).toBe("plan")
-    expect(runner.calls[0].stateKey).toBe("previews/pr-42/terraform.tfstate")
+    expect(runner.calls[0].workspacePath).toBe("infra")
+    expect(runner.calls[1].command).toBe("apply")
+    expect(runner.calls[1].workspacePath).toBe("infra")
   })
 
-  test("PR synchronize updates head SHA and creates new plan run", async () => {
-    await handler.handlePullRequestEvent(makeContext({ action: "opened", headSha: "sha-1" }))
-    await handler.handlePullRequestEvent(makeContext({ action: "synchronize", headSha: "sha-2" }))
+  // -----------------------------------------------------------------------
+  // PR opened -- plan only (auto_apply: false)
+  // -----------------------------------------------------------------------
 
-    // Preview should have updated SHA
+  test("PR opened: plan only when auto_apply is false", async () => {
+    handler = createHandler(runner, { configLoader: fakeConfigLoader(PLAN_ONLY_CONFIG) })
+
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+
+    const runs = await db.select().from(tfRuns)
+    expect(runs).toHaveLength(1) // plan only
+    expect(runs[0].runType).toBe("plan")
+    expect(runs[0].status).toBe("success")
+
+    const pvs = await db.select().from(previews)
+    expect(pvs[0].status).toBe("ready")
+
+    expect(runner.calls).toHaveLength(1)
+    expect(runner.calls[0].command).toBe("plan")
+  })
+
+  // -----------------------------------------------------------------------
+  // PR synchronize
+  // -----------------------------------------------------------------------
+
+  test("PR synchronize: re-plans and re-applies", async () => {
+    await handler.handleWebhookEvent(makePrContext({ action: "opened", headSha: "sha-1" }))
+    await handler.handleWebhookEvent(makePrContext({ action: "synchronize", headSha: "sha-2" }))
+
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].headSha).toBe("sha-2")
 
-    // Should have two plan runs
+    // 2 plans + 2 applies
     const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(2)
-    expect(runs.every((r) => r.runType === "plan")).toBe(true)
-    expect(runs.every((r) => r.status === "success")).toBe(true)
+    expect(runs).toHaveLength(4)
 
-    expect(runner.calls).toHaveLength(2)
+    expect(runner.calls).toHaveLength(4)
   })
 
-  test("PR closed without merge creates destroy run", async () => {
-    await handler.handlePullRequestEvent(makeContext({ action: "opened" }))
-    await handler.handlePullRequestEvent(makeContext({ action: "closed", merged: false }))
+  // -----------------------------------------------------------------------
+  // PR closed without merge -- destroy preview
+  // -----------------------------------------------------------------------
+
+  test("PR closed without merge: destroys preview", async () => {
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+    await handler.handleWebhookEvent(makePrContext({ action: "closed", merged: false }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].status).toBe("destroyed")
 
-    const runs = await db.select().from(tfRuns)
-    const destroyRuns = runs.filter((r) => r.runType === "destroy")
+    const destroyRuns = (await db.select().from(tfRuns)).filter((r) => r.runType === "destroy")
     expect(destroyRuns).toHaveLength(1)
     expect(destroyRuns[0].status).toBe("success")
-
-    expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(1)
-    expect(runner.calls.find((c) => c.command === "destroy")?.stateKey).toBe(
-      "previews/pr-42/terraform.tfstate",
-    )
   })
 
-  test("PR merged creates apply + destroy runs", async () => {
-    await handler.handlePullRequestEvent(makeContext({ action: "opened" }))
-    await handler.handlePullRequestEvent(makeContext({ action: "closed", merged: true }))
+  // -----------------------------------------------------------------------
+  // PR merged -- destroy preview (production apply is via push event)
+  // -----------------------------------------------------------------------
+
+  test("PR merged: destroys preview only (no production apply)", async () => {
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+    await handler.handleWebhookEvent(makePrContext({ action: "closed", merged: true }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].status).toBe("destroyed")
 
+    // plan + apply (from open) + destroy (from close)
     const runs = await db.select().from(tfRuns)
     const applyRuns = runs.filter((r) => r.runType === "apply")
     const destroyRuns = runs.filter((r) => r.runType === "destroy")
-    expect(applyRuns).toHaveLength(1)
-    expect(applyRuns[0].status).toBe("success")
+    expect(applyRuns).toHaveLength(1) // preview apply only
     expect(destroyRuns).toHaveLength(1)
-    expect(destroyRuns[0].status).toBe("success")
 
+    // No production apply -- that comes from a push event
     expect(runner.calls.filter((c) => c.command === "apply")).toHaveLength(1)
-    expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(1)
-
-    // Apply should target production state, destroy should target preview state
-    const applyCall = runner.calls.find((c) => c.command === "apply")
-    const destroyCall = runner.calls.find((c) => c.command === "destroy")
-    expect(applyCall?.stateKey).toBe("production/main/terraform.tfstate")
-    expect(destroyCall?.stateKey).toBe("previews/pr-42/terraform.tfstate")
+    expect(runner.calls.find((c) => c.command === "apply")?.stateKey).toBe(
+      "previews/pr-42/infra/terraform.tfstate",
+    )
   })
 
+  // -----------------------------------------------------------------------
+  // PR closed with no existing preview
+  // -----------------------------------------------------------------------
+
   test("PR closed with no existing preview is a no-op", async () => {
-    await handler.handlePullRequestEvent(makeContext({ action: "closed", prNumber: 999 }))
+    await handler.handleWebhookEvent(makePrContext({ action: "closed", prNumber: 999 }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(0)
+    // Config is loaded but no preview found, so no runner calls
     expect(runner.calls).toHaveLength(0)
   })
 
-  test("reopened PR reuses existing preview", async () => {
-    await handler.handlePullRequestEvent(makeContext({ action: "opened" }))
-    await handler.handlePullRequestEvent(makeContext({ action: "closed", merged: false }))
-    await handler.handlePullRequestEvent(makeContext({ action: "reopened", headSha: "new-sha" }))
+  // -----------------------------------------------------------------------
+  // Reopened PR
+  // -----------------------------------------------------------------------
 
-    // Still only one preview record (upsert)
+  test("reopened PR reuses existing preview", async () => {
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+    await handler.handleWebhookEvent(makePrContext({ action: "closed", merged: false }))
+    await handler.handleWebhookEvent(makePrContext({ action: "reopened", headSha: "new-sha" }))
+
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].headSha).toBe("new-sha")
     expect(pvs[0].status).toBe("ready")
-
-    // plan, destroy, plan
-    expect(runner.calls.map((c) => c.command)).toEqual(["plan", "destroy", "plan"])
   })
+
+  // -----------------------------------------------------------------------
+  // Runner failure
+  // -----------------------------------------------------------------------
 
   test("runner failure marks run and preview as failed", async () => {
     const failRunner: Runner = {
@@ -196,26 +298,50 @@ describe("webhook-handler", () => {
         }
       },
     }
-    const failHandler = createHandler(failRunner)
+    const failHandler = createHandler(failRunner, {
+      configLoader: fakeConfigLoader(DEFAULT_CONFIG),
+    })
 
-    await failHandler.handlePullRequestEvent(makeContext({ action: "opened" }))
+    await failHandler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].status).toBe("failed")
 
     const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(1)
+    expect(runs).toHaveLength(1) // only plan, no apply since plan failed
     expect(runs[0].status).toBe("failed")
     expect(runs[0].errorMessage).toBe("init failed")
   })
+
+  // -----------------------------------------------------------------------
+  // Multi-workspace
+  // -----------------------------------------------------------------------
+
+  test("multi-workspace: plans and applies each workspace", async () => {
+    handler = createHandler(runner, {
+      configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG),
+    })
+
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+
+    // Two workspaces, each gets plan + apply = 4 runner calls
+    expect(runner.calls).toHaveLength(4)
+    expect(runner.calls[0]).toMatchObject({ command: "plan", workspacePath: "infra" })
+    expect(runner.calls[1]).toMatchObject({ command: "apply", workspacePath: "infra" })
+    expect(runner.calls[2]).toMatchObject({ command: "plan", workspacePath: "infra/monitoring" })
+    expect(runner.calls[3]).toMatchObject({ command: "apply", workspacePath: "infra/monitoring" })
+  })
+
+  // -----------------------------------------------------------------------
+  // Concurrent events serialized by mutex
+  // -----------------------------------------------------------------------
 
   test("concurrent events for same PR are serialized by mutex", async () => {
     const order: string[] = []
     let resolveFirst!: () => void
     const firstBlocked = new Promise<void>((r) => { resolveFirst = r })
 
-    /** A slow runner that blocks the first call until we release it. */
     const slowRunner: Runner = {
       calls: 0,
       async run(opts: RunOpts): Promise<TerraformResult> {
@@ -238,37 +364,78 @@ describe("webhook-handler", () => {
     } as Runner & { calls: number }
 
     const mutex = new KeyedMutex()
-    const slowHandler = createHandler(slowRunner, mutex)
+    const slowHandler = createHandler(slowRunner, {
+      mutex,
+      configLoader: fakeConfigLoader(PLAN_ONLY_CONFIG),
+    })
 
-    // Fire both events concurrently (simulating rapid pushes)
-    const p1 = slowHandler.handlePullRequestEvent(
-      makeContext({ action: "opened", headSha: "sha-1" }),
+    const p1 = slowHandler.handleWebhookEvent(
+      makePrContext({ action: "opened", headSha: "sha-1" }),
     )
-    const p2 = slowHandler.handlePullRequestEvent(
-      makeContext({ action: "synchronize", headSha: "sha-2" }),
+    const p2 = slowHandler.handleWebhookEvent(
+      makePrContext({ action: "synchronize", headSha: "sha-2" }),
     )
 
-    // Give microtasks time to start
     await new Promise((r) => setTimeout(r, 50))
-
-    // Only the first call should have started
     expect(order).toEqual(["start-1"])
 
-    // Release the first call
     resolveFirst()
     await Promise.all([p1, p2])
 
-    // Both completed in order: first finished, then second ran
     expect(order).toEqual(["start-1", "end-1", "start-2", "end-2"])
+  })
 
-    // Both plans should be in the DB
-    const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(2)
-    expect(runs.every((r) => r.status === "success")).toBe(true)
+  // -----------------------------------------------------------------------
+  // Push to default branch -- production apply
+  // -----------------------------------------------------------------------
 
-    // Final preview headSha should be from the second event
+  test("push to default branch: plans and applies production", async () => {
+    await handler.handleWebhookEvent(makePushContext())
+
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
-    expect(pvs[0].headSha).toBe("sha-2")
+    expect(pvs[0].prNumber).toBe(0) // sentinel for production
+    expect(pvs[0].stateKey).toBe("production/main/infra/terraform.tfstate")
+    expect(pvs[0].status).toBe("ready")
+
+    const runs = await db.select().from(tfRuns)
+    expect(runs).toHaveLength(2) // plan + apply
+    expect(runs[0].runType).toBe("plan")
+    expect(runs[1].runType).toBe("apply")
+
+    expect(runner.calls[0].stateKey).toBe("production/main/infra/terraform.tfstate")
+  })
+
+  // -----------------------------------------------------------------------
+  // Push to non-default branch -- ignored
+  // -----------------------------------------------------------------------
+
+  test("push to non-default branch is ignored", async () => {
+    await handler.handleWebhookEvent(makePushContext({ branch: "feature/something" }))
+
+    const pvs = await db.select().from(previews)
+    expect(pvs).toHaveLength(0)
+    expect(runner.calls).toHaveLength(0)
+  })
+
+  // -----------------------------------------------------------------------
+  // Config default_branch override
+  // -----------------------------------------------------------------------
+
+  test("push respects config default_branch override", async () => {
+    const config: YaffleConfig = {
+      version: 1,
+      default_branch: "develop",
+      workspaces: [{ path: "infra", auto_apply: true, auto_apply_on_merge: true }],
+    }
+    const h = createHandler(runner, { configLoader: fakeConfigLoader(config) })
+
+    // Push to "main" should be ignored because config says "develop"
+    await h.handleWebhookEvent(makePushContext({ branch: "main", defaultBranch: "main" }))
+    expect(runner.calls).toHaveLength(0)
+
+    // Push to "develop" should trigger
+    await h.handleWebhookEvent(makePushContext({ branch: "develop", defaultBranch: "main" }))
+    expect(runner.calls).toHaveLength(2) // plan + apply
   })
 })

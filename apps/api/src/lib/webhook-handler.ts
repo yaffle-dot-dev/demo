@@ -1,12 +1,38 @@
-import type { TerraformResult, WebhookContext } from "@yaffle/shared"
+import type {
+  PullRequestContext,
+  PushContext,
+  TerraformResult,
+  WebhookContext,
+} from "@yaffle/shared"
 
+import {
+  type WorkspaceConfig,
+  type YaffleConfig,
+  interpolateVariables,
+  loadConfig,
+  parseYaml,
+  prVariableContext,
+  pushVariableContext,
+} from "./config.ts"
+import { ConfigError } from "./config.ts"
 import { ensureOrg } from "../db/queries/organizations.ts"
 import { findPreview, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
 import { createTfRun, updateRunStatus } from "../db/queries/tf-runs.ts"
-import { createCheckRun, getInstallationToken, updateCheckRun } from "./github.ts"
+import {
+  createCheckRun,
+  fetchFileContent,
+  getInstallationToken,
+  updateCheckRun,
+} from "./github.ts"
 import { LocalRunner } from "./local-runner.ts"
 import { KeyedMutex } from "./mutex.ts"
-import type { Runner } from "./runner.ts"
+import {
+  type RunOpts,
+  type Runner,
+  buildStateKey,
+  previewStatePrefix,
+  productionStatePrefix,
+} from "./runner.ts"
 import { removeState } from "./state.ts"
 
 const CHECK_NAME = "Yaffle / terraform"
@@ -23,50 +49,122 @@ const previewMutex = new KeyedMutex()
 
 /** Build the mutex key for a webhook context. */
 function mutexKey(ctx: WebhookContext): string {
-  return `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
+  if (ctx.kind === "pull_request") {
+    return `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
+  }
+  return `${ctx.owner}/${ctx.repo}@${ctx.branch}`
 }
 
 /**
- * Create a handler with an injected runner and optional mutex.
+ * Optional config loader override for testing.
+ * In production, we fetch config via the GitHub API.
+ * In tests, we inject a fake loader.
+ */
+type ConfigLoader = (ctx: WebhookContext, token?: string) => Promise<YaffleConfig>
+
+/**
+ * Create a handler with an injected runner and optional overrides.
  * Used by tests to avoid real git clone + tofu invocations.
  */
-export function createHandler(runner: Runner, mutex?: KeyedMutex): {
-  handlePullRequestEvent: (ctx: WebhookContext) => Promise<void>
+export function createHandler(
+  runner: Runner,
+  opts?: { mutex?: KeyedMutex; configLoader?: ConfigLoader },
+): {
+  handleWebhookEvent: (ctx: WebhookContext) => Promise<void>
 } {
-  const m = mutex ?? new KeyedMutex()
+  const m = opts?.mutex ?? new KeyedMutex()
+  const loader = opts?.configLoader ?? fetchConfig
   return {
-    handlePullRequestEvent: (ctx: WebhookContext) =>
-      m.run(mutexKey(ctx), () => handlePullRequestEventWith(ctx, runner)),
+    handleWebhookEvent: (ctx: WebhookContext) =>
+      m.run(mutexKey(ctx), () => handleEvent(ctx, runner, loader)),
   }
 }
 
 /**
- * Handle a pull_request webhook event using the default runner.
+ * Handle a webhook event using the default runner.
  * Serialized per-preview via the global mutex.
  */
-export async function handlePullRequestEvent(ctx: WebhookContext): Promise<void> {
+export async function handleWebhookEvent(ctx: WebhookContext): Promise<void> {
   return previewMutex.run(mutexKey(ctx), () =>
-    handlePullRequestEventWith(ctx, defaultRunner),
+    handleEvent(ctx, defaultRunner, fetchConfig),
   )
 }
 
 /**
- * Acquire an installation token for private repo access.
- * Returns undefined if no installation ID or if token acquisition fails.
+ * Fetch config from the repo via the GitHub Contents API.
  */
-async function acquireToken(ctx: WebhookContext): Promise<string | undefined> {
-  if (!ctx.installationId) return undefined
-  try {
-    return await getInstallationToken(ctx.installationId)
-  } catch (err) {
-    console.warn(`failed to get installation token:`, err)
-    return undefined
+async function fetchConfig(ctx: WebhookContext, token?: string): Promise<YaffleConfig> {
+  if (!ctx.installationId) {
+    throw new ConfigError(
+      "Cannot fetch config without a GitHub App installation",
+    )
+  }
+
+  const sha = ctx.kind === "pull_request" ? ctx.headSha : ctx.headSha
+  const raw = await fetchFileContent(
+    ctx.installationId,
+    ctx.owner,
+    ctx.repo,
+    ".yaffle/config.yml",
+    sha,
+  )
+
+  if (!raw) {
+    throw new ConfigError(
+      "No .yaffle/config.yml found. Yaffle requires a config file. See https://yaffle.dev/docs/config",
+    )
+  }
+
+  // Re-use the parseYaml + zod validation from config.ts
+  // loadConfig reads from disk; here we already have the content
+  const { z } = await import("zod")
+  const parsed = parseYaml(raw)
+
+  const workspaceSchema = z.object({
+    path: z.string().min(1),
+    auto_apply: z.boolean().default(true),
+    auto_apply_on_merge: z.boolean().default(true),
+    variables: z.record(z.string()).optional(),
+  })
+  const configSchema = z.object({
+    version: z.literal(1),
+    default_branch: z.string().optional(),
+    workspaces: z.array(workspaceSchema).min(1, "at least one workspace is required"),
+  })
+
+  const result = configSchema.safeParse(parsed)
+  if (!result.success) {
+    const issues = result.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+    throw new ConfigError(`Invalid .yaffle/config.yml:\n${issues.join("\n")}`)
+  }
+
+  return result.data
+}
+
+// ---------------------------------------------------------------------------
+// Event dispatch
+// ---------------------------------------------------------------------------
+
+async function handleEvent(
+  ctx: WebhookContext,
+  runner: Runner,
+  configLoader: ConfigLoader,
+): Promise<void> {
+  if (ctx.kind === "pull_request") {
+    await handlePullRequestEvent(ctx, runner, configLoader)
+  } else {
+    await handlePushEvent(ctx, runner, configLoader)
   }
 }
 
-async function handlePullRequestEventWith(
-  ctx: WebhookContext,
+// ---------------------------------------------------------------------------
+// Pull request events
+// ---------------------------------------------------------------------------
+
+async function handlePullRequestEvent(
+  ctx: PullRequestContext,
   runner: Runner,
+  configLoader: ConfigLoader,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   console.log(`handling PR event: ${tag} action=${ctx.action} sha=${ctx.headSha}`)
@@ -75,319 +173,404 @@ async function handlePullRequestEventWith(
     case "opened":
     case "reopened":
     case "synchronize":
-      await handlePlanRequested(ctx, runner)
+      await handlePrOpenedOrUpdated(ctx, runner, configLoader)
       break
 
     case "closed":
-      if (ctx.merged) {
-        await handleMerged(ctx, runner)
-      } else {
-        await handleClosed(ctx, runner)
-      }
+      await handlePrClosed(ctx, runner, configLoader)
       break
   }
 }
 
 /**
- * PR opened/updated -- persist preview + run, create check, run plan.
+ * PR opened/updated -- load config, then plan + apply per workspace.
  */
-async function handlePlanRequested(ctx: WebhookContext, runner: Runner): Promise<void> {
+async function handlePrOpenedOrUpdated(
+  ctx: PullRequestContext,
+  runner: Runner,
+  configLoader: ConfigLoader,
+): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
-
-  // 1. Ensure the org exists in our DB
   const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
-  console.log(`org resolved: ${org.login} (${org.id})`)
+  const installationToken = await acquireToken(ctx)
 
-  // 2. Upsert the preview record
-  const stateKey = `previews/pr-${ctx.prNumber}/terraform.tfstate`
-  const preview = await upsertPreview({
-    orgId: org.id,
-    repo: ctx.repo,
+  // Load config
+  let config: YaffleConfig
+  try {
+    config = await configLoader(ctx, installationToken)
+  } catch (err) {
+    console.error(`failed to load config for ${tag}:`, err)
+    // TODO: create a failed check run to surface the error
+    return
+  }
+
+  const statePrefix = previewStatePrefix(ctx.prNumber)
+  const varCtx = prVariableContext({
     prNumber: ctx.prNumber,
     branch: ctx.branch,
-    headSha: ctx.headSha,
-    stateKey,
-    mode: "terraform",
+    sha: ctx.headSha,
+    owner: ctx.owner,
+    repo: ctx.repo,
   })
-  console.log(`preview upserted: ${preview.id} status=${preview.status}`)
 
-  // 3. Mark preview as planning
-  await updatePreviewStatus(preview.id, "planning")
+  for (const ws of config.workspaces) {
+    const stateKey = buildStateKey(statePrefix, ws.path)
+    const wsTag = `${tag}:${ws.path}`
 
-  // 4. Create a plan run record
+    // Upsert preview
+    const preview = await upsertPreview({
+      orgId: org.id,
+      repo: ctx.repo,
+      prNumber: ctx.prNumber,
+      branch: ctx.branch,
+      headSha: ctx.headSha,
+      stateKey,
+      mode: "terraform",
+    })
+
+    const variables = interpolateVariables(ws.variables, varCtx)
+
+    // Plan
+    console.log(`[${wsTag}] planning`)
+    await updatePreviewStatus(preview.id, "planning")
+
+    const planResult = await executeRun({
+      ctx,
+      preview,
+      runner,
+      command: "plan",
+      stateKey,
+      workspacePath: ws.path,
+      variables,
+      installationToken,
+      wsTag,
+    })
+
+    if (!planResult.success) continue
+
+    // Apply if auto_apply
+    if (ws.auto_apply) {
+      console.log(`[${wsTag}] auto-applying preview`)
+      await updatePreviewStatus(preview.id, "applying")
+
+      const applyResult = await executeRun({
+        ctx,
+        preview,
+        runner,
+        command: "apply",
+        stateKey,
+        workspacePath: ws.path,
+        variables,
+        installationToken,
+        wsTag,
+      })
+
+      if (applyResult.success) {
+        await updatePreviewStatus(preview.id, "ready")
+      }
+    } else {
+      await updatePreviewStatus(preview.id, "ready")
+    }
+  }
+}
+
+/**
+ * PR closed -- destroy preview resources for all workspaces.
+ * Whether merged or not, the preview gets destroyed.
+ */
+async function handlePrClosed(
+  ctx: PullRequestContext,
+  runner: Runner,
+  configLoader: ConfigLoader,
+): Promise<void> {
+  const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
+  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
+  const installationToken = await acquireToken(ctx)
+
+  // Load config to know which workspaces to destroy
+  let config: YaffleConfig
+  try {
+    config = await configLoader(ctx, installationToken)
+  } catch (err) {
+    console.error(`failed to load config for ${tag}:`, err)
+    return
+  }
+
+  const statePrefix = previewStatePrefix(ctx.prNumber)
+
+  for (const ws of config.workspaces) {
+    const stateKey = buildStateKey(statePrefix, ws.path)
+    const wsTag = `${tag}:${ws.path}`
+
+    const preview = await findPreview(org.id, ctx.repo, ctx.prNumber)
+    if (!preview) {
+      console.warn(`[${wsTag}] no preview found, nothing to destroy`)
+      continue
+    }
+
+    console.log(`[${wsTag}] destroying preview`)
+    await updatePreviewStatus(preview.id, "destroying")
+
+    const destroyResult = await executeRun({
+      ctx,
+      preview,
+      runner,
+      command: "destroy",
+      stateKey,
+      workspacePath: ws.path,
+      variables: {},
+      installationToken,
+      wsTag,
+    })
+
+    if (destroyResult.success) {
+      await removeState(ctx.owner, ctx.repo, stateKey)
+      await updatePreviewStatus(preview.id, "destroyed")
+      console.log(`[${wsTag}] preview destroyed`)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Push events (production apply)
+// ---------------------------------------------------------------------------
+
+async function handlePushEvent(
+  ctx: PushContext,
+  runner: Runner,
+  configLoader: ConfigLoader,
+): Promise<void> {
+  const tag = `${ctx.owner}/${ctx.repo}@${ctx.branch}`
+  console.log(`handling push event: ${tag} sha=${ctx.headSha}`)
+
+  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
+  const installationToken = await acquireToken(ctx)
+
+  // Load config
+  let config: YaffleConfig
+  try {
+    config = await configLoader(ctx, installationToken)
+  } catch (err) {
+    console.error(`failed to load config for ${tag}:`, err)
+    return
+  }
+
+  // Determine default branch
+  const defaultBranch = config.default_branch ?? ctx.defaultBranch
+  if (ctx.branch !== defaultBranch) {
+    console.log(`[${tag}] ignoring push to non-default branch (default: ${defaultBranch})`)
+    return
+  }
+
+  const statePrefix = productionStatePrefix(ctx.branch)
+  const varCtx = pushVariableContext({
+    branch: ctx.branch,
+    sha: ctx.headSha,
+    owner: ctx.owner,
+    repo: ctx.repo,
+  })
+
+  for (const ws of config.workspaces) {
+    if (!ws.auto_apply_on_merge) {
+      console.log(`[${tag}:${ws.path}] auto_apply_on_merge disabled, skipping`)
+      continue
+    }
+
+    const stateKey = buildStateKey(statePrefix, ws.path)
+    const wsTag = `${tag}:${ws.path}`
+    const variables = interpolateVariables(ws.variables, varCtx)
+
+    // For production, we create a preview record to track the run
+    // Using prNumber=0 as a sentinel for production runs
+    const preview = await upsertPreview({
+      orgId: org.id,
+      repo: ctx.repo,
+      prNumber: 0,
+      branch: ctx.branch,
+      headSha: ctx.headSha,
+      stateKey,
+      mode: "terraform",
+    })
+
+    // Plan
+    console.log(`[${wsTag}] planning production`)
+    await updatePreviewStatus(preview.id, "planning")
+
+    const planResult = await executeRun({
+      ctx,
+      preview,
+      runner,
+      command: "plan",
+      stateKey,
+      workspacePath: ws.path,
+      variables,
+      installationToken,
+      wsTag,
+    })
+
+    if (!planResult.success) continue
+
+    // Apply
+    console.log(`[${wsTag}] applying production`)
+    await updatePreviewStatus(preview.id, "applying")
+
+    const applyResult = await executeRun({
+      ctx,
+      preview,
+      runner,
+      command: "apply",
+      stateKey,
+      workspacePath: ws.path,
+      variables,
+      installationToken,
+      wsTag,
+    })
+
+    if (applyResult.success) {
+      await updatePreviewStatus(preview.id, "ready")
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shared execution logic
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a single terraform run, creating DB records and updating
+ * GitHub check runs.
+ */
+async function executeRun(opts: {
+  ctx: WebhookContext
+  preview: { id: string }
+  runner: Runner
+  command: "plan" | "apply" | "destroy"
+  stateKey: string
+  workspacePath: string
+  variables: Record<string, string>
+  installationToken?: string
+  wsTag: string
+}): Promise<TerraformResult> {
+  const { ctx, preview, runner, wsTag } = opts
+
+  // Create run record
   const run = await createTfRun({
     previewId: preview.id,
-    runType: "plan",
+    runType: opts.command,
     status: "pending",
   })
-  console.log(`tf_run created: ${run.id} type=${run.runType}`)
 
-  // 5. Create the GitHub check run (if we have an installation)
+  // Create check run (PR events only, with installation)
   let checkRunId: number | undefined
-  if (ctx.installationId) {
+  if (ctx.installationId && ctx.kind === "pull_request") {
+    const checkName = opts.workspacePath === "."
+      ? CHECK_NAME
+      : `${CHECK_NAME} (${opts.workspacePath})`
+
     try {
       checkRunId = await createCheckRun(ctx.installationId, {
         owner: ctx.owner,
         repo: ctx.repo,
         headSha: ctx.headSha,
-        name: CHECK_NAME,
-        status: "queued",
-        title: "Terraform plan queued",
-        summary: `Planning infrastructure changes for PR #${ctx.prNumber}...`,
+        name: checkName,
+        status: "in_progress",
+        title: `Running ${opts.command}`,
+        summary: `${opts.command} for ${opts.workspacePath}...`,
       })
-      console.log(`check run ${checkRunId} created for ${tag}`)
     } catch (err) {
-      console.warn(`failed to create check run for ${tag}:`, err)
+      console.warn(`[${wsTag}] failed to create check run:`, err)
     }
   }
 
-  // 6. Mark run as running
   await updateRunStatus(run.id, "running", {
     checkRunId,
     startedAt: new Date(),
   })
 
-  if (checkRunId && ctx.installationId) {
-    await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, checkRunId, {
-      status: "in_progress",
-      title: "Running terraform plan",
-      summary: `Analyzing infrastructure changes for PR #${ctx.prNumber}...`,
-    }).catch((err) => console.warn(`failed to update check run:`, err))
-  }
-
-  // 7. Get installation token for private repo clone
-  const installationToken = await acquireToken(ctx)
-
-  // 8. Run terraform plan via the runner
+  // Execute
+  let result: TerraformResult
   try {
-    const result = await runner.run({
+    result = await runner.run({
       owner: ctx.owner,
       repo: ctx.repo,
       headSha: ctx.headSha,
-      command: "plan",
-      stateKey,
-      variables: { environment: `preview-pr-${ctx.prNumber}` },
-      installationToken,
+      command: opts.command,
+      workspacePath: opts.workspacePath,
+      stateKey: opts.stateKey,
+      variables: opts.variables,
+      installationToken: opts.installationToken,
     })
-
-    console.log(
-      `plan result: success=${result.success} summary=${result.planSummary} duration=${result.durationMs}ms`,
-    )
-
-    await completePlan(run.id, preview.id, ctx, checkRunId, result)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error(`plan failed for ${tag}:`, msg)
+    console.error(`[${wsTag}] ${opts.command} threw:`, msg)
 
-    await updateRunStatus(run.id, "failed", {
-      completedAt: new Date(),
+    result = {
+      success: false,
+      command: opts.command,
+      output: "",
       errorMessage: msg,
-    })
-    await updatePreviewStatus(preview.id, "failed")
-
-    if (checkRunId && ctx.installationId) {
-      await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, checkRunId, {
-        status: "completed",
-        conclusion: "failure",
-        title: "Terraform plan failed",
-        summary: msg,
-      }).catch((err) => console.warn(`failed to update check run:`, err))
+      durationMs: 0,
     }
   }
-}
 
-/**
- * Finalize a plan run -- update DB records and GitHub check.
- */
-async function completePlan(
-  runId: string,
-  previewId: string,
-  ctx: WebhookContext,
-  checkRunId: number | undefined,
-  result: TerraformResult,
-): Promise<void> {
+  // Update DB
   if (result.success) {
-    await updateRunStatus(runId, "success", {
+    await updateRunStatus(run.id, "success", {
       completedAt: new Date(),
       planSummary: result.planSummary,
       planJson: result.planJson,
+      outputs: result.outputs,
     })
-    await updatePreviewStatus(previewId, "ready")
   } else {
-    await updateRunStatus(runId, "failed", {
+    await updateRunStatus(run.id, "failed", {
       completedAt: new Date(),
       errorMessage: result.errorMessage,
     })
-    await updatePreviewStatus(previewId, "failed")
+    await updatePreviewStatus(preview.id, "failed")
   }
 
+  console.log(
+    `[${wsTag}] ${opts.command}: success=${result.success} duration=${result.durationMs}ms`,
+  )
+
+  // Update check run
   if (checkRunId && ctx.installationId) {
-    // Truncate plan output if it's too long for GitHub (max 65535 chars)
     const MAX_TEXT_LENGTH = 65000
     let text = result.output
     if (text.length > MAX_TEXT_LENGTH) {
       text = `${text.slice(0, MAX_TEXT_LENGTH)}\n\n... (output truncated)`
     }
-
-    // Wrap in a code block for formatting
     const formattedText = text ? `\`\`\`\n${text}\n\`\`\`` : undefined
 
     await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, checkRunId, {
       status: "completed",
       conclusion: result.success ? "success" : "failure",
       title: result.success
-        ? `Terraform plan: ${result.planSummary ?? "complete"}`
-        : "Terraform plan failed",
+        ? opts.command === "plan"
+          ? `Plan: ${result.planSummary ?? "complete"}`
+          : `${opts.command} complete`
+        : `${opts.command} failed`,
       summary: result.success
-        ? `Plan: ${result.planSummary ?? "complete"}`
-        : (result.errorMessage ?? "Plan failed"),
+        ? opts.command === "plan"
+          ? `Plan: ${result.planSummary ?? "complete"}`
+          : `${opts.command} completed successfully`
+        : (result.errorMessage ?? `${opts.command} failed`),
       text: formattedText,
-    }).catch((err) => console.warn(`failed to update check run:`, err))
+    }).catch((err) => console.warn(`[${wsTag}] failed to update check run:`, err))
   }
+
+  return result
 }
 
 /**
- * PR merged -- apply to production and clean up preview.
+ * Acquire an installation token for private repo access.
  */
-async function handleMerged(ctx: WebhookContext, runner: Runner): Promise<void> {
-  const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
-
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
-  const preview = await findPreview(org.id, ctx.repo, ctx.prNumber)
-
-  if (!preview) {
-    console.warn(`no preview found for ${tag}, nothing to apply/destroy`)
-    return
-  }
-
-  console.log(`PR ${tag} was merged, transitioning preview ${preview.id}`)
-
-  const installationToken = await acquireToken(ctx)
-  const productionStateKey = "production/main/terraform.tfstate"
-
-  // Apply to production
-  const applyRun = await createTfRun({
-    previewId: preview.id,
-    runType: "apply",
-    status: "pending",
-  })
-  await updatePreviewStatus(preview.id, "applying")
-  await updateRunStatus(applyRun.id, "running", { startedAt: new Date() })
-  console.log(`created production apply run ${applyRun.id} for ${tag}`)
-
+async function acquireToken(ctx: WebhookContext): Promise<string | undefined> {
+  if (!ctx.installationId) return undefined
   try {
-    const result = await runner.run({
-      owner: ctx.owner,
-      repo: ctx.repo,
-      headSha: ctx.headSha,
-      command: "apply",
-      stateKey: productionStateKey,
-      variables: { environment: "production" },
-      installationToken,
-    })
-
-    if (result.success) {
-      await updateRunStatus(applyRun.id, "success", {
-        completedAt: new Date(),
-        outputs: result.outputs,
-      })
-    } else {
-      await updateRunStatus(applyRun.id, "failed", {
-        completedAt: new Date(),
-        errorMessage: result.errorMessage,
-      })
-      await updatePreviewStatus(preview.id, "failed")
-      return
-    }
+    return await getInstallationToken(ctx.installationId)
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    await updateRunStatus(applyRun.id, "failed", {
-      completedAt: new Date(),
-      errorMessage: msg,
-    })
-    await updatePreviewStatus(preview.id, "failed")
-    console.error(`apply failed for ${tag}:`, msg)
-    return
+    console.warn("failed to get installation token:", err)
+    return undefined
   }
-
-  // Destroy preview workspace
-  await destroyPreview(ctx, preview, runner, installationToken)
-}
-
-/**
- * PR closed without merge -- destroy preview resources.
- */
-async function handleClosed(ctx: WebhookContext, runner: Runner): Promise<void> {
-  const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
-
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
-  const preview = await findPreview(org.id, ctx.repo, ctx.prNumber)
-
-  if (!preview) {
-    console.warn(`no preview found for ${tag}, nothing to destroy`)
-    return
-  }
-
-  console.log(`PR ${tag} was closed, destroying preview ${preview.id}`)
-
-  const installationToken = await acquireToken(ctx)
-  await destroyPreview(ctx, preview, runner, installationToken)
-}
-
-/**
- * Shared logic for destroying a preview workspace.
- */
-async function destroyPreview(
-  ctx: WebhookContext,
-  preview: { id: string; stateKey: string },
-  runner: Runner,
-  installationToken?: string,
-): Promise<void> {
-  const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
-
-  const destroyRun = await createTfRun({
-    previewId: preview.id,
-    runType: "destroy",
-    status: "pending",
-  })
-  await updatePreviewStatus(preview.id, "destroying")
-  await updateRunStatus(destroyRun.id, "running", { startedAt: new Date() })
-
-  try {
-    const result = await runner.run({
-      owner: ctx.owner,
-      repo: ctx.repo,
-      headSha: ctx.headSha,
-      command: "destroy",
-      stateKey: preview.stateKey,
-      installationToken,
-    })
-
-    if (result.success) {
-      await updateRunStatus(destroyRun.id, "success", { completedAt: new Date() })
-    } else {
-      await updateRunStatus(destroyRun.id, "failed", {
-        completedAt: new Date(),
-        errorMessage: result.errorMessage,
-      })
-      await updatePreviewStatus(preview.id, "failed")
-      console.error(`destroy failed for ${tag}: ${result.errorMessage}`)
-      return
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    await updateRunStatus(destroyRun.id, "failed", {
-      completedAt: new Date(),
-      errorMessage: msg,
-    })
-    await updatePreviewStatus(preview.id, "failed")
-    console.error(`destroy failed for ${tag}:`, msg)
-    return
-  }
-
-  // Clean up the state files after successful destroy
-  await removeState(ctx.owner, ctx.repo, preview.stateKey)
-
-  await updatePreviewStatus(preview.id, "destroyed")
-  console.log(`preview ${preview.id} destroyed for ${tag}`)
 }

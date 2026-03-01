@@ -88,6 +88,39 @@ export async function createCheckRun(
 /**
  * Update an existing GitHub Check Run.
  */
+/**
+ * Fetch a single file's contents from a repo at a specific ref.
+ * Returns the decoded content, or undefined if the file doesn't exist.
+ */
+export async function fetchFileContent(
+  installationId: number,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<string | undefined> {
+  const octokit = await getInstallationOctokit(installationId)
+
+  try {
+    const response = await octokit.request("GET /repos/{owner}/{repo}/contents/{path}", {
+      owner,
+      repo,
+      path,
+      ref,
+    })
+
+    const data = response.data as { content?: string; encoding?: string }
+    if (data.content && data.encoding === "base64") {
+      return Buffer.from(data.content, "base64").toString("utf-8")
+    }
+    return undefined
+  } catch (err: unknown) {
+    const status = (err as { status?: number }).status
+    if (status === 404) return undefined
+    throw err
+  }
+}
+
 export async function updateCheckRun(
   installationId: number,
   owner: string,
