@@ -1,5 +1,6 @@
 **/.env
 **/.env.*
+
 # Devenv
 .devenv/
 .devenv.flake.nix
@@ -9,3 +10,13 @@
 
 # Nix
 result
+
+# Dependencies
+node_modules/
+bun.lock
+
+# Build output
+dist/
+
+# Drizzle
+apps/api/drizzle/
