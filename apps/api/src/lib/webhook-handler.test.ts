@@ -4,21 +4,21 @@ import type { RunType, TerraformResult, WebhookContext } from "@yaffle/shared"
 
 import { db } from "./db.ts"
 import { organizations, previews, tfRuns } from "../db/schema.ts"
+import { KeyedMutex } from "./mutex.ts"
 import { createHandler } from "./webhook-handler.ts"
-import type { Runner } from "./runner.ts"
+import type { Runner, RunOpts } from "./runner.ts"
 
 /** A fake runner that returns canned success results without cloning or running tofu. */
 class FakeRunner implements Runner {
-  calls: Array<{ command: RunType; owner: string; repo: string }> = []
+  calls: Array<{ command: RunType; owner: string; repo: string; stateKey: string }> = []
 
-  async run(opts: {
-    owner: string
-    repo: string
-    headSha: string
-    command: RunType
-    variables?: Record<string, string>
-  }): Promise<TerraformResult> {
-    this.calls.push({ command: opts.command, owner: opts.owner, repo: opts.repo })
+  async run(opts: RunOpts): Promise<TerraformResult> {
+    this.calls.push({
+      command: opts.command,
+      owner: opts.owner,
+      repo: opts.repo,
+      stateKey: opts.stateKey,
+    })
 
     return {
       success: true,
@@ -92,9 +92,10 @@ describe("webhook-handler", () => {
     expect(runs[0].startedAt).toBeTruthy()
     expect(runs[0].completedAt).toBeTruthy()
 
-    // Verify runner was called with correct args
+    // Verify runner was called with correct args including stateKey
     expect(runner.calls).toHaveLength(1)
     expect(runner.calls[0].command).toBe("plan")
+    expect(runner.calls[0].stateKey).toBe("previews/pr-42/terraform.tfstate")
   })
 
   test("PR synchronize updates head SHA and creates new plan run", async () => {
@@ -129,6 +130,9 @@ describe("webhook-handler", () => {
     expect(destroyRuns[0].status).toBe("success")
 
     expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(1)
+    expect(runner.calls.find((c) => c.command === "destroy")?.stateKey).toBe(
+      "previews/pr-42/terraform.tfstate",
+    )
   })
 
   test("PR merged creates apply + destroy runs", async () => {
@@ -149,6 +153,12 @@ describe("webhook-handler", () => {
 
     expect(runner.calls.filter((c) => c.command === "apply")).toHaveLength(1)
     expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(1)
+
+    // Apply should target production state, destroy should target preview state
+    const applyCall = runner.calls.find((c) => c.command === "apply")
+    const destroyCall = runner.calls.find((c) => c.command === "destroy")
+    expect(applyCall?.stateKey).toBe("production/main/terraform.tfstate")
+    expect(destroyCall?.stateKey).toBe("previews/pr-42/terraform.tfstate")
   })
 
   test("PR closed with no existing preview is a no-op", async () => {
@@ -176,7 +186,7 @@ describe("webhook-handler", () => {
 
   test("runner failure marks run and preview as failed", async () => {
     const failRunner: Runner = {
-      async run() {
+      async run(_opts: RunOpts) {
         return {
           success: false,
           command: "plan" as const,
@@ -198,5 +208,67 @@ describe("webhook-handler", () => {
     expect(runs).toHaveLength(1)
     expect(runs[0].status).toBe("failed")
     expect(runs[0].errorMessage).toBe("init failed")
+  })
+
+  test("concurrent events for same PR are serialized by mutex", async () => {
+    const order: string[] = []
+    let resolveFirst!: () => void
+    const firstBlocked = new Promise<void>((r) => { resolveFirst = r })
+
+    /** A slow runner that blocks the first call until we release it. */
+    const slowRunner: Runner = {
+      calls: 0,
+      async run(opts: RunOpts): Promise<TerraformResult> {
+        const callNum = ++this.calls
+        order.push(`start-${callNum}`)
+
+        if (callNum === 1) {
+          await firstBlocked
+        }
+
+        order.push(`end-${callNum}`)
+        return {
+          success: true,
+          command: opts.command,
+          output: `call ${callNum}`,
+          planSummary: "+1, ~0, -0",
+          durationMs: 1,
+        }
+      },
+    } as Runner & { calls: number }
+
+    const mutex = new KeyedMutex()
+    const slowHandler = createHandler(slowRunner, mutex)
+
+    // Fire both events concurrently (simulating rapid pushes)
+    const p1 = slowHandler.handlePullRequestEvent(
+      makeContext({ action: "opened", headSha: "sha-1" }),
+    )
+    const p2 = slowHandler.handlePullRequestEvent(
+      makeContext({ action: "synchronize", headSha: "sha-2" }),
+    )
+
+    // Give microtasks time to start
+    await new Promise((r) => setTimeout(r, 50))
+
+    // Only the first call should have started
+    expect(order).toEqual(["start-1"])
+
+    // Release the first call
+    resolveFirst()
+    await Promise.all([p1, p2])
+
+    // Both completed in order: first finished, then second ran
+    expect(order).toEqual(["start-1", "end-1", "start-2", "end-2"])
+
+    // Both plans should be in the DB
+    const runs = await db.select().from(tfRuns)
+    expect(runs).toHaveLength(2)
+    expect(runs.every((r) => r.status === "success")).toBe(true)
+
+    // Final preview headSha should be from the second event
+    const pvs = await db.select().from(previews)
+    expect(pvs).toHaveLength(1)
+    expect(pvs[0].headSha).toBe("sha-2")
   })
 })

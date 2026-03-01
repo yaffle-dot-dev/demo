@@ -12,12 +12,16 @@ export interface Runner {
    * Execute a terraform command against a repo at a specific SHA.
    * The runner is responsible for workspace setup and cleanup.
    */
-  run(opts: {
-    owner: string
-    repo: string
-    headSha: string
-    command: RunType
-    variables?: Record<string, string>
-    installationToken?: string
-  }): Promise<TerraformResult>
+  run(opts: RunOpts): Promise<TerraformResult>
+}
+
+export interface RunOpts {
+  owner: string
+  repo: string
+  headSha: string
+  command: RunType
+  /** State key, e.g. "previews/pr-42/terraform.tfstate" */
+  stateKey: string
+  variables?: Record<string, string>
+  installationToken?: string
 }

@@ -168,8 +168,8 @@ export async function runTerraform(opts: {
       return {
         success: false,
         command: opts.command,
-        output: initResult.stdout,
-        errorMessage: `terraform init failed: ${initResult.stderr}`,
+        output: sanitizeOutput(initResult.stdout),
+        errorMessage: sanitizeOutput(`terraform init failed: ${initResult.stderr}`),
         durationMs: Date.now() - start,
       }
     }
@@ -180,7 +180,7 @@ export async function runTerraform(opts: {
         return {
           success: true,
           command: "plan",
-          output,
+          output: sanitizeOutput(output),
           planJson,
           planSummary: summary,
           durationMs: Date.now() - start,
@@ -192,7 +192,7 @@ export async function runTerraform(opts: {
         return {
           success: true,
           command: "apply",
-          output,
+          output: sanitizeOutput(output),
           outputs,
           durationMs: Date.now() - start,
         }
@@ -203,7 +203,7 @@ export async function runTerraform(opts: {
         return {
           success: true,
           command: "destroy",
-          output,
+          output: sanitizeOutput(output),
           durationMs: Date.now() - start,
         }
       }
@@ -214,11 +214,25 @@ export async function runTerraform(opts: {
     return {
       success: false,
       command: opts.command,
-      output,
-      errorMessage: msg,
+      output: sanitizeOutput(output),
+      errorMessage: sanitizeOutput(msg),
       durationMs: Date.now() - start,
     }
   }
+}
+
+/**
+ * Sanitize raw CLI output before it reaches users.
+ * Replaces implementation-specific references (OpenTofu, tofu, Terraform)
+ * with "Yaffle" so we don't leak engine details.
+ */
+export function sanitizeOutput(raw: string): string {
+  return raw
+    .replaceAll("OpenTofu", "Yaffle")
+    .replaceAll("opentofu.org", "yaffle.dev")
+    .replace(/\btofu\b/g, "yaffle")
+    .replaceAll("Terraform", "Yaffle")
+    .replace(/\bterraform\b/g, "yaffle")
 }
 
 /**

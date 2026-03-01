@@ -7,15 +7,61 @@ export interface AppEnv {
   databaseUrl: string
 }
 
+/**
+ * Normalize a PEM key that may have been flattened to a single line.
+ * 1Password can't store newlines in password fields, so secretspec
+ * gives us something like:
+ *   "-----BEGIN RSA PRIVATE KEY----- MIIEp... -----END RSA PRIVATE KEY-----"
+ * We need to restore the proper PEM line breaks.
+ */
+function normalizePem(raw: string): string {
+  const trimmed = raw.trim()
+
+  // Already has proper newlines -- return as-is
+  if (trimmed.includes("\n")) return trimmed
+
+  // Single-line PEM: extract header, base64 body, footer and reformat
+  const match = trimmed.match(
+    /^(-----BEGIN [A-Z ]+-----)\s+(.+?)\s+(-----END [A-Z ]+-----)-*$/,
+  )
+  if (!match) return trimmed
+
+  const [, header, body, footer] = match
+
+  // Split the base64 body into 64-char lines (PEM standard)
+  const bodyNoSpaces = body.replace(/\s+/g, "")
+  const lines: string[] = []
+  for (let i = 0; i < bodyNoSpaces.length; i += 64) {
+    lines.push(bodyNoSpaces.slice(i, i + 64))
+  }
+
+  return `${header}\n${lines.join("\n")}\n${footer}`
+}
+
 function loadPrivateKey(): string {
-  const keyPath = process.env.GITHUB_APP_PRIVATE_KEY
-  if (!keyPath) return ""
-  // secretspec gives us a file path (as_path = true)
+  const keyEnv = process.env.GITHUB_APP_PRIVATE_KEY
+  if (!keyEnv) return ""
+
+  // secretspec with as_path = true writes the secret to a temp file
+  // and sets the env var to the file path
   try {
-    return readFileSync(keyPath, "utf-8")
+    const contents = readFileSync(keyEnv, "utf-8").trim()
+    if (contents.includes("-----BEGIN")) {
+      const pem = normalizePem(contents)
+      console.log(`loaded private key from file: ${keyEnv} (${pem.split("\n").length} lines)`)
+      return pem
+    }
+    console.log(`file ${keyEnv} read but no PEM header found, using contents as key`)
+    return contents
   } catch {
-    // Fall back to treating the value as the key itself (for tests)
-    return keyPath
+    // Not a file path -- treat the value as the key itself
+    if (keyEnv.includes("-----BEGIN")) {
+      const pem = normalizePem(keyEnv)
+      console.log(`using GITHUB_APP_PRIVATE_KEY env var directly as PEM key`)
+      return pem
+    }
+    console.warn(`GITHUB_APP_PRIVATE_KEY is not a valid file path or PEM key`)
+    return keyEnv
   }
 }
 

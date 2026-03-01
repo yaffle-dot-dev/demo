@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { parsePlanSummary, runTerraform } from "./terraform.ts"
+import { parsePlanSummary, runTerraform, sanitizeOutput } from "./terraform.ts"
 
 describe("parsePlanSummary", () => {
   test("parses standard plan output", () => {
@@ -36,6 +36,51 @@ Plan: 0 to add, 0 to change, 5 to destroy.
 
   test("returns unknown for unrecognized output", () => {
     expect(parsePlanSummary("some random output")).toBe("unknown")
+  })
+})
+
+describe("sanitizeOutput", () => {
+  test("replaces OpenTofu with Yaffle", () => {
+    expect(sanitizeOutput("OpenTofu has been successfully initialized!")).toBe(
+      "Yaffle has been successfully initialized!",
+    )
+  })
+
+  test("replaces tofu command references with yaffle", () => {
+    expect(sanitizeOutput('Try running "tofu plan" to see any changes.')).toBe(
+      'Try running "yaffle plan" to see any changes.',
+    )
+  })
+
+  test("replaces opentofu.org URLs with yaffle.dev", () => {
+    expect(sanitizeOutput("https://opentofu.org/docs/cli/plugins/signing/")).toBe(
+      "https://yaffle.dev/docs/cli/plugins/signing/",
+    )
+  })
+
+  test("replaces Terraform with Yaffle", () => {
+    expect(sanitizeOutput("Terraform will perform the following actions:")).toBe(
+      "Yaffle will perform the following actions:",
+    )
+  })
+
+  test("replaces lowercase terraform with yaffle", () => {
+    expect(sanitizeOutput("terraform init failed: something broke")).toBe(
+      "yaffle init failed: something broke",
+    )
+  })
+
+  test("handles multiple replacements in one string", () => {
+    const input =
+      "OpenTofu used terraform config. Run tofu plan at opentofu.org for details."
+    const expected =
+      "Yaffle used yaffle config. Run yaffle plan at yaffle.dev for details."
+    expect(sanitizeOutput(input)).toBe(expected)
+  })
+
+  test("does not modify unrelated content", () => {
+    const input = "resource \"null_resource\" \"test\" {}"
+    expect(sanitizeOutput(input)).toBe(input)
   })
 })
 
@@ -79,6 +124,11 @@ resource "null_resource" "example" {
     expect(result.output).toContain("null_resource")
     expect(result.planJson).toBeTruthy()
     expect(result.durationMs).toBeGreaterThan(0)
+
+    // Output should be sanitized -- no engine leaks
+    expect(result.output).not.toContain("OpenTofu")
+    expect(result.output).not.toContain("opentofu.org")
+    expect(result.output).not.toMatch(/\btofu\b/)
   }, 30_000)
 
   test("plan succeeds with no changes on empty config", async () => {
@@ -153,5 +203,10 @@ resource "nonexistent_provider" "thing" {
     expect(result.success).toBe(false)
     expect(result.errorMessage).toBeTruthy()
     expect(result.durationMs).toBeGreaterThan(0)
+
+    // Error messages should also be sanitized
+    expect(result.errorMessage).not.toContain("OpenTofu")
+    expect(result.errorMessage).not.toMatch(/\btofu\b/)
+    expect(result.output).not.toContain("OpenTofu")
   }, 30_000)
 })

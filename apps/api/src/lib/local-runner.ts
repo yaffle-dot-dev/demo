@@ -1,22 +1,16 @@
-import type { RunType, TerraformResult } from "@yaffle/shared"
+import type { TerraformResult } from "@yaffle/shared"
 
-import type { Runner } from "./runner.ts"
+import type { RunOpts, Runner } from "./runner.ts"
+import { configureLocalBackend } from "./state.ts"
 import { runTerraform } from "./terraform.ts"
 import { cleanupWorkspace, findTerraformDirs, prepareWorkspace } from "./workspace.ts"
 
 /**
- * Local runner: clones the repo, finds TF directories,
- * and shells out to tofu/terraform as a subprocess.
+ * Local runner: clones the repo, finds TF directories, configures
+ * a persistent local backend, and shells out to tofu/terraform.
  */
 export class LocalRunner implements Runner {
-  async run(opts: {
-    owner: string
-    repo: string
-    headSha: string
-    command: RunType
-    variables?: Record<string, string>
-    installationToken?: string
-  }): Promise<TerraformResult> {
+  async run(opts: RunOpts): Promise<TerraformResult> {
     const start = Date.now()
     let workDir: string | undefined
 
@@ -45,6 +39,9 @@ export class LocalRunner implements Runner {
       // Run against the first TF directory found
       // TODO: support multiple TF directories from .yaffle/config.yml
       const tfDir = tfDirs[0] === "." ? workDir : `${workDir}/${tfDirs[0]}`
+
+      // Configure persistent local backend before init
+      await configureLocalBackend(tfDir, opts.owner, opts.repo, opts.stateKey)
 
       return await runTerraform({
         workDir: tfDir,

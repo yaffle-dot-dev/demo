@@ -5,7 +5,9 @@ import { findPreview, updatePreviewStatus, upsertPreview } from "../db/queries/p
 import { createTfRun, updateRunStatus } from "../db/queries/tf-runs.ts"
 import { createCheckRun, getInstallationToken, updateCheckRun } from "./github.ts"
 import { LocalRunner } from "./local-runner.ts"
+import { KeyedMutex } from "./mutex.ts"
 import type { Runner } from "./runner.ts"
+import { removeState } from "./state.ts"
 
 const CHECK_NAME = "Yaffle / terraform"
 
@@ -13,23 +15,39 @@ const CHECK_NAME = "Yaffle / terraform"
 const defaultRunner: Runner = new LocalRunner()
 
 /**
- * Create a handler with an injected runner. Used by tests to avoid
- * real git clone + tofu invocations.
+ * Per-preview mutex. Ensures that concurrent webhook events for the same
+ * preview (owner/repo/pr) are processed sequentially. Different previews
+ * still run concurrently.
  */
-export function createHandler(runner: Runner): {
+const previewMutex = new KeyedMutex()
+
+/** Build the mutex key for a webhook context. */
+function mutexKey(ctx: WebhookContext): string {
+  return `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
+}
+
+/**
+ * Create a handler with an injected runner and optional mutex.
+ * Used by tests to avoid real git clone + tofu invocations.
+ */
+export function createHandler(runner: Runner, mutex?: KeyedMutex): {
   handlePullRequestEvent: (ctx: WebhookContext) => Promise<void>
 } {
+  const m = mutex ?? new KeyedMutex()
   return {
     handlePullRequestEvent: (ctx: WebhookContext) =>
-      handlePullRequestEventWith(ctx, runner),
+      m.run(mutexKey(ctx), () => handlePullRequestEventWith(ctx, runner)),
   }
 }
 
 /**
  * Handle a pull_request webhook event using the default runner.
+ * Serialized per-preview via the global mutex.
  */
 export async function handlePullRequestEvent(ctx: WebhookContext): Promise<void> {
-  return handlePullRequestEventWith(ctx, defaultRunner)
+  return previewMutex.run(mutexKey(ctx), () =>
+    handlePullRequestEventWith(ctx, defaultRunner),
+  )
 }
 
 /**
@@ -147,6 +165,7 @@ async function handlePlanRequested(ctx: WebhookContext, runner: Runner): Promise
       repo: ctx.repo,
       headSha: ctx.headSha,
       command: "plan",
+      stateKey,
       variables: { environment: `preview-pr-${ctx.prNumber}` },
       installationToken,
     })
@@ -244,6 +263,7 @@ async function handleMerged(ctx: WebhookContext, runner: Runner): Promise<void> 
   console.log(`PR ${tag} was merged, transitioning preview ${preview.id}`)
 
   const installationToken = await acquireToken(ctx)
+  const productionStateKey = "production/main/terraform.tfstate"
 
   // Apply to production
   const applyRun = await createTfRun({
@@ -261,6 +281,7 @@ async function handleMerged(ctx: WebhookContext, runner: Runner): Promise<void> 
       repo: ctx.repo,
       headSha: ctx.headSha,
       command: "apply",
+      stateKey: productionStateKey,
       variables: { environment: "production" },
       installationToken,
     })
@@ -290,7 +311,7 @@ async function handleMerged(ctx: WebhookContext, runner: Runner): Promise<void> 
   }
 
   // Destroy preview workspace
-  await destroyPreview(ctx, preview.id, runner, installationToken)
+  await destroyPreview(ctx, preview, runner, installationToken)
 }
 
 /**
@@ -310,7 +331,7 @@ async function handleClosed(ctx: WebhookContext, runner: Runner): Promise<void> 
   console.log(`PR ${tag} was closed, destroying preview ${preview.id}`)
 
   const installationToken = await acquireToken(ctx)
-  await destroyPreview(ctx, preview.id, runner, installationToken)
+  await destroyPreview(ctx, preview, runner, installationToken)
 }
 
 /**
@@ -318,18 +339,18 @@ async function handleClosed(ctx: WebhookContext, runner: Runner): Promise<void> 
  */
 async function destroyPreview(
   ctx: WebhookContext,
-  previewId: string,
+  preview: { id: string; stateKey: string },
   runner: Runner,
   installationToken?: string,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
 
   const destroyRun = await createTfRun({
-    previewId,
+    previewId: preview.id,
     runType: "destroy",
     status: "pending",
   })
-  await updatePreviewStatus(previewId, "destroying")
+  await updatePreviewStatus(preview.id, "destroying")
   await updateRunStatus(destroyRun.id, "running", { startedAt: new Date() })
 
   try {
@@ -338,6 +359,7 @@ async function destroyPreview(
       repo: ctx.repo,
       headSha: ctx.headSha,
       command: "destroy",
+      stateKey: preview.stateKey,
       installationToken,
     })
 
@@ -348,7 +370,7 @@ async function destroyPreview(
         completedAt: new Date(),
         errorMessage: result.errorMessage,
       })
-      await updatePreviewStatus(previewId, "failed")
+      await updatePreviewStatus(preview.id, "failed")
       console.error(`destroy failed for ${tag}: ${result.errorMessage}`)
       return
     }
@@ -358,11 +380,14 @@ async function destroyPreview(
       completedAt: new Date(),
       errorMessage: msg,
     })
-    await updatePreviewStatus(previewId, "failed")
+    await updatePreviewStatus(preview.id, "failed")
     console.error(`destroy failed for ${tag}:`, msg)
     return
   }
 
-  await updatePreviewStatus(previewId, "destroyed")
-  console.log(`preview ${previewId} destroyed for ${tag}`)
+  // Clean up the state files after successful destroy
+  await removeState(ctx.owner, ctx.repo, preview.stateKey)
+
+  await updatePreviewStatus(preview.id, "destroyed")
+  console.log(`preview ${preview.id} destroyed for ${tag}`)
 }
