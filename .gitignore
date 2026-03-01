@@ -1,0 +1,11 @@
+**/.env
+**/.env.*
+# Devenv
+.devenv/
+.devenv.flake.nix
+
+# direnv
+.direnv/
+
+# Nix
+result
