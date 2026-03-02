@@ -11,3 +11,12 @@ declare global {
 }
 
 export {}
+
+interface ImportMetaEnv {
+  readonly VITE_YAFFLE_AUTH_ISSUER?: string
+  readonly VITE_YAFFLE_AUTH_CLIENT_ID?: string
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv
+}

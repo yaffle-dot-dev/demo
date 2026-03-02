@@ -17,7 +17,7 @@ import {
   validateConfig,
 } from "./config.ts"
 import { ensureOrg, findOrgById } from "../db/queries/organizations.ts"
-import { findPreview, findPreviewById, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
+import { findPreview, findPreviewById, markRemovedWorkspacesDestroyed, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
 import { appendRunLog, createTfRun, findLatestRun, updateRunStatus } from "../db/queries/tf-runs.ts"
 import {
   createCheckRun,
@@ -639,6 +639,7 @@ async function handlePushEvent(
         variables,
         installationToken,
         wsTag,
+        createCheckRun: true, // Create check run for production pushes
       })
 
       if (!planResult.success) return
@@ -660,6 +661,18 @@ async function handlePushEvent(
       logger.info("applying production", wsAttrs)
       await updatePreviewStatus(preview.id, "applying")
 
+      // Update the plan's check run to show apply is starting
+      if (planResult.checkRunId && ctx.installationId) {
+        await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, planResult.checkRunId, {
+          status: "in_progress",
+          title: "Applying changes",
+          summary: `Plan: ${planResult.planSummary ?? "complete"}\n\nApplying...`,
+        }).catch((err) => logger.warn("failed to update check run for apply", {
+          ...wsAttrs,
+          error: err instanceof Error ? err.message : String(err),
+        }))
+      }
+
       const applyResult = await executeRun({
         ctx,
         preview,
@@ -670,12 +683,32 @@ async function handlePushEvent(
         variables,
         installationToken,
         wsTag,
+        checkRunId: planResult.checkRunId, // Reuse plan's check run
       })
 
       if (applyResult.success) {
         await updatePreviewStatus(preview.id, "ready")
+      } else {
+        await updatePreviewStatus(preview.id, "failed")
       }
     })
+  }
+
+  // Mark workspaces that are no longer in the config as destroyed
+  const activeWorkspacePaths = config.workspaces
+    .filter((ws) => ws.auto_apply_on_merge || ws.require_approval)
+    .map((ws) => ws.path)
+
+  const destroyedCount = await markRemovedWorkspacesDestroyed(
+    org.id,
+    ctx.repo,
+    ctx.branch,
+    ctx.headSha,
+    activeWorkspacePaths,
+  )
+
+  if (destroyedCount > 0) {
+    logger.info(`marked ${destroyedCount} removed workspace(s) as destroyed`, attrs)
   }
 }
 
@@ -701,6 +734,7 @@ async function executeRun(opts: {
   installationToken?: string
   wsTag: string
   createCheckRun?: boolean
+  checkRunId?: number // Existing check run to update (instead of creating new)
 }): Promise<RunResult> {
   return withSpan(`run.${opts.command}`, async (span) => {
     const { ctx, preview, runner, wsTag } = opts
@@ -720,9 +754,9 @@ async function executeRun(opts: {
       status: "pending",
     })
 
-    // Create check run (PR events only, with installation)
-    let checkRunId: number | undefined
-    if (ctx.installationId && (ctx.kind === "pull_request" || opts.createCheckRun)) {
+    // Use existing check run or create a new one
+    let checkRunId: number | undefined = opts.checkRunId
+    if (!checkRunId && ctx.installationId && (ctx.kind === "pull_request" || opts.createCheckRun)) {
       const checkName = opts.workspacePath === "."
         ? CHECK_NAME
         : `${CHECK_NAME} (${opts.workspacePath})`

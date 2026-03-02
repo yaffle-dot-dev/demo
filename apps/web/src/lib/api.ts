@@ -66,8 +66,16 @@ export interface EnvironmentGroup {
   workspaces: EnvironmentWorkspace[]
 }
 
+export interface OrgInfo {
+  id: string
+  login: string
+  role: string
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`)
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: buildAuthHeaders(),
+  })
   const text = await res.text()
   if (!res.ok) {
     try {
@@ -87,6 +95,20 @@ async function fetchJson<T>(path: string): Promise<T> {
   } catch {
     throw new Error("API returned non-JSON data")
   }
+}
+
+function buildAuthHeaders(): HeadersInit {
+  if (typeof window === "undefined") return {}
+
+  // Use Bearer token auth (primary method)
+  const accessToken = localStorage.getItem("yaffle.accessToken")
+  if (accessToken) {
+    return {
+      Authorization: `Bearer ${accessToken}`,
+    }
+  }
+
+  return {}
 }
 
 export async function listPreviews(params: {
@@ -119,6 +141,10 @@ export async function listEnvironments(params: {
   return fetchJson(`/environments?${searchParams}`)
 }
 
+export async function listOrgs(): Promise<DetailResponse<OrgInfo[]>> {
+  return fetchJson("/orgs")
+}
+
 export async function getPreview(id: string): Promise<DetailResponse<Preview>> {
   return fetchJson(`/previews/${id}`)
 }
@@ -140,9 +166,30 @@ export async function getRunPlan(id: string): Promise<DetailResponse<unknown>> {
 }
 
 export async function getRunOutput(id: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/runs/${id}/output`)
+  const res = await fetch(`${API_BASE}/runs/${id}/output`, {
+    headers: buildAuthHeaders(),
+  })
   if (!res.ok) {
     throw new Error(`API error: ${res.status}`)
   }
   return res.text()
+}
+
+export async function approvePreview(
+  id: string,
+  approverLogin?: string,
+  githubUserId?: number,
+): Promise<void> {
+  const res = await fetch(`${API_BASE}/previews/${id}/approve`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(),
+    },
+    body: JSON.stringify({ approverLogin, githubUserId }),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || `API error: ${res.status}`)
+  }
 }

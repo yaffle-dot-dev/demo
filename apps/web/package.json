@@ -10,6 +10,7 @@
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
+    "@openauthjs/openauth": "^0.4.3",
     "@yaffle/shared": "workspace:*"
   },
   "devDependencies": {

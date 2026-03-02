@@ -1,454 +1,210 @@
 <script lang="ts">
   import { browser } from "$app/environment"
-  import { onDestroy, onMount } from "svelte"
-  import { listEnvironments, listPreviews, type EnvironmentGroup, type Preview } from "$lib/api"
-  import { statusConfig, formatRelativeTime, shortSha } from "$lib/status"
+  import { goto } from "$app/navigation"
+  import { onMount, onDestroy } from "svelte"
+  import { listOrgs } from "$lib/api"
 
-  let org = $state("lamalex")
-  let repoFilter = $state("")
-  let showInactive = $state(false)
-  let yourHandle = $state("")
-  let previews = $state<Preview[]>([])
-  let environments = $state<EnvironmentGroup[]>([])
-  let loading = $state(false)
-  let error = $state("")
+  let hasToken = $state<boolean | null>(null)
+  let redirecting = $state(false)
+  let awaitingInstall = $state(false)
   let stream: EventSource | null = null
 
-  const ACTIVE_STATUSES = new Set([
-    "pending",
-    "planning",
-    "applying",
-    "awaiting_approval",
-    "ready",
-    "failed",
-  ])
+  const INSTALL_PENDING_KEY = "yaffle.installPending"
 
-  interface PreviewGroup {
-    key: string
-    repo: string
-    prNumber: number
-    branch: string
-    headSha: string
-    createdAt: string
-    status: string
-    authorLogin: string | null
-    workspaces: Preview[]
+  function startInstall() {
+    localStorage.setItem(INSTALL_PENDING_KEY, Date.now().toString())
+    awaitingInstall = true
+    window.open("https://github.com/apps/yaffle-dot-dev", "_blank")
   }
-
-  async function load() {
-    loading = true
-    error = ""
-    try {
-      const [previewsRes, envRes] = await Promise.all([
-        listPreviews({
-        org,
-        repo: repoFilter || undefined,
-        }),
-        listEnvironments({
-          org,
-          repo: repoFilter || undefined,
-        }),
-      ])
-      previews = previewsRes.data.filter((p) => p.prNumber !== 0)
-      environments = envRes.data
-    } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
-      previews = []
-      environments = []
-    } finally {
-      loading = false
-    }
-  }
-
-  async function refreshEnvironments() {
-    try {
-      const envRes = await listEnvironments({
-        org,
-        repo: repoFilter || undefined,
-      })
-      environments = envRes.data
-    } catch {
-      environments = []
-    }
-  }
-
-  function groupStatus(workspaces: Preview[]): string {
-    const statuses = new Set(workspaces.map((ws) => ws.status))
-    if (statuses.has("failed")) return "failed"
-    if (
-      statuses.has("applying") ||
-      statuses.has("planning") ||
-      statuses.has("pending") ||
-      statuses.has("awaiting_approval")
-    ) {
-      return "applying"
-    }
-    if (statuses.has("destroying")) return "destroying"
-    if (statuses.has("ready")) return "ready"
-    if (statuses.has("destroyed")) return "destroyed"
-    return "pending"
-  }
-
-  function groupPreviews(list: Preview[]): PreviewGroup[] {
-    const map = new Map<string, PreviewGroup>()
-
-    for (const preview of list) {
-      const key = `${preview.repo}#${preview.prNumber}`
-      const existing = map.get(key)
-      const createdAt = existing
-        ? new Date(existing.createdAt) > new Date(preview.createdAt)
-          ? existing.createdAt
-          : preview.createdAt
-        : preview.createdAt
-
-      const status = existing ? groupStatus([...existing.workspaces, preview]) : preview.status
-
-      const headSha = existing?.headSha ?? preview.headSha
-      const branch = existing?.branch ?? preview.branch
-      const authorLogin = existing?.authorLogin ?? preview.authorLogin ?? null
-
-      const group: PreviewGroup = {
-        key,
-        repo: preview.repo,
-        prNumber: preview.prNumber,
-        branch,
-        headSha,
-        createdAt,
-        status,
-        authorLogin,
-        workspaces: existing ? [...existing.workspaces, preview] : [preview],
-      }
-
-      map.set(key, group)
-    }
-
-    return Array.from(map.values()).sort((a, b) => {
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-    })
-  }
-
-  const activeGroups = $derived(
-    groupPreviews(previews.filter((p) => (showInactive ? true : ACTIVE_STATUSES.has(p.status)))),
-  )
-
-  const normalizedHandle = $derived(yourHandle.trim().toLowerCase())
-
-  const yourGroups = $derived(
-    normalizedHandle
-      ? activeGroups.filter((g) => (g.authorLogin ?? "").toLowerCase() === normalizedHandle)
-      : [],
-  )
-
-  const otherGroups = $derived(
-    normalizedHandle
-      ? activeGroups.filter((g) => (g.authorLogin ?? "").toLowerCase() !== normalizedHandle)
-      : activeGroups,
-  )
-
-  onMount(() => {
-    if (!browser) return
-    org = localStorage.getItem("yaffle.org") ?? org
-    repoFilter = localStorage.getItem("yaffle.repo") ?? repoFilter
-    yourHandle = localStorage.getItem("yaffle.handle") ?? yourHandle
-    showInactive = localStorage.getItem("yaffle.showInactive") === "true"
-  })
-
-  onDestroy(() => {
-    if (stream) stream.close()
-  })
 
   function connectStream() {
-    if (!browser) return
-    if (stream) stream.close()
+    if (!browser || stream) return
+    const token = localStorage.getItem("yaffle.accessToken")
+    if (!token) return
 
     const params = new URLSearchParams()
-    params.set("org", org)
-    if (repoFilter) params.set("repo", repoFilter)
+    params.set("token", token)
 
-    stream = new EventSource(`/api/previews/stream?${params.toString()}`)
+    stream = new EventSource(`/api/orgs/stream?${params.toString()}`)
     stream.addEventListener("update", (event) => {
+      if (redirecting) return
       try {
-        const payload = JSON.parse((event as MessageEvent).data) as { data: Preview[] }
-        previews = payload.data.filter((p) => p.prNumber !== 0)
-        refreshEnvironments()
+        const payload = JSON.parse((event as MessageEvent).data) as { data: Array<{ login: string }> }
+        if (payload.data.length > 0) {
+          // Clear pending state
+          localStorage.removeItem(INSTALL_PENDING_KEY)
+          redirecting = true
+          goto(`/${payload.data[0].login}`, { replaceState: true })
+        }
       } catch {
         // ignore malformed payloads
       }
     })
+    stream.addEventListener("error", () => {
+      // Reconnect on error after a delay
+      stream?.close()
+      stream = null
+      setTimeout(connectStream, 5000)
+    })
   }
 
-  $effect(() => {
-    org; repoFilter; showInactive; yourHandle;
-    if (browser) {
-      localStorage.setItem("yaffle.org", org)
-      localStorage.setItem("yaffle.repo", repoFilter)
-      localStorage.setItem("yaffle.handle", yourHandle)
-      localStorage.setItem("yaffle.showInactive", String(showInactive))
+  // Listen for storage changes from other tabs
+  function handleStorageChange(e: StorageEvent) {
+    if (e.key === INSTALL_PENDING_KEY && e.newValue) {
+      awaitingInstall = true
     }
-    load()
-    connectStream()
+  }
+
+  onMount(async () => {
+    if (!browser) return
+    hasToken = Boolean(localStorage.getItem("yaffle.accessToken"))
+
+    // Check if install is pending (user clicked install, possibly in another tab)
+    const pendingTimestamp = localStorage.getItem(INSTALL_PENDING_KEY)
+    if (pendingTimestamp) {
+      // Only consider pending if within last 5 minutes
+      const elapsed = Date.now() - parseInt(pendingTimestamp, 10)
+      if (elapsed < 5 * 60 * 1000) {
+        awaitingInstall = true
+      } else {
+        localStorage.removeItem(INSTALL_PENDING_KEY)
+      }
+    }
+
+    window.addEventListener("storage", handleStorageChange)
+
+    if (hasToken) {
+      // Check once immediately
+      redirecting = true
+      try {
+        const res = await listOrgs()
+        if (res.data.length > 0) {
+          localStorage.removeItem(INSTALL_PENDING_KEY)
+          goto(`/${res.data[0].login}`, { replaceState: true })
+          return
+        }
+      } catch {
+        // If we can't fetch orgs, stay on landing page
+      }
+      redirecting = false
+
+      // Connect to SSE stream to wait for org membership
+      connectStream()
+    }
+  })
+
+  onDestroy(() => {
+    if (browser) {
+      window.removeEventListener("storage", handleStorageChange)
+    }
+    if (stream) {
+      stream.close()
+      stream = null
+    }
   })
 </script>
 
-<div class="space-y-6">
-  <section class="grid grid-cols-1 gap-4">
-    <div class="rounded-xl border border-border bg-gradient-to-br from-surface-raised via-surface to-surface px-5 py-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <h1 class="text-xl font-semibold">Primary environments</h1>
-          <p class="text-sm text-text-muted mt-1">
-            Latest apply status for long-lived branches.
+{#if hasToken === null || redirecting}
+  <!-- Checking auth state / redirecting -->
+  <div class="min-h-[60vh]"></div>
+{:else if !hasToken}
+  <div class="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
+    <div class="max-w-2xl space-y-8">
+      <div class="space-y-4">
+        <h1 class="text-4xl font-bold text-text tracking-tight">
+          Preview infrastructure changes
+          <span class="text-yaffle-400">before they hit production</span>
+        </h1>
+        <p class="text-lg text-text-muted max-w-xl mx-auto">
+          Yaffle creates ephemeral Terraform workspaces for every pull request.
+          See exactly what will change, get approvals, and merge with confidence.
+        </p>
+      </div>
+
+      <div class="flex flex-col sm:flex-row gap-4 justify-center">
+        <button
+          onclick={() => import('$lib/auth').then(m => m.startGithubLogin())}
+          class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg
+                 bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
+                 transition-colors"
+        >
+          <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+          </svg>
+          Sign in with GitHub
+        </button>
+      </div>
+
+      <div class="pt-8 grid grid-cols-1 sm:grid-cols-3 gap-6 text-left">
+        <div class="space-y-2">
+          <div class="text-yaffle-400 font-mono text-sm">01</div>
+          <h3 class="font-semibold text-text">PR-triggered plans</h3>
+          <p class="text-sm text-text-muted">
+            Open a PR and Yaffle automatically runs terraform plan on your changes.
           </p>
         </div>
-        <div class="text-right text-sm text-text-dim">
-          <div class="font-mono text-xs">{environments.length} environments</div>
+        <div class="space-y-2">
+          <div class="text-yaffle-400 font-mono text-sm">02</div>
+          <h3 class="font-semibold text-text">Isolated state</h3>
+          <p class="text-sm text-text-muted">
+            Each preview gets its own state file. No conflicts, no locks, no waiting.
+          </p>
+        </div>
+        <div class="space-y-2">
+          <div class="text-yaffle-400 font-mono text-sm">03</div>
+          <h3 class="font-semibold text-text">Approval workflows</h3>
+          <p class="text-sm text-text-muted">
+            Require sign-off before applying. Integrates with your existing GitHub flow.
+          </p>
         </div>
       </div>
 
-      {#if environments.length === 0}
-        <div class="text-text-dim text-sm py-6">No environments yet.</div>
-      {:else}
-        <div class="mt-4 grid grid-cols-1 gap-3">
-          {#each environments as env (env.repo + env.branch)}
-            {@const cfg = statusConfig(env.status)}
-            <div class="rounded-lg border border-border bg-surface p-3">
-              <div class="flex items-start justify-between">
-                <div>
-                  <div class="flex items-center gap-2">
-                    <span class="font-medium text-text">{env.repo}</span>
-                    <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                      {env.branch}
-                    </span>
-                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
-                      <span class="font-mono">{cfg.icon}</span>
-                      {cfg.label}
-                    </span>
-                  </div>
-                  <div class="flex flex-wrap gap-4 text-xs text-text-dim mt-2">
-                    <span class="font-mono">{shortSha(env.headSha)}</span>
-                    <span>{formatRelativeTime(env.updatedAt)}</span>
-                    <span>{env.workspaces.length} workspace{env.workspaces.length === 1 ? "" : "s"}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          {/each}
+      <p class="text-sm text-text-dim pt-4">
+        Already have an account?
+        <button
+          onclick={() => import('$lib/auth').then(m => m.startGithubLogin())}
+          class="text-yaffle-400 hover:underline"
+        >
+          Sign in
+        </button>
+      </p>
+    </div>
+  </div>
+{:else}
+  <!-- Signed in but no orgs - show onboarding message -->
+  <div class="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
+    <div class="max-w-md space-y-4">
+      <h1 class="text-2xl font-semibold text-text">Welcome to Yaffle</h1>
+      {#if awaitingInstall}
+        <p class="text-text-muted">
+          Waiting for GitHub App installation to complete...
+        </p>
+        <div class="flex items-center justify-center gap-3 text-text-muted">
+          <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+          <span class="text-sm">This will redirect automatically once complete</span>
         </div>
+        <button
+          onclick={() => { awaitingInstall = false; localStorage.removeItem(INSTALL_PENDING_KEY) }}
+          class="text-sm text-text-dim hover:text-text-muted transition-colors"
+        >
+          Cancel
+        </button>
+      {:else}
+        <p class="text-text-muted">
+          Install the Yaffle GitHub App on an organization or your personal account to get started.
+        </p>
+        <button
+          onclick={startInstall}
+          class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
+                 bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
+                 transition-colors"
+        >
+          Install GitHub App
+        </button>
       {/if}
     </div>
-
-    <div class="rounded-xl border border-border bg-gradient-to-br from-surface-raised via-surface to-surface px-5 py-4">
-      <div class="flex items-center justify-between">
-        <div>
-          <h2 class="text-xl font-semibold">Preview groups</h2>
-          <p class="text-sm text-text-muted mt-1">
-            Active previews grouped by PR. Destroyed previews are hidden by default.
-          </p>
-        </div>
-        <div class="text-right text-sm text-text-dim">
-          <div class="font-mono text-xs">{activeGroups.length} groups</div>
-          <div class="font-mono text-xs">{previews.length} workspaces</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- Filters -->
-  <div class="flex flex-wrap gap-3 items-center">
-    <input
-      type="text"
-      bind:value={org}
-      placeholder="org"
-      class="bg-surface-raised border border-border rounded px-3 py-1.5 text-sm text-text
-             placeholder:text-text-dim focus:outline-none focus:border-yaffle-500 w-36"
-    />
-    <input
-      type="text"
-      bind:value={repoFilter}
-      placeholder="repo"
-      class="bg-surface-raised border border-border rounded px-3 py-1.5 text-sm text-text
-             placeholder:text-text-dim focus:outline-none focus:border-yaffle-500 w-52"
-    />
-    <input
-      type="text"
-      bind:value={yourHandle}
-      placeholder="your handle"
-      class="bg-surface-raised border border-border rounded px-3 py-1.5 text-sm text-text
-             placeholder:text-text-dim focus:outline-none focus:border-yaffle-500 w-40"
-    />
-    <label class="flex items-center gap-2 text-sm text-text-muted">
-      <input type="checkbox" bind:checked={showInactive} />
-      Show destroyed
-    </label>
   </div>
-
-  <!-- Error -->
-  {#if error}
-    <div class="bg-red-950/50 border border-red-800 rounded px-4 py-3 text-sm text-red-300">
-      {error}
-    </div>
-  {/if}
-
-  <!-- Loading -->
-  {#if loading}
-    <div class="text-text-muted text-sm">Loading...</div>
-  {:else if activeGroups.length === 0}
-    <div class="text-text-dim text-sm py-10 text-center">
-      Waiting for your first preview or deployment.
-    </div>
-  {:else}
-    {#if normalizedHandle}
-      <section class="space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-sm font-medium text-text-muted">Your active previews</h2>
-          <span class="text-xs text-text-dim">{yourGroups.length} groups</span>
-        </div>
-        {#if yourGroups.length === 0}
-          <div class="text-text-dim text-sm py-6 text-center">No previews for @{normalizedHandle}.</div>
-        {:else}
-          <div class="grid grid-cols-1 gap-4">
-            {#each yourGroups as group (group.key)}
-              {@const cfg = statusConfig(group.status)}
-              <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
-                <div class="flex items-start justify-between">
-                  <div>
-                    <div class="flex items-center gap-3">
-                      <a href="/previews/{group.workspaces[0].id}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
-                        {group.repo}
-                      </a>
-                      <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
-                      <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
-                        <span class="font-mono">{cfg.icon}</span>
-                        {cfg.label}
-                      </span>
-                    </div>
-                    <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
-                      <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                        {group.branch}
-                      </span>
-                      <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                      <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
-                    </div>
-                  </div>
-                  <div class="text-right text-xs text-text-dim">
-                    {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
-                  </div>
-                </div>
-
-                <div class="mt-4 flex flex-wrap gap-2">
-                  {#each group.workspaces as ws (ws.id)}
-                    {@const wsCfg = statusConfig(ws.status)}
-                    <a href="/previews/{ws.id}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
-                      <span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>
-                      <span class="font-mono">{ws.workspacePath}</span>
-                    </a>
-                  {/each}
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </section>
-
-      <section class="space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-sm font-medium text-text-muted">Other active previews</h2>
-          <span class="text-xs text-text-dim">{otherGroups.length} groups</span>
-        </div>
-        {#if otherGroups.length === 0}
-          <div class="text-text-dim text-sm py-6 text-center">No other active previews.</div>
-        {:else}
-          <div class="grid grid-cols-1 gap-4">
-            {#each otherGroups as group (group.key)}
-              {@const cfg = statusConfig(group.status)}
-              <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
-                <div class="flex items-start justify-between">
-                  <div>
-                    <div class="flex items-center gap-3">
-                      <a href="/previews/{group.workspaces[0].id}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
-                        {group.repo}
-                      </a>
-                      <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
-                      <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
-                        <span class="font-mono">{cfg.icon}</span>
-                        {cfg.label}
-                      </span>
-                    </div>
-                    <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
-                      <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                        {group.branch}
-                      </span>
-                      <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                      <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
-                      {#if group.authorLogin}
-                        <span class="text-text-dim text-xs">@{group.authorLogin}</span>
-                      {/if}
-                    </div>
-                  </div>
-                  <div class="text-right text-xs text-text-dim">
-                    {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
-                  </div>
-                </div>
-
-                <div class="mt-4 flex flex-wrap gap-2">
-                  {#each group.workspaces as ws (ws.id)}
-                    {@const wsCfg = statusConfig(ws.status)}
-                    <a href="/previews/{ws.id}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
-                      <span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>
-                      <span class="font-mono">{ws.workspacePath}</span>
-                    </a>
-                  {/each}
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </section>
-    {:else}
-      <div class="grid grid-cols-1 gap-4">
-        {#each activeGroups as group (group.key)}
-          {@const cfg = statusConfig(group.status)}
-          <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
-            <div class="flex items-start justify-between">
-              <div>
-                <div class="flex items-center gap-3">
-                  <a href="/previews/{group.workspaces[0].id}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
-                    {group.repo}
-                  </a>
-                  <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
-                  <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
-                    <span class="font-mono">{cfg.icon}</span>
-                    {cfg.label}
-                  </span>
-                </div>
-                <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
-                  <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                    {group.branch}
-                  </span>
-                  <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                  <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
-                  {#if group.authorLogin}
-                    <span class="text-text-dim text-xs">@{group.authorLogin}</span>
-                  {/if}
-                </div>
-              </div>
-              <div class="text-right text-xs text-text-dim">
-                {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
-              </div>
-            </div>
-
-            <div class="mt-4 flex flex-wrap gap-2">
-              {#each group.workspaces as ws (ws.id)}
-                {@const wsCfg = statusConfig(ws.status)}
-                <a href="/previews/{ws.id}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
-                  <span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>
-                  <span class="font-mono">{ws.workspacePath}</span>
-                </a>
-              {/each}
-            </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
-  {/if}
-</div>
+{/if}

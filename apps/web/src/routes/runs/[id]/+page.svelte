@@ -35,7 +35,9 @@
   function connectStream(id: string) {
     if (!browser) return
     if (stream) stream.close()
-    stream = new EventSource(`/api/runs/${id}/stream`)
+    const token = localStorage.getItem("yaffle.accessToken")
+    const params = token ? `?token=${encodeURIComponent(token)}` : ""
+    stream = new EventSource(`/api/runs/${id}/stream${params}`)
     stream.addEventListener("update", (event) => {
       try {
         const payload = JSON.parse((event as MessageEvent).data) as {

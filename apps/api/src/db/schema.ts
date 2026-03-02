@@ -16,6 +16,10 @@ export const organizations = pgTable("organizations", {
   login: text("login").notNull(),
   stateBucket: text("state_bucket").notNull(),
   runnerMode: text("runner_mode").default("saas").notNull(),
+  // GitHub App installation tracking
+  installationId: bigint("installation_id", { mode: "number" }),
+  installationStatus: text("installation_status").default("active").notNull(), // active, suspended, uninstalled
+  installedAt: timestamp("installed_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 })
 
@@ -86,8 +90,39 @@ export const approvals = pgTable("approvals", {
   approvedAt: timestamp("approved_at").defaultNow().notNull(),
 })
 
+export const users = pgTable(
+  "users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    login: text("login").notNull(),
+    provider: text("provider").notNull(),
+    externalId: text("external_id").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [unique("users_provider_external_id").on(t.provider, t.externalId)],
+)
+
+export const orgMemberships = pgTable(
+  "org_memberships",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .references(() => organizations.id)
+      .notNull(),
+    userId: uuid("user_id")
+      .references(() => users.id)
+      .notNull(),
+    role: text("role").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [unique("org_memberships_org_user").on(t.orgId, t.userId)],
+)
+
 export const jobs = pgTable("jobs", {
   id: uuid("id").primaryKey().defaultRandom(),
+  orgId: uuid("org_id")
+    .references(() => organizations.id)
+    .notNull(),
   jobType: text("job_type").notNull(),
   payload: jsonb("payload").notNull(),
   status: text("status").default("pending").notNull(),
@@ -96,3 +131,20 @@ export const jobs = pgTable("jobs", {
   attempts: integer("attempts").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 })
+
+export const repositories = pgTable(
+  "repositories",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: uuid("org_id")
+      .references(() => organizations.id)
+      .notNull(),
+    githubId: bigint("github_id", { mode: "number" }).notNull(),
+    name: text("name").notNull(),
+    fullName: text("full_name").notNull(),
+    defaultBranch: text("default_branch").default("main").notNull(),
+    isActive: boolean("is_active").default(true).notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [unique("repositories_github_id").on(t.githubId)],
+)

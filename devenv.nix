@@ -38,6 +38,13 @@
     SECRETSPEC_PROFILE = "development";
     SECRETSPEC_PROVIDER = "onepassword://yaffle.dev";
 
+    # Auth defaults (OpenAuth - mounted at root, not /auth)
+    YAFFLE_AUTH_MODE = "required";
+    YAFFLE_AUTH_ISSUER = "http://localhost:3000";
+    YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
+    VITE_YAFFLE_AUTH_ISSUER = "http://localhost:3000";
+    VITE_YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
+
     # Telemetry defaults for local dev (disabled, no endpoint)
     YAFFLE_ENV = "development";
   };

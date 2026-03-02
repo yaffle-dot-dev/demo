@@ -11,6 +11,16 @@ export interface AppEnv {
   otelHeaders: string
   /** YAFFLE_ENV -- deployment environment name (development, staging, production) */
   yaffleEnv: string
+  /** YAFFLE_AUTH_MODE -- off | dev | required */
+  authMode: string
+  /** YAFFLE_AUTH_ISSUER -- OpenAuth issuer URL */
+  authIssuer: string
+  /** YAFFLE_AUTH_CLIENT_ID -- OpenAuth client ID */
+  authClientId: string
+  /** GITHUB_OAUTH_CLIENT_ID -- GitHub OAuth app client ID */
+  githubOauthClientId: string
+  /** GITHUB_OAUTH_CLIENT_SECRET -- GitHub OAuth app client secret */
+  githubOauthClientSecret: string
 }
 
 /**
@@ -80,5 +90,10 @@ export function getEnv(): AppEnv {
     otelEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "",
     otelHeaders: process.env.OTEL_EXPORTER_OTLP_HEADERS ?? "",
     yaffleEnv: process.env.YAFFLE_ENV ?? "development",
+    authMode: process.env.YAFFLE_AUTH_MODE ?? "off",
+    authIssuer: process.env.YAFFLE_AUTH_ISSUER || "http://localhost:3000",
+    authClientId: process.env.YAFFLE_AUTH_CLIENT_ID ?? "yaffle-web",
+    githubOauthClientId: process.env.GITHUB_OAUTH_CLIENT_ID ?? "",
+    githubOauthClientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET ?? "",
   }
 }

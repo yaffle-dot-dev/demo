@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, type SQL } from "drizzle-orm"
+import { and, desc, eq, gt, notInArray, type SQL } from "drizzle-orm"
 
 import type { PreviewStatus } from "@yaffle/shared"
 
@@ -140,4 +140,46 @@ export async function updatePreviewHead(
     .update(previews)
     .set({ headSha, status: "pending" as PreviewStatus })
     .where(eq(previews.id, previewId))
+}
+
+/**
+ * Mark production previews as destroyed if they're no longer in the config.
+ * This handles cases where workspaces are removed from .yaffle/config.yml.
+ */
+export async function markRemovedWorkspacesDestroyed(
+  orgId: string,
+  repo: string,
+  branch: string,
+  headSha: string,
+  activeWorkspacePaths: string[],
+): Promise<number> {
+  if (activeWorkspacePaths.length === 0) {
+    // If no workspaces are active, mark all production previews for this branch as destroyed
+    const result = await db
+      .update(previews)
+      .set({ status: "destroyed" as PreviewStatus, headSha })
+      .where(
+        and(
+          eq(previews.orgId, orgId),
+          eq(previews.repo, repo),
+          eq(previews.branch, branch),
+          eq(previews.prNumber, 0), // Production only
+        ),
+      )
+    return result.rowCount ?? 0
+  }
+
+  const result = await db
+    .update(previews)
+    .set({ status: "destroyed" as PreviewStatus, headSha })
+    .where(
+      and(
+        eq(previews.orgId, orgId),
+        eq(previews.repo, repo),
+        eq(previews.branch, branch),
+        eq(previews.prNumber, 0), // Production only
+        notInArray(previews.workspacePath, activeWorkspacePaths),
+      ),
+    )
+  return result.rowCount ?? 0
 }

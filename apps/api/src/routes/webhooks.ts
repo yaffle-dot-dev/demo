@@ -10,6 +10,18 @@ import { getEnv } from "../lib/env.ts"
 import { logger, getWebhookReceivedCounter } from "../lib/telemetry.ts"
 import { verifyWebhookSignature } from "../lib/webhook-verify.ts"
 import { handleWebhookEvent } from "../lib/webhook-handler.ts"
+import {
+  ensureOrg,
+  updateOrgInstallationStatus,
+  findOrgByInstallationId,
+} from "../db/queries/organizations.ts"
+import {
+  ensureRepo,
+  deactivateRepos,
+  deactivateAllReposForOrg,
+  reactivateRepos,
+} from "../db/queries/repositories.ts"
+import { ensureUser, ensureMembership } from "../db/queries/users.ts"
 
 export const webhooksRoute = new Hono()
 
@@ -113,6 +125,153 @@ webhooksRoute.post("/github", async (c) => {
     })
 
     return c.json({ data: { received: true } })
+  }
+
+  // Handle GitHub App installation events
+  if (event === "installation") {
+    const action = payload.action as string
+    const installation = payload.installation
+    const account = installation?.account
+
+    if (!installation || !account) {
+      return c.json({ data: { ignored: true, reason: "missing installation data" } })
+    }
+
+    const installationId = installation.id as number
+    const githubId = account.id as number
+    const login = account.login as string
+
+    logger.info(`installation event: action=${action} org=${login}`, {
+      "webhook.action": action,
+      "yaffle.org": login,
+      "yaffle.installation_id": installationId,
+    })
+
+    if (action === "created") {
+      // App was installed - create/update org and track repos
+      const org = await ensureOrg(login, githubId, installationId)
+
+      // Track initial repositories
+      const repositories = payload.repositories ?? []
+      for (const repo of repositories) {
+        await ensureRepo({
+          orgId: org.id,
+          githubId: repo.id,
+          name: repo.name,
+          fullName: repo.full_name,
+        })
+      }
+
+      // Create membership for the user who installed the app
+      const sender = payload.sender
+      if (sender?.id && sender?.login) {
+        const user = await ensureUser({
+          login: sender.login,
+          provider: "github",
+          externalId: String(sender.id),
+        })
+        await ensureMembership({
+          orgId: org.id,
+          userId: user.id,
+          role: "admin", // installer gets admin
+        })
+        logger.info(`created admin membership for installer: user=${sender.login} org=${login}`, {
+          "yaffle.org": login,
+          "yaffle.user": sender.login,
+        })
+      }
+
+      logger.info(`installation created: org=${login} repos=${repositories.length}`, {
+        "yaffle.org": login,
+        "yaffle.repo_count": repositories.length,
+      })
+
+      return c.json({ data: { received: true, action: "installation_created" } })
+    }
+
+    if (action === "deleted") {
+      // App was uninstalled - mark org as uninstalled and deactivate all repos
+      const org = await findOrgByInstallationId(installationId)
+      if (org) {
+        await updateOrgInstallationStatus(githubId, "uninstalled")
+        await deactivateAllReposForOrg(org.id)
+      }
+
+      logger.info(`installation deleted: org=${login}`, { "yaffle.org": login })
+
+      return c.json({ data: { received: true, action: "installation_deleted" } })
+    }
+
+    if (action === "suspend") {
+      // App was suspended - mark org as suspended
+      await updateOrgInstallationStatus(githubId, "suspended")
+      logger.info(`installation suspended: org=${login}`, { "yaffle.org": login })
+      return c.json({ data: { received: true, action: "installation_suspended" } })
+    }
+
+    if (action === "unsuspend") {
+      // App was unsuspended - mark org as active again
+      await updateOrgInstallationStatus(githubId, "active")
+      logger.info(`installation unsuspended: org=${login}`, { "yaffle.org": login })
+      return c.json({ data: { received: true, action: "installation_unsuspended" } })
+    }
+
+    return c.json({ data: { ignored: true, reason: `unhandled installation action: ${action}` } })
+  }
+
+  // Handle repository access changes
+  if (event === "installation_repositories") {
+    const action = payload.action as string
+    const installation = payload.installation
+    const account = installation?.account
+
+    if (!installation || !account) {
+      return c.json({ data: { ignored: true, reason: "missing installation data" } })
+    }
+
+    const installationId = installation.id as number
+    const login = account.login as string
+
+    const org = await findOrgByInstallationId(installationId)
+    if (!org) {
+      logger.warn(`installation_repositories event for unknown installation: ${installationId}`)
+      return c.json({ data: { ignored: true, reason: "unknown installation" } })
+    }
+
+    if (action === "added") {
+      const addedRepos = payload.repositories_added ?? []
+      for (const repo of addedRepos) {
+        await ensureRepo({
+          orgId: org.id,
+          githubId: repo.id,
+          name: repo.name,
+          fullName: repo.full_name,
+        })
+      }
+      // Reactivate any that were previously removed
+      await reactivateRepos(addedRepos.map((r: { id: number }) => r.id))
+
+      logger.info(`repos added to installation: org=${login} count=${addedRepos.length}`, {
+        "yaffle.org": login,
+        "yaffle.repo_count": addedRepos.length,
+      })
+
+      return c.json({ data: { received: true, action: "repos_added" } })
+    }
+
+    if (action === "removed") {
+      const removedRepos = payload.repositories_removed ?? []
+      await deactivateRepos(removedRepos.map((r: { id: number }) => r.id))
+
+      logger.info(`repos removed from installation: org=${login} count=${removedRepos.length}`, {
+        "yaffle.org": login,
+        "yaffle.repo_count": removedRepos.length,
+      })
+
+      return c.json({ data: { received: true, action: "repos_removed" } })
+    }
+
+    return c.json({ data: { ignored: true, reason: `unhandled installation_repositories action: ${action}` } })
   }
 
   return c.json({ data: { ignored: true, reason: `unhandled event: ${event}` } })

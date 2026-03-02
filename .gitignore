@@ -20,3 +20,7 @@ dist/
 
 # Drizzle
 apps/api/drizzle/
+
+# Svelte
+**/.svelte-kit
+**/build/**
