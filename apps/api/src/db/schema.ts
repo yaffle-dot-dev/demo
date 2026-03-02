@@ -39,6 +39,7 @@ export const previews = pgTable(
       .notNull(),
     repo: text("repo").notNull(),
     prNumber: integer("pr_number").notNull(),
+    workspacePath: text("workspace_path").notNull(),
     branch: text("branch").notNull(),
     headSha: text("head_sha").notNull(),
     status: text("status").default("pending").notNull(),
@@ -46,7 +47,9 @@ export const previews = pgTable(
     mode: text("mode").notNull(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
-  (t) => [unique("previews_org_repo_pr").on(t.orgId, t.repo, t.prNumber)],
+  (t) => [
+    unique("previews_org_repo_pr_workspace").on(t.orgId, t.repo, t.prNumber, t.workspacePath),
+  ],
 )
 
 export const tfRuns = pgTable("tf_runs", {

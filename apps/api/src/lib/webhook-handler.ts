@@ -8,13 +8,14 @@ import type {
 import {
   type WorkspaceConfig,
   type YaffleConfig,
+  ConfigError,
   interpolateVariables,
   loadConfig,
   parseYaml,
   prVariableContext,
   pushVariableContext,
+  validateConfig,
 } from "./config.ts"
-import { ConfigError } from "./config.ts"
 import { ensureOrg } from "../db/queries/organizations.ts"
 import { findPreview, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
 import { createTfRun, updateRunStatus } from "../db/queries/tf-runs.ts"
@@ -100,13 +101,12 @@ async function fetchConfig(ctx: WebhookContext, token?: string): Promise<YaffleC
     )
   }
 
-  const sha = ctx.kind === "pull_request" ? ctx.headSha : ctx.headSha
   const raw = await fetchFileContent(
     ctx.installationId,
     ctx.owner,
     ctx.repo,
     ".yaffle/config.yml",
-    sha,
+    ctx.headSha,
   )
 
   if (!raw) {
@@ -115,30 +115,8 @@ async function fetchConfig(ctx: WebhookContext, token?: string): Promise<YaffleC
     )
   }
 
-  // Re-use the parseYaml + zod validation from config.ts
-  // loadConfig reads from disk; here we already have the content
-  const { z } = await import("zod")
   const parsed = parseYaml(raw)
-
-  const workspaceSchema = z.object({
-    path: z.string().min(1),
-    auto_apply: z.boolean().default(true),
-    auto_apply_on_merge: z.boolean().default(true),
-    variables: z.record(z.string()).optional(),
-  })
-  const configSchema = z.object({
-    version: z.literal(1),
-    default_branch: z.string().optional(),
-    workspaces: z.array(workspaceSchema).min(1, "at least one workspace is required"),
-  })
-
-  const result = configSchema.safeParse(parsed)
-  if (!result.success) {
-    const issues = result.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-    throw new ConfigError(`Invalid .yaffle/config.yml:\n${issues.join("\n")}`)
-  }
-
-  return result.data
+  return validateConfig(parsed)
 }
 
 // ---------------------------------------------------------------------------
@@ -199,8 +177,9 @@ async function handlePrOpenedOrUpdated(
   try {
     config = await configLoader(ctx, installationToken)
   } catch (err) {
-    console.error(`failed to load config for ${tag}:`, err)
-    // TODO: create a failed check run to surface the error
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`failed to load config for ${tag}:`, msg)
+    await surfaceConfigError(ctx, msg)
     return
   }
 
@@ -225,6 +204,7 @@ async function handlePrOpenedOrUpdated(
       orgId: org.id,
       repo: ctx.repo,
       prNumber: ctx.prNumber,
+      workspacePath: ws.path,
       branch: ctx.branch,
       headSha: ctx.headSha,
       stateKey,
@@ -295,7 +275,9 @@ async function handlePrClosed(
   try {
     config = await configLoader(ctx, installationToken)
   } catch (err) {
-    console.error(`failed to load config for ${tag}:`, err)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`failed to load config for ${tag}:`, msg)
+    await surfaceConfigError(ctx, msg)
     return
   }
 
@@ -308,7 +290,7 @@ async function handlePrClosed(
     const stateKey = buildStateKey(statePrefix, ws.path)
     const wsTag = `${tag}:${ws.path}`
 
-    const preview = await findPreview(org.id, ctx.repo, ctx.prNumber)
+    const preview = await findPreview(org.id, ctx.repo, ctx.prNumber, ws.path)
     if (!preview) {
       console.warn(`[${wsTag}] no preview found, nothing to destroy`)
       continue
@@ -352,12 +334,13 @@ async function handlePushEvent(
   const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
   const installationToken = await acquireToken(ctx)
 
-  // Load config
+  // Load config -- no PR to annotate on push events, just log
   let config: YaffleConfig
   try {
     config = await configLoader(ctx, installationToken)
   } catch (err) {
-    console.error(`failed to load config for ${tag}:`, err)
+    const msg = err instanceof Error ? err.message : String(err)
+    console.error(`failed to load config for ${tag}:`, msg)
     return
   }
 
@@ -395,6 +378,7 @@ async function handlePushEvent(
       orgId: org.id,
       repo: ctx.repo,
       prNumber: 0,
+      workspacePath: ws.path,
       branch: ctx.branch,
       headSha: ctx.headSha,
       stateKey,
@@ -569,6 +553,32 @@ async function executeRun(opts: {
   }
 
   return result
+}
+
+/**
+ * Create a failed check run to surface a config error on a PR.
+ * Only creates a check run for pull_request events with an installation.
+ */
+async function surfaceConfigError(
+  ctx: WebhookContext,
+  message: string,
+): Promise<void> {
+  if (ctx.kind !== "pull_request" || !ctx.installationId) return
+
+  try {
+    await createCheckRun(ctx.installationId, {
+      owner: ctx.owner,
+      repo: ctx.repo,
+      headSha: ctx.headSha,
+      name: CHECK_NAME,
+      status: "completed",
+      conclusion: "failure",
+      title: "Configuration error",
+      summary: message,
+    })
+  } catch (err) {
+    console.warn(`failed to create config error check run:`, err)
+  }
 }
 
 /**

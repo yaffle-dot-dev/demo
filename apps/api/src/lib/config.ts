@@ -20,8 +20,22 @@ const configSchema = z.object({
   workspaces: z.array(workspaceSchema).min(1, "at least one workspace is required"),
 })
 
+export { configSchema }
 export type YaffleConfig = z.infer<typeof configSchema>
 export type WorkspaceConfig = z.infer<typeof workspaceSchema>
+
+/**
+ * Validate a parsed YAML object against the config schema.
+ * Throws ConfigError on invalid input.
+ */
+export function validateConfig(parsed: unknown): YaffleConfig {
+  const result = configSchema.safeParse(parsed)
+  if (!result.success) {
+    const issues = result.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+    throw new ConfigError(`Invalid .yaffle/config.yml:\n${issues.join("\n")}`)
+  }
+  return result.data
+}
 
 /**
  * Context available for variable interpolation.
@@ -53,16 +67,7 @@ export async function loadConfig(workDir: string): Promise<YaffleConfig> {
   }
 
   const parsed = parseYaml(raw)
-  const result = configSchema.safeParse(parsed)
-
-  if (!result.success) {
-    const issues = result.error.issues.map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-    throw new ConfigError(
-      `Invalid ${CONFIG_PATH}:\n${issues.join("\n")}`,
-    )
-  }
-
-  return result.data
+  return validateConfig(parsed)
 }
 
 /**

@@ -438,4 +438,50 @@ describe("webhook-handler", () => {
     await h.handleWebhookEvent(makePushContext({ branch: "develop", defaultBranch: "main" }))
     expect(runner.calls).toHaveLength(2) // plan + apply
   })
+
+  // -----------------------------------------------------------------------
+  // Config error -- should not crash, should not call runner
+  // -----------------------------------------------------------------------
+
+  test("config error does not crash and skips runner calls", async () => {
+    const failingLoader = async () => {
+      throw new Error("config file not found")
+    }
+    const h = createHandler(runner, { configLoader: failingLoader })
+
+    // Should not throw
+    await h.handleWebhookEvent(makePrContext({ action: "opened" }))
+
+    // No runner calls -- config failed before any runs
+    expect(runner.calls).toHaveLength(0)
+
+    // No previews created
+    const pvs = await db.select().from(previews)
+    expect(pvs).toHaveLength(0)
+  })
+
+  // -----------------------------------------------------------------------
+  // Multi-workspace: each workspace gets its own preview record
+  // -----------------------------------------------------------------------
+
+  test("multi-workspace: creates separate preview records per workspace", async () => {
+    handler = createHandler(runner, {
+      configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG),
+    })
+
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+
+    const pvs = await db.select().from(previews)
+    expect(pvs).toHaveLength(2)
+
+    const paths = pvs.map((p) => p.workspacePath).sort()
+    expect(paths).toEqual(["infra", "infra/monitoring"])
+
+    // Each preview has its own state key
+    const stateKeys = pvs.map((p) => p.stateKey).sort()
+    expect(stateKeys).toEqual([
+      "previews/pr-42/infra/monitoring/terraform.tfstate",
+      "previews/pr-42/infra/terraform.tfstate",
+    ])
+  })
 })

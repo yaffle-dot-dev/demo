@@ -9,12 +9,13 @@ export type Preview = typeof previews.$inferSelect
 export type NewPreview = typeof previews.$inferInsert
 
 /**
- * Find a preview by org + repo + PR number.
+ * Find a preview by org + repo + PR number + workspace path.
  */
 export async function findPreview(
   orgId: string,
   repo: string,
   prNumber: number,
+  workspacePath: string,
 ): Promise<Preview | undefined> {
   const rows = await db
     .select()
@@ -24,6 +25,7 @@ export async function findPreview(
         eq(previews.orgId, orgId),
         eq(previews.repo, repo),
         eq(previews.prNumber, prNumber),
+        eq(previews.workspacePath, workspacePath),
       ),
     )
     .limit(1)
@@ -31,7 +33,7 @@ export async function findPreview(
 }
 
 /**
- * Upsert a preview. On conflict (same org/repo/pr), update the head SHA,
+ * Upsert a preview. On conflict (same org/repo/pr/workspace), update the head SHA,
  * branch, and reset status to pending.
  */
 export async function upsertPreview(values: NewPreview): Promise<Preview> {
@@ -39,7 +41,7 @@ export async function upsertPreview(values: NewPreview): Promise<Preview> {
     .insert(previews)
     .values(values)
     .onConflictDoUpdate({
-      target: [previews.orgId, previews.repo, previews.prNumber],
+      target: [previews.orgId, previews.repo, previews.prNumber, previews.workspacePath],
       set: {
         headSha: values.headSha,
         branch: values.branch,
