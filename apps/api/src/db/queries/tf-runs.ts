@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm"
+import { and, desc, eq, sql } from "drizzle-orm"
 
 import type { RunStatus, RunType } from "@yaffle/shared"
 
@@ -36,6 +36,19 @@ export async function updateRunStatus(
   await db
     .update(tfRuns)
     .set({ status, ...extra })
+    .where(eq(tfRuns.id, runId))
+}
+
+/**
+ * Append log output to a run.
+ */
+export async function appendRunLog(
+  runId: string,
+  chunk: string,
+): Promise<void> {
+  await db
+    .update(tfRuns)
+    .set({ logOutput: sql`coalesce(${tfRuns.logOutput}, '') || ${chunk}` })
     .where(eq(tfRuns.id, runId))
 }
 

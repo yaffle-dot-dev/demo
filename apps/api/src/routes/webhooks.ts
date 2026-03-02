@@ -66,6 +66,7 @@ webhooksRoute.post("/github", async (c) => {
       action: action as PullRequestAction,
       headSha: payload.pull_request.head.sha,
       branch: payload.pull_request.head.ref,
+      authorLogin: payload.pull_request.user?.login ?? "unknown",
       merged: payload.pull_request.merged ?? false,
       defaultBranch: payload.repository.default_branch,
     }

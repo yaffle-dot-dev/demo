@@ -18,7 +18,7 @@ import {
 } from "./config.ts"
 import { ensureOrg } from "../db/queries/organizations.ts"
 import { findPreview, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
-import { createTfRun, updateRunStatus } from "../db/queries/tf-runs.ts"
+import { appendRunLog, createTfRun, updateRunStatus } from "../db/queries/tf-runs.ts"
 import {
   createCheckRun,
   fetchFileContent,
@@ -260,6 +260,7 @@ async function handlePrOpenedOrUpdated(
         workspacePath: ws.path,
         branch: ctx.branch,
         headSha: ctx.headSha,
+        authorLogin: ctx.authorLogin,
         stateKey,
         mode: "terraform",
       })
@@ -615,7 +616,32 @@ async function executeRun(opts: {
 
     // Execute
     let result: TerraformResult
+    let logBuffer = ""
+    let flushing: Promise<void> | null = null
+    let flushInterval: ReturnType<typeof setInterval> | null = null
+
+    const flushLogs = async (): Promise<void> => {
+      if (!logBuffer) return
+      const chunk = logBuffer
+      logBuffer = ""
+      try {
+        await appendRunLog(run.id, chunk)
+      } catch (err) {
+        logger.warn("failed to append run logs", {
+          ...runAttrs,
+          "error": err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
     try {
+      flushInterval = setInterval(() => {
+        if (!flushing) {
+          flushing = flushLogs().finally(() => {
+            flushing = null
+          })
+        }
+      }, 1000)
+
       result = await runner.run({
         owner: ctx.owner,
         repo: ctx.repo,
@@ -625,6 +651,15 @@ async function executeRun(opts: {
         stateKey: opts.stateKey,
         variables: opts.variables,
         installationToken: opts.installationToken,
+        onOutput: (chunk, source) => {
+          const entry = source === "stderr" ? `[stderr] ${chunk}` : chunk
+          logBuffer += entry
+          if (logBuffer.length > 4096 && !flushing) {
+            flushing = flushLogs().finally(() => {
+              flushing = null
+            })
+          }
+        },
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
@@ -640,6 +675,15 @@ async function executeRun(opts: {
         durationMs: 0,
       }
     }
+
+    if (flushInterval) {
+      clearInterval(flushInterval)
+    }
+
+    if (flushing) {
+      await flushing
+    }
+    await flushLogs()
 
     // Record metrics
     getRunDurationHistogram().record(result.durationMs, {

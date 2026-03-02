@@ -1,4 +1,5 @@
 import { Hono } from "hono"
+import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
 import { findPreviewById, listPreviews } from "../db/queries/previews.ts"
@@ -40,7 +41,7 @@ previewsRoute.get("/", async (c) => {
 
   const organization = await findOrgByLogin(orgLogin)
   if (!organization) {
-    return c.json({ error: { code: "ORG_NOT_FOUND", message: `organization "${orgLogin}" not found` } }, 404)
+    return c.json({ data: [], nextCursor: null }, 200)
   }
 
   const result = await listPreviews(organization.id, {
@@ -61,6 +62,72 @@ previewsRoute.get("/", async (c) => {
   return c.json({
     data: result.items.map(serializePreview),
     nextCursor: result.nextCursor,
+  })
+})
+
+/**
+ * GET /api/previews/stream?org=owner&repo=owner/repo
+ *
+ * Server-sent events stream for preview list updates.
+ */
+previewsRoute.get("/stream", async (c) => {
+  const parsed = listQuerySchema.safeParse(c.req.query())
+  if (!parsed.success) {
+    return c.json(
+      { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0].message } },
+      400,
+    )
+  }
+
+  const { org: orgLogin, repo, status, pr_number, limit, cursor } = parsed.data
+
+  return streamSSE(c, async (stream) => {
+    let lastPayload = ""
+    let inFlight = false
+
+    const sendSnapshot = async (): Promise<void> => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        const organization = await findOrgByLogin(orgLogin)
+        if (!organization) {
+          const emptyPayload = JSON.stringify({ data: [], nextCursor: null })
+          if (emptyPayload !== lastPayload) {
+            lastPayload = emptyPayload
+            await stream.writeSSE({ event: "update", data: emptyPayload })
+          }
+          return
+        }
+
+        const result = await listPreviews(organization.id, {
+          repo,
+          status,
+          prNumber: pr_number,
+          limit,
+          cursor,
+        })
+
+        const payload = JSON.stringify({
+          data: result.items.map(serializePreview),
+          nextCursor: result.nextCursor,
+        })
+
+        if (payload !== lastPayload) {
+          lastPayload = payload
+          await stream.writeSSE({ event: "update", data: payload })
+        }
+      } finally {
+        inFlight = false
+      }
+    }
+
+    await sendSnapshot()
+
+    const interval = setInterval(sendSnapshot, 5000)
+
+    stream.onAbort(() => {
+      clearInterval(interval)
+    })
   })
 })
 
@@ -135,6 +202,65 @@ previewsRoute.get("/:id/outputs", async (c) => {
   return c.json({ data: latestApply.outputs })
 })
 
+/**
+ * GET /api/previews/:id/stream
+ *
+ * Server-sent events stream for preview detail updates.
+ */
+previewsRoute.get("/:id/stream", async (c) => {
+  const id = c.req.param("id")
+  const parseResult = uuidParam.safeParse(id)
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
+
+  return streamSSE(c, async (stream) => {
+    let lastPayload = ""
+    let inFlight = false
+
+    const sendSnapshot = async (): Promise<void> => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        const preview = await findPreviewById(id)
+        if (!preview) {
+          const emptyPayload = JSON.stringify({ preview: null, runs: [], outputs: null })
+          if (emptyPayload !== lastPayload) {
+            lastPayload = emptyPayload
+            await stream.writeSSE({ event: "update", data: emptyPayload })
+          }
+          return
+        }
+
+        const runs = await listRunsForPreview(id)
+        const latestApply = await findLatestRun(id, "apply")
+        const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+
+        const payload = JSON.stringify({
+          preview: serializePreview(preview),
+          runs: runs.map(serializeRun),
+          outputs,
+        })
+
+        if (payload !== lastPayload) {
+          lastPayload = payload
+          await stream.writeSSE({ event: "update", data: payload })
+        }
+      } finally {
+        inFlight = false
+      }
+    }
+
+    await sendSnapshot()
+
+    const interval = setInterval(sendSnapshot, 5000)
+
+    stream.onAbort(() => {
+      clearInterval(interval)
+    })
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Serialization helpers
 // ---------------------------------------------------------------------------
@@ -146,6 +272,7 @@ interface SerializedPreview {
   workspacePath: string
   branch: string
   headSha: string
+  authorLogin: string | null
   status: string
   stateKey: string
   mode: string
@@ -159,6 +286,7 @@ function serializePreview(p: {
   workspacePath: string
   branch: string
   headSha: string
+  authorLogin: string | null
   status: string
   stateKey: string
   mode: string
@@ -171,6 +299,7 @@ function serializePreview(p: {
     workspacePath: p.workspacePath,
     branch: p.branch,
     headSha: p.headSha,
+    authorLogin: p.authorLogin ?? null,
     status: p.status,
     stateKey: p.stateKey,
     mode: p.mode,

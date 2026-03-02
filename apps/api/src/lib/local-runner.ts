@@ -60,6 +60,7 @@ export class LocalRunner implements Runner {
           workDir: tfDir,
           command: opts.command,
           variables: opts.variables,
+          onOutput: opts.onOutput,
         })
       } finally {
         if (workDir) {

@@ -11,6 +11,26 @@ function getTfBinary(): string {
   return process.env.YAFFLE_TF_BINARY ?? "terraform"
 }
 
+async function readStream(
+  stream: ReadableStream<Uint8Array> | null,
+  onChunk?: (chunk: string) => void,
+): Promise<string> {
+  if (!stream) return ""
+  const decoder = new TextDecoder()
+  const reader = stream.getReader()
+  let output = ""
+
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    const chunk = decoder.decode(value, { stream: true })
+    output += chunk
+    onChunk?.(chunk)
+  }
+
+  return output
+}
+
 interface TfExecResult {
   exitCode: number
   stdout: string
@@ -20,11 +40,16 @@ interface TfExecResult {
 /**
  * Execute a terraform/tofu command as a subprocess.
  */
-function execTf(args: string[], cwd: string, env?: Record<string, string>): TfExecResult {
+async function execTf(
+  args: string[],
+  cwd: string,
+  env?: Record<string, string>,
+  onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
+): Promise<TfExecResult> {
   const binary = getTfBinary()
   const subcommand = args[0] ?? "unknown"
 
-  return tracer.startActiveSpan(`tf.${subcommand}`, (span) => {
+  return tracer.startActiveSpan(`tf.${subcommand}`, async (span) => {
     span.setAttributes({
       "tf.binary": binary,
       "tf.args": args.join(" "),
@@ -33,15 +58,23 @@ function execTf(args: string[], cwd: string, env?: Record<string, string>): TfEx
 
     logger.debug(`${binary} ${args.join(" ")}`, { "tf.cwd": cwd })
 
-    const result = Bun.spawnSync([binary, ...args], {
+    const proc = Bun.spawn([binary, ...args], {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
       env: { ...process.env, ...env, TF_IN_AUTOMATION: "1", TF_INPUT: "0" },
     })
 
-    const stdout = result.stdout.toString()
-    const stderr = result.stderr.toString()
+    const stdoutPromise = readStream(proc.stdout, (chunk) => {
+      onOutput?.(sanitizeOutput(chunk), "stdout")
+    })
+    const stderrPromise = readStream(proc.stderr, (chunk) => {
+      onOutput?.(sanitizeOutput(chunk), "stderr")
+    })
+
+    const exitCode = await proc.exited
+    const stdout = await stdoutPromise
+    const stderr = await stderrPromise
 
     if (stderr) {
       for (const line of stderr.split("\n").filter(Boolean)) {
@@ -49,18 +82,21 @@ function execTf(args: string[], cwd: string, env?: Record<string, string>): TfEx
       }
     }
 
-    span.setAttributes({ "tf.exit_code": result.exitCode })
+    span.setAttributes({ "tf.exit_code": exitCode })
     span.end()
 
-    return { exitCode: result.exitCode, stdout, stderr }
+    return { exitCode, stdout, stderr }
   })
 }
 
 /**
  * Run `terraform init` in the given directory.
  */
-export function tfInit(workDir: string): TfExecResult {
-  return execTf(["init", "-input=false", "-no-color"], workDir)
+export async function tfInit(
+  workDir: string,
+  onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
+): Promise<TfExecResult> {
+  return execTf(["init", "-input=false", "-no-color"], workDir, undefined, onOutput)
 }
 
 /**
@@ -70,6 +106,7 @@ export function tfInit(workDir: string): TfExecResult {
 export async function tfPlan(
   workDir: string,
   variables?: Record<string, string>,
+  onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
 ): Promise<{ output: string; planJson: unknown; summary: string }> {
   // Write variables file if provided
   if (variables && Object.keys(variables).length > 0) {
@@ -81,9 +118,11 @@ export async function tfPlan(
 
   const planFile = join(workDir, "tfplan")
 
-  const result = execTf(
+  const result = await execTf(
     ["plan", "-out=tfplan", "-input=false", "-no-color", "-detailed-exitcode"],
     workDir,
+    undefined,
+    onOutput,
   )
 
   // Exit code 0 = no changes, 1 = error, 2 = changes present
@@ -96,7 +135,7 @@ export async function tfPlan(
   // Extract JSON plan
   let planJson: unknown = null
   if (existsSync(planFile)) {
-    const showResult = execTf(["show", "-json", "-no-color", "tfplan"], workDir)
+    const showResult = await execTf(["show", "-json", "-no-color", "tfplan"], workDir)
     if (showResult.exitCode === 0) {
       try {
         planJson = JSON.parse(showResult.stdout)
@@ -117,6 +156,7 @@ export async function tfPlan(
 export async function tfApply(
   workDir: string,
   variables?: Record<string, string>,
+  onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
 ): Promise<{ output: string; outputs: Record<string, unknown> }> {
   if (variables && Object.keys(variables).length > 0) {
     await writeFile(
@@ -125,9 +165,11 @@ export async function tfApply(
     )
   }
 
-  const result = execTf(
+  const result = await execTf(
     ["apply", "-auto-approve", "-input=false", "-no-color"],
     workDir,
+    undefined,
+    onOutput,
   )
 
   if (result.exitCode !== 0) {
@@ -135,7 +177,7 @@ export async function tfApply(
   }
 
   // Fetch outputs
-  const outputResult = execTf(["output", "-json", "-no-color"], workDir)
+  const outputResult = await execTf(["output", "-json", "-no-color"], workDir)
   let outputs: Record<string, unknown> = {}
   if (outputResult.exitCode === 0 && outputResult.stdout.trim()) {
     try {
@@ -151,10 +193,15 @@ export async function tfApply(
 /**
  * Run `terraform destroy` with auto-approve.
  */
-export function tfDestroy(workDir: string): { output: string } {
-  const result = execTf(
+export async function tfDestroy(
+  workDir: string,
+  onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
+): Promise<{ output: string }> {
+  const result = await execTf(
     ["destroy", "-auto-approve", "-input=false", "-no-color"],
     workDir,
+    undefined,
+    onOutput,
   )
 
   if (result.exitCode !== 0) {
@@ -172,12 +219,13 @@ export async function runTerraform(opts: {
   workDir: string
   command: RunType
   variables?: Record<string, string>
+  onOutput?: (chunk: string, source: "stdout" | "stderr") => void
 }): Promise<TerraformResult> {
   const start = Date.now()
 
   try {
     // Always init first
-    const initResult = tfInit(opts.workDir)
+    const initResult = await tfInit(opts.workDir, opts.onOutput)
     if (initResult.exitCode !== 0) {
       return {
         success: false,
@@ -190,7 +238,11 @@ export async function runTerraform(opts: {
 
     switch (opts.command) {
       case "plan": {
-        const { output, planJson, summary } = await tfPlan(opts.workDir, opts.variables)
+        const { output, planJson, summary } = await tfPlan(
+          opts.workDir,
+          opts.variables,
+          opts.onOutput,
+        )
         return {
           success: true,
           command: "plan",
@@ -202,7 +254,7 @@ export async function runTerraform(opts: {
       }
 
       case "apply": {
-        const { output, outputs } = await tfApply(opts.workDir, opts.variables)
+        const { output, outputs } = await tfApply(opts.workDir, opts.variables, opts.onOutput)
         return {
           success: true,
           command: "apply",
@@ -213,7 +265,7 @@ export async function runTerraform(opts: {
       }
 
       case "destroy": {
-        const { output } = tfDestroy(opts.workDir)
+        const { output } = await tfDestroy(opts.workDir, opts.onOutput)
         return {
           success: true,
           command: "destroy",

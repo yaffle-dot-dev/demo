@@ -63,9 +63,57 @@
 
   # ── Process management (devenv up) ──────────────────────────────
   processes = {
-    api.exec = "secretspec run -- bun run dev:api";
-    web.exec = "secretspec run -- bun run dev:web";
+    api.exec = "op whoami >/dev/null 2>&1 || op signin; secretspec run -- bun run dev:api";
+    web.exec = "bun run dev:web";
     smee.exec = "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github";
+  };
+
+  # ── Process health checks ────────────────────────────────────
+  process-managers.process-compose.settings.processes = {
+    api = {
+      readiness_probe = {
+        http_get = {
+          host = "localhost";
+          port = 3000;
+          path = "/api/health";
+          scheme = "http";
+        };
+        initial_delay_seconds = 2;
+        period_seconds = 10;
+        timeout_seconds = 2;
+        success_threshold = 1;
+        failure_threshold = 3;
+      };
+    };
+
+    web = {
+      readiness_probe = {
+        http_get = {
+          host = "localhost";
+          port = 5173;
+          path = "/";
+          scheme = "http";
+        };
+        initial_delay_seconds = 10;
+        period_seconds = 10;
+        timeout_seconds = 2;
+        success_threshold = 1;
+        failure_threshold = 3;
+      };
+    };
+
+    smee = {
+      readiness_probe = {
+        exec = {
+          command = "pgrep -f smee-client";
+        };
+        initial_delay_seconds = 2;
+        period_seconds = 10;
+        timeout_seconds = 1;
+        success_threshold = 1;
+        failure_threshold = 3;
+      };
+    };
   };
 
   # ── Shell hook ───────────────────────────────────────────────────
@@ -87,6 +135,7 @@
     echo "  secretspec check       - verify all secrets are configured"
     echo "  secretspec config init - set up 1Password provider"
     echo "  secretspec run -- cmd  - run cmd with secrets injected"
+    echo "  op signin"
     echo ""
   '';
 

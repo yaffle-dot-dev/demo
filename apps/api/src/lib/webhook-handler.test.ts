@@ -34,6 +34,8 @@ class FakeRunner implements Runner {
       stateKey: opts.stateKey,
     })
 
+    opts.onOutput?.(`fake ${opts.command} output`, "stdout")
+
     return {
       success: true,
       command: opts.command,
@@ -105,6 +107,7 @@ function makePrContext(overrides?: Partial<PullRequestContext>): PullRequestCont
     action: "opened",
     headSha: "abc123def456",
     branch: "feature/test",
+    authorLogin: "octocat",
     merged: false,
     defaultBranch: "main",
     ...overrides,

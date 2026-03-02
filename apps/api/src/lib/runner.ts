@@ -28,6 +28,7 @@ export interface RunOpts {
   stateKey: string
   variables?: Record<string, string>
   installationToken?: string
+  onOutput?: (chunk: string, source: "stdout" | "stderr") => void
 }
 
 /**

@@ -1,4 +1,5 @@
 import { Hono } from "hono"
+import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
 import { findRunById } from "../db/queries/tf-runs.ts"
@@ -90,9 +91,79 @@ runsRoute.get("/:id/output", async (c) => {
 
   // Return the plan summary or error message as the raw output.
   // In the future this could be the full stdout captured from the TF process.
-  const output = run.errorMessage ?? run.planSummary ?? ""
+  const output = run.logOutput ?? run.errorMessage ?? run.planSummary ?? ""
 
   return c.text(output)
+})
+
+/**
+ * GET /api/runs/:id/stream
+ *
+ * Server-sent events stream for run detail updates.
+ */
+runsRoute.get("/:id/stream", async (c) => {
+  const id = c.req.param("id")
+  const parseResult = uuidParam.safeParse(id)
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
+
+  return streamSSE(c, async (stream) => {
+    let lastPayload = ""
+    let inFlight = false
+
+    const sendSnapshot = async (): Promise<void> => {
+      if (inFlight) return
+      inFlight = true
+      try {
+        const run = await findRunById(id)
+        if (!run) {
+          const emptyPayload = JSON.stringify({ run: null, planJson: null, output: "" })
+          if (emptyPayload !== lastPayload) {
+            lastPayload = emptyPayload
+            await stream.writeSSE({ event: "update", data: emptyPayload })
+          }
+          return
+        }
+
+        const output = run.logOutput ?? run.errorMessage ?? run.planSummary ?? ""
+        const payload = JSON.stringify({
+          run: {
+            id: run.id,
+            previewId: run.previewId,
+            runType: run.runType,
+            status: run.status,
+            checkRunId: run.checkRunId,
+            planSummary: run.planSummary,
+            outputs: run.outputs,
+            errorMessage: run.errorMessage,
+            logOutput: run.logOutput,
+            startedAt: run.startedAt?.toISOString() ?? null,
+            completedAt: run.completedAt?.toISOString() ?? null,
+            createdAt: run.createdAt.toISOString(),
+            durationMs: durationMs(run.startedAt, run.completedAt),
+          },
+          planJson: run.planJson ?? null,
+          output,
+        })
+
+        if (payload !== lastPayload) {
+          lastPayload = payload
+          await stream.writeSSE({ event: "update", data: payload })
+        }
+      } finally {
+        inFlight = false
+      }
+    }
+
+    await sendSnapshot()
+
+    const interval = setInterval(sendSnapshot, 5000)
+
+    stream.onAbort(() => {
+      clearInterval(interval)
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

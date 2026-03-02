@@ -99,11 +99,12 @@ describe("GET /api/previews", () => {
     expect(body.error.code).toBe("VALIDATION_ERROR")
   })
 
-  test("returns 404 when org does not exist", async () => {
+  test("returns empty list when org does not exist", async () => {
     const res = await req("/api/previews?org=nonexistent")
-    expect(res.status).toBe(404)
+    expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.error.code).toBe("ORG_NOT_FOUND")
+    expect(body.data).toEqual([])
+    expect(body.nextCursor).toBeNull()
   })
 
   test("returns empty list when no previews exist", async () => {

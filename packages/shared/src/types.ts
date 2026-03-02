@@ -34,6 +34,7 @@ export interface PullRequestContext {
   action: PullRequestAction
   headSha: string
   branch: string
+  authorLogin: string
   merged: boolean
   defaultBranch: string
 }
