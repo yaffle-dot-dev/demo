@@ -4,13 +4,24 @@ import { z } from "zod"
 
 import { findPreviewById, listPreviews } from "../db/queries/previews.ts"
 import { findLatestRun, listRunsForPreview } from "../db/queries/tf-runs.ts"
+import { createApproval, listApprovals } from "../db/queries/approvals.ts"
 import { findOrgByLogin } from "../db/queries/organizations.ts"
 import { logger } from "../lib/telemetry.ts"
+import { approvePreviewApply } from "../lib/webhook-handler.ts"
 
 const listQuerySchema = z.object({
   repo: z.string().optional(),
   status: z
-    .enum(["pending", "planning", "applying", "ready", "failed", "destroying", "destroyed"])
+    .enum([
+      "pending",
+      "planning",
+      "applying",
+      "awaiting_approval",
+      "ready",
+      "failed",
+      "destroying",
+      "destroyed",
+    ])
     .optional(),
   pr_number: z.coerce.number().int().positive().optional(),
   limit: z.coerce.number().int().min(1).max(250).optional(),
@@ -19,6 +30,10 @@ const listQuerySchema = z.object({
 })
 
 const uuidParam = z.string().uuid()
+const approveSchema = z.object({
+  approverLogin: z.string().min(1),
+  githubUserId: z.coerce.number().int().positive(),
+})
 
 export const previewsRoute = new Hono()
 
@@ -203,6 +218,105 @@ previewsRoute.get("/:id/outputs", async (c) => {
 })
 
 /**
+ * GET /api/previews/:id/approvals
+ */
+previewsRoute.get("/:id/approvals", async (c) => {
+  const id = c.req.param("id")
+  const parseResult = uuidParam.safeParse(id)
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
+
+  const preview = await findPreviewById(id)
+  if (!preview) {
+    return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+  }
+
+  const approvals = await listApprovals(id)
+
+  return c.json({
+    data: approvals.map((a) => ({
+      id: a.id,
+      previewId: a.previewId,
+      githubUserId: a.githubUserId,
+      approverLogin: a.approverLogin ?? null,
+      approvedAt: a.approvedAt.toISOString(),
+    })),
+  })
+})
+
+/**
+ * POST /api/previews/:id/approve
+ */
+previewsRoute.post("/:id/approve", async (c) => {
+  const id = c.req.param("id")
+  const parseResult = uuidParam.safeParse(id)
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
+
+  const body = approveSchema.safeParse(await c.req.json())
+  if (!body.success) {
+    return c.json(
+      { error: { code: "VALIDATION_ERROR", message: body.error.issues[0].message } },
+      400,
+    )
+  }
+
+  const preview = await findPreviewById(id)
+  if (!preview) {
+    return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+  }
+
+  if (preview.prNumber !== 0) {
+    return c.json(
+      { error: { code: "INVALID_APPROVAL", message: "only production previews require approval" } },
+      400,
+    )
+  }
+
+  if (!preview.requireApproval) {
+    return c.json(
+      { error: { code: "INVALID_APPROVAL", message: "approval not required for this preview" } },
+      400,
+    )
+  }
+
+  if (preview.status !== "awaiting_approval") {
+    return c.json(
+      { error: { code: "INVALID_STATUS", message: "preview is not awaiting approval" } },
+      409,
+    )
+  }
+
+  const approverLogin = body.data.approverLogin
+  const approvers = Array.isArray(preview.approvers)
+    ? preview.approvers.filter((a): a is string => typeof a === "string")
+    : []
+
+  if (approvers.length > 0 && !approvers.map((a) => a.toLowerCase()).includes(approverLogin.toLowerCase())) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "approver is not authorized" } },
+      403,
+    )
+  }
+
+  await createApproval({
+    previewId: preview.id,
+    githubUserId: body.data.githubUserId,
+    approverLogin: body.data.approverLogin,
+  })
+
+  await approvePreviewApply({
+    previewId: preview.id,
+    approverLogin: body.data.approverLogin,
+    githubUserId: body.data.githubUserId,
+  })
+
+  return c.json({ data: { approved: true } })
+})
+
+/**
  * GET /api/previews/:id/stream
  *
  * Server-sent events stream for preview detail updates.
@@ -276,6 +390,8 @@ interface SerializedPreview {
   status: string
   stateKey: string
   mode: string
+  requireApproval: boolean
+  approvers: string[] | null
   createdAt: string
 }
 
@@ -290,8 +406,13 @@ function serializePreview(p: {
   status: string
   stateKey: string
   mode: string
+  requireApproval: boolean
+  approvers: unknown
   createdAt: Date
 }): SerializedPreview {
+  const approvers = Array.isArray(p.approvers)
+    ? p.approvers.filter((entry) => typeof entry === "string")
+    : null
   return {
     id: p.id,
     repo: p.repo,
@@ -303,6 +424,8 @@ function serializePreview(p: {
     status: p.status,
     stateKey: p.stateKey,
     mode: p.mode,
+    requireApproval: p.requireApproval,
+    approvers,
     createdAt: p.createdAt.toISOString(),
   }
 }

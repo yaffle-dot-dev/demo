@@ -36,6 +36,9 @@ workspaces:
   - path: infra
     auto_apply: true
     auto_apply_on_merge: false
+    require_approval: true
+    approvers:
+      - lamalex
     variables:
       environment: "{{ env }}"
       region: us-east-1
@@ -52,6 +55,8 @@ workspaces:
     expect(result.workspaces[0].path).toBe("infra")
     expect(result.workspaces[0].auto_apply).toBe(true)
     expect(result.workspaces[0].auto_apply_on_merge).toBe(false)
+    expect(result.workspaces[0].require_approval).toBe(true)
+    expect(result.workspaces[0].approvers).toEqual(["lamalex"])
     expect(result.workspaces[0].variables.environment).toBe("{{ env }}")
     expect(result.workspaces[0].variables.region).toBe("us-east-1")
 
@@ -119,6 +124,7 @@ describe("loadConfig", () => {
       // Defaults applied by zod
       expect(config.workspaces[0].auto_apply).toBe(true)
       expect(config.workspaces[0].auto_apply_on_merge).toBe(true)
+      expect(config.workspaces[0].require_approval).toBe(false)
     } finally {
       await rm(dir, { recursive: true, force: true })
     }

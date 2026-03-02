@@ -31,6 +31,18 @@ export async function findOrgByGithubId(githubId: number): Promise<Organization 
 }
 
 /**
+ * Find an organization by its UUID.
+ */
+export async function findOrgById(id: string): Promise<Organization | undefined> {
+  const rows = await db
+    .select()
+    .from(organizations)
+    .where(eq(organizations.id, id))
+    .limit(1)
+  return rows[0]
+}
+
+/**
  * Ensure an organization exists. Creates a stub if missing.
  * In the real flow, orgs are created during GitHub App installation,
  * but for early dev we auto-create from webhook context.

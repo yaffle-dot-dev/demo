@@ -16,9 +16,9 @@ import {
   pushVariableContext,
   validateConfig,
 } from "./config.ts"
-import { ensureOrg } from "../db/queries/organizations.ts"
-import { findPreview, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
-import { appendRunLog, createTfRun, updateRunStatus } from "../db/queries/tf-runs.ts"
+import { ensureOrg, findOrgById } from "../db/queries/organizations.ts"
+import { findPreview, findPreviewById, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
+import { appendRunLog, createTfRun, findLatestRun, updateRunStatus } from "../db/queries/tf-runs.ts"
 import {
   createCheckRun,
   fetchFileContent,
@@ -123,6 +123,121 @@ export async function handleWebhookEvent(ctx: WebhookContext): Promise<void> {
   return previewMutex.run(mutexKey(ctx), () =>
     handleEvent(ctx, defaultRunner, fetchConfig),
   )
+}
+
+/**
+ * Approve a production preview and apply.
+ */
+export async function approvePreviewApply(opts: {
+  previewId: string
+  approverLogin: string
+  githubUserId: number
+}): Promise<void> {
+  return previewMutex.run(`approve:${opts.previewId}`, async () => {
+    const preview = await findPreviewById(opts.previewId)
+    if (!preview) {
+      throw new Error("preview not found")
+    }
+    if (!preview.requireApproval) {
+      throw new Error("approval not required")
+    }
+    if (preview.status !== "awaiting_approval") {
+      throw new Error("preview is not awaiting approval")
+    }
+    if (!preview.installationId) {
+      throw new Error("missing installation id")
+    }
+
+    const approvers = Array.isArray(preview.approvers) ? preview.approvers : []
+    if (
+      approvers.length > 0 &&
+      !approvers.map((a) => a.toLowerCase()).includes(opts.approverLogin.toLowerCase())
+    ) {
+      throw new Error("approver not authorized")
+    }
+
+    const org = await findOrgById(preview.orgId)
+    if (!org) {
+      throw new Error("organization not found")
+    }
+
+    const ctx: PushContext = {
+      kind: "push",
+      installationId: preview.installationId,
+      ownerGithubId: org.githubId,
+      owner: org.login,
+      repo: preview.repo,
+      headSha: preview.headSha,
+      branch: preview.branch,
+      defaultBranch: preview.branch,
+    }
+
+    const raw = await fetchFileContent(
+      preview.installationId,
+      ctx.owner,
+      ctx.repo,
+      ".yaffle/config.yml",
+      ctx.headSha,
+    )
+    if (!raw) {
+      throw new Error("config file not found")
+    }
+    const config = validateConfig(parseYaml(raw))
+    const workspace = config.workspaces.find((ws) => ws.path === preview.workspacePath)
+    if (!workspace) {
+      throw new Error("workspace not found in config")
+    }
+
+    const variables = interpolateVariables(
+      workspace.variables,
+      pushVariableContext({
+        branch: preview.branch,
+        sha: preview.headSha,
+        owner: ctx.owner,
+        repo: ctx.repo,
+      }),
+    )
+
+    const installationToken = await getInstallationToken(preview.installationId)
+
+    const planRun = await findLatestRun(preview.id, "plan")
+    if (planRun?.checkRunId) {
+      await updateCheckRun(preview.installationId, ctx.owner, ctx.repo, planRun.checkRunId, {
+        status: "in_progress",
+        title: "Applying after approval",
+        summary: `Approved by @${opts.approverLogin}`,
+      })
+    }
+
+    await updatePreviewStatus(preview.id, "applying")
+
+    const applyResult = await executeRun({
+      ctx,
+      preview,
+      runner: defaultRunner,
+      command: "apply",
+      stateKey: preview.stateKey,
+      workspacePath: preview.workspacePath,
+      variables,
+      installationToken,
+      wsTag: `${ctx.owner}/${ctx.repo}@${ctx.branch}:${preview.workspacePath}`,
+    })
+
+    if (applyResult.success) {
+      await updatePreviewStatus(preview.id, "ready")
+    }
+
+    if (planRun?.checkRunId) {
+      await updateCheckRun(preview.installationId, ctx.owner, ctx.repo, planRun.checkRunId, {
+        status: "completed",
+        conclusion: applyResult.success ? "success" : "failure",
+        title: applyResult.success ? "Applied" : "Apply failed",
+        summary: applyResult.success
+          ? "Production apply completed."
+          : applyResult.errorMessage ?? "Apply failed.",
+      })
+    }
+  })
 }
 
 /**
@@ -255,6 +370,7 @@ async function handlePrOpenedOrUpdated(
       // Upsert preview
       const preview = await upsertPreview({
         orgId: org.id,
+        installationId: ctx.installationId,
         repo: ctx.repo,
         prNumber: ctx.prNumber,
         workspacePath: ws.path,
@@ -263,6 +379,8 @@ async function handlePrOpenedOrUpdated(
         authorLogin: ctx.authorLogin,
         stateKey,
         mode: "terraform",
+        requireApproval: false,
+        approvers: null,
       })
 
       const variables = interpolateVariables(ws.variables, varCtx)
@@ -282,6 +400,7 @@ async function handlePrOpenedOrUpdated(
         variables,
         installationToken,
         wsTag,
+        createCheckRun: ws.require_approval ?? false,
       })
 
       const planCheckRun = makeCheckRunRef(ctx, planResult.checkRunId)
@@ -475,7 +594,7 @@ async function handlePushEvent(
   })
 
   for (const ws of config.workspaces) {
-    if (!ws.auto_apply_on_merge) {
+    if (!ws.auto_apply_on_merge && !ws.require_approval) {
       logger.info("auto_apply_on_merge disabled, skipping", {
         ...attrs,
         "yaffle.workspace_path": ws.path,
@@ -494,6 +613,7 @@ async function handlePushEvent(
       // Using prNumber=0 as a sentinel for production runs
       const preview = await upsertPreview({
         orgId: org.id,
+        installationId: ctx.installationId,
         repo: ctx.repo,
         prNumber: 0,
         workspacePath: ws.path,
@@ -501,6 +621,8 @@ async function handlePushEvent(
         headSha: ctx.headSha,
         stateKey,
         mode: "terraform",
+        requireApproval: ws.require_approval ?? false,
+        approvers: ws.approvers ?? null,
       })
 
       // Plan
@@ -520,6 +642,19 @@ async function handlePushEvent(
       })
 
       if (!planResult.success) return
+
+      if (ws.require_approval) {
+        await updatePreviewStatus(preview.id, "awaiting_approval")
+        if (planResult.checkRunId && ctx.installationId) {
+          await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, planResult.checkRunId, {
+            status: "completed",
+            conclusion: "action_required",
+            title: "Awaiting approval",
+            summary: "Approval required before production apply.",
+          })
+        }
+        return
+      }
 
       // Apply
       logger.info("applying production", wsAttrs)
@@ -565,6 +700,7 @@ async function executeRun(opts: {
   variables: Record<string, string>
   installationToken?: string
   wsTag: string
+  createCheckRun?: boolean
 }): Promise<RunResult> {
   return withSpan(`run.${opts.command}`, async (span) => {
     const { ctx, preview, runner, wsTag } = opts
@@ -586,21 +722,21 @@ async function executeRun(opts: {
 
     // Create check run (PR events only, with installation)
     let checkRunId: number | undefined
-    if (ctx.installationId && ctx.kind === "pull_request") {
+    if (ctx.installationId && (ctx.kind === "pull_request" || opts.createCheckRun)) {
       const checkName = opts.workspacePath === "."
         ? CHECK_NAME
         : `${CHECK_NAME} (${opts.workspacePath})`
 
       try {
-        checkRunId = await createCheckRun(ctx.installationId, {
-          owner: ctx.owner,
-          repo: ctx.repo,
-          headSha: ctx.headSha,
-          name: checkName,
-          status: "in_progress",
-          title: `Running ${opts.command}`,
-          summary: `${opts.command} for ${opts.workspacePath}...`,
-        })
+          checkRunId = await createCheckRun(ctx.installationId, {
+            owner: ctx.owner,
+            repo: ctx.repo,
+            headSha: ctx.headSha,
+            name: checkName,
+            status: "in_progress",
+            title: `Running ${opts.command}`,
+            summary: `${opts.command} for ${opts.workspacePath}...`,
+          })
       } catch (err) {
         logger.warn("failed to create check run", {
           ...runAttrs,

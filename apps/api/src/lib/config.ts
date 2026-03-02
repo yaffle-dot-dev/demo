@@ -11,6 +11,8 @@ const workspaceSchema = z.object({
   path: z.string().min(1),
   auto_apply: z.boolean().default(true),
   auto_apply_on_merge: z.boolean().default(true),
+  require_approval: z.boolean().default(false),
+  approvers: z.array(z.string().min(1)).optional(),
   variables: z.record(z.string()).optional(),
 })
 

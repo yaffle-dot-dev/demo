@@ -1,5 +1,6 @@
 import {
   bigint,
+  boolean,
   integer,
   jsonb,
   pgTable,
@@ -37,6 +38,7 @@ export const previews = pgTable(
     orgId: uuid("org_id")
       .references(() => organizations.id)
       .notNull(),
+    installationId: bigint("installation_id", { mode: "number" }),
     repo: text("repo").notNull(),
     prNumber: integer("pr_number").notNull(),
     workspacePath: text("workspace_path").notNull(),
@@ -46,6 +48,8 @@ export const previews = pgTable(
     status: text("status").default("pending").notNull(),
     stateKey: text("state_key").notNull(),
     mode: text("mode").notNull(),
+    requireApproval: boolean("require_approval").default(false).notNull(),
+    approvers: jsonb("approvers"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [
@@ -78,6 +82,7 @@ export const approvals = pgTable("approvals", {
     .references(() => previews.id)
     .notNull(),
   githubUserId: bigint("github_user_id", { mode: "number" }).notNull(),
+  approverLogin: text("approver_login"),
   approvedAt: timestamp("approved_at").defaultNow().notNull(),
 })
 

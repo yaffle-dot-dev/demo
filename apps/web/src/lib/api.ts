@@ -11,6 +11,8 @@ export interface Preview {
   status: string
   stateKey: string
   mode: string
+  requireApproval: boolean
+  approvers: string[] | null
   createdAt: string
 }
 

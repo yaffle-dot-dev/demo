@@ -112,7 +112,12 @@ environmentsRoute.get("/", async (c) => {
 function aggregateStatus(workspaces: EnvironmentWorkspace[]): string {
   const statuses = new Set(workspaces.map((ws) => ws.status))
   if (statuses.has("failed")) return "failed"
-  if (statuses.has("applying") || statuses.has("planning") || statuses.has("pending")) {
+  if (
+    statuses.has("applying") ||
+    statuses.has("planning") ||
+    statuses.has("pending") ||
+    statuses.has("awaiting_approval")
+  ) {
     return "applying"
   }
   if (statuses.has("destroying")) return "destroying"

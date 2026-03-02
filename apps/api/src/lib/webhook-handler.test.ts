@@ -91,6 +91,20 @@ const MULTI_WORKSPACE_CONFIG: YaffleConfig = {
   ],
 }
 
+/** Config with approval required on merge. */
+const APPROVAL_CONFIG: YaffleConfig = {
+  version: 1,
+  workspaces: [
+    {
+      path: "infra",
+      auto_apply: true,
+      auto_apply_on_merge: true,
+      require_approval: true,
+      approvers: ["lamalex"],
+    },
+  ],
+}
+
 /** Fake config loader that returns a fixed config. */
 function fakeConfigLoader(config: YaffleConfig) {
   return async (_ctx: WebhookContext, _token?: string): Promise<YaffleConfig> => config
@@ -407,6 +421,21 @@ describe("webhook-handler", () => {
     expect(runs[1].runType).toBe("apply")
 
     expect(runner.calls[0].stateKey).toBe("production/main/infra/terraform.tfstate")
+  })
+
+  test("push to default branch with require_approval plans only", async () => {
+    const runner = new FakeRunner()
+    const h = createHandler(runner, { configLoader: fakeConfigLoader(APPROVAL_CONFIG) })
+
+    await h.handleWebhookEvent(makePushContext())
+
+    // Only plan should run
+    expect(runner.calls.map((c) => c.command)).toEqual(["plan"])
+
+    const previewRows = await db.select().from(previews)
+    expect(previewRows).toHaveLength(1)
+    expect(previewRows[0].status).toBe("awaiting_approval")
+    expect(previewRows[0].requireApproval).toBe(true)
   })
 
   // -----------------------------------------------------------------------

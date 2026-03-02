@@ -14,7 +14,14 @@
   let error = $state("")
   let stream: EventSource | null = null
 
-  const ACTIVE_STATUSES = new Set(["pending", "planning", "applying", "ready", "failed"])
+  const ACTIVE_STATUSES = new Set([
+    "pending",
+    "planning",
+    "applying",
+    "awaiting_approval",
+    "ready",
+    "failed",
+  ])
 
   interface PreviewGroup {
     key: string
@@ -68,7 +75,12 @@
   function groupStatus(workspaces: Preview[]): string {
     const statuses = new Set(workspaces.map((ws) => ws.status))
     if (statuses.has("failed")) return "failed"
-    if (statuses.has("applying") || statuses.has("planning") || statuses.has("pending")) {
+    if (
+      statuses.has("applying") ||
+      statuses.has("planning") ||
+      statuses.has("pending") ||
+      statuses.has("awaiting_approval")
+    ) {
       return "applying"
     }
     if (statuses.has("destroying")) return "destroying"
