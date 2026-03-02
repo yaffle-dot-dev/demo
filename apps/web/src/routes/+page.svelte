@@ -1,7 +1,7 @@
 <script lang="ts">
   import { browser } from "$app/environment"
   import { onDestroy, onMount } from "svelte"
-  import { listPreviews, type Preview } from "$lib/api"
+  import { listEnvironments, listPreviews, type EnvironmentGroup, type Preview } from "$lib/api"
   import { statusConfig, formatRelativeTime, shortSha } from "$lib/status"
 
   let org = $state("lamalex")
@@ -9,6 +9,7 @@
   let showInactive = $state(false)
   let yourHandle = $state("")
   let previews = $state<Preview[]>([])
+  let environments = $state<EnvironmentGroup[]>([])
   let loading = $state(false)
   let error = $state("")
   let stream: EventSource | null = null
@@ -31,16 +32,36 @@
     loading = true
     error = ""
     try {
-      const res = await listPreviews({
+      const [previewsRes, envRes] = await Promise.all([
+        listPreviews({
         org,
         repo: repoFilter || undefined,
-      })
-      previews = res.data
+        }),
+        listEnvironments({
+          org,
+          repo: repoFilter || undefined,
+        }),
+      ])
+      previews = previewsRes.data.filter((p) => p.prNumber !== 0)
+      environments = envRes.data
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
       previews = []
+      environments = []
     } finally {
       loading = false
+    }
+  }
+
+  async function refreshEnvironments() {
+    try {
+      const envRes = await listEnvironments({
+        org,
+        repo: repoFilter || undefined,
+      })
+      environments = envRes.data
+    } catch {
+      environments = []
     }
   }
 
@@ -136,7 +157,8 @@
     stream.addEventListener("update", (event) => {
       try {
         const payload = JSON.parse((event as MessageEvent).data) as { data: Preview[] }
-        previews = payload.data
+        previews = payload.data.filter((p) => p.prNumber !== 0)
+        refreshEnvironments()
       } catch {
         // ignore malformed payloads
       }
@@ -157,17 +179,64 @@
 </script>
 
 <div class="space-y-6">
-  <section class="rounded-xl border border-border bg-gradient-to-br from-surface-raised via-surface to-surface px-5 py-4">
-    <div class="flex items-center justify-between">
-      <div>
-        <h1 class="text-xl font-semibold">Preview groups</h1>
-        <p class="text-sm text-text-muted mt-1">
-          Active previews grouped by PR. Destroyed previews are hidden by default.
-        </p>
+  <section class="grid grid-cols-1 gap-4">
+    <div class="rounded-xl border border-border bg-gradient-to-br from-surface-raised via-surface to-surface px-5 py-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="text-xl font-semibold">Primary environments</h1>
+          <p class="text-sm text-text-muted mt-1">
+            Latest apply status for long-lived branches.
+          </p>
+        </div>
+        <div class="text-right text-sm text-text-dim">
+          <div class="font-mono text-xs">{environments.length} environments</div>
+        </div>
       </div>
-      <div class="text-right text-sm text-text-dim">
-        <div class="font-mono text-xs">{activeGroups.length} groups</div>
-        <div class="font-mono text-xs">{previews.length} workspaces</div>
+
+      {#if environments.length === 0}
+        <div class="text-text-dim text-sm py-6">No environments yet.</div>
+      {:else}
+        <div class="mt-4 grid grid-cols-1 gap-3">
+          {#each environments as env (env.repo + env.branch)}
+            {@const cfg = statusConfig(env.status)}
+            <div class="rounded-lg border border-border bg-surface p-3">
+              <div class="flex items-start justify-between">
+                <div>
+                  <div class="flex items-center gap-2">
+                    <span class="font-medium text-text">{env.repo}</span>
+                    <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
+                      {env.branch}
+                    </span>
+                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
+                      <span class="font-mono">{cfg.icon}</span>
+                      {cfg.label}
+                    </span>
+                  </div>
+                  <div class="flex flex-wrap gap-4 text-xs text-text-dim mt-2">
+                    <span class="font-mono">{shortSha(env.headSha)}</span>
+                    <span>{formatRelativeTime(env.updatedAt)}</span>
+                    <span>{env.workspaces.length} workspace{env.workspaces.length === 1 ? "" : "s"}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </div>
+
+    <div class="rounded-xl border border-border bg-gradient-to-br from-surface-raised via-surface to-surface px-5 py-4">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-xl font-semibold">Preview groups</h2>
+          <p class="text-sm text-text-muted mt-1">
+            Active previews grouped by PR. Destroyed previews are hidden by default.
+          </p>
+        </div>
+        <div class="text-right text-sm text-text-dim">
+          <div class="font-mono text-xs">{activeGroups.length} groups</div>
+          <div class="font-mono text-xs">{previews.length} workspaces</div>
+        </div>
       </div>
     </div>
   </section>

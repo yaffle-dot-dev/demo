@@ -6,6 +6,7 @@ import { logger } from "hono/logger"
 import { webhooksRoute } from "./routes/webhooks.ts"
 import { previewsRoute } from "./routes/previews.ts"
 import { runsRoute } from "./routes/runs.ts"
+import { environmentsRoute } from "./routes/environments.ts"
 import { healthRoute } from "./routes/health.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
@@ -33,6 +34,7 @@ app.notFound((c) => {
 app.route("/api/webhooks", webhooksRoute)
 app.route("/api/previews", previewsRoute)
 app.route("/api/runs", runsRoute)
+app.route("/api/environments", environmentsRoute)
 app.route("/api", healthRoute)
 
 const port = Number(process.env.PORT ?? 3000)

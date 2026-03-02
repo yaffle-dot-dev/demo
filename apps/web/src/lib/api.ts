@@ -43,6 +43,27 @@ export interface ApiError {
   error: { code: string; message: string }
 }
 
+export interface EnvironmentWorkspace {
+  previewId: string
+  workspacePath: string
+  status: string
+  headSha: string
+  lastRunId: string | null
+  lastRunType: string | null
+  lastRunStatus: string | null
+  lastRunCompletedAt: string | null
+  planSummary: string | null
+}
+
+export interface EnvironmentGroup {
+  repo: string
+  branch: string
+  headSha: string
+  status: string
+  updatedAt: string
+  workspaces: EnvironmentWorkspace[]
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`)
   const text = await res.text()
@@ -83,6 +104,17 @@ export async function listPreviews(params: {
   if (params.cursor) searchParams.set("cursor", params.cursor)
 
   return fetchJson(`/previews?${searchParams}`)
+}
+
+export async function listEnvironments(params: {
+  org: string
+  repo?: string
+}): Promise<DetailResponse<EnvironmentGroup[]>> {
+  const searchParams = new URLSearchParams()
+  searchParams.set("org", params.org)
+  if (params.repo) searchParams.set("repo", params.repo)
+
+  return fetchJson(`/environments?${searchParams}`)
 }
 
 export async function getPreview(id: string): Promise<DetailResponse<Preview>> {
