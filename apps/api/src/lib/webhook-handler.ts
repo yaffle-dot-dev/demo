@@ -8,11 +8,9 @@ import type {
 } from "@yaffle/shared"
 
 import {
-  type WorkspaceConfig,
   type YaffleConfig,
   ConfigError,
   interpolateVariables,
-  loadConfig,
   parseYaml,
   prVariableContext,
   pushVariableContext,
@@ -27,6 +25,12 @@ import {
   getInstallationToken,
   updateCheckRun,
 } from "./github.ts"
+import {
+  type CheckRunRef,
+  type CommentManager,
+  checkRunUrl,
+  createCommentManager,
+} from "./pr-comment.ts"
 import { LocalRunner } from "./local-runner.ts"
 import { KeyedMutex } from "./mutex.ts"
 import {
@@ -40,10 +44,10 @@ import { removeState } from "./state.ts"
 import {
   type Span,
   SpanStatusCode,
-  configLoadErrorCounter,
+  getConfigLoadErrorCounter,
+  getRunDurationHistogram,
+  getRunResultCounter,
   logger,
-  runDurationHistogram,
-  runResultCounter,
   tracer,
   withSpan,
 } from "./telemetry.ts"
@@ -219,7 +223,7 @@ async function handlePrOpenedOrUpdated(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
-    configLoadErrorCounter.add(1, { owner: ctx.owner, repo: ctx.repo })
+    getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
     await surfaceConfigError(ctx, msg)
     return
   }
@@ -238,6 +242,8 @@ async function handlePrOpenedOrUpdated(
     owner: ctx.owner,
     repo: ctx.repo,
   })
+
+  const comment = createCommentManager(ctx)
 
   for (const ws of config.workspaces) {
     await withSpan("workspace.preview", async (wsSpan) => {
@@ -263,6 +269,7 @@ async function handlePrOpenedOrUpdated(
       // Plan
       logger.info("planning", wsAttrs)
       await updatePreviewStatus(preview.id, "planning")
+      await comment.update(ws.path, { phase: "planning" })
 
       const planResult = await executeRun({
         ctx,
@@ -276,12 +283,26 @@ async function handlePrOpenedOrUpdated(
         wsTag,
       })
 
-      if (!planResult.success) return
+      const planCheckRun = makeCheckRunRef(ctx, planResult.checkRunId)
+
+      if (!planResult.success) {
+        await comment.update(ws.path, {
+          phase: "plan_failed",
+          errorMessage: planResult.errorMessage,
+          planCheckRun,
+        })
+        return
+      }
 
       // Apply if auto_apply
       if (ws.auto_apply) {
         logger.info("auto-applying preview", wsAttrs)
         await updatePreviewStatus(preview.id, "applying")
+        await comment.update(ws.path, {
+          phase: "applying",
+          planSummary: planResult.planSummary,
+          planCheckRun,
+        })
 
         const applyResult = await executeRun({
           ctx,
@@ -295,11 +316,33 @@ async function handlePrOpenedOrUpdated(
           wsTag,
         })
 
+        const applyCheckRun = makeCheckRunRef(ctx, applyResult.checkRunId)
+
         if (applyResult.success) {
           await updatePreviewStatus(preview.id, "ready")
+          await comment.update(ws.path, {
+            phase: "ready",
+            planSummary: planResult.planSummary,
+            outputs: applyResult.outputs,
+            planCheckRun,
+            applyCheckRun,
+          })
+        } else {
+          await comment.update(ws.path, {
+            phase: "apply_failed",
+            planSummary: planResult.planSummary,
+            errorMessage: applyResult.errorMessage,
+            planCheckRun,
+            applyCheckRun,
+          })
         }
       } else {
         await updatePreviewStatus(preview.id, "ready")
+        await comment.update(ws.path, {
+          phase: "plan_success",
+          planSummary: planResult.planSummary,
+          planCheckRun,
+        })
       }
     })
   }
@@ -326,7 +369,7 @@ async function handlePrClosed(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
-    configLoadErrorCounter.add(1, { owner: ctx.owner, repo: ctx.repo })
+    getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
     await surfaceConfigError(ctx, msg)
     return
   }
@@ -338,6 +381,7 @@ async function handlePrClosed(
   )
 
   const statePrefix = previewStatePrefix(ctx.prNumber)
+  const comment = createCommentManager(ctx)
 
   for (const ws of config.workspaces) {
     await withSpan("workspace.destroy", async (wsSpan) => {
@@ -354,6 +398,7 @@ async function handlePrClosed(
 
       logger.info("destroying preview", wsAttrs)
       await updatePreviewStatus(preview.id, "destroying")
+      await comment.update(ws.path, { phase: "destroying" })
 
       const destroyResult = await executeRun({
         ctx,
@@ -370,6 +415,7 @@ async function handlePrClosed(
       if (destroyResult.success) {
         await removeState(ctx.owner, ctx.repo, stateKey)
         await updatePreviewStatus(preview.id, "destroyed")
+        await comment.update(ws.path, { phase: "destroyed" })
         logger.info("preview destroyed", wsAttrs)
       }
     })
@@ -399,7 +445,7 @@ async function handlePushEvent(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
-    configLoadErrorCounter.add(1, { owner: ctx.owner, repo: ctx.repo })
+    getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
     return
   }
 
@@ -505,6 +551,9 @@ async function handlePushEvent(
  * Execute a single terraform run, creating DB records and updating
  * GitHub check runs.
  */
+/** TerraformResult extended with the check run ID created for this run. */
+type RunResult = TerraformResult & { checkRunId?: number }
+
 async function executeRun(opts: {
   ctx: WebhookContext
   preview: { id: string }
@@ -515,7 +564,7 @@ async function executeRun(opts: {
   variables: Record<string, string>
   installationToken?: string
   wsTag: string
-}): Promise<TerraformResult> {
+}): Promise<RunResult> {
   return withSpan(`run.${opts.command}`, async (span) => {
     const { ctx, preview, runner, wsTag } = opts
     const runAttrs = {
@@ -593,12 +642,12 @@ async function executeRun(opts: {
     }
 
     // Record metrics
-    runDurationHistogram.record(result.durationMs, {
+    getRunDurationHistogram().record(result.durationMs, {
       command: opts.command,
       workspace: opts.workspacePath,
       success: String(result.success),
     })
-    runResultCounter.add(1, {
+    getRunResultCounter().add(1, {
       command: opts.command,
       workspace: opts.workspacePath,
       result: result.success ? "success" : "failure",
@@ -664,7 +713,7 @@ async function executeRun(opts: {
       }))
     }
 
-    return result
+    return { ...result, checkRunId }
   })
 }
 
@@ -695,6 +744,21 @@ async function surfaceConfigError(
       "yaffle.repo": ctx.repo,
       "error": err instanceof Error ? err.message : String(err),
     })
+  }
+}
+
+/**
+ * Build a CheckRunRef from a context and check run ID, or undefined if
+ * either the installation or check run ID is missing.
+ */
+function makeCheckRunRef(
+  ctx: WebhookContext,
+  checkRunId: number | undefined,
+): CheckRunRef | undefined {
+  if (!checkRunId) return undefined
+  return {
+    id: checkRunId,
+    url: checkRunUrl(ctx.owner, ctx.repo, checkRunId),
   }
 }
 

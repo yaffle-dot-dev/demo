@@ -70,6 +70,7 @@ export async function initTelemetry(): Promise<void> {
     })
     metrics.setGlobalMeterProvider(meterProvider)
     meterProviderInstance = meterProvider
+    resetMeter()
 
     // Logs
     const logExporter = new OTLPLogExporter()
@@ -91,47 +92,94 @@ export async function initTelemetry(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Get the tracer. Returns the global OTel tracer (no-op if SDK not initialized).
+ * Get the tracer. The OTel API proxies through to the real provider
+ * even when obtained before initTelemetry() is called.
  */
 export const tracer = trace.getTracer(SERVICE_NAME, SERVICE_VERSION)
-
-/**
- * Get the meter. Returns the global OTel meter (no-op if SDK not initialized).
- */
-export const meter = metrics.getMeter(SERVICE_NAME, SERVICE_VERSION)
 
 export { context, SpanStatusCode }
 export type { Span, SpanOptions, Attributes }
 
 // ---------------------------------------------------------------------------
-// Metrics instances (from the Linear issue spec)
+// Metrics -- lazy getters so instruments bind to the real MeterProvider
 // ---------------------------------------------------------------------------
+//
+// Unlike the tracer, meters and their instruments obtained before
+// setGlobalMeterProvider() are permanently no-op. We use a lazy pattern:
+// the first call after initTelemetry() creates real instruments; before
+// that, calls go to no-op counters/histograms (harmless).
 
+let _meter: ReturnType<typeof metrics.getMeter> | null = null
+function getMeter(): ReturnType<typeof metrics.getMeter> {
+  if (!_meter) _meter = metrics.getMeter(SERVICE_NAME, SERVICE_VERSION)
+  return _meter
+}
+
+// Reset cached meter after provider registration so instruments bind correctly
+function resetMeter(): void {
+  _meter = null
+  _webhookReceivedCounter = null
+  _runDurationHistogram = null
+  _runResultCounter = null
+  _configLoadErrorCounter = null
+  _githubApiErrorCounter = null
+}
+
+let _webhookReceivedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
 /** Counter: webhook events received, by event type. */
-export const webhookReceivedCounter = meter.createCounter("yaffle.webhook.received", {
-  description: "Webhook events received",
-})
+export function getWebhookReceivedCounter(): typeof _webhookReceivedCounter & {} {
+  if (!_webhookReceivedCounter) {
+    _webhookReceivedCounter = getMeter().createCounter("yaffle.webhook.received", {
+      description: "Webhook events received",
+    })
+  }
+  return _webhookReceivedCounter
+}
 
+let _runDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
 /** Histogram: terraform run duration in ms, by command/workspace. */
-export const runDurationHistogram = meter.createHistogram("yaffle.run.duration", {
-  description: "Terraform run duration in milliseconds",
-  unit: "ms",
-})
+export function getRunDurationHistogram(): typeof _runDurationHistogram & {} {
+  if (!_runDurationHistogram) {
+    _runDurationHistogram = getMeter().createHistogram("yaffle.run.duration", {
+      description: "Terraform run duration in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _runDurationHistogram
+}
 
+let _runResultCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
 /** Counter: terraform run results, by command/success/failure. */
-export const runResultCounter = meter.createCounter("yaffle.run.result", {
-  description: "Terraform run results",
-})
+export function getRunResultCounter(): typeof _runResultCounter & {} {
+  if (!_runResultCounter) {
+    _runResultCounter = getMeter().createCounter("yaffle.run.result", {
+      description: "Terraform run results",
+    })
+  }
+  return _runResultCounter
+}
 
+let _configLoadErrorCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
 /** Counter: config load errors. */
-export const configLoadErrorCounter = meter.createCounter("yaffle.config.load.errors", {
-  description: "Config load errors",
-})
+export function getConfigLoadErrorCounter(): typeof _configLoadErrorCounter & {} {
+  if (!_configLoadErrorCounter) {
+    _configLoadErrorCounter = getMeter().createCounter("yaffle.config.load.errors", {
+      description: "Config load errors",
+    })
+  }
+  return _configLoadErrorCounter
+}
 
+let _githubApiErrorCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
 /** Counter: GitHub API errors, by endpoint. */
-export const githubApiErrorCounter = meter.createCounter("yaffle.github.api.errors", {
-  description: "GitHub API errors",
-})
+export function getGithubApiErrorCounter(): typeof _githubApiErrorCounter & {} {
+  if (!_githubApiErrorCounter) {
+    _githubApiErrorCounter = getMeter().createCounter("yaffle.github.api.errors", {
+      description: "GitHub API errors",
+    })
+  }
+  return _githubApiErrorCounter
+}
 
 // ---------------------------------------------------------------------------
 // Structured logging helper

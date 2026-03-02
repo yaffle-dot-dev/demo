@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs"
+
 import type { TerraformResult } from "@yaffle/shared"
 
 import type { RunOpts, Runner } from "./runner.ts"
@@ -36,6 +38,20 @@ export class LocalRunner implements Runner {
         const tfDir = opts.workspacePath === "."
           ? workDir
           : `${workDir}/${opts.workspacePath}`
+
+        // Verify the workspace path actually exists in the repo
+        if (!existsSync(tfDir)) {
+          const shortSha = opts.headSha.slice(0, 7)
+          return {
+            success: false,
+            command: opts.command,
+            output: "",
+            errorMessage:
+              `Workspace path "${opts.workspacePath}" not found in ${opts.owner}/${opts.repo} at ${shortSha}. ` +
+              "Check that the path in .yaffle/config.yml matches a directory in your repository.",
+            durationMs: 0,
+          }
+        }
 
         // Configure persistent local backend before init
         await configureLocalBackend(tfDir, opts.owner, opts.repo, opts.stateKey)

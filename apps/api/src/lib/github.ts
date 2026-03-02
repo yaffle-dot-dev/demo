@@ -145,3 +145,95 @@ export async function updateCheckRun(
       : undefined,
   })
 }
+
+/**
+ * Upsert a PR comment. Finds an existing comment by a hidden HTML marker,
+ * then updates it or creates a new one.
+ *
+ * The marker is a comment like `<!-- yaffle:outputs:infra -->` embedded in the body.
+ * This prevents duplicate comments on re-apply.
+ */
+export async function upsertPrComment(
+  installationId: number,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  body: string,
+  marker: string,
+): Promise<number> {
+  const octokit = await getInstallationOctokit(installationId)
+
+  // Find existing comment with this marker
+  const existingId = await findCommentByMarker(
+    octokit,
+    owner,
+    repo,
+    prNumber,
+    marker,
+  )
+
+  if (existingId) {
+    await octokit.request(
+      "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
+      {
+        owner,
+        repo,
+        comment_id: existingId,
+        body,
+      },
+    )
+    return existingId
+  }
+
+  const response = await octokit.request(
+    "POST /repos/{owner}/{repo}/issues/{issue_number}/comments",
+    {
+      owner,
+      repo,
+      issue_number: prNumber,
+      body,
+    },
+  )
+  return response.data.id
+}
+
+/**
+ * Search PR comments for one containing a specific marker string.
+ * Paginates through all comments to find it.
+ */
+async function findCommentByMarker(
+  octokit: Awaited<ReturnType<App["getInstallationOctokit"]>>,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  marker: string,
+): Promise<number | undefined> {
+  let page = 1
+  const perPage = 100
+
+  while (true) {
+    const response = await octokit.request(
+      "GET /repos/{owner}/{repo}/issues/{issue_number}/comments",
+      {
+        owner,
+        repo,
+        issue_number: prNumber,
+        per_page: perPage,
+        page,
+      },
+    )
+
+    const comments = response.data as Array<{ id: number; body?: string }>
+
+    for (const comment of comments) {
+      if (comment.body?.includes(marker)) {
+        return comment.id
+      }
+    }
+
+    if (comments.length < perPage) break
+    page++
+  }
+
+  return undefined
+}

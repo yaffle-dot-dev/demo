@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { LocalRunner } from "./local-runner.ts"
 import { configureLocalBackend, removeState, stateExists } from "./state.ts"
 import { runTerraform } from "./terraform.ts"
 
@@ -113,4 +114,28 @@ describe("persistent state integration", () => {
     expect(finalPlanResult.success).toBe(true)
     expect(finalPlanResult.planSummary).toBe("+1, ~0, -0")
   }, 120_000)
+})
+
+describe("LocalRunner", () => {
+  test("returns clear error when workspace path does not exist in repo", async () => {
+    const runner = new LocalRunner()
+
+    // Use the real repo (yaffle itself) but point at a nonexistent workspace path
+    const result = await runner.run({
+      owner: "lamalex",
+      repo: "yaffle",
+      headSha: "HEAD",
+      command: "plan",
+      workspacePath: "this/path/does/not/exist",
+      stateKey: "previews/pr-999/this/path/does/not/exist/terraform.tfstate",
+    })
+
+    expect(result.success).toBe(false)
+    expect(result.errorMessage).toContain("this/path/does/not/exist")
+    expect(result.errorMessage).toContain("not found")
+    expect(result.errorMessage).toContain(".yaffle/config.yml")
+    // Should NOT contain internal temp paths
+    expect(result.errorMessage).not.toContain("/var/folders")
+    expect(result.errorMessage).not.toContain("yaffle-ws-")
+  }, 30_000)
 })

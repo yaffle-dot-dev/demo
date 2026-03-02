@@ -7,7 +7,7 @@ import type {
 } from "@yaffle/shared"
 
 import { getEnv } from "../lib/env.ts"
-import { logger, webhookReceivedCounter } from "../lib/telemetry.ts"
+import { logger, getWebhookReceivedCounter } from "../lib/telemetry.ts"
 import { verifyWebhookSignature } from "../lib/webhook-verify.ts"
 import { handleWebhookEvent } from "../lib/webhook-handler.ts"
 
@@ -41,7 +41,7 @@ webhooksRoute.post("/github", async (c) => {
     )
   }
 
-  webhookReceivedCounter.add(1, { event: event ?? "unknown" })
+  getWebhookReceivedCounter().add(1, { event: event ?? "unknown" })
   logger.info(`webhook received: event=${event} delivery=${deliveryId}`, {
     "webhook.event": event ?? "unknown",
     "webhook.delivery_id": deliveryId ?? "unknown",
