@@ -37,6 +37,9 @@
     # Secretspec defaults for local dev
     SECRETSPEC_PROFILE = "development";
     SECRETSPEC_PROVIDER = "onepassword://yaffle.dev";
+
+    # Telemetry defaults for local dev (disabled, no endpoint)
+    YAFFLE_ENV = "development";
   };
 
   # ── Postgres ─────────────────────────────────────────────────────

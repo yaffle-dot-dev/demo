@@ -4,6 +4,8 @@ import { readFile, writeFile } from "node:fs/promises"
 
 import type { RunType, TerraformResult } from "@yaffle/shared"
 
+import { logger, tracer } from "./telemetry.ts"
+
 /** Resolve the terraform/tofu binary path. */
 function getTfBinary(): string {
   return process.env.YAFFLE_TF_BINARY ?? "terraform"
@@ -20,26 +22,38 @@ interface TfExecResult {
  */
 function execTf(args: string[], cwd: string, env?: Record<string, string>): TfExecResult {
   const binary = getTfBinary()
-  console.log(`[tf] ${binary} ${args.join(" ")} (cwd: ${cwd})`)
+  const subcommand = args[0] ?? "unknown"
 
-  const result = Bun.spawnSync([binary, ...args], {
-    cwd,
-    stdout: "pipe",
-    stderr: "pipe",
-    env: { ...process.env, ...env, TF_IN_AUTOMATION: "1", TF_INPUT: "0" },
-  })
+  return tracer.startActiveSpan(`tf.${subcommand}`, (span) => {
+    span.setAttributes({
+      "tf.binary": binary,
+      "tf.args": args.join(" "),
+      "tf.cwd": cwd,
+    })
 
-  const stdout = result.stdout.toString()
-  const stderr = result.stderr.toString()
+    logger.debug(`${binary} ${args.join(" ")}`, { "tf.cwd": cwd })
 
-  if (stderr) {
-    // tofu/terraform writes progress to stderr even on success, log it
-    for (const line of stderr.split("\n").filter(Boolean)) {
-      console.log(`[tf:stderr] ${line}`)
+    const result = Bun.spawnSync([binary, ...args], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, ...env, TF_IN_AUTOMATION: "1", TF_INPUT: "0" },
+    })
+
+    const stdout = result.stdout.toString()
+    const stderr = result.stderr.toString()
+
+    if (stderr) {
+      for (const line of stderr.split("\n").filter(Boolean)) {
+        logger.debug(`[tf:stderr] ${line}`)
+      }
     }
-  }
 
-  return { exitCode: result.exitCode, stdout, stderr }
+    span.setAttributes({ "tf.exit_code": result.exitCode })
+    span.end()
+
+    return { exitCode: result.exitCode, stdout, stderr }
+  })
 }
 
 /**
@@ -87,7 +101,7 @@ export async function tfPlan(
       try {
         planJson = JSON.parse(showResult.stdout)
       } catch {
-        console.warn("[tf] failed to parse plan JSON")
+        logger.warn("failed to parse plan JSON")
       }
     }
   }
@@ -127,7 +141,7 @@ export async function tfApply(
     try {
       outputs = JSON.parse(outputResult.stdout)
     } catch {
-      console.warn("[tf] failed to parse outputs JSON")
+      logger.warn("failed to parse outputs JSON")
     }
   }
 

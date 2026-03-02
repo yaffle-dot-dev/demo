@@ -2,6 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { logger } from "./telemetry.ts"
+
 /**
  * Prepare a workspace by cloning the repo and checking out the target SHA.
  * Returns the path to the cloned workspace directory.
@@ -76,7 +78,10 @@ export async function cleanupWorkspace(workDir: string): Promise<void> {
   try {
     await rm(workDir, { recursive: true, force: true })
   } catch (err) {
-    console.warn(`failed to clean up workspace ${workDir}:`, err)
+    logger.warn(`failed to clean up workspace ${workDir}`, {
+      "workspace.dir": workDir,
+      "error": err instanceof Error ? err.message : String(err),
+    })
   }
 }
 

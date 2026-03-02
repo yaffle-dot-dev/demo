@@ -1,5 +1,7 @@
 import { WebhookVerificationError } from "@yaffle/shared"
 
+import { logger } from "./telemetry.ts"
+
 const ALGORITHM = "SHA-256"
 const SIGNATURE_PREFIX = "sha256="
 
@@ -18,7 +20,7 @@ export async function verifyWebhookSignature(
 
   if (!secret) {
     // In development without secrets configured, skip verification
-    console.warn("GITHUB_WEBHOOK_SECRET not set, skipping webhook signature verification")
+    logger.warn("GITHUB_WEBHOOK_SECRET not set, skipping webhook signature verification")
     return
   }
 

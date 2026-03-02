@@ -1,3 +1,5 @@
+import { SpanKind } from "@opentelemetry/api"
+
 import type {
   PullRequestContext,
   PushContext,
@@ -35,6 +37,16 @@ import {
   productionStatePrefix,
 } from "./runner.ts"
 import { removeState } from "./state.ts"
+import {
+  type Span,
+  SpanStatusCode,
+  configLoadErrorCounter,
+  logger,
+  runDurationHistogram,
+  runResultCounter,
+  tracer,
+  withSpan,
+} from "./telemetry.ts"
 
 const CHECK_NAME = "Yaffle / terraform"
 
@@ -54,6 +66,24 @@ function mutexKey(ctx: WebhookContext): string {
     return `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   }
   return `${ctx.owner}/${ctx.repo}@${ctx.branch}`
+}
+
+/** Common span attributes from a webhook context. */
+function contextAttrs(ctx: WebhookContext): Record<string, string | number> {
+  const attrs: Record<string, string | number> = {
+    "yaffle.owner": ctx.owner,
+    "yaffle.repo": ctx.repo,
+    "yaffle.head_sha": ctx.headSha,
+    "yaffle.event_kind": ctx.kind,
+  }
+  if (ctx.kind === "pull_request") {
+    attrs["yaffle.pr_number"] = ctx.prNumber
+    attrs["yaffle.pr_action"] = ctx.action
+    attrs["yaffle.branch"] = ctx.branch
+  } else {
+    attrs["yaffle.branch"] = ctx.branch
+  }
+  return attrs
 }
 
 /**
@@ -128,11 +158,19 @@ async function handleEvent(
   runner: Runner,
   configLoader: ConfigLoader,
 ): Promise<void> {
-  if (ctx.kind === "pull_request") {
-    await handlePullRequestEvent(ctx, runner, configLoader)
-  } else {
-    await handlePushEvent(ctx, runner, configLoader)
-  }
+  const spanName = ctx.kind === "pull_request"
+    ? `webhook.pull_request.${ctx.action}`
+    : "webhook.push"
+
+  return withSpan(spanName, async (span) => {
+    span.setAttributes(contextAttrs(ctx))
+
+    if (ctx.kind === "pull_request") {
+      await handlePullRequestEvent(ctx, runner, configLoader)
+    } else {
+      await handlePushEvent(ctx, runner, configLoader)
+    }
+  }, { kind: SpanKind.INTERNAL })
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +183,8 @@ async function handlePullRequestEvent(
   configLoader: ConfigLoader,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
-  console.log(`handling PR event: ${tag} action=${ctx.action} sha=${ctx.headSha}`)
+  const attrs = contextAttrs(ctx)
+  logger.info(`handling PR event: ${tag} action=${ctx.action} sha=${ctx.headSha}`, attrs)
 
   switch (ctx.action) {
     case "opened":
@@ -169,6 +208,7 @@ async function handlePrOpenedOrUpdated(
   configLoader: ConfigLoader,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
+  const attrs = contextAttrs(ctx)
   const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
   const installationToken = await acquireToken(ctx)
 
@@ -178,13 +218,17 @@ async function handlePrOpenedOrUpdated(
     config = await configLoader(ctx, installationToken)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    console.error(`failed to load config for ${tag}:`, msg)
+    logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
+    configLoadErrorCounter.add(1, { owner: ctx.owner, repo: ctx.repo })
     await surfaceConfigError(ctx, msg)
     return
   }
 
   const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
-  console.log(`[${tag}] config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`)
+  logger.info(
+    `config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`,
+    { ...attrs, "yaffle.workspace_count": config.workspaces.length },
+  )
 
   const statePrefix = previewStatePrefix(ctx.prNumber)
   const varCtx = prVariableContext({
@@ -196,44 +240,242 @@ async function handlePrOpenedOrUpdated(
   })
 
   for (const ws of config.workspaces) {
-    const stateKey = buildStateKey(statePrefix, ws.path)
-    const wsTag = `${tag}:${ws.path}`
+    await withSpan("workspace.preview", async (wsSpan) => {
+      const stateKey = buildStateKey(statePrefix, ws.path)
+      const wsTag = `${tag}:${ws.path}`
+      const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
+      wsSpan.setAttributes(wsAttrs)
 
-    // Upsert preview
-    const preview = await upsertPreview({
-      orgId: org.id,
-      repo: ctx.repo,
-      prNumber: ctx.prNumber,
-      workspacePath: ws.path,
-      branch: ctx.branch,
-      headSha: ctx.headSha,
-      stateKey,
-      mode: "terraform",
+      // Upsert preview
+      const preview = await upsertPreview({
+        orgId: org.id,
+        repo: ctx.repo,
+        prNumber: ctx.prNumber,
+        workspacePath: ws.path,
+        branch: ctx.branch,
+        headSha: ctx.headSha,
+        stateKey,
+        mode: "terraform",
+      })
+
+      const variables = interpolateVariables(ws.variables, varCtx)
+
+      // Plan
+      logger.info("planning", wsAttrs)
+      await updatePreviewStatus(preview.id, "planning")
+
+      const planResult = await executeRun({
+        ctx,
+        preview,
+        runner,
+        command: "plan",
+        stateKey,
+        workspacePath: ws.path,
+        variables,
+        installationToken,
+        wsTag,
+      })
+
+      if (!planResult.success) return
+
+      // Apply if auto_apply
+      if (ws.auto_apply) {
+        logger.info("auto-applying preview", wsAttrs)
+        await updatePreviewStatus(preview.id, "applying")
+
+        const applyResult = await executeRun({
+          ctx,
+          preview,
+          runner,
+          command: "apply",
+          stateKey,
+          workspacePath: ws.path,
+          variables,
+          installationToken,
+          wsTag,
+        })
+
+        if (applyResult.success) {
+          await updatePreviewStatus(preview.id, "ready")
+        }
+      } else {
+        await updatePreviewStatus(preview.id, "ready")
+      }
     })
+  }
+}
 
-    const variables = interpolateVariables(ws.variables, varCtx)
+/**
+ * PR closed -- destroy preview resources for all workspaces.
+ * Whether merged or not, the preview gets destroyed.
+ */
+async function handlePrClosed(
+  ctx: PullRequestContext,
+  runner: Runner,
+  configLoader: ConfigLoader,
+): Promise<void> {
+  const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
+  const attrs = contextAttrs(ctx)
+  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
+  const installationToken = await acquireToken(ctx)
 
-    // Plan
-    console.log(`[${wsTag}] planning`)
-    await updatePreviewStatus(preview.id, "planning")
+  // Load config to know which workspaces to destroy
+  let config: YaffleConfig
+  try {
+    config = await configLoader(ctx, installationToken)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
+    configLoadErrorCounter.add(1, { owner: ctx.owner, repo: ctx.repo })
+    await surfaceConfigError(ctx, msg)
+    return
+  }
 
-    const planResult = await executeRun({
-      ctx,
-      preview,
-      runner,
-      command: "plan",
-      stateKey,
-      workspacePath: ws.path,
-      variables,
-      installationToken,
-      wsTag,
+  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
+  logger.info(
+    `config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`,
+    { ...attrs, "yaffle.workspace_count": config.workspaces.length },
+  )
+
+  const statePrefix = previewStatePrefix(ctx.prNumber)
+
+  for (const ws of config.workspaces) {
+    await withSpan("workspace.destroy", async (wsSpan) => {
+      const stateKey = buildStateKey(statePrefix, ws.path)
+      const wsTag = `${tag}:${ws.path}`
+      const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
+      wsSpan.setAttributes(wsAttrs)
+
+      const preview = await findPreview(org.id, ctx.repo, ctx.prNumber, ws.path)
+      if (!preview) {
+        logger.warn("no preview found, nothing to destroy", wsAttrs)
+        return
+      }
+
+      logger.info("destroying preview", wsAttrs)
+      await updatePreviewStatus(preview.id, "destroying")
+
+      const destroyResult = await executeRun({
+        ctx,
+        preview,
+        runner,
+        command: "destroy",
+        stateKey,
+        workspacePath: ws.path,
+        variables: {},
+        installationToken,
+        wsTag,
+      })
+
+      if (destroyResult.success) {
+        await removeState(ctx.owner, ctx.repo, stateKey)
+        await updatePreviewStatus(preview.id, "destroyed")
+        logger.info("preview destroyed", wsAttrs)
+      }
     })
+  }
+}
 
-    if (!planResult.success) continue
+// ---------------------------------------------------------------------------
+// Push events (production apply)
+// ---------------------------------------------------------------------------
 
-    // Apply if auto_apply
-    if (ws.auto_apply) {
-      console.log(`[${wsTag}] auto-applying preview`)
+async function handlePushEvent(
+  ctx: PushContext,
+  runner: Runner,
+  configLoader: ConfigLoader,
+): Promise<void> {
+  const tag = `${ctx.owner}/${ctx.repo}@${ctx.branch}`
+  const attrs = contextAttrs(ctx)
+  logger.info(`handling push event: ${tag} sha=${ctx.headSha}`, attrs)
+
+  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
+  const installationToken = await acquireToken(ctx)
+
+  // Load config -- no PR to annotate on push events, just log
+  let config: YaffleConfig
+  try {
+    config = await configLoader(ctx, installationToken)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
+    configLoadErrorCounter.add(1, { owner: ctx.owner, repo: ctx.repo })
+    return
+  }
+
+  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
+  logger.info(
+    `config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`,
+    { ...attrs, "yaffle.workspace_count": config.workspaces.length },
+  )
+
+  // Determine default branch
+  const defaultBranch = config.default_branch ?? ctx.defaultBranch
+  if (ctx.branch !== defaultBranch) {
+    logger.info(
+      `ignoring push to non-default branch (default: ${defaultBranch})`,
+      attrs,
+    )
+    return
+  }
+
+  const statePrefix = productionStatePrefix(ctx.branch)
+  const varCtx = pushVariableContext({
+    branch: ctx.branch,
+    sha: ctx.headSha,
+    owner: ctx.owner,
+    repo: ctx.repo,
+  })
+
+  for (const ws of config.workspaces) {
+    if (!ws.auto_apply_on_merge) {
+      logger.info("auto_apply_on_merge disabled, skipping", {
+        ...attrs,
+        "yaffle.workspace_path": ws.path,
+      })
+      continue
+    }
+
+    await withSpan("workspace.production", async (wsSpan) => {
+      const stateKey = buildStateKey(statePrefix, ws.path)
+      const wsTag = `${tag}:${ws.path}`
+      const variables = interpolateVariables(ws.variables, varCtx)
+      const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
+      wsSpan.setAttributes(wsAttrs)
+
+      // For production, we create a preview record to track the run
+      // Using prNumber=0 as a sentinel for production runs
+      const preview = await upsertPreview({
+        orgId: org.id,
+        repo: ctx.repo,
+        prNumber: 0,
+        workspacePath: ws.path,
+        branch: ctx.branch,
+        headSha: ctx.headSha,
+        stateKey,
+        mode: "terraform",
+      })
+
+      // Plan
+      logger.info("planning production", wsAttrs)
+      await updatePreviewStatus(preview.id, "planning")
+
+      const planResult = await executeRun({
+        ctx,
+        preview,
+        runner,
+        command: "plan",
+        stateKey,
+        workspacePath: ws.path,
+        variables,
+        installationToken,
+        wsTag,
+      })
+
+      if (!planResult.success) return
+
+      // Apply
+      logger.info("applying production", wsAttrs)
       await updatePreviewStatus(preview.id, "applying")
 
       const applyResult = await executeRun({
@@ -251,177 +493,7 @@ async function handlePrOpenedOrUpdated(
       if (applyResult.success) {
         await updatePreviewStatus(preview.id, "ready")
       }
-    } else {
-      await updatePreviewStatus(preview.id, "ready")
-    }
-  }
-}
-
-/**
- * PR closed -- destroy preview resources for all workspaces.
- * Whether merged or not, the preview gets destroyed.
- */
-async function handlePrClosed(
-  ctx: PullRequestContext,
-  runner: Runner,
-  configLoader: ConfigLoader,
-): Promise<void> {
-  const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
-  const installationToken = await acquireToken(ctx)
-
-  // Load config to know which workspaces to destroy
-  let config: YaffleConfig
-  try {
-    config = await configLoader(ctx, installationToken)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(`failed to load config for ${tag}:`, msg)
-    await surfaceConfigError(ctx, msg)
-    return
-  }
-
-  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
-  console.log(`[${tag}] config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`)
-
-  const statePrefix = previewStatePrefix(ctx.prNumber)
-
-  for (const ws of config.workspaces) {
-    const stateKey = buildStateKey(statePrefix, ws.path)
-    const wsTag = `${tag}:${ws.path}`
-
-    const preview = await findPreview(org.id, ctx.repo, ctx.prNumber, ws.path)
-    if (!preview) {
-      console.warn(`[${wsTag}] no preview found, nothing to destroy`)
-      continue
-    }
-
-    console.log(`[${wsTag}] destroying preview`)
-    await updatePreviewStatus(preview.id, "destroying")
-
-    const destroyResult = await executeRun({
-      ctx,
-      preview,
-      runner,
-      command: "destroy",
-      stateKey,
-      workspacePath: ws.path,
-      variables: {},
-      installationToken,
-      wsTag,
     })
-
-    if (destroyResult.success) {
-      await removeState(ctx.owner, ctx.repo, stateKey)
-      await updatePreviewStatus(preview.id, "destroyed")
-      console.log(`[${wsTag}] preview destroyed`)
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Push events (production apply)
-// ---------------------------------------------------------------------------
-
-async function handlePushEvent(
-  ctx: PushContext,
-  runner: Runner,
-  configLoader: ConfigLoader,
-): Promise<void> {
-  const tag = `${ctx.owner}/${ctx.repo}@${ctx.branch}`
-  console.log(`handling push event: ${tag} sha=${ctx.headSha}`)
-
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
-  const installationToken = await acquireToken(ctx)
-
-  // Load config -- no PR to annotate on push events, just log
-  let config: YaffleConfig
-  try {
-    config = await configLoader(ctx, installationToken)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(`failed to load config for ${tag}:`, msg)
-    return
-  }
-
-  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
-  console.log(`[${tag}] config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`)
-
-  // Determine default branch
-  const defaultBranch = config.default_branch ?? ctx.defaultBranch
-  if (ctx.branch !== defaultBranch) {
-    console.log(`[${tag}] ignoring push to non-default branch (default: ${defaultBranch})`)
-    return
-  }
-
-  const statePrefix = productionStatePrefix(ctx.branch)
-  const varCtx = pushVariableContext({
-    branch: ctx.branch,
-    sha: ctx.headSha,
-    owner: ctx.owner,
-    repo: ctx.repo,
-  })
-
-  for (const ws of config.workspaces) {
-    if (!ws.auto_apply_on_merge) {
-      console.log(`[${tag}:${ws.path}] auto_apply_on_merge disabled, skipping`)
-      continue
-    }
-
-    const stateKey = buildStateKey(statePrefix, ws.path)
-    const wsTag = `${tag}:${ws.path}`
-    const variables = interpolateVariables(ws.variables, varCtx)
-
-    // For production, we create a preview record to track the run
-    // Using prNumber=0 as a sentinel for production runs
-    const preview = await upsertPreview({
-      orgId: org.id,
-      repo: ctx.repo,
-      prNumber: 0,
-      workspacePath: ws.path,
-      branch: ctx.branch,
-      headSha: ctx.headSha,
-      stateKey,
-      mode: "terraform",
-    })
-
-    // Plan
-    console.log(`[${wsTag}] planning production`)
-    await updatePreviewStatus(preview.id, "planning")
-
-    const planResult = await executeRun({
-      ctx,
-      preview,
-      runner,
-      command: "plan",
-      stateKey,
-      workspacePath: ws.path,
-      variables,
-      installationToken,
-      wsTag,
-    })
-
-    if (!planResult.success) continue
-
-    // Apply
-    console.log(`[${wsTag}] applying production`)
-    await updatePreviewStatus(preview.id, "applying")
-
-    const applyResult = await executeRun({
-      ctx,
-      preview,
-      runner,
-      command: "apply",
-      stateKey,
-      workspacePath: ws.path,
-      variables,
-      installationToken,
-      wsTag,
-    })
-
-    if (applyResult.success) {
-      await updatePreviewStatus(preview.id, "ready")
-    }
   }
 }
 
@@ -444,115 +516,156 @@ async function executeRun(opts: {
   installationToken?: string
   wsTag: string
 }): Promise<TerraformResult> {
-  const { ctx, preview, runner, wsTag } = opts
+  return withSpan(`run.${opts.command}`, async (span) => {
+    const { ctx, preview, runner, wsTag } = opts
+    const runAttrs = {
+      "yaffle.command": opts.command,
+      "yaffle.workspace_path": opts.workspacePath,
+      "yaffle.state_key": opts.stateKey,
+      "yaffle.owner": ctx.owner,
+      "yaffle.repo": ctx.repo,
+    }
+    span.setAttributes(runAttrs)
 
-  // Create run record
-  const run = await createTfRun({
-    previewId: preview.id,
-    runType: opts.command,
-    status: "pending",
-  })
+    // Create run record
+    const run = await createTfRun({
+      previewId: preview.id,
+      runType: opts.command,
+      status: "pending",
+    })
 
-  // Create check run (PR events only, with installation)
-  let checkRunId: number | undefined
-  if (ctx.installationId && ctx.kind === "pull_request") {
-    const checkName = opts.workspacePath === "."
-      ? CHECK_NAME
-      : `${CHECK_NAME} (${opts.workspacePath})`
+    // Create check run (PR events only, with installation)
+    let checkRunId: number | undefined
+    if (ctx.installationId && ctx.kind === "pull_request") {
+      const checkName = opts.workspacePath === "."
+        ? CHECK_NAME
+        : `${CHECK_NAME} (${opts.workspacePath})`
 
+      try {
+        checkRunId = await createCheckRun(ctx.installationId, {
+          owner: ctx.owner,
+          repo: ctx.repo,
+          headSha: ctx.headSha,
+          name: checkName,
+          status: "in_progress",
+          title: `Running ${opts.command}`,
+          summary: `${opts.command} for ${opts.workspacePath}...`,
+        })
+      } catch (err) {
+        logger.warn("failed to create check run", {
+          ...runAttrs,
+          "error": err instanceof Error ? err.message : String(err),
+        })
+      }
+    }
+
+    await updateRunStatus(run.id, "running", {
+      checkRunId,
+      startedAt: new Date(),
+    })
+
+    // Execute
+    let result: TerraformResult
     try {
-      checkRunId = await createCheckRun(ctx.installationId, {
+      result = await runner.run({
         owner: ctx.owner,
         repo: ctx.repo,
         headSha: ctx.headSha,
-        name: checkName,
-        status: "in_progress",
-        title: `Running ${opts.command}`,
-        summary: `${opts.command} for ${opts.workspacePath}...`,
+        command: opts.command,
+        workspacePath: opts.workspacePath,
+        stateKey: opts.stateKey,
+        variables: opts.variables,
+        installationToken: opts.installationToken,
       })
     } catch (err) {
-      console.warn(`[${wsTag}] failed to create check run:`, err)
-    }
-  }
+      const msg = err instanceof Error ? err.message : String(err)
+      logger.error(`${opts.command} threw: ${msg}`, runAttrs)
+      span.setStatus({ code: SpanStatusCode.ERROR, message: msg })
+      span.recordException(err instanceof Error ? err : new Error(msg))
 
-  await updateRunStatus(run.id, "running", {
-    checkRunId,
-    startedAt: new Date(),
+      result = {
+        success: false,
+        command: opts.command,
+        output: "",
+        errorMessage: msg,
+        durationMs: 0,
+      }
+    }
+
+    // Record metrics
+    runDurationHistogram.record(result.durationMs, {
+      command: opts.command,
+      workspace: opts.workspacePath,
+      success: String(result.success),
+    })
+    runResultCounter.add(1, {
+      command: opts.command,
+      workspace: opts.workspacePath,
+      result: result.success ? "success" : "failure",
+    })
+
+    // Update span with result
+    span.setAttributes({
+      "yaffle.run.success": result.success,
+      "yaffle.run.duration_ms": result.durationMs,
+    })
+
+    // Update DB
+    if (result.success) {
+      await updateRunStatus(run.id, "success", {
+        completedAt: new Date(),
+        planSummary: result.planSummary,
+        planJson: result.planJson,
+        outputs: result.outputs,
+      })
+    } else {
+      await updateRunStatus(run.id, "failed", {
+        completedAt: new Date(),
+        errorMessage: result.errorMessage,
+      })
+      await updatePreviewStatus(preview.id, "failed")
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: result.errorMessage ?? `${opts.command} failed`,
+      })
+    }
+
+    logger.info(
+      `${opts.command}: success=${result.success} duration=${result.durationMs}ms`,
+      runAttrs,
+    )
+
+    // Update check run
+    if (checkRunId && ctx.installationId) {
+      const MAX_TEXT_LENGTH = 65000
+      let text = result.output
+      if (text.length > MAX_TEXT_LENGTH) {
+        text = `${text.slice(0, MAX_TEXT_LENGTH)}\n\n... (output truncated)`
+      }
+      const formattedText = text ? `\`\`\`\n${text}\n\`\`\`` : undefined
+
+      await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, checkRunId, {
+        status: "completed",
+        conclusion: result.success ? "success" : "failure",
+        title: result.success
+          ? opts.command === "plan"
+            ? `Plan: ${result.planSummary ?? "complete"}`
+            : `${opts.command} complete`
+          : `${opts.command} failed`,
+        summary: result.success
+          ? opts.command === "plan"
+            ? `Plan: ${result.planSummary ?? "complete"}`
+            : `${opts.command} completed successfully`
+          : (result.errorMessage ?? `${opts.command} failed`),
+        text: formattedText,
+      }).catch((err) => logger.warn("failed to update check run", {
+        ...runAttrs,
+        "error": err instanceof Error ? err.message : String(err),
+      }))
+    }
+
+    return result
   })
-
-  // Execute
-  let result: TerraformResult
-  try {
-    result = await runner.run({
-      owner: ctx.owner,
-      repo: ctx.repo,
-      headSha: ctx.headSha,
-      command: opts.command,
-      workspacePath: opts.workspacePath,
-      stateKey: opts.stateKey,
-      variables: opts.variables,
-      installationToken: opts.installationToken,
-    })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    console.error(`[${wsTag}] ${opts.command} threw:`, msg)
-
-    result = {
-      success: false,
-      command: opts.command,
-      output: "",
-      errorMessage: msg,
-      durationMs: 0,
-    }
-  }
-
-  // Update DB
-  if (result.success) {
-    await updateRunStatus(run.id, "success", {
-      completedAt: new Date(),
-      planSummary: result.planSummary,
-      planJson: result.planJson,
-      outputs: result.outputs,
-    })
-  } else {
-    await updateRunStatus(run.id, "failed", {
-      completedAt: new Date(),
-      errorMessage: result.errorMessage,
-    })
-    await updatePreviewStatus(preview.id, "failed")
-  }
-
-  console.log(
-    `[${wsTag}] ${opts.command}: success=${result.success} duration=${result.durationMs}ms`,
-  )
-
-  // Update check run
-  if (checkRunId && ctx.installationId) {
-    const MAX_TEXT_LENGTH = 65000
-    let text = result.output
-    if (text.length > MAX_TEXT_LENGTH) {
-      text = `${text.slice(0, MAX_TEXT_LENGTH)}\n\n... (output truncated)`
-    }
-    const formattedText = text ? `\`\`\`\n${text}\n\`\`\`` : undefined
-
-    await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, checkRunId, {
-      status: "completed",
-      conclusion: result.success ? "success" : "failure",
-      title: result.success
-        ? opts.command === "plan"
-          ? `Plan: ${result.planSummary ?? "complete"}`
-          : `${opts.command} complete`
-        : `${opts.command} failed`,
-      summary: result.success
-        ? opts.command === "plan"
-          ? `Plan: ${result.planSummary ?? "complete"}`
-          : `${opts.command} completed successfully`
-        : (result.errorMessage ?? `${opts.command} failed`),
-      text: formattedText,
-    }).catch((err) => console.warn(`[${wsTag}] failed to update check run:`, err))
-  }
-
-  return result
 }
 
 /**
@@ -577,7 +690,11 @@ async function surfaceConfigError(
       summary: message,
     })
   } catch (err) {
-    console.warn(`failed to create config error check run:`, err)
+    logger.warn("failed to create config error check run", {
+      "yaffle.owner": ctx.owner,
+      "yaffle.repo": ctx.repo,
+      "error": err instanceof Error ? err.message : String(err),
+    })
   }
 }
 
@@ -589,7 +706,11 @@ async function acquireToken(ctx: WebhookContext): Promise<string | undefined> {
   try {
     return await getInstallationToken(ctx.installationId)
   } catch (err) {
-    console.warn("failed to get installation token:", err)
+    logger.warn("failed to get installation token", {
+      "yaffle.owner": ctx.owner,
+      "yaffle.repo": ctx.repo,
+      "error": err instanceof Error ? err.message : String(err),
+    })
     return undefined
   }
 }

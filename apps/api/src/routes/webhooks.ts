@@ -7,6 +7,7 @@ import type {
 } from "@yaffle/shared"
 
 import { getEnv } from "../lib/env.ts"
+import { logger, webhookReceivedCounter } from "../lib/telemetry.ts"
 import { verifyWebhookSignature } from "../lib/webhook-verify.ts"
 import { handleWebhookEvent } from "../lib/webhook-handler.ts"
 
@@ -31,14 +32,20 @@ webhooksRoute.post("/github", async (c) => {
     const env = getEnv()
     await verifyWebhookSignature(body, signature, env.githubWebhookSecret)
   } catch (err) {
-    console.error("webhook verification failed:", err)
+    logger.error("webhook verification failed", {
+      "error": err instanceof Error ? err.message : String(err),
+    })
     return c.json(
       { error: { code: "WEBHOOK_VERIFICATION_FAILED", message: "invalid signature" } },
       401,
     )
   }
 
-  console.log(`webhook received: event=${event} delivery=${deliveryId}`)
+  webhookReceivedCounter.add(1, { event: event ?? "unknown" })
+  logger.info(`webhook received: event=${event} delivery=${deliveryId}`, {
+    "webhook.event": event ?? "unknown",
+    "webhook.delivery_id": deliveryId ?? "unknown",
+  })
 
   const payload = JSON.parse(body)
 
@@ -64,10 +71,12 @@ webhooksRoute.post("/github", async (c) => {
     }
 
     handleWebhookEvent(context).catch((err) => {
-      console.error(
-        `error handling PR event for ${context.owner}/${context.repo}#${context.prNumber}:`,
-        err,
-      )
+      logger.error(`error handling PR event for ${context.owner}/${context.repo}#${context.prNumber}`, {
+        "yaffle.owner": context.owner,
+        "yaffle.repo": context.repo,
+        "yaffle.pr_number": context.prNumber,
+        "error": err instanceof Error ? err.message : String(err),
+      })
     })
 
     return c.json({ data: { received: true } })
@@ -94,10 +103,12 @@ webhooksRoute.post("/github", async (c) => {
     }
 
     handleWebhookEvent(context).catch((err) => {
-      console.error(
-        `error handling push event for ${context.owner}/${context.repo}@${context.branch}:`,
-        err,
-      )
+      logger.error(`error handling push event for ${context.owner}/${context.repo}@${context.branch}`, {
+        "yaffle.owner": context.owner,
+        "yaffle.repo": context.repo,
+        "yaffle.branch": context.branch,
+        "error": err instanceof Error ? err.message : String(err),
+      })
     })
 
     return c.json({ data: { received: true } })

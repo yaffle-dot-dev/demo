@@ -3,6 +3,8 @@ import { homedir } from "node:os"
 import { mkdir, rm, writeFile } from "node:fs/promises"
 import { existsSync } from "node:fs"
 
+import { logger } from "./telemetry.ts"
+
 const STATE_ROOT = join(homedir(), ".yaffle", "state")
 
 /**
@@ -59,7 +61,10 @@ terraform {
 }
 `
   await writeFile(overridePath, overrideContent)
-  console.log(`[state] backend override written: ${overridePath} -> ${statePath}`)
+  logger.info(`backend override written: ${overridePath} -> ${statePath}`, {
+    "state.override_path": overridePath,
+    "state.state_path": statePath,
+  })
 
   return statePath
 }
@@ -78,8 +83,11 @@ export async function removeState(owner: string, repo: string, stateKey: string)
   const stateDir = resolveStateDir(owner, repo, stateKey)
   try {
     await rm(stateDir, { recursive: true, force: true })
-    console.log(`[state] removed state dir: ${stateDir}`)
+    logger.info(`removed state dir: ${stateDir}`, { "state.dir": stateDir })
   } catch (err) {
-    console.warn(`[state] failed to remove state dir ${stateDir}:`, err)
+    logger.warn(`failed to remove state dir ${stateDir}`, {
+      "state.dir": stateDir,
+      "error": err instanceof Error ? err.message : String(err),
+    })
   }
 }
