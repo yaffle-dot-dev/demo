@@ -71,3 +71,17 @@ export async function listRunsForPreview(previewId: string): Promise<TfRun[]> {
     .where(eq(tfRuns.previewId, previewId))
     .orderBy(desc(tfRuns.createdAt))
 }
+
+/**
+ * Find a single run by its UUID.
+ */
+export async function findRunById(
+  runId: string,
+): Promise<TfRun | undefined> {
+  const rows = await db
+    .select()
+    .from(tfRuns)
+    .where(eq(tfRuns.id, runId))
+    .limit(1)
+  return rows[0]
+}
