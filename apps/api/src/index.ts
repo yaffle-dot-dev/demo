@@ -3,6 +3,7 @@ import { initTelemetry, logger as log, shutdownTelemetry } from "./lib/telemetry
 import { Hono } from "hono"
 import { logger } from "hono/logger"
 
+import { httpTelemetry } from "./middleware/http-telemetry.ts"
 import { webhooksRoute } from "./routes/webhooks.ts"
 import { previewsRoute } from "./routes/previews.ts"
 import { runsRoute } from "./routes/runs.ts"
@@ -17,6 +18,8 @@ await initTelemetry()
 
 const app = new Hono()
 
+// Telemetry middleware - creates root span and records metrics for all requests
+app.use("*", httpTelemetry)
 app.use("*", logger())
 
 // Global error handler — consistent { error: { code, message } } shape

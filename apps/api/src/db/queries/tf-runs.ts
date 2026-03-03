@@ -4,6 +4,7 @@ import type { RunStatus, RunType } from "@yaffle/shared"
 
 import { db } from "../../lib/db.ts"
 import { tfRuns } from "../schema.ts"
+import { withDbSpan } from "../../lib/telemetry.ts"
 
 export type TfRun = typeof tfRuns.$inferSelect
 export type NewTfRun = typeof tfRuns.$inferInsert
@@ -12,8 +13,10 @@ export type NewTfRun = typeof tfRuns.$inferInsert
  * Create a new TF run record.
  */
 export async function createTfRun(values: NewTfRun): Promise<TfRun> {
-  const rows = await db.insert(tfRuns).values(values).returning()
-  return rows[0]
+  return withDbSpan("insert", "tf_runs", async () => {
+    const rows = await db.insert(tfRuns).values(values).returning()
+    return rows[0]
+  })
 }
 
 /**
@@ -33,10 +36,12 @@ export async function updateRunStatus(
     completedAt?: Date
   },
 ): Promise<void> {
-  await db
-    .update(tfRuns)
-    .set({ status, ...extra })
-    .where(eq(tfRuns.id, runId))
+  return withDbSpan("update", "tf_runs", async () => {
+    await db
+      .update(tfRuns)
+      .set({ status, ...extra })
+      .where(eq(tfRuns.id, runId))
+  })
 }
 
 /**
@@ -46,10 +51,12 @@ export async function appendRunLog(
   runId: string,
   chunk: string,
 ): Promise<void> {
-  await db
-    .update(tfRuns)
-    .set({ logOutput: sql`coalesce(${tfRuns.logOutput}, '') || ${chunk}` })
-    .where(eq(tfRuns.id, runId))
+  return withDbSpan("update", "tf_runs", async () => {
+    await db
+      .update(tfRuns)
+      .set({ logOutput: sql`coalesce(${tfRuns.logOutput}, '') || ${chunk}` })
+      .where(eq(tfRuns.id, runId))
+  })
 }
 
 /**
@@ -59,30 +66,34 @@ export async function findLatestRun(
   previewId: string,
   runType?: RunType,
 ): Promise<TfRun | undefined> {
-  const conditions = [eq(tfRuns.previewId, previewId)]
-  if (runType) {
-    conditions.push(eq(tfRuns.runType, runType))
-  }
+  return withDbSpan("select", "tf_runs", async () => {
+    const conditions = [eq(tfRuns.previewId, previewId)]
+    if (runType) {
+      conditions.push(eq(tfRuns.runType, runType))
+    }
 
-  const rows = await db
-    .select()
-    .from(tfRuns)
-    .where(and(...conditions))
-    .orderBy(desc(tfRuns.createdAt))
-    .limit(1)
+    const rows = await db
+      .select()
+      .from(tfRuns)
+      .where(and(...conditions))
+      .orderBy(desc(tfRuns.createdAt))
+      .limit(1)
 
-  return rows[0]
+    return rows[0]
+  })
 }
 
 /**
  * List all runs for a preview.
  */
 export async function listRunsForPreview(previewId: string): Promise<TfRun[]> {
-  return db
-    .select()
-    .from(tfRuns)
-    .where(eq(tfRuns.previewId, previewId))
-    .orderBy(desc(tfRuns.createdAt))
+  return withDbSpan("select", "tf_runs", async () => {
+    return db
+      .select()
+      .from(tfRuns)
+      .where(eq(tfRuns.previewId, previewId))
+      .orderBy(desc(tfRuns.createdAt))
+  })
 }
 
 /**
@@ -91,10 +102,12 @@ export async function listRunsForPreview(previewId: string): Promise<TfRun[]> {
 export async function findRunById(
   runId: string,
 ): Promise<TfRun | undefined> {
-  const rows = await db
-    .select()
-    .from(tfRuns)
-    .where(eq(tfRuns.id, runId))
-    .limit(1)
-  return rows[0]
+  return withDbSpan("select", "tf_runs", async () => {
+    const rows = await db
+      .select()
+      .from(tfRuns)
+      .where(eq(tfRuns.id, runId))
+      .limit(1)
+    return rows[0]
+  })
 }

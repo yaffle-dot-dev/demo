@@ -123,6 +123,12 @@ function resetMeter(): void {
   _runResultCounter = null
   _configLoadErrorCounter = null
   _githubApiErrorCounter = null
+  _httpRequestDuration = null
+  _httpRequestCounter = null
+  _githubApiDuration = null
+  _authDuration = null
+  _authCounter = null
+  _runQueueTime = null
 }
 
 let _webhookReceivedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
@@ -179,6 +185,76 @@ export function getGithubApiErrorCounter(): typeof _githubApiErrorCounter & {} {
     })
   }
   return _githubApiErrorCounter
+}
+
+let _httpRequestDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: HTTP request duration in ms, by method/route/status. */
+export function getHttpRequestDurationHistogram(): typeof _httpRequestDuration & {} {
+  if (!_httpRequestDuration) {
+    _httpRequestDuration = getMeter().createHistogram("yaffle.http.request.duration", {
+      description: "HTTP request duration in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _httpRequestDuration
+}
+
+let _httpRequestCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: HTTP requests, by method/route/status. */
+export function getHttpRequestCounter(): typeof _httpRequestCounter & {} {
+  if (!_httpRequestCounter) {
+    _httpRequestCounter = getMeter().createCounter("yaffle.http.requests", {
+      description: "HTTP requests",
+    })
+  }
+  return _httpRequestCounter
+}
+
+let _githubApiDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: GitHub API call duration in ms, by endpoint. */
+export function getGithubApiDurationHistogram(): typeof _githubApiDuration & {} {
+  if (!_githubApiDuration) {
+    _githubApiDuration = getMeter().createHistogram("yaffle.github.api.duration", {
+      description: "GitHub API call duration in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _githubApiDuration
+}
+
+let _authDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: Auth operation duration in ms. */
+export function getAuthDurationHistogram(): typeof _authDuration & {} {
+  if (!_authDuration) {
+    _authDuration = getMeter().createHistogram("yaffle.auth.duration", {
+      description: "Auth operation duration in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _authDuration
+}
+
+let _authCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: Auth operations, by operation/result. */
+export function getAuthCounter(): typeof _authCounter & {} {
+  if (!_authCounter) {
+    _authCounter = getMeter().createCounter("yaffle.auth.operations", {
+      description: "Auth operations",
+    })
+  }
+  return _authCounter
+}
+
+let _runQueueTime: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: Time from run creation to start in ms. */
+export function getRunQueueTimeHistogram(): typeof _runQueueTime & {} {
+  if (!_runQueueTime) {
+    _runQueueTime = getMeter().createHistogram("yaffle.run.queue_time", {
+      description: "Time from run creation to execution start in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _runQueueTime
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +340,39 @@ export async function withSpan<T>(
       span.end()
       return result
     } catch (err) {
+      span.setStatus({
+        code: SpanStatusCode.ERROR,
+        message: err instanceof Error ? err.message : String(err),
+      })
+      span.recordException(err instanceof Error ? err : new Error(String(err)))
+      span.end()
+      throw err
+    }
+  })
+}
+
+/**
+ * Wrap a database query with a span. Adds standard DB attributes.
+ */
+export async function withDbSpan<T>(
+  operation: string,
+  table: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const start = Date.now()
+  return tracer.startActiveSpan(`db.${operation}`, async (span) => {
+    span.setAttributes({
+      "db.system": "postgresql",
+      "db.operation": operation,
+      "db.sql.table": table,
+    })
+    try {
+      const result = await fn()
+      span.setAttributes({ "db.duration_ms": Date.now() - start })
+      span.end()
+      return result
+    } catch (err) {
+      span.setAttributes({ "db.duration_ms": Date.now() - start })
       span.setStatus({
         code: SpanStatusCode.ERROR,
         message: err instanceof Error ? err.message : String(err),

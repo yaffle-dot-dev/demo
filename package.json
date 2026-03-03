@@ -17,5 +17,8 @@
     "test": "bun run --filter='*' test",
     "db:generate": "bun run --filter=@yaffle/api db:generate",
     "db:migrate": "bun run --filter=@yaffle/api db:migrate"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.10"
   }
 }

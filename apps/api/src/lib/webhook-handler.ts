@@ -47,6 +47,7 @@ import {
   getConfigLoadErrorCounter,
   getRunDurationHistogram,
   getRunResultCounter,
+  getRunQueueTimeHistogram,
   logger,
   tracer,
   withSpan,
@@ -748,6 +749,7 @@ async function executeRun(opts: {
     span.setAttributes(runAttrs)
 
     // Create run record
+    const runCreatedAt = Date.now()
     const run = await createTfRun({
       previewId: preview.id,
       runType: opts.command,
@@ -778,6 +780,14 @@ async function executeRun(opts: {
         })
       }
     }
+
+    const runStartedAt = Date.now()
+    const queueTimeMs = runStartedAt - runCreatedAt
+    getRunQueueTimeHistogram().record(queueTimeMs, {
+      command: opts.command,
+      workspace: opts.workspacePath,
+    })
+    span.setAttributes({ "yaffle.run.queue_time_ms": queueTimeMs })
 
     await updateRunStatus(run.id, "running", {
       checkRunId,
