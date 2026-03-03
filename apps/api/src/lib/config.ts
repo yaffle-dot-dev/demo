@@ -7,6 +7,16 @@ const CONFIG_PATH = ".yaffle/config.yml"
 /**
  * Zod schema for .yaffle/config.yml
  */
+const onApplySchema = z.object({
+  /** Webhook URL to POST outputs to after successful apply */
+  webhook: z.string().url().optional(),
+  /** GitHub repository_dispatch event configuration */
+  github_dispatch: z.object({
+    repo: z.string().min(1),
+    event: z.string().min(1).default("yaffle-apply"),
+  }).optional(),
+}).optional()
+
 const workspaceSchema = z.object({
   path: z.string().min(1),
   auto_apply: z.boolean().default(true),
@@ -14,6 +24,7 @@ const workspaceSchema = z.object({
   require_approval: z.boolean().default(false),
   approvers: z.array(z.string().min(1)).optional(),
   variables: z.record(z.string()).optional(),
+  on_apply: onApplySchema,
 })
 
 const configSchema = z.object({

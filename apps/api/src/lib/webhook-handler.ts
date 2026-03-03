@@ -9,6 +9,7 @@ import type {
 
 import {
   type YaffleConfig,
+  type WorkspaceConfig,
   ConfigError,
   interpolateVariables,
   parseYaml,
@@ -16,6 +17,7 @@ import {
   pushVariableContext,
   validateConfig,
 } from "./config.ts"
+import { executeApplyCallbacks } from "./apply-callbacks.ts"
 import { ensureOrg, findOrgById } from "../db/queries/organizations.ts"
 import { findPreview, findPreviewById, markRemovedWorkspacesDestroyed, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
 import { appendRunLog, createTfRun, findLatestRun, updateRunStatus } from "../db/queries/tf-runs.ts"
@@ -226,6 +228,20 @@ export async function approvePreviewApply(opts: {
 
     if (applyResult.success) {
       await updatePreviewStatus(preview.id, "ready")
+
+      // Execute apply callbacks (webhooks, github_dispatch)
+      if (workspace.on_apply && applyResult.outputs) {
+        await executeApplyCallbacks(workspace.on_apply, {
+          owner: ctx.owner,
+          repo: ctx.repo,
+          prNumber: 0, // Production
+          branch: ctx.branch,
+          headSha: ctx.headSha,
+          workspacePath: preview.workspacePath,
+          previewId: preview.id,
+          outputs: applyResult.outputs,
+        }, ctx.installationId)
+      }
     }
 
     if (planRun?.checkRunId) {
@@ -448,6 +464,20 @@ async function handlePrOpenedOrUpdated(
             planCheckRun,
             applyCheckRun,
           })
+
+          // Execute apply callbacks (webhooks, github_dispatch)
+          if (ws.on_apply && applyResult.outputs) {
+            await executeApplyCallbacks(ws.on_apply, {
+              owner: ctx.owner,
+              repo: ctx.repo,
+              prNumber: ctx.prNumber,
+              branch: ctx.branch,
+              headSha: ctx.headSha,
+              workspacePath: ws.path,
+              previewId: preview.id,
+              outputs: applyResult.outputs,
+            }, ctx.installationId)
+          }
         } else {
           await comment.update(ws.path, {
             phase: "apply_failed",
@@ -689,6 +719,20 @@ async function handlePushEvent(
 
       if (applyResult.success) {
         await updatePreviewStatus(preview.id, "ready")
+
+        // Execute apply callbacks (webhooks, github_dispatch)
+        if (ws.on_apply && applyResult.outputs) {
+          await executeApplyCallbacks(ws.on_apply, {
+            owner: ctx.owner,
+            repo: ctx.repo,
+            prNumber: 0, // Production
+            branch: ctx.branch,
+            headSha: ctx.headSha,
+            workspacePath: ws.path,
+            previewId: preview.id,
+            outputs: applyResult.outputs,
+          }, ctx.installationId)
+        }
       } else {
         await updatePreviewStatus(preview.id, "failed")
       }
