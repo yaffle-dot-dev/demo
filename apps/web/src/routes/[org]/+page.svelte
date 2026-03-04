@@ -10,7 +10,7 @@
     type Preview,
   } from "$lib/api"
   import { statusConfig, formatRelativeTime, shortSha } from "$lib/status"
-  import { getUserLogin } from "$lib/auth"
+  import { getUserLogin, setLastOrg } from "$lib/auth"
 
   // Org comes from URL param - always defined since this is a [org] route
   const org = $derived(page.params.org ?? "")
@@ -157,6 +157,8 @@
     hasToken = Boolean(localStorage.getItem("yaffle.accessToken"))
     userHandle = getUserLogin()
     showInactive = localStorage.getItem("yaffle.showInactive") === "true"
+    // Remember this org as the last visited
+    if (org) setLastOrg(org)
   })
 
   onDestroy(() => {

@@ -7,6 +7,7 @@ const STORAGE_KEYS = {
   userLogin: "yaffle.userLogin",
   userId: "yaffle.userId",
   challenge: "yaffle.authChallenge",
+  lastOrg: "yaffle.lastOrg",
 } as const
 
 function getIssuerUrl(): string {
@@ -89,4 +90,12 @@ export function getUserLogin(): string | null {
 
 export function isLoggedIn(): boolean {
   return !!getAccessToken()
+}
+
+export function getLastOrg(): string | null {
+  return localStorage.getItem(STORAGE_KEYS.lastOrg)
+}
+
+export function setLastOrg(org: string): void {
+  localStorage.setItem(STORAGE_KEYS.lastOrg, org)
 }

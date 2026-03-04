@@ -1,105 +1,38 @@
 <script lang="ts">
   import { browser } from "$app/environment"
   import { goto } from "$app/navigation"
-  import { onMount, onDestroy } from "svelte"
+  import { onMount } from "svelte"
   import { listOrgs } from "$lib/api"
+  import { getLastOrg } from "$lib/auth"
 
   let hasToken = $state<boolean | null>(null)
   let redirecting = $state(false)
-  let awaitingInstall = $state(false)
-  let stream: EventSource | null = null
 
-  const INSTALL_PENDING_KEY = "yaffle.installPending"
-
-  function startInstall() {
-    localStorage.setItem(INSTALL_PENDING_KEY, Date.now().toString())
-    awaitingInstall = true
-    window.open("https://github.com/apps/yaffle-dot-dev", "_blank")
-  }
-
-  function connectStream() {
-    if (!browser || stream) return
-    const token = localStorage.getItem("yaffle.accessToken")
-    if (!token) return
-
-    const params = new URLSearchParams()
-    params.set("token", token)
-
-    stream = new EventSource(`/api/orgs/stream?${params.toString()}`)
-    stream.addEventListener("update", (event) => {
-      if (redirecting) return
-      try {
-        const payload = JSON.parse((event as MessageEvent).data) as { data: Array<{ login: string }> }
-        if (payload.data.length > 0) {
-          // Clear pending state
-          localStorage.removeItem(INSTALL_PENDING_KEY)
-          redirecting = true
-          goto(`/${payload.data[0].login}`, { replaceState: true })
-        }
-      } catch {
-        // ignore malformed payloads
-      }
-    })
-    stream.addEventListener("error", () => {
-      // Reconnect on error after a delay
-      stream?.close()
-      stream = null
-      setTimeout(connectStream, 5000)
-    })
-  }
-
-  // Listen for storage changes from other tabs
-  function handleStorageChange(e: StorageEvent) {
-    if (e.key === INSTALL_PENDING_KEY && e.newValue) {
-      awaitingInstall = true
-    }
-  }
+  const GITHUB_APP_NAME = "yaffle-dot-dev"
+  const installUrl = `https://github.com/apps/${GITHUB_APP_NAME}/installations/new`
 
   onMount(async () => {
     if (!browser) return
     hasToken = Boolean(localStorage.getItem("yaffle.accessToken"))
 
-    // Check if install is pending (user clicked install, possibly in another tab)
-    const pendingTimestamp = localStorage.getItem(INSTALL_PENDING_KEY)
-    if (pendingTimestamp) {
-      // Only consider pending if within last 5 minutes
-      const elapsed = Date.now() - parseInt(pendingTimestamp, 10)
-      if (elapsed < 5 * 60 * 1000) {
-        awaitingInstall = true
-      } else {
-        localStorage.removeItem(INSTALL_PENDING_KEY)
-      }
-    }
-
-    window.addEventListener("storage", handleStorageChange)
-
     if (hasToken) {
-      // Check once immediately
+      // Check if user has any orgs
       redirecting = true
       try {
         const res = await listOrgs()
         if (res.data.length > 0) {
-          localStorage.removeItem(INSTALL_PENDING_KEY)
-          goto(`/${res.data[0].login}`, { replaceState: true })
+          // Check for last visited org, otherwise use first available
+          const lastOrg = getLastOrg()
+          const targetOrg = lastOrg && res.data.some(o => o.login === lastOrg)
+            ? lastOrg
+            : res.data[0].login
+          goto(`/${targetOrg}`, { replaceState: true })
           return
         }
       } catch {
         // If we can't fetch orgs, stay on landing page
       }
       redirecting = false
-
-      // Connect to SSE stream to wait for org membership
-      connectStream()
-    }
-  })
-
-  onDestroy(() => {
-    if (browser) {
-      window.removeEventListener("storage", handleStorageChange)
-    }
-    if (stream) {
-      stream.close()
-      stream = null
     }
   })
 </script>
@@ -171,40 +104,21 @@
     </div>
   </div>
 {:else}
-  <!-- Signed in but no orgs - show onboarding message -->
+  <!-- Signed in but no orgs - prompt to install GitHub App -->
   <div class="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
     <div class="max-w-md space-y-4">
       <h1 class="text-2xl font-semibold text-text">Welcome to Yaffle</h1>
-      {#if awaitingInstall}
-        <p class="text-text-muted">
-          Waiting for GitHub App installation to complete...
-        </p>
-        <div class="flex items-center justify-center gap-3 text-text-muted">
-          <svg class="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-          </svg>
-          <span class="text-sm">This will redirect automatically once complete</span>
-        </div>
-        <button
-          onclick={() => { awaitingInstall = false; localStorage.removeItem(INSTALL_PENDING_KEY) }}
-          class="text-sm text-text-dim hover:text-text-muted transition-colors"
-        >
-          Cancel
-        </button>
-      {:else}
-        <p class="text-text-muted">
-          Install the Yaffle GitHub App on an organization or your personal account to get started.
-        </p>
-        <button
-          onclick={startInstall}
-          class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
-                 bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
-                 transition-colors"
-        >
-          Install GitHub App
-        </button>
-      {/if}
+      <p class="text-text-muted">
+        Install the Yaffle GitHub App on an organization or your personal account to get started.
+      </p>
+      <a
+        href={installUrl}
+        class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
+               bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
+               transition-colors"
+      >
+        Install GitHub App
+      </a>
     </div>
   </div>
 {/if}
