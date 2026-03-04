@@ -232,12 +232,18 @@ reposRoute.get(
           .catch(() => { /* connection likely closed */ })
       }, 30_000)
 
-      stream.onAbort(() => {
-        console.log(`[sse:pr] onAbort called: PR #${prNumber}`)
-        getSseConnectionsActiveCounter().add(-1, { type: "pr" })
-        clearInterval(heartbeat)
-        events.offPreviewUpdate(handlePreviewUpdate)
-        events.offRunUpdate(handleRunUpdate)
+      // Block the callback so Hono doesn't call stream.close() in its
+      // finally block.  The promise resolves only when the client
+      // disconnects and onAbort fires, which lets cleanup run first.
+      await new Promise<void>((resolve) => {
+        stream.onAbort(() => {
+          console.log(`[sse:pr] onAbort called: PR #${prNumber}`)
+          getSseConnectionsActiveCounter().add(-1, { type: "pr" })
+          clearInterval(heartbeat)
+          events.offPreviewUpdate(handlePreviewUpdate)
+          events.offRunUpdate(handleRunUpdate)
+          resolve()
+        })
       })
     })
   },
@@ -422,12 +428,17 @@ reposRoute.get(
           .catch(() => { /* connection likely closed */ })
       }, 30_000)
 
-      stream.onAbort(() => {
-        console.log(`[sse:env] onAbort called: ${branch}`)
-        getSseConnectionsActiveCounter().add(-1, { type: "env" })
-        clearInterval(heartbeat)
-        events.offPreviewUpdate(handlePreviewUpdate)
-        events.offRunUpdate(handleRunUpdate)
+      // Block the callback so Hono doesn't call stream.close() in its
+      // finally block.  Resolves only when the client disconnects.
+      await new Promise<void>((resolve) => {
+        stream.onAbort(() => {
+          console.log(`[sse:env] onAbort called: ${branch}`)
+          getSseConnectionsActiveCounter().add(-1, { type: "env" })
+          clearInterval(heartbeat)
+          events.offPreviewUpdate(handlePreviewUpdate)
+          events.offRunUpdate(handleRunUpdate)
+          resolve()
+        })
       })
     })
   },

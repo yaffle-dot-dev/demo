@@ -1,6 +1,11 @@
 version: 1
 
 workspaces:
-  - path: test/e2e/infra
+  # Control plane infrastructure - S3 state bucket, DynamoDB locks
+  # Preview PRs get ephemeral infra, merge to main gets production
+  - path: apps/control-plane/infra
+    auto_apply: true
+    auto_apply_on_merge: true
     variables:
       environment: "{{ env }}"
+      aws_region: "us-east-1"
