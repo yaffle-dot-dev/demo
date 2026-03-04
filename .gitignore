@@ -19,7 +19,14 @@ bun.lock
 dist/
 
 # Drizzle
-apps/api/drizzle/
+apps/control-plane/drizzle/
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
 
 # Svelte
 **/.svelte-kit

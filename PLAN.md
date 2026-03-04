@@ -578,8 +578,8 @@ yaffle/
 
 ### Phase 0: Local Development
 ```bash
-# Run API locally
-bun run dev:api
+# Run control plane locally
+bun run dev:control-plane
 
 # TF runs locally (no ECS yet)
 cd infra && terraform plan

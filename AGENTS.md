@@ -3,9 +3,46 @@
 > Yaffle is a Terraform runner with ephemeral preview workspaces, triggered by
 > GitHub webhook events. See PLAN.md for full architecture.
 
+## How We Build Yaffle
+
+**We dogfood Yaffle to build Yaffle.** This is non-negotiable.
+
+Yaffle's value proposition is safe, incremental infrastructure delivery from 0 to
+100 and from 100 to infinity. We prove this by using Yaffle to deploy itself.
+
+### The Framework
+
+1. **Every infrastructure change goes through a PR.** No manual `terraform apply`
+   in production. No "just this once" exceptions.
+
+2. **Preview environments validate changes before merge.** Open a PR, Yaffle spins
+   up ephemeral infrastructure, runs plans, and shows you exactly what will change.
+   See it working before you commit to it.
+
+3. **Merge means deploy.** When the PR merges, Yaffle applies to production. The
+   same plan you reviewed, the same state, no surprises.
+
+4. **Build incrementally.** Small PRs, small changes, frequent deploys. Don't let
+   infrastructure changes pile up into a terrifying mega-deploy.
+
+### Why This Matters
+
+- **We feel our own pain.** If Yaffle is annoying to use, we fix it immediately.
+- **We prove the value prop.** Every successful deploy is evidence that Yaffle works.
+- **We catch bugs early.** Dogfooding surfaces issues before customers hit them.
+- **We build confidence.** Safe iteration from zero to production, every time.
+
+### Practical Rules
+
+- `apps/control-plane/infra/` contains Yaffle's own Terraform (S3 state bucket, etc.)
+- `.yaffle/config.yml` configures Yaffle to manage itself
+- PRs trigger preview plans via Yaffle
+- Merges to `main` trigger production applies
+- If Yaffle can't deploy Yaffle, we're not shipping
+
 ## Project Overview
 
-- **Control Plane API:** Hono + Bun (TypeScript)
+- **Control Plane:** Hono + Bun (TypeScript) - `apps/control-plane/`
 - **Frontend:** SvelteKit
 - **Database:** Postgres (Neon initially, then RDS)
 - **TF Execution:** ECS Fargate containers
@@ -17,15 +54,19 @@
 
 ```
 yaffle/
-├── infra/                 # Yaffle's own Terraform (dogfooded)
 ├── apps/
-│   ├── api/               # Hono + Bun control plane (src/)
+│   ├── control-plane/     # Hono + Bun control plane
+│   │   ├── src/           # TypeScript source
+│   │   ├── infra/         # Control plane infrastructure (S3, DynamoDB, ECS, etc.)
+│   │   └── drizzle/       # Database migrations
 │   ├── web/               # SvelteKit frontend
 │   └── runner/            # TF runner Docker container
 ├── modules/
 │   └── aws-runner/        # BYOA module (future)
 ├── packages/
 │   └── shared/            # Shared TypeScript packages
+├── actions/
+│   └── outputs-action/    # GitHub Action for fetching TF outputs
 └── .yaffle/
     └── config.yml         # Self-dogfooding config
 ```
@@ -39,7 +80,7 @@ Package manager is **Bun**. All commands run from the repo root unless noted.
 bun install
 
 # Development
-bun run dev:api               # Run API locally
+bun run dev:control-plane     # Run control plane locally
 bun run dev:web               # Run SvelteKit frontend
 
 # Build
