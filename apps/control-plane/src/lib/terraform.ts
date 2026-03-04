@@ -96,7 +96,7 @@ export async function tfInit(
   workDir: string,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
 ): Promise<TfExecResult> {
-  return execTf(["init", "-input=false", "-no-color"], workDir, undefined, onOutput)
+  return execTf(["init", "-input=false"], workDir, undefined, onOutput)
 }
 
 /**
@@ -119,7 +119,7 @@ export async function tfPlan(
   const planFile = join(workDir, "tfplan")
 
   const result = await execTf(
-    ["plan", "-out=tfplan", "-input=false", "-no-color", "-detailed-exitcode"],
+    ["plan", "-out=tfplan", "-input=false", "-detailed-exitcode"],
     workDir,
     undefined,
     onOutput,
@@ -166,7 +166,7 @@ export async function tfApply(
   }
 
   const result = await execTf(
-    ["apply", "-auto-approve", "-input=false", "-no-color"],
+    ["apply", "-auto-approve", "-input=false"],
     workDir,
     undefined,
     onOutput,
@@ -198,7 +198,7 @@ export async function tfDestroy(
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
 ): Promise<{ output: string }> {
   const result = await execTf(
-    ["destroy", "-auto-approve", "-input=false", "-no-color"],
+    ["destroy", "-auto-approve", "-input=false"],
     workDir,
     undefined,
     onOutput,
