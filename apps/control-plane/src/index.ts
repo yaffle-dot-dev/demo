@@ -9,6 +9,7 @@ import { previewsRoute } from "./routes/previews.ts"
 import { runsRoute } from "./routes/runs.ts"
 import { environmentsRoute } from "./routes/environments.ts"
 import { orgsRoute } from "./routes/orgs.ts"
+import { reposRoute } from "./routes/repos.ts"
 import { authRoute } from "./routes/auth.ts"
 import { authApiRoute } from "./routes/auth-api.ts"
 import { healthRoute } from "./routes/health.ts"
@@ -43,6 +44,7 @@ app.route("/api/previews", previewsRoute)
 app.route("/api/runs", runsRoute)
 app.route("/api/environments", environmentsRoute)
 app.route("/api/orgs", orgsRoute)
+app.route("/api/orgs", reposRoute) // Nested under /api/orgs for /:org/repos/... routes
 app.route("/api/auth", authApiRoute)
 app.route("/api", healthRoute)
 

@@ -170,6 +170,53 @@ export async function updatePreviewHead(
 }
 
 /**
+ * Find all previews for a PR (all workspaces).
+ */
+export async function findPreviewsByPr(
+  orgId: string,
+  repo: string,
+  prNumber: number,
+): Promise<Preview[]> {
+  return withDbSpan("select", "previews", async () => {
+    return db
+      .select()
+      .from(previews)
+      .where(
+        and(
+          eq(previews.orgId, orgId),
+          eq(previews.repo, repo),
+          eq(previews.prNumber, prNumber),
+        ),
+      )
+      .orderBy(previews.workspacePath)
+  })
+}
+
+/**
+ * Find all previews for a long-lived environment (branch with prNumber=0).
+ */
+export async function findPreviewsByEnv(
+  orgId: string,
+  repo: string,
+  branch: string,
+): Promise<Preview[]> {
+  return withDbSpan("select", "previews", async () => {
+    return db
+      .select()
+      .from(previews)
+      .where(
+        and(
+          eq(previews.orgId, orgId),
+          eq(previews.repo, repo),
+          eq(previews.branch, branch),
+          eq(previews.prNumber, 0),
+        ),
+      )
+      .orderBy(previews.workspacePath)
+  })
+}
+
+/**
  * Mark production previews as destroyed if they're no longer in the config.
  * This handles cases where workspaces are removed from .yaffle/config.yml.
  */

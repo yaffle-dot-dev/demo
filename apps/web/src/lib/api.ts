@@ -72,6 +72,41 @@ export interface OrgInfo {
   role: string
 }
 
+// Compact preview shape for grouped views (less fields than full Preview)
+export interface WorkspacePreview {
+  id: string
+  workspacePath: string
+  status: string
+  stateKey: string
+  mode: string
+  requireApproval: boolean
+  createdAt: string
+}
+
+export interface WorkspaceWithRuns {
+  preview: WorkspacePreview
+  runs: Run[]
+  outputs: unknown | null
+}
+
+export interface PrPreviewGroup {
+  org: string
+  repo: string
+  prNumber: number
+  branch: string
+  headSha: string
+  authorLogin: string | null
+  workspaces: WorkspaceWithRuns[]
+}
+
+export interface EnvPreviewGroup {
+  org: string
+  repo: string
+  branch: string
+  headSha: string
+  workspaces: WorkspaceWithRuns[]
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     headers: buildAuthHeaders(),
@@ -192,4 +227,26 @@ export async function approvePreview(
     const text = await res.text()
     throw new Error(text || `API error: ${res.status}`)
   }
+}
+
+/**
+ * Get all previews (workspaces) for a PR.
+ */
+export async function getPreviewsByPr(
+  org: string,
+  repo: string,
+  prNumber: number,
+): Promise<DetailResponse<PrPreviewGroup>> {
+  return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${prNumber}`)
+}
+
+/**
+ * Get all previews (workspaces) for a long-lived environment.
+ */
+export async function getPreviewsByEnv(
+  org: string,
+  repo: string,
+  branch: string,
+): Promise<DetailResponse<EnvPreviewGroup>> {
+  return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(branch)}`)
 }
