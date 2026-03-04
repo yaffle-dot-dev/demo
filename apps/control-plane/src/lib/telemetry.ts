@@ -129,6 +129,12 @@ function resetMeter(): void {
   _authDuration = null
   _authCounter = null
   _runQueueTime = null
+  _sseSnapshotDuration = null
+  _ssePayloadBytes = null
+  _sseMessagesSent = null
+  _sseMessagesDeduped = null
+  _sseConnectionsActive = null
+  _sseEventsEmitted = null
 }
 
 let _webhookReceivedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
@@ -255,6 +261,78 @@ export function getRunQueueTimeHistogram(): typeof _runQueueTime & {} {
     })
   }
   return _runQueueTime
+}
+
+// ---------------------------------------------------------------------------
+// SSE metrics (see docs/sse-streaming.md Decision 2)
+// ---------------------------------------------------------------------------
+
+let _sseSnapshotDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: SSE snapshot query duration in ms, by stream type. */
+export function getSseSnapshotDurationHistogram(): typeof _sseSnapshotDuration & {} {
+  if (!_sseSnapshotDuration) {
+    _sseSnapshotDuration = getMeter().createHistogram("yaffle.sse.snapshot.duration", {
+      description: "SSE snapshot query duration in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _sseSnapshotDuration
+}
+
+let _ssePayloadBytes: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: SSE payload size in bytes. */
+export function getSsePayloadBytesHistogram(): typeof _ssePayloadBytes & {} {
+  if (!_ssePayloadBytes) {
+    _ssePayloadBytes = getMeter().createHistogram("yaffle.sse.payload.bytes", {
+      description: "SSE payload size in bytes",
+      unit: "By",
+    })
+  }
+  return _ssePayloadBytes
+}
+
+let _sseMessagesSent: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: SSE messages sent, by type (snapshot/heartbeat). */
+export function getSseMessagesSentCounter(): typeof _sseMessagesSent & {} {
+  if (!_sseMessagesSent) {
+    _sseMessagesSent = getMeter().createCounter("yaffle.sse.messages.sent", {
+      description: "SSE messages sent",
+    })
+  }
+  return _sseMessagesSent
+}
+
+let _sseMessagesDeduped: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: SSE messages deduped (payload unchanged). */
+export function getSseMessagesDedupedCounter(): typeof _sseMessagesDeduped & {} {
+  if (!_sseMessagesDeduped) {
+    _sseMessagesDeduped = getMeter().createCounter("yaffle.sse.messages.deduped", {
+      description: "SSE messages skipped due to unchanged payload",
+    })
+  }
+  return _sseMessagesDeduped
+}
+
+let _sseConnectionsActive: ReturnType<ReturnType<typeof metrics.getMeter>["createUpDownCounter"]> | null = null
+/** UpDownCounter: active SSE connections (gauge-like). */
+export function getSseConnectionsActiveCounter(): typeof _sseConnectionsActive & {} {
+  if (!_sseConnectionsActive) {
+    _sseConnectionsActive = getMeter().createUpDownCounter("yaffle.sse.connections.active", {
+      description: "Number of active SSE connections",
+    })
+  }
+  return _sseConnectionsActive
+}
+
+let _sseEventsEmitted: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: events emitted on the event bus, by type. */
+export function getSseEventsEmittedCounter(): typeof _sseEventsEmitted & {} {
+  if (!_sseEventsEmitted) {
+    _sseEventsEmitted = getMeter().createCounter("yaffle.sse.events.emitted", {
+      description: "Events emitted on the internal event bus",
+    })
+  }
+  return _sseEventsEmitted
 }
 
 // ---------------------------------------------------------------------------

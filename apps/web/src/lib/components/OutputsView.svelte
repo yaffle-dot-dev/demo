@@ -9,7 +9,9 @@
     outputs: Record<string, TerraformOutput> | null
   }
 
-  let { outputs }: Props = $props()
+  let props: Props = $props()
+
+  const outputs = $derived(props.outputs)
 
   const STORAGE_KEY = "yaffle:outputs-view-format"
   let showJson = $state(typeof localStorage !== "undefined" && localStorage.getItem(STORAGE_KEY) === "json")

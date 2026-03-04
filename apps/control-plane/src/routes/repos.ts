@@ -9,6 +9,13 @@ import {
 import { listRunsForPreview, findLatestRun } from "../db/queries/tf-runs.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 import { events, type PreviewUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
+import {
+  getSseSnapshotDurationHistogram,
+  getSsePayloadBytesHistogram,
+  getSseMessagesSentCounter,
+  getSseMessagesDedupedCounter,
+  getSseConnectionsActiveCounter,
+} from "../lib/telemetry.ts"
 
 const prNumberParam = z.coerce.number().int().positive()
 
@@ -103,6 +110,7 @@ reposRoute.get(
     const prNumber = prParsed.data
 
     return streamSSE(c, async (stream) => {
+      getSseConnectionsActiveCounter().add(1, { type: "pr" })
       let lastPayload = ""
       let inFlight = false
       let pendingUpdate = false
@@ -117,6 +125,7 @@ reposRoute.get(
         pendingUpdate = false
 
         try {
+          const startTime = performance.now()
           const previews = await findPreviewsByPr(auth.orgId, repo, prNumber)
 
           if (previews.length === 0) {
@@ -141,6 +150,12 @@ reposRoute.get(
             }),
           )
 
+          const queryDuration = performance.now() - startTime
+          getSseSnapshotDurationHistogram().record(queryDuration, {
+            type: "pr",
+            workspace_count: String(previewsWithRuns.length),
+          })
+
           const first = previews[0]
           const payload = JSON.stringify({
             data: {
@@ -156,9 +171,12 @@ reposRoute.get(
 
           if (payload !== lastPayload) {
             lastPayload = payload
+            getSsePayloadBytesHistogram().record(payload.length, { type: "pr" })
+            getSseMessagesSentCounter().add(1, { type: "snapshot" })
             console.log(`[sse:pr] sending update: workspaces=${previewsWithRuns.length} payloadLen=${payload.length}`)
             await stream.writeSSE({ event: "update", data: payload })
           } else {
+            getSseMessagesDedupedCounter().add(1, { type: "pr" })
             console.log(`[sse:pr] skipping update: payload unchanged`)
           }
         } finally {
@@ -188,7 +206,9 @@ reposRoute.get(
       const handlePreviewUpdate = (event: PreviewUpdateEvent): void => {
         console.log(`[sse:pr] handlePreviewUpdate: previewId=${event.previewId} matches=${event.orgId === auth.orgId && event.repo === repo && event.prNumber === prNumber}`)
         if (event.orgId === auth.orgId && event.repo === repo && event.prNumber === prNumber) {
-          updatePreviewIds().then(() => sendSnapshot())
+          updatePreviewIds()
+            .then(() => sendSnapshot())
+            .catch((err) => console.error(`[sse:pr] error in handlePreviewUpdate:`, err))
         }
       }
 
@@ -196,7 +216,7 @@ reposRoute.get(
       const handleRunUpdate = (event: RunUpdateEvent): void => {
         console.log(`[sse:pr] handleRunUpdate: previewId=${event.previewId} inSet=${previewIds.has(event.previewId)} setSize=${previewIds.size}`)
         if (previewIds.has(event.previewId)) {
-          sendSnapshot()
+          sendSnapshot().catch((err) => console.error(`[sse:pr] error in handleRunUpdate:`, err))
         }
       }
 
@@ -204,8 +224,16 @@ reposRoute.get(
       events.onRunUpdate(handleRunUpdate)
       console.log(`[sse:pr] connected: PR #${prNumber}`)
 
+      // Heartbeat to keep connection alive
+      const heartbeat = setInterval(() => {
+        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+          .catch(() => { /* connection likely closed */ })
+      }, 30_000)
+
       stream.onAbort(() => {
         console.log(`[sse:pr] onAbort called: PR #${prNumber}`)
+        getSseConnectionsActiveCounter().add(-1, { type: "pr" })
+        clearInterval(heartbeat)
         events.offPreviewUpdate(handlePreviewUpdate)
         events.offRunUpdate(handleRunUpdate)
       })
@@ -281,6 +309,7 @@ reposRoute.get(
     const branch = c.req.param("branch")
 
     return streamSSE(c, async (stream) => {
+      getSseConnectionsActiveCounter().add(1, { type: "env" })
       let lastPayload = ""
       let inFlight = false
       let pendingUpdate = false
@@ -295,6 +324,7 @@ reposRoute.get(
         pendingUpdate = false
 
         try {
+          const startTime = performance.now()
           const previews = await findPreviewsByEnv(auth.orgId, repo, branch)
 
           if (previews.length === 0) {
@@ -319,6 +349,12 @@ reposRoute.get(
             }),
           )
 
+          const queryDuration = performance.now() - startTime
+          getSseSnapshotDurationHistogram().record(queryDuration, {
+            type: "env",
+            workspace_count: String(previewsWithRuns.length),
+          })
+
           const first = previews[0]
           const payload = JSON.stringify({
             data: {
@@ -332,7 +368,11 @@ reposRoute.get(
 
           if (payload !== lastPayload) {
             lastPayload = payload
+            getSsePayloadBytesHistogram().record(payload.length, { type: "env" })
+            getSseMessagesSentCounter().add(1, { type: "snapshot" })
             await stream.writeSSE({ event: "update", data: payload })
+          } else {
+            getSseMessagesDedupedCounter().add(1, { type: "env" })
           }
         } finally {
           inFlight = false
@@ -357,14 +397,16 @@ reposRoute.get(
       // Listen for preview updates matching this env (prNumber=0 for envs)
       const handlePreviewUpdate = (event: PreviewUpdateEvent): void => {
         if (event.orgId === auth.orgId && event.repo === repo && event.prNumber === 0) {
-          updatePreviewIds().then(() => sendSnapshot())
+          updatePreviewIds()
+            .then(() => sendSnapshot())
+            .catch((err) => console.error(`[sse:env] error in handlePreviewUpdate:`, err))
         }
       }
 
       // Listen for run updates for any preview in this env
       const handleRunUpdate = (event: RunUpdateEvent): void => {
         if (previewIds.has(event.previewId)) {
-          sendSnapshot()
+          sendSnapshot().catch((err) => console.error(`[sse:env] error in handleRunUpdate:`, err))
         }
       }
 
@@ -372,8 +414,16 @@ reposRoute.get(
       events.onRunUpdate(handleRunUpdate)
       console.log(`[sse:env] connected: ${branch}`)
 
+      // Heartbeat to keep connection alive
+      const heartbeat = setInterval(() => {
+        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+          .catch(() => { /* connection likely closed */ })
+      }, 30_000)
+
       stream.onAbort(() => {
         console.log(`[sse:env] onAbort called: ${branch}`)
+        getSseConnectionsActiveCounter().add(-1, { type: "env" })
+        clearInterval(heartbeat)
         events.offPreviewUpdate(handlePreviewUpdate)
         events.offRunUpdate(handleRunUpdate)
       })

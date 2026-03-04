@@ -108,10 +108,15 @@ previewsRoute.get(
     return streamSSE(c, async (stream) => {
       let lastPayload = ""
       let inFlight = false
+      let pendingUpdate = false
 
       const sendSnapshot = async (): Promise<void> => {
-        if (inFlight) return
+        if (inFlight) {
+          pendingUpdate = true
+          return
+        }
         inFlight = true
+        pendingUpdate = false
         try {
           const result = await listPreviews(auth.orgId, {
             repo,
@@ -132,6 +137,9 @@ previewsRoute.get(
           }
         } finally {
           inFlight = false
+          if (pendingUpdate) {
+            await sendSnapshot()
+          }
         }
       }
 
@@ -143,15 +151,27 @@ previewsRoute.get(
         if (event.orgId === auth.orgId) {
           // If filtering by repo, only refresh when that repo changes
           if (!repo || event.repo === repo) {
-            sendSnapshot()
+            sendSnapshot().catch((err) => console.error(`[sse:previews] error in handlePreviewUpdate:`, err))
           }
         }
       }
 
       events.onPreviewUpdate(handlePreviewUpdate)
 
-      stream.onAbort(() => {
-        events.offPreviewUpdate(handlePreviewUpdate)
+      // Heartbeat to keep connection alive
+      const heartbeat = setInterval(() => {
+        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+          .catch(() => { /* connection likely closed */ })
+      }, 30_000)
+
+      // Block the callback so Hono doesn't call stream.close() in its
+      // finally block.  Resolves only when the client disconnects.
+      await new Promise<void>((resolve) => {
+        stream.onAbort(() => {
+          clearInterval(heartbeat)
+          events.offPreviewUpdate(handlePreviewUpdate)
+          resolve()
+        })
       })
     })
   },

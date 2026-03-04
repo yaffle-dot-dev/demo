@@ -2,13 +2,14 @@
   import { browser } from "$app/environment"
   import { page } from "$app/state"
   import { goto } from "$app/navigation"
-  import { onDestroy, onMount } from "svelte"
+  import { onMount } from "svelte"
   import {
     listEnvironments,
     listPreviews,
     type EnvironmentGroup,
     type Preview,
   } from "$lib/api"
+  import { usePreviewListStream } from "$lib/sse/index.svelte"
   import { statusConfig, formatRelativeTime, shortSha } from "$lib/status"
   import { getUserLogin, setLastOrg } from "$lib/auth"
 
@@ -16,13 +17,17 @@
   const org = $derived(page.params.org ?? "")
 
   let showInactive = $state(false)
-  let previews = $state<Preview[]>([])
   let environments = $state<EnvironmentGroup[]>([])
   let loading = $state(true)
   let error = $state("")
   let hasToken = $state<boolean | null>(null)
   let userHandle = $state<string | null>(null)
-  let stream: EventSource | null = null
+
+  // SSE hook replaces inline EventSource management
+  const stream = usePreviewListStream(() => org)
+
+  // Use SSE data for previews (filtered to exclude env previews)
+  const previews = $derived(stream.previews.filter((p) => p.prNumber !== 0))
 
   const ACTIVE_STATUSES = new Set([
     "pending",
@@ -55,15 +60,10 @@
     loading = true
     error = ""
     try {
-      const [previewsRes, envRes] = await Promise.all([
-        listPreviews({ org }),
-        listEnvironments({ org }),
-      ])
-      previews = previewsRes.data.filter((p) => p.prNumber !== 0)
+      const envRes = await listEnvironments({ org })
       environments = envRes.data
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
-      previews = []
       environments = []
     } finally {
       loading = false
@@ -78,6 +78,15 @@
       environments = []
     }
   }
+
+  // Refresh environments when preview SSE data changes
+  $effect(() => {
+    // Track the previews array - when SSE pushes new data, also refresh envs
+    void stream.previews
+    if (browser && stream.previews.length > 0) {
+      refreshEnvironments()
+    }
+  })
 
   function groupStatus(workspaces: Preview[]): string {
     const statuses = new Set(workspaces.map((ws) => ws.status))
@@ -159,45 +168,15 @@
     showInactive = localStorage.getItem("yaffle.showInactive") === "true"
     // Remember this org as the last visited
     if (org) setLastOrg(org)
+    load()
   })
 
-  onDestroy(() => {
-    if (stream) stream.close()
-  })
-
-  function connectStream() {
-    if (!browser) return
-    const token = localStorage.getItem("yaffle.accessToken")
-    hasToken = Boolean(token)
-    if (!hasToken || !org) return
-    if (stream) stream.close()
-
-    const params = new URLSearchParams()
-    params.set("org", org)
-    if (token) params.set("token", token)
-
-    stream = new EventSource(`/api/previews/stream?${params.toString()}`)
-    stream.addEventListener("update", (event) => {
-      try {
-        const payload = JSON.parse((event as MessageEvent).data) as { data: Preview[] }
-        previews = payload.data.filter((p) => p.prNumber !== 0)
-        refreshEnvironments()
-      } catch {
-        // ignore malformed payloads
-      }
-    })
-    stream.addEventListener("error", (event) => {
-      console.error("SSE stream error:", event)
-    })
-  }
-
+  // Persist showInactive preference
   $effect(() => {
-    org; showInactive;
+    void showInactive
     if (browser) {
       localStorage.setItem("yaffle.showInactive", String(showInactive))
     }
-    load()
-    connectStream()
   })
 </script>
 

@@ -19,20 +19,33 @@
     workspaces: WorkspaceWithRuns[]
     githubUrl: string
     streaming?: boolean
+    /** When set, display this specific run instead of the latest */
+    viewedRunId?: string | null
+    /** Whether a newer run exists beyond the pinned view */
+    hasNewerRun?: boolean
+    /** Latest head SHA (for showing in new run badge) */
+    latestHeadSha?: string | null
+    /** Callback to unpin and switch to latest run */
+    onSwitchToLatest?: () => void
   }
 
-  let {
-    type,
-    org,
-    repo,
-    identifier,
-    branch,
-    headSha,
-    authorLogin = null,
-    workspaces,
-    githubUrl,
-    streaming = false,
-  }: Props = $props()
+  let props: Props = $props()
+
+  // Explicitly derive frequently-changing props so downstream $derived chains react
+  const type = $derived(props.type)
+  const org = $derived(props.org)
+  const repo = $derived(props.repo)
+  const identifier = $derived(props.identifier)
+  const branch = $derived(props.branch)
+  const headSha = $derived(props.headSha)
+  const authorLogin = $derived(props.authorLogin ?? null)
+  const workspaces = $derived(props.workspaces)
+  const githubUrl = $derived(props.githubUrl)
+  const streaming = $derived(props.streaming ?? false)
+  const viewedRunId = $derived(props.viewedRunId ?? null)
+  const hasNewerRun = $derived(props.hasNewerRun ?? false)
+  const latestHeadSha = $derived(props.latestHeadSha ?? null)
+  const onSwitchToLatest = $derived(props.onSwitchToLatest ?? null)
 
   // Selected workspace from URL query param or first workspace
   let selectedPath = $derived.by(() => {
@@ -52,12 +65,41 @@
   type TabId = "plan" | "apply" | "outputs"
   let activeTab = $state<TabId>("plan")
 
-  // Get latest runs for the selected workspace
+  // When viewedRunId is set, find it across ALL workspaces to get the timestamp boundary
+  const pinnedRun = $derived.by((): Run | null => {
+    if (!viewedRunId) return null
+    for (const ws of workspaces) {
+      const run = ws.runs.find((r: Run) => r.id === viewedRunId)
+      if (run) return run
+    }
+    return null
+  })
+
+  // The timestamp boundary: when pinned, only show runs created at or before this time
+  const pinnedBoundary = $derived(pinnedRun?.createdAt ?? null)
+
+  // When pinned, only show runs from the same cycle (created at or before the pinned run)
+  const visibleRuns = $derived.by((): Run[] => {
+    const runs = selectedWorkspace?.runs ?? []
+    if (!pinnedBoundary) return runs
+    return runs.filter((r: Run) => r.createdAt <= pinnedBoundary)
+  })
+
+  // Frozen workspaces for sidebar: when pinned, filter runs to the pinned cycle
+  const sidebarWorkspaces = $derived.by((): WorkspaceWithRuns[] => {
+    if (!pinnedBoundary) return workspaces
+    return workspaces.map((ws) => ({
+      ...ws,
+      runs: ws.runs.filter((r: Run) => r.createdAt <= pinnedBoundary),
+    }))
+  })
+
+  // Get latest plan/apply from the visible (possibly filtered) runs
   const latestPlan = $derived(
-    selectedWorkspace?.runs.find((r: Run) => r.runType === "plan")
+    visibleRuns.find((r: Run) => r.runType === "plan") ?? undefined,
   )
   const latestApply = $derived(
-    selectedWorkspace?.runs.find((r: Run) => r.runType === "apply")
+    visibleRuns.find((r: Run) => r.runType === "apply") ?? undefined,
   )
   const hasOutputs = $derived(
     latestApply?.status === "success" && selectedWorkspace?.outputs
@@ -70,24 +112,38 @@
     status?: string
   }
 
+  // The apply is stale if it's from a previous run cycle (older than the latest plan)
+  const applyIsStale = $derived(
+    latestPlan && latestApply && latestApply.createdAt < latestPlan.createdAt,
+  )
+
   const tabs = $derived.by((): Tab[] => {
     const result: Tab[] = []
     if (latestPlan) {
       result.push({ id: "plan", label: "Plan", status: latestPlan.status })
     }
-    if (latestApply) {
+    if (latestApply && !applyIsStale) {
       result.push({ id: "apply", label: "Apply", status: latestApply.status })
     }
-    if (hasOutputs) {
+    if (hasOutputs && !applyIsStale) {
       result.push({ id: "outputs", label: "Outputs" })
     }
     return result
   })
 
-  // Auto-select first available tab if current isn't available
+  // Auto-select tab: switch to apply when plan finishes and apply starts
   $effect(() => {
-    if (tabs.length > 0 && !tabs.some((t) => t.id === activeTab)) {
+    if (tabs.length === 0) return
+    // If current tab isn't available, pick the first one
+    if (!tabs.some((t) => t.id === activeTab)) {
       activeTab = tabs[0].id
+      return
+    }
+    // Auto-switch from plan to apply when apply is running/pending
+    if (activeTab === "plan" && latestPlan?.status === "success" && latestApply) {
+      if (latestApply.status === "running" || latestApply.status === "pending") {
+        activeTab = "apply"
+      }
     }
   })
 
@@ -181,7 +237,7 @@
     <!-- Sidebar -->
     <aside class="w-56 flex-shrink-0 border-r border-border bg-surface overflow-hidden">
       <WorkspaceSidebar
-        {workspaces}
+        workspaces={sidebarWorkspaces}
         {selectedPath}
         onSelect={handleWorkspaceSelect}
       />
@@ -190,8 +246,15 @@
     <!-- Content area -->
     <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
       {#if selectedWorkspace}
-        <!-- Workspace header -->
-        {@const cfg = statusConfig(selectedWorkspace.preview.status)}
+        <!-- Workspace header: when pinned, derive status from visible runs -->
+        {@const displayStatus = pinnedBoundary
+          ? (latestApply?.status === "success" ? "ready"
+            : latestApply?.status === "running" ? "applying"
+            : latestPlan?.status === "success" ? "planned"
+            : latestPlan?.status === "running" ? "planning"
+            : selectedWorkspace.preview.status)
+          : selectedWorkspace.preview.status}
+        {@const cfg = statusConfig(displayStatus)}
         <div class="flex-shrink-0 px-6 py-4 border-b border-border">
           <div class="flex items-center justify-between">
             <div>
@@ -205,6 +268,23 @@
                 {/if}
               </div>
             </div>
+            {#if hasNewerRun && onSwitchToLatest}
+              <button
+                onclick={onSwitchToLatest}
+                class="flex items-center gap-2 px-3 py-1.5 bg-status-planning/15 hover:bg-status-planning/25 border border-status-planning/30 rounded text-status-planning transition-colors"
+              >
+                <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
+                  <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <div class="text-left">
+                  <div class="text-xs font-medium leading-tight">new run</div>
+                  {#if latestHeadSha}
+                    <div class="font-mono text-[10px] leading-tight opacity-75">{shortSha(latestHeadSha)}</div>
+                  {/if}
+                </div>
+              </button>
+            {/if}
           </div>
         </div>
 

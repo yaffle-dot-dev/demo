@@ -1,5 +1,7 @@
 import { EventEmitter } from "node:events"
 
+import { getSseEventsEmittedCounter } from "./telemetry.ts"
+
 export interface RunUpdateEvent {
   runId: string
   previewId: string
@@ -15,17 +17,20 @@ export interface PreviewUpdateEvent {
 class YaffleEvents extends EventEmitter {
   constructor() {
     super()
-    // Allow a reasonable number of concurrent SSE connections before warning
-    this.setMaxListeners(50)
+    // Allow many concurrent SSE connections before warning.
+    // Each browser tab creates 1-2 listeners per event type.
+    this.setMaxListeners(100)
   }
 
   emitRunUpdate(runId: string, previewId: string): void {
     console.log(`[events] emitRunUpdate: runId=${runId} previewId=${previewId} listeners=${this.listenerCount("run:update")}`)
+    getSseEventsEmittedCounter().add(1, { type: "run_update" })
     this.emit("run:update", { runId, previewId })
   }
 
   emitPreviewUpdate(previewId: string, orgId: string, repo: string, prNumber: number): void {
     console.log(`[events] emitPreviewUpdate: previewId=${previewId} prNumber=${prNumber} listeners=${this.listenerCount("preview:update")}`)
+    getSseEventsEmittedCounter().add(1, { type: "preview_update" })
     this.emit("preview:update", { previewId, orgId, repo, prNumber })
   }
 

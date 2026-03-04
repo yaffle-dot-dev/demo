@@ -20,7 +20,9 @@
     planJson: PlanJson | null
   }
 
-  let { planJson }: Props = $props()
+  let props: Props = $props()
+
+  const planJson = $derived(props.planJson)
 
   // Group changes by action type
   interface GroupedChanges {

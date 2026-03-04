@@ -8,7 +8,11 @@
     onSelect: (path: string) => void
   }
 
-  let { workspaces, selectedPath, onSelect }: Props = $props()
+  let props: Props = $props()
+
+  const workspaces = $derived(props.workspaces)
+  const selectedPath = $derived(props.selectedPath)
+  const onSelect = $derived(props.onSelect)
 
   function getRunStatus(workspace: WorkspaceWithRuns, runType: "plan" | "apply"): string | null {
     const run = workspace.runs.find((r: Run) => r.runType === runType)

@@ -7,10 +7,13 @@
     streaming?: boolean
   }
 
-  let { output = "", streaming = false }: Props = $props()
+  let props: Props = $props()
+
+  const output = $derived(props.output ?? "")
+  const streaming = $derived(props.streaming ?? false)
 
   let container: HTMLDivElement
-  let term: import("xterm").Terminal | null = null
+  let term = $state<import("xterm").Terminal | null>(null)
   let fitAddon: import("@xterm/addon-fit").FitAddon | null = null
   let resizeObserver: ResizeObserver | null = null
   let lastOutput = ""
