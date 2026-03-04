@@ -9,9 +9,10 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core"
+import { uuidv7 } from "uuidv7"
 
 export const organizations = pgTable("organizations", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
   githubId: bigint("github_id", { mode: "number" }).unique().notNull(),
   login: text("login").notNull(),
   stateBucket: text("state_bucket").notNull(),
@@ -24,7 +25,7 @@ export const organizations = pgTable("organizations", {
 })
 
 export const connections = pgTable("connections", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
   orgId: uuid("org_id")
     .references(() => organizations.id)
     .notNull(),
@@ -38,7 +39,7 @@ export const connections = pgTable("connections", {
 export const previews = pgTable(
   "previews",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id)
       .notNull(),
@@ -62,7 +63,7 @@ export const previews = pgTable(
 )
 
 export const tfRuns = pgTable("tf_runs", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
   previewId: uuid("preview_id")
     .references(() => previews.id)
     .notNull(),
@@ -81,7 +82,7 @@ export const tfRuns = pgTable("tf_runs", {
 })
 
 export const approvals = pgTable("approvals", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
   previewId: uuid("preview_id")
     .references(() => previews.id)
     .notNull(),
@@ -93,7 +94,7 @@ export const approvals = pgTable("approvals", {
 export const users = pgTable(
   "users",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     login: text("login").notNull(),
     provider: text("provider").notNull(),
     externalId: text("external_id").notNull(),
@@ -105,7 +106,7 @@ export const users = pgTable(
 export const orgMemberships = pgTable(
   "org_memberships",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id)
       .notNull(),
@@ -119,7 +120,7 @@ export const orgMemberships = pgTable(
 )
 
 export const jobs = pgTable("jobs", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
   orgId: uuid("org_id")
     .references(() => organizations.id)
     .notNull(),
@@ -135,7 +136,7 @@ export const jobs = pgTable("jobs", {
 export const repositories = pgTable(
   "repositories",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id)
       .notNull(),
