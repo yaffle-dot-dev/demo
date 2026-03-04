@@ -3,7 +3,6 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
 import { findPreviewById, listPreviews } from "../db/queries/previews.ts"
-import { findLatestRun, listRunsForPreview } from "../db/queries/tf-runs.ts"
 import { createApproval, listApprovals } from "../db/queries/approvals.ts"
 import { logger } from "../lib/telemetry.ts"
 import {
@@ -12,7 +11,7 @@ import {
   getAuth,
 } from "../middleware/org-auth.ts"
 import { approvePreviewApply } from "../lib/webhook-handler.ts"
-import { events, type PreviewUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
+import { events, type PreviewUpdateEvent } from "../lib/events.ts"
 
 const listQuerySchema = z.object({
   repo: z.string().optional(),
@@ -166,89 +165,6 @@ async function getPreviewOrgId(c: { req: { param: (key: string) => string } }): 
 }
 
 /**
- * GET /api/previews/:id
- *
- * Get a single preview by UUID.
- */
-previewsRoute.get(
-  "/:id",
-  requireResourceAccess({ getOrgId: getPreviewOrgId }),
-  async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
-    if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
-    }
-
-    const preview = await findPreviewById(id)
-    if (!preview) {
-      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
-    }
-
-    return c.json({ data: serializePreview(preview) })
-  },
-)
-
-/**
- * GET /api/previews/:id/runs
- *
- * List all runs for a preview (plan, apply, destroy history).
- */
-previewsRoute.get(
-  "/:id/runs",
-  requireResourceAccess({ getOrgId: getPreviewOrgId }),
-  async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
-    if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
-    }
-
-    const preview = await findPreviewById(id)
-    if (!preview) {
-      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
-    }
-
-    const runs = await listRunsForPreview(id)
-
-    return c.json({ data: runs.map(serializeRun) })
-  },
-)
-
-/**
- * GET /api/previews/:id/outputs
- *
- * Get terraform outputs from the latest successful apply.
- * This is the primary endpoint for CI pipelines to get infrastructure outputs.
- */
-previewsRoute.get(
-  "/:id/outputs",
-  requireResourceAccess({ getOrgId: getPreviewOrgId }),
-  async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
-    if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
-    }
-
-    const preview = await findPreviewById(id)
-    if (!preview) {
-      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
-    }
-
-    const latestApply = await findLatestRun(id, "apply")
-    if (!latestApply || latestApply.status !== "success" || !latestApply.outputs) {
-      return c.json(
-        { error: { code: "NO_OUTPUTS", message: "no successful apply with outputs found" } },
-        404,
-      )
-    }
-
-    return c.json({ data: latestApply.outputs })
-  },
-)
-
-/**
  * GET /api/previews/:id/approvals
  */
 previewsRoute.get(
@@ -364,86 +280,6 @@ previewsRoute.post(
   },
 )
 
-/**
- * GET /api/previews/:id/stream
- *
- * Server-sent events stream for preview detail updates.
- */
-previewsRoute.get(
-  "/:id/stream",
-  requireResourceAccess({ getOrgId: getPreviewOrgId, allowQueryToken: true }),
-  async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
-    if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
-    }
-
-    return streamSSE(c, async (stream) => {
-      let lastPayload = ""
-      let inFlight = false
-
-      const sendSnapshot = async (): Promise<void> => {
-        if (inFlight) return
-        inFlight = true
-        try {
-          const preview = await findPreviewById(id)
-          if (!preview) {
-            const emptyPayload = JSON.stringify({ preview: null, runs: [], outputs: null })
-            if (emptyPayload !== lastPayload) {
-              lastPayload = emptyPayload
-              await stream.writeSSE({ event: "update", data: emptyPayload })
-            }
-            return
-          }
-
-          const runs = await listRunsForPreview(id)
-          const latestApply = await findLatestRun(id, "apply")
-          const outputs = latestApply?.status === "success" ? latestApply.outputs : null
-
-          const payload = JSON.stringify({
-            preview: serializePreview(preview),
-            runs: runs.map(serializeRun),
-            outputs,
-          })
-
-          if (payload !== lastPayload) {
-            lastPayload = payload
-            await stream.writeSSE({ event: "update", data: payload })
-          }
-        } finally {
-          inFlight = false
-        }
-      }
-
-      // Send initial snapshot
-      await sendSnapshot()
-
-      // Listen for preview updates for this specific preview
-      const handlePreviewUpdate = (event: PreviewUpdateEvent): void => {
-        if (event.previewId === id) {
-          sendSnapshot()
-        }
-      }
-
-      // Listen for run updates for this preview (runs affect the payload)
-      const handleRunUpdate = (event: RunUpdateEvent): void => {
-        if (event.previewId === id) {
-          sendSnapshot()
-        }
-      }
-
-      events.onPreviewUpdate(handlePreviewUpdate)
-      events.onRunUpdate(handleRunUpdate)
-
-      stream.onAbort(() => {
-        events.offPreviewUpdate(handlePreviewUpdate)
-        events.offRunUpdate(handleRunUpdate)
-      })
-    })
-  },
-)
-
 // ---------------------------------------------------------------------------
 // Serialization helpers
 // ---------------------------------------------------------------------------
@@ -496,47 +332,5 @@ function serializePreview(p: {
     requireApproval: p.requireApproval,
     approvers,
     createdAt: p.createdAt.toISOString(),
-  }
-}
-
-interface SerializedRun {
-  id: string
-  previewId: string
-  runType: string
-  status: string
-  checkRunId: number | null
-  planSummary: string | null
-  outputs: unknown
-  errorMessage: string | null
-  startedAt: string | null
-  completedAt: string | null
-  createdAt: string
-}
-
-function serializeRun(r: {
-  id: string
-  previewId: string
-  runType: string
-  status: string
-  checkRunId: number | null
-  planSummary: string | null
-  outputs: unknown
-  errorMessage: string | null
-  startedAt: Date | null
-  completedAt: Date | null
-  createdAt: Date
-}): SerializedRun {
-  return {
-    id: r.id,
-    previewId: r.previewId,
-    runType: r.runType,
-    status: r.status,
-    checkRunId: r.checkRunId,
-    planSummary: r.planSummary,
-    outputs: r.outputs,
-    errorMessage: r.errorMessage,
-    startedAt: r.startedAt?.toISOString() ?? null,
-    completedAt: r.completedAt?.toISOString() ?? null,
-    createdAt: r.createdAt.toISOString(),
   }
 }

@@ -6,7 +6,6 @@ import { logger } from "hono/logger"
 import { httpTelemetry } from "./middleware/http-telemetry.ts"
 import { webhooksRoute } from "./routes/webhooks.ts"
 import { previewsRoute } from "./routes/previews.ts"
-import { runsRoute } from "./routes/runs.ts"
 import { environmentsRoute } from "./routes/environments.ts"
 import { orgsRoute } from "./routes/orgs.ts"
 import { reposRoute } from "./routes/repos.ts"
@@ -41,7 +40,6 @@ app.notFound((c) => {
 // API routes - mount BEFORE OpenAuth to ensure /api/* is handled first
 app.route("/api/webhooks", webhooksRoute)
 app.route("/api/previews", previewsRoute)
-app.route("/api/runs", runsRoute)
 app.route("/api/environments", environmentsRoute)
 app.route("/api/orgs", orgsRoute)
 app.route("/api/orgs", reposRoute) // Nested under /api/orgs for /:org/repos/... routes

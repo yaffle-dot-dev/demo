@@ -249,7 +249,7 @@
                   {@const wsCfg = statusConfig(ws.status)}
                   {@const wsShowStatus = ws.status !== "ready"}
                   <a
-                    href="/previews/{ws.previewId}"
+                    href="/{org}/{env.repo}/env/{env.branch}?ws={encodeURIComponent(ws.workspacePath)}"
                     class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface-raised text-xs text-text-muted hover:text-text hover:border-yaffle-500/40 transition-colors"
                   >
                     {#if wsShowStatus}
@@ -320,7 +320,7 @@
                 <div class="flex items-start justify-between">
                   <div>
                     <div class="flex items-center gap-3">
-                      <a href="/previews/{group.workspaces[0].id}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                      <a href="/{org}/{group.repo}/pr/{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                         {group.repo}
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
@@ -347,7 +347,7 @@
                 <div class="mt-4 flex flex-wrap gap-2">
                   {#each group.workspaces as ws (ws.id)}
                     {@const wsCfg = statusConfig(ws.status)}
-                    <a href="/previews/{ws.id}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
+                    <a href="/{org}/{group.repo}/pr/{group.prNumber}?ws={encodeURIComponent(ws.workspacePath)}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
                       {#if ws.status !== "ready"}<span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>{/if}
                       <span class="font-mono">{ws.workspacePath}</span>
                     </a>
@@ -374,7 +374,7 @@
                 <div class="flex items-start justify-between">
                   <div>
                     <div class="flex items-center gap-3">
-                      <a href="/previews/{group.workspaces[0].id}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                      <a href="/{org}/{group.repo}/pr/{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                         {group.repo}
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
@@ -404,7 +404,7 @@
                 <div class="mt-4 flex flex-wrap gap-2">
                   {#each group.workspaces as ws (ws.id)}
                     {@const wsCfg = statusConfig(ws.status)}
-                    <a href="/previews/{ws.id}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
+                    <a href="/{org}/{group.repo}/pr/{group.prNumber}?ws={encodeURIComponent(ws.workspacePath)}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
                       {#if ws.status !== "ready"}
                         <span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>
                       {/if}
@@ -426,7 +426,7 @@
             <div class="flex items-start justify-between">
               <div>
                 <div class="flex items-center gap-3">
-                  <a href="/previews/{group.workspaces[0].id}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                  <a href="/{org}/{group.repo}/pr/{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                     {group.repo}
                   </a>
                   <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
@@ -456,7 +456,7 @@
             <div class="mt-4 flex flex-wrap gap-2">
               {#each group.workspaces as ws (ws.id)}
                 {@const wsCfg = statusConfig(ws.status)}
-                <a href="/previews/{ws.id}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
+                <a href="/{org}/{group.repo}/pr/{group.prNumber}?ws={encodeURIComponent(ws.workspacePath)}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
                   {#if ws.status !== "ready"}
                     <span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>
                   {/if}
