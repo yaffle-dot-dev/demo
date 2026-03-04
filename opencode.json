@@ -4,6 +4,13 @@
   "server": {
     "port": 4096,
   },
+  "permission": {
+    "bash": {
+      "jj *": "ask",
+      "jj git push *": "deny",
+      "git *": "deny"
+    }
+  },
   "mcp": {
     "linear": {
       "type": "remote",

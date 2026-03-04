@@ -5,6 +5,7 @@ import { z } from "zod"
 import { findPreviewById } from "../db/queries/previews.ts"
 import { findRunById } from "../db/queries/tf-runs.ts"
 import { requireResourceAccess } from "../middleware/org-auth.ts"
+import { events, type RunUpdateEvent } from "../lib/events.ts"
 
 const uuidParam = z.string().uuid()
 
@@ -182,12 +183,20 @@ runsRoute.get(
         }
       }
 
+      // Send initial snapshot
       await sendSnapshot()
 
-      const interval = setInterval(sendSnapshot, 5000)
+      // Listen for run updates
+      const handleRunUpdate = (event: RunUpdateEvent): void => {
+        if (event.runId === id) {
+          sendSnapshot()
+        }
+      }
+
+      events.onRunUpdate(handleRunUpdate)
 
       stream.onAbort(() => {
-        clearInterval(interval)
+        events.offRunUpdate(handleRunUpdate)
       })
     })
   },

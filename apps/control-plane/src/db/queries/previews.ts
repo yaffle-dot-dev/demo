@@ -5,6 +5,7 @@ import type { PreviewStatus } from "@yaffle/shared"
 import { db } from "../../lib/db.ts"
 import { previews } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
+import { events } from "../../lib/events.ts"
 
 export type Preview = typeof previews.$inferSelect
 export type NewPreview = typeof previews.$inferInsert
@@ -136,10 +137,15 @@ export async function updatePreviewStatus(
   status: PreviewStatus,
 ): Promise<void> {
   return withDbSpan("update", "previews", async () => {
-    await db
+    const updated = await db
       .update(previews)
       .set({ status })
       .where(eq(previews.id, previewId))
+      .returning({ orgId: previews.orgId, repo: previews.repo, prNumber: previews.prNumber })
+    if (updated.length > 0) {
+      const { orgId, repo, prNumber } = updated[0]
+      events.emitPreviewUpdate(previewId, orgId, repo, prNumber)
+    }
   })
 }
 
@@ -151,10 +157,15 @@ export async function updatePreviewHead(
   headSha: string,
 ): Promise<void> {
   return withDbSpan("update", "previews", async () => {
-    await db
+    const updated = await db
       .update(previews)
       .set({ headSha, status: "pending" as PreviewStatus })
       .where(eq(previews.id, previewId))
+      .returning({ orgId: previews.orgId, repo: previews.repo, prNumber: previews.prNumber })
+    if (updated.length > 0) {
+      const { orgId, repo, prNumber } = updated[0]
+      events.emitPreviewUpdate(previewId, orgId, repo, prNumber)
+    }
   })
 }
 

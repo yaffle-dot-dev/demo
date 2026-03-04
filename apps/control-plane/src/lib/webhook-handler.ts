@@ -829,7 +829,7 @@ async function executeRun(opts: {
     })
     span.setAttributes({ "yaffle.run.queue_time_ms": queueTimeMs })
 
-    await updateRunStatus(run.id, "running", {
+    await updateRunStatus(run.id, preview.id, "running", {
       checkRunId,
       startedAt: new Date(),
     })
@@ -845,7 +845,7 @@ async function executeRun(opts: {
       const chunk = logBuffer
       logBuffer = ""
       try {
-        await appendRunLog(run.id, chunk)
+        await appendRunLog(run.id, preview.id, chunk)
       } catch (err) {
         logger.warn("failed to append run logs", {
           ...runAttrs,
@@ -927,14 +927,14 @@ async function executeRun(opts: {
 
     // Update DB
     if (result.success) {
-      await updateRunStatus(run.id, "success", {
+      await updateRunStatus(run.id, preview.id, "success", {
         completedAt: new Date(),
         planSummary: result.planSummary,
         planJson: result.planJson,
         outputs: result.outputs,
       })
     } else {
-      await updateRunStatus(run.id, "failed", {
+      await updateRunStatus(run.id, preview.id, "failed", {
         completedAt: new Date(),
         errorMessage: result.errorMessage,
       })

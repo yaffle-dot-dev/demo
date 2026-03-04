@@ -12,6 +12,7 @@ import {
   getAuth,
 } from "../middleware/org-auth.ts"
 import { approvePreviewApply } from "../lib/webhook-handler.ts"
+import { events, type PreviewUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
 
 const listQuerySchema = z.object({
   repo: z.string().optional(),
@@ -135,12 +136,23 @@ previewsRoute.get(
         }
       }
 
+      // Send initial snapshot
       await sendSnapshot()
 
-      const interval = setInterval(sendSnapshot, 5000)
+      // Listen for preview updates matching this org (and optionally repo)
+      const handlePreviewUpdate = (event: PreviewUpdateEvent): void => {
+        if (event.orgId === auth.orgId) {
+          // If filtering by repo, only refresh when that repo changes
+          if (!repo || event.repo === repo) {
+            sendSnapshot()
+          }
+        }
+      }
+
+      events.onPreviewUpdate(handlePreviewUpdate)
 
       stream.onAbort(() => {
-        clearInterval(interval)
+        events.offPreviewUpdate(handlePreviewUpdate)
       })
     })
   },
@@ -404,12 +416,29 @@ previewsRoute.get(
         }
       }
 
+      // Send initial snapshot
       await sendSnapshot()
 
-      const interval = setInterval(sendSnapshot, 5000)
+      // Listen for preview updates for this specific preview
+      const handlePreviewUpdate = (event: PreviewUpdateEvent): void => {
+        if (event.previewId === id) {
+          sendSnapshot()
+        }
+      }
+
+      // Listen for run updates for this preview (runs affect the payload)
+      const handleRunUpdate = (event: RunUpdateEvent): void => {
+        if (event.previewId === id) {
+          sendSnapshot()
+        }
+      }
+
+      events.onPreviewUpdate(handlePreviewUpdate)
+      events.onRunUpdate(handleRunUpdate)
 
       stream.onAbort(() => {
-        clearInterval(interval)
+        events.offPreviewUpdate(handlePreviewUpdate)
+        events.offRunUpdate(handleRunUpdate)
       })
     })
   },

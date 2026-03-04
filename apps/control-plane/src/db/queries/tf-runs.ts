@@ -5,6 +5,7 @@ import type { RunStatus, RunType } from "@yaffle/shared"
 import { db } from "../../lib/db.ts"
 import { tfRuns } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
+import { events } from "../../lib/events.ts"
 
 export type TfRun = typeof tfRuns.$inferSelect
 export type NewTfRun = typeof tfRuns.$inferInsert
@@ -24,6 +25,7 @@ export async function createTfRun(values: NewTfRun): Promise<TfRun> {
  */
 export async function updateRunStatus(
   runId: string,
+  previewId: string,
   status: RunStatus,
   extra?: {
     checkRunId?: number
@@ -41,6 +43,7 @@ export async function updateRunStatus(
       .update(tfRuns)
       .set({ status, ...extra })
       .where(eq(tfRuns.id, runId))
+    events.emitRunUpdate(runId, previewId)
   })
 }
 
@@ -49,6 +52,7 @@ export async function updateRunStatus(
  */
 export async function appendRunLog(
   runId: string,
+  previewId: string,
   chunk: string,
 ): Promise<void> {
   return withDbSpan("update", "tf_runs", async () => {
@@ -56,6 +60,7 @@ export async function appendRunLog(
       .update(tfRuns)
       .set({ logOutput: sql`coalesce(${tfRuns.logOutput}, '') || ${chunk}` })
       .where(eq(tfRuns.id, runId))
+    events.emitRunUpdate(runId, previewId)
   })
 }
 
