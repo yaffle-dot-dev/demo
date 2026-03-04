@@ -70,14 +70,14 @@
 
   # ── Process management (devenv up) ──────────────────────────────
   processes = {
-    api.exec = "op whoami >/dev/null 2>&1 || op signin; secretspec run -- bun run dev:api";
+    control-plane.exec = "op whoami >/dev/null 2>&1 || op signin; secretspec run -- bun run dev:control-plane";
     web.exec = "bun run dev:web";
     smee.exec = "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github";
   };
 
   # ── Process health checks ────────────────────────────────────
   process-managers.process-compose.settings.processes = {
-    api = {
+    control-plane = {
       readiness_probe = {
         http_get = {
           host = "localhost";
@@ -135,7 +135,7 @@
     echo "  op          $(op --version)"
     echo ""
     echo "commands:"
-    echo "  devenv up              - start postgres, api, and web"
+    echo "  devenv up              - start postgres, control-plane, web, and smee"
     echo "  bun install            - install dependencies"
     echo "  bun test               - run tests"
     echo "  tofu plan              - run opentofu plan (from infra/)"

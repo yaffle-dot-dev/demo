@@ -1,0 +1,1 @@
+ALTER TABLE "tf_runs" ADD COLUMN "check_run_id" bigint;

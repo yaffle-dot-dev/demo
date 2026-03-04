@@ -6,7 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "dev:api": "bun run --filter=@yaffle/api dev",
+    "dev:control-plane": "bun run --filter=@yaffle/control-plane dev",
     "dev:web": "bun run --filter=@yaffle/web dev",
     "build": "bun run --filter='*' build",
     "typecheck": "bun run --filter='*' typecheck",
@@ -15,8 +15,8 @@
     "format": "biome format --write .",
     "format:check": "biome format .",
     "test": "bun run --filter='*' test",
-    "db:generate": "bun run --filter=@yaffle/api db:generate",
-    "db:migrate": "bun run --filter=@yaffle/api db:migrate"
+    "db:generate": "bun run --filter=@yaffle/control-plane db:generate",
+    "db:migrate": "bun run --filter=@yaffle/control-plane db:migrate"
   },
   "devDependencies": {
     "bun-types": "^1.3.10"

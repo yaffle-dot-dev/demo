@@ -1,0 +1,41 @@
+{
+  "name": "@yaffle/control-plane",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --hot src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "start": "bun run dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1001.0",
+    "@octokit/webhooks": "^13.4.0",
+    "@openauthjs/openauth": "^0.4.3",
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api-logs": "^0.212.0",
+    "@opentelemetry/exporter-logs-otlp-proto": "^0.212.0",
+    "@opentelemetry/exporter-metrics-otlp-proto": "^0.212.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.212.0",
+    "@opentelemetry/resources": "^2.5.1",
+    "@opentelemetry/sdk-logs": "^0.212.0",
+    "@opentelemetry/sdk-metrics": "^2.5.1",
+    "@opentelemetry/sdk-trace-base": "^2.5.1",
+    "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@yaffle/shared": "workspace:*",
+    "drizzle-orm": "^0.38.0",
+    "hono": "^4.6.0",
+    "octokit": "^4.1.0",
+    "postgres": "^3.4.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "drizzle-kit": "^0.30.0",
+    "typescript": "^5.7.0"
+  }
+}
