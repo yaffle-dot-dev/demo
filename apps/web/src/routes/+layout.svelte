@@ -4,7 +4,7 @@
   import { page } from "$app/state"
   import { goto } from "$app/navigation"
   import { onMount } from "svelte"
-  import { logout, startGithubLogin, getUserLogin, setLastOrg } from "$lib/auth"
+  import { logout, startGithubLogin, getUserLogin, setLastOrg, getLastOrg } from "$lib/auth"
   import { listOrgs, type OrgInfo } from "$lib/api"
 
   let { children } = $props()
@@ -17,8 +17,8 @@
   // Use installations/new/permissions with state param to get redirected back properly
   const installUrl = `https://github.com/apps/${GITHUB_APP_NAME}/installations/new`
 
-  // Get current org from URL if on an org page
-  const currentOrg = $derived(page.params.org ?? "")
+  // Get current org from URL if on an org page, otherwise use last visited org
+  const currentOrg = $derived(page.params.org ?? getLastOrg() ?? "")
 
   onMount(async () => {
     if (!browser) return
