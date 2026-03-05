@@ -1,0 +1,11 @@
+# devenv.yaml - standalone devenv 2.x configuration
+# This file is used by `devenv up` to manage processes with the native process manager.
+# Packages and shell activation come from flake.nix via `nix develop`.
+
+inputs:
+  nixpkgs:
+    url: github:cachix/devenv-nixpkgs/rolling
+
+# Don't auto-load secrets - use secretspec run manually when needed
+secretspec:
+  enable: false
