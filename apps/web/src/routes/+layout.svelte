@@ -4,47 +4,62 @@
   import { page } from "$app/state"
   import { goto } from "$app/navigation"
   import { onMount } from "svelte"
-  import { logout, startGithubLogin, getUserLogin, setLastOrg, getLastOrg } from "$lib/auth"
+  import { logout, startGithubLogin, useSession, setLastOrg, getLastOrg } from "$lib/auth"
   import { listOrgs, type OrgInfo } from "$lib/api"
 
   let { children } = $props()
-  let userLogin = $state("")
   let orgs = $state<OrgInfo[]>([])
   let showOrgMenu = $state(false)
+  let hasFetchedOrgs = false
 
   // GitHub App name for installation URL
   const GITHUB_APP_NAME = "yaffle-dot-dev"
   // Use installations/new/permissions with state param to get redirected back properly
   const installUrl = `https://github.com/apps/${GITHUB_APP_NAME}/installations/new`
 
+  // BetterAuth session store
+  const session = useSession()
+
+  // Derive user info from session
+  const isLoggedIn = $derived(!!$session.data?.user)
+  const userLogin = $derived($session.data?.user?.name ?? "")
+
   // Get current org from URL if on an org page, otherwise use last visited org
   const currentOrg = $derived(page.params.org ?? getLastOrg() ?? "")
 
-  onMount(async () => {
-    if (!browser) return
-    userLogin = getUserLogin() ?? ""
-
-    // Fetch orgs if logged in
-    if (localStorage.getItem("yaffle.accessToken")) {
-      try {
-        const res = await listOrgs()
-        orgs = res.data
-      } catch {
-        orgs = []
-      }
+  async function fetchOrgs(): Promise<void> {
+    if (hasFetchedOrgs) return
+    hasFetchedOrgs = true
+    try {
+      const res = await listOrgs()
+      orgs = res.data
+    } catch {
+      orgs = []
     }
+  }
+
+  onMount(() => {
+    if (!browser) return
+
+    // Subscribe to session changes and fetch orgs when logged in
+    const unsubscribe = session.subscribe((state) => {
+      if (state.isPending) return
+      if (state.data?.user && !hasFetchedOrgs) {
+        fetchOrgs()
+      }
+    })
+
+    return unsubscribe
   })
 
   function signOut() {
     logout()
-    userLogin = ""
-    window.location.href = "/"
   }
 
-  function selectOrg(login: string) {
+  function selectOrg(slug: string) {
     showOrgMenu = false
-    setLastOrg(login)
-    goto(`/${login}`)
+    setLastOrg(slug)
+    goto(`/${slug}`)
   }
 </script>
 
@@ -73,10 +88,10 @@
               <div class="absolute top-full left-0 mt-1 py-1 bg-surface-raised border border-border rounded-lg shadow-lg z-50 min-w-[160px]">
                 {#each orgs as org (org.id)}
                   <button
-                    class="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-overlay transition-colors {org.login === currentOrg ? 'text-yaffle-400' : 'text-text-muted'}"
-                    onclick={() => selectOrg(org.login)}
+                    class="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-overlay transition-colors {org.slug === currentOrg ? 'text-yaffle-400' : 'text-text-muted'}"
+                    onclick={() => selectOrg(org.slug)}
                   >
-                    {org.login}
+                    {org.name}
                   </button>
                 {/each}
                 <hr class="my-1 border-border" />
@@ -89,7 +104,7 @@
               </div>
             {/if}
           </div>
-        {:else if userLogin}
+        {:else if isLoggedIn}
           <span class="text-text-dim">/</span>
           <a
             href={installUrl}
@@ -100,7 +115,7 @@
         {/if}
       </div>
       <div class="flex gap-4 text-sm text-text-muted items-center">
-        {#if userLogin}
+        {#if isLoggedIn}
           <span class="text-xs text-text-dim">@{userLogin}</span>
           <button class="text-xs text-text-muted hover:text-text transition-colors" onclick={signOut}>
             Sign out

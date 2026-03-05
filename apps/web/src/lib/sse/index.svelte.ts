@@ -14,15 +14,6 @@ export type {
 export { findRunInGroup, getLatestRunForWorkspace, hasActiveRun } from "./types"
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function getToken(): string | null {
-  if (!browser) return null
-  return localStorage.getItem("yaffle.accessToken")
-}
-
-// ---------------------------------------------------------------------------
 // usePreviewStream - for PR and env detail pages
 // ---------------------------------------------------------------------------
 
@@ -68,9 +59,6 @@ export function usePreviewStream(
 
     if (!browser || !org || !repo || !id) return
 
-    const token = getToken()
-    if (!token) return
-
     // Reset state for new connection
     store.reset()
 
@@ -78,10 +66,11 @@ export function usePreviewStream(
       ? `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${id}/stream`
       : `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(String(id))}/stream`
 
-    const url = `/api${path}?token=${encodeURIComponent(token)}`
+    const url = `/api${path}`
 
     const connection = new SSEConnection({
       url,
+      withCredentials: true, // Send cookies for BetterAuth session
       onMessage: (data) => store.handleMessage(data),
       onStateChange: (state) => { store.connectionState = state },
       onError: (err) => console.error("[sse] parse error:", err),
@@ -133,19 +122,13 @@ export function usePreviewListStream(
 
     if (!browser || !org) return
 
-    const token = getToken()
-    if (!token) return
-
     store.reset()
 
-    const params = new URLSearchParams()
-    params.set("org", org)
-    params.set("token", token)
-
-    const url = `/api/previews/stream?${params.toString()}`
+    const url = `/api/previews/stream?org=${encodeURIComponent(org)}`
 
     const connection = new SSEConnection({
       url,
+      withCredentials: true, // Send cookies for BetterAuth session
       onMessage: (data) => store.handleMessage(data),
       onStateChange: (state) => { store.connectionState = state },
       onError: (err) => console.error("[sse] parse error:", err),

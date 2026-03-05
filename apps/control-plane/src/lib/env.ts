@@ -13,10 +13,12 @@ export interface AppEnv {
   yaffleEnv: string
   /** YAFFLE_AUTH_MODE -- off | dev | required */
   authMode: string
-  /** YAFFLE_AUTH_ISSUER -- OpenAuth issuer URL */
-  authIssuer: string
-  /** YAFFLE_AUTH_CLIENT_ID -- OpenAuth client ID */
-  authClientId: string
+  /** BETTER_AUTH_SECRET -- 32+ char secret for BetterAuth encryption */
+  betterAuthSecret: string
+  /** BETTER_AUTH_URL -- Base URL for BetterAuth (e.g., https://api.yaffle.dev) */
+  betterAuthUrl: string
+  /** TRUSTED_ORIGINS -- Comma-separated list of trusted origins for OAuth callbacks */
+  trustedOrigins: string
   /** GITHUB_OAUTH_CLIENT_ID -- GitHub OAuth app client ID */
   githubOauthClientId: string
   /** GITHUB_OAUTH_CLIENT_SECRET -- GitHub OAuth app client secret */
@@ -91,8 +93,9 @@ export function getEnv(): AppEnv {
     otelHeaders: process.env.OTEL_EXPORTER_OTLP_HEADERS ?? "",
     yaffleEnv: process.env.YAFFLE_ENV ?? "development",
     authMode: process.env.YAFFLE_AUTH_MODE ?? "off",
-    authIssuer: process.env.YAFFLE_AUTH_ISSUER || "http://localhost:3000",
-    authClientId: process.env.YAFFLE_AUTH_CLIENT_ID ?? "yaffle-web",
+    betterAuthSecret: process.env.BETTER_AUTH_SECRET ?? "",
+    betterAuthUrl: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
+    trustedOrigins: process.env.TRUSTED_ORIGINS ?? "",
     githubOauthClientId: process.env.GITHUB_OAUTH_CLIENT_ID ?? "",
     githubOauthClientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET ?? "",
   }

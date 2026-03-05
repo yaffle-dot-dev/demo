@@ -1,7 +1,7 @@
 import type { Context, Next } from "hono"
 import { requireAuth, AuthError, type AuthContext } from "../lib/auth.ts"
 import { getMembershipRole } from "../db/queries/users.ts"
-import { findOrgByLogin } from "../db/queries/organizations.ts"
+import { findOrgBySlug } from "../db/queries/organizations.ts"
 import { getEnv } from "../lib/env.ts"
 
 /**
@@ -65,18 +65,18 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
     // Skip auth entirely if disabled
     if (env.authMode === "off") {
       // Still need to resolve org for the handler
-      const orgLogin = orgSource === "query" ? c.req.query(orgKey) : c.req.param(orgKey)
-      if (!orgLogin) {
+      const orgSlug = orgSource === "query" ? c.req.query(orgKey) : c.req.param(orgKey)
+      if (!orgSlug) {
         return c.json(
           { error: { code: "VALIDATION_ERROR", message: `${orgKey} is required` } },
           400,
         )
       }
 
-      const org = await findOrgByLogin(orgLogin)
+      const org = await findOrgBySlug(orgSlug)
       if (!org) {
         return c.json(
-          { error: { code: "ORG_NOT_FOUND", message: `organization not found: ${orgLogin}` } },
+          { error: { code: "ORG_NOT_FOUND", message: `organization not found: ${orgSlug}` } },
           404,
         )
       }
@@ -84,11 +84,11 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
       // Set minimal context for handler
       c.set("auth", {
         userId: "",
-        externalId: "",
-        login: "",
+        email: "",
+        name: "",
+        image: null,
         orgId: org.id,
         role: "admin",
-        provider: "",
       } as OrgAuthContext)
 
       await next()
@@ -111,8 +111,8 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
     }
 
     // Get org identifier
-    const orgLogin = orgSource === "query" ? c.req.query(orgKey) : c.req.param(orgKey)
-    if (!orgLogin) {
+    const orgSlug = orgSource === "query" ? c.req.query(orgKey) : c.req.param(orgKey)
+    if (!orgSlug) {
       return c.json(
         { error: { code: "VALIDATION_ERROR", message: `${orgKey} is required` } },
         400,
@@ -120,10 +120,10 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
     }
 
     // Resolve org
-    const org = await findOrgByLogin(orgLogin)
+    const org = await findOrgBySlug(orgSlug)
     if (!org) {
       return c.json(
-        { error: { code: "ORG_NOT_FOUND", message: `organization not found: ${orgLogin}` } },
+        { error: { code: "ORG_NOT_FOUND", message: `organization not found: ${orgSlug}` } },
         404,
       )
     }
@@ -204,11 +204,11 @@ export function requireResourceAccess(options: ResourceAuthOptions) {
     if (env.authMode === "off") {
       c.set("auth", {
         userId: "",
-        externalId: "",
-        login: "",
+        email: "",
+        name: "",
+        image: null,
         orgId,
         role: "admin",
-        provider: "",
       } as OrgAuthContext)
       await next()
       return

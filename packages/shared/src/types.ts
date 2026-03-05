@@ -35,6 +35,9 @@ export interface PullRequestContext {
   action: PullRequestAction
   headSha: string
   branch: string
+  /** GitHub user ID (stable identifier) */
+  authorGithubId: number
+  /** GitHub username (for display, can change) */
   authorLogin: string
   merged: boolean
   defaultBranch: string
@@ -51,6 +54,10 @@ export interface PushContext {
   repo: string
   headSha: string
   branch: string
+  /** GitHub user ID of the pusher (from sender object) */
+  pusherGithubId: number | null
+  /** GitHub username of the pusher (from sender object) */
+  pusherLogin: string | null
   defaultBranch: string
 }
 

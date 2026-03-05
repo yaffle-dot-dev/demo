@@ -115,6 +115,8 @@ export async function upsertPreview(values: NewPreview): Promise<Preview> {
           headSha: values.headSha,
           branch: values.branch,
           installationId: values.installationId,
+          authorGithubId: values.authorGithubId,
+          authorLogin: values.authorLogin,
           requireApproval: values.requireApproval,
           approvers: values.approvers,
           status: "pending",

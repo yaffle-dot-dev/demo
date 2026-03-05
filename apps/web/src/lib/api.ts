@@ -7,6 +7,9 @@ export interface Preview {
   workspacePath: string
   branch: string
   headSha: string
+  /** GitHub user ID (stable identifier for matching) */
+  authorGithubId: number | null
+  /** GitHub username (for display, can change) */
   authorLogin: string | null
   status: string
   stateKey: string
@@ -68,8 +71,10 @@ export interface EnvironmentGroup {
 
 export interface OrgInfo {
   id: string
-  login: string
+  name: string
+  slug: string
   role: string
+  source: string
 }
 
 // Compact preview shape for grouped views (less fields than full Preview)
@@ -108,8 +113,9 @@ export interface EnvPreviewGroup {
 }
 
 async function fetchJson<T>(path: string): Promise<T> {
+  // BetterAuth uses cookies for authentication, sent automatically by the browser
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: buildAuthHeaders(),
+    credentials: "include",
   })
   const text = await res.text()
   if (!res.ok) {
@@ -132,18 +138,32 @@ async function fetchJson<T>(path: string): Promise<T> {
   }
 }
 
-function buildAuthHeaders(): HeadersInit {
-  if (typeof window === "undefined") return {}
-
-  // Use Bearer token auth (primary method)
-  const accessToken = localStorage.getItem("yaffle.accessToken")
-  if (accessToken) {
-    return {
-      Authorization: `Bearer ${accessToken}`,
+async function postJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    try {
+      const parsed = JSON.parse(text) as ApiError
+      throw new Error(parsed.error?.message ?? `API error: ${res.status}`)
+    } catch {
+      throw new Error(text || `API error: ${res.status}`)
     }
   }
 
-  return {}
+  if (!text) {
+    return undefined as T
+  }
+
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error("API returned non-JSON data")
+  }
 }
 
 export async function listPreviews(params: {
@@ -180,6 +200,21 @@ export async function listOrgs(): Promise<DetailResponse<OrgInfo[]>> {
   return fetchJson("/orgs")
 }
 
+export interface CurrentUser {
+  userId: string
+  name: string
+  email: string
+  /** GitHub user ID (numeric) - used for matching PR authors */
+  githubId: number | null
+}
+
+/**
+ * Get the current authenticated user's info, including their GitHub ID.
+ */
+export async function getMe(): Promise<DetailResponse<CurrentUser>> {
+  return fetchJson("/users/me")
+}
+
 export async function getPreview(id: string): Promise<DetailResponse<Preview>> {
   return fetchJson(`/previews/${id}`)
 }
@@ -202,7 +237,7 @@ export async function getRunPlan(id: string): Promise<DetailResponse<unknown>> {
 
 export async function getRunOutput(id: string): Promise<string> {
   const res = await fetch(`${API_BASE}/runs/${id}/output`, {
-    headers: buildAuthHeaders(),
+    credentials: "include",
   })
   if (!res.ok) {
     throw new Error(`API error: ${res.status}`)
@@ -215,18 +250,7 @@ export async function approvePreview(
   approverLogin?: string,
   githubUserId?: number,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/previews/${id}/approve`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...buildAuthHeaders(),
-    },
-    body: JSON.stringify({ approverLogin, githubUserId }),
-  })
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(text || `API error: ${res.status}`)
-  }
+  await postJson(`/previews/${id}/approve`, { approverLogin, githubUserId })
 }
 
 /**

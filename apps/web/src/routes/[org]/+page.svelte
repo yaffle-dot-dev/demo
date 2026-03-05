@@ -5,13 +5,13 @@
   import { onMount } from "svelte"
   import {
     listEnvironments,
-    listPreviews,
+    getMe,
     type EnvironmentGroup,
     type Preview,
   } from "$lib/api"
   import { usePreviewListStream } from "$lib/sse/index.svelte"
   import { statusConfig, formatRelativeTime, shortSha } from "$lib/status"
-  import { getUserLogin, setLastOrg } from "$lib/auth"
+  import { useSession, setLastOrg } from "$lib/auth"
 
   // Org comes from URL param - always defined since this is a [org] route
   const org = $derived(page.params.org ?? "")
@@ -20,8 +20,12 @@
   let environments = $state<EnvironmentGroup[]>([])
   let loading = $state(true)
   let error = $state("")
-  let hasToken = $state<boolean | null>(null)
-  let userHandle = $state<string | null>(null)
+  
+  // Current user's GitHub ID for matching "your" previews
+  let myGithubId = $state<number | null>(null)
+
+  // BetterAuth session store
+  const session = useSession()
 
   // SSE hook replaces inline EventSource management
   const stream = usePreviewListStream(() => org)
@@ -46,21 +50,24 @@
     headSha: string
     createdAt: string
     status: string
+    /** GitHub user ID of the PR author (stable identifier) */
+    authorGithubId: number | null
+    /** GitHub username of the PR author (for display) */
     authorLogin: string | null
     workspaces: Preview[]
   }
 
   async function load() {
     if (!browser) return
-    hasToken = Boolean(localStorage.getItem("yaffle.accessToken"))
-    if (!hasToken) {
-      goto("/")
-      return
-    }
     loading = true
     error = ""
     try {
-      const envRes = await listEnvironments({ org })
+      // Fetch user's GitHub ID and environments in parallel
+      const [meRes, envRes] = await Promise.all([
+        getMe(),
+        listEnvironments({ org }),
+      ])
+      myGithubId = meRes.data.githubId
       environments = envRes.data
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
@@ -121,6 +128,7 @@
 
       const headSha = existing?.headSha ?? preview.headSha
       const branch = existing?.branch ?? preview.branch
+      const authorGithubId = existing?.authorGithubId ?? preview.authorGithubId ?? null
       const authorLogin = existing?.authorLogin ?? preview.authorLogin ?? null
 
       const group: PreviewGroup = {
@@ -131,6 +139,7 @@
         headSha,
         createdAt,
         status,
+        authorGithubId,
         authorLogin,
         workspaces: existing ? [...existing.workspaces, preview] : [preview],
       }
@@ -147,28 +156,41 @@
     groupPreviews(previews.filter((p) => (showInactive ? true : ACTIVE_STATUSES.has(p.status)))),
   )
 
-  const normalizedHandle = $derived(userHandle?.trim().toLowerCase() ?? "")
-
+  // Filter groups by GitHub ID (stable) instead of username (can change)
   const yourGroups = $derived(
-    normalizedHandle
-      ? activeGroups.filter((g) => (g.authorLogin ?? "").toLowerCase() === normalizedHandle)
+    myGithubId
+      ? activeGroups.filter((g) => g.authorGithubId === myGithubId)
       : [],
   )
 
   const otherGroups = $derived(
-    normalizedHandle
-      ? activeGroups.filter((g) => (g.authorLogin ?? "").toLowerCase() !== normalizedHandle)
+    myGithubId
+      ? activeGroups.filter((g) => g.authorGithubId !== myGithubId)
       : activeGroups,
   )
 
+  let hasLoaded = false
+
   onMount(() => {
     if (!browser) return
-    hasToken = Boolean(localStorage.getItem("yaffle.accessToken"))
-    userHandle = getUserLogin()
     showInactive = localStorage.getItem("yaffle.showInactive") === "true"
     // Remember this org as the last visited
     if (org) setLastOrg(org)
-    load()
+
+    // Subscribe to session and load when ready
+    const unsubscribe = session.subscribe((state) => {
+      if (state.isPending) return
+      if (hasLoaded) return
+      hasLoaded = true
+
+      if (!state.data?.user) {
+        goto("/")
+        return
+      }
+      load()
+    })
+
+    return unsubscribe
   })
 
   // Persist showInactive preference
@@ -283,14 +305,14 @@
       Waiting for your first preview or deployment.
     </div>
   {:else}
-    {#if normalizedHandle}
+    {#if myGithubId}
       <section class="space-y-3">
         <div class="flex items-center justify-between">
           <h2 class="text-sm font-medium text-text-muted">Your active previews</h2>
           <span class="text-xs text-text-dim">{yourGroups.length} groups</span>
         </div>
         {#if yourGroups.length === 0}
-          <div class="text-text-dim text-sm py-6 text-center">No previews for @{normalizedHandle}.</div>
+          <div class="text-text-dim text-sm py-6 text-center">No active previews.</div>
         {:else}
           <div class="grid grid-cols-1 gap-4">
             {#each yourGroups as group (group.key)}

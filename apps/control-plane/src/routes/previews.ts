@@ -208,7 +208,7 @@ previewsRoute.get(
       data: approvals.map((a) => ({
         id: a.id,
         previewId: a.previewId,
-        githubUserId: a.githubUserId,
+        userId: a.userId,
         approverLogin: a.approverLogin ?? null,
         approvedAt: a.approvedAt.toISOString(),
       })),
@@ -258,11 +258,11 @@ previewsRoute.post(
       )
     }
 
-    // Use auth context if available, otherwise fall back to body
-    const approverLogin = auth.login || body.data?.approverLogin
-    const githubUserId = auth.externalId ? Number(auth.externalId) : body.data?.githubUserId
+    // Use auth context for approver identity
+    const approverLogin = auth.name || body.data?.approverLogin
+    const userId = auth.userId
 
-    if (!approverLogin || !githubUserId) {
+    if (!userId) {
       return c.json(
         { error: { code: "VALIDATION_ERROR", message: "approver identity required" } },
         400,
@@ -276,6 +276,7 @@ previewsRoute.post(
 
     if (
       approvers.length > 0 &&
+      approverLogin &&
       !approvers.map((a) => a.toLowerCase()).includes(approverLogin.toLowerCase())
     ) {
       return c.json(
@@ -286,14 +287,13 @@ previewsRoute.post(
 
     await createApproval({
       previewId: preview.id,
-      githubUserId,
-      approverLogin,
+      userId,
+      approverLogin: approverLogin ?? null,
     })
 
     await approvePreviewApply({
       previewId: preview.id,
       approverLogin,
-      githubUserId,
     })
 
     return c.json({ data: { approved: true } })
@@ -311,6 +311,7 @@ interface SerializedPreview {
   workspacePath: string
   branch: string
   headSha: string
+  authorGithubId: number | null
   authorLogin: string | null
   status: string
   stateKey: string
@@ -327,6 +328,7 @@ function serializePreview(p: {
   workspacePath: string
   branch: string
   headSha: string
+  authorGithubId: number | null
   authorLogin: string | null
   status: string
   stateKey: string
@@ -345,6 +347,7 @@ function serializePreview(p: {
     workspacePath: p.workspacePath,
     branch: p.branch,
     headSha: p.headSha,
+    authorGithubId: p.authorGithubId ?? null,
     authorLogin: p.authorLogin ?? null,
     status: p.status,
     stateKey: p.stateKey,

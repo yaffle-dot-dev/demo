@@ -2,6 +2,7 @@ import { initTelemetry, logger as log, shutdownTelemetry } from "./lib/telemetry
 
 import { Hono } from "hono"
 import { logger } from "hono/logger"
+import { cors } from "hono/cors"
 
 import { httpTelemetry } from "./middleware/http-telemetry.ts"
 import { webhooksRoute } from "./routes/webhooks.ts"
@@ -9,14 +10,27 @@ import { previewsRoute } from "./routes/previews.ts"
 import { environmentsRoute } from "./routes/environments.ts"
 import { orgsRoute } from "./routes/orgs.ts"
 import { reposRoute } from "./routes/repos.ts"
-import { authRoute } from "./routes/auth.ts"
 import { authApiRoute } from "./routes/auth-api.ts"
 import { healthRoute } from "./routes/health.ts"
+import { auth } from "./lib/better-auth.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
 await initTelemetry()
 
 const app = new Hono()
+
+// CORS for auth endpoints (needed for cross-origin requests from web app)
+app.use(
+  "/api/auth/*",
+  cors({
+    origin: (origin) => origin, // Allow all origins for now, tighten in production
+    allowHeaders: ["Content-Type", "Authorization"],
+    allowMethods: ["POST", "GET", "OPTIONS"],
+    exposeHeaders: ["Content-Length"],
+    maxAge: 600,
+    credentials: true,
+  }),
+)
 
 // Telemetry middleware - creates root span and records metrics for all requests
 app.use("*", httpTelemetry)
@@ -37,18 +51,27 @@ app.notFound((c) => {
   return c.json({ error: { code: "NOT_FOUND", message: "not found" } }, 404)
 })
 
-// API routes - mount BEFORE OpenAuth to ensure /api/* is handled first
+// BetterAuth handler - handles /api/auth/*
+app.on(["POST", "GET"], "/api/auth/*", async (c) => {
+  log.info(`BetterAuth request: ${c.req.method} ${c.req.path}`)
+  try {
+    const response = await auth.handler(c.req.raw)
+    log.info(`BetterAuth response: ${response.status}`)
+    return response
+  } catch (err) {
+    log.error("BetterAuth handler error", { error: err instanceof Error ? err.message : String(err) })
+    throw err
+  }
+})
+
+// API routes
 app.route("/api/webhooks", webhooksRoute)
 app.route("/api/previews", previewsRoute)
 app.route("/api/environments", environmentsRoute)
 app.route("/api/orgs", orgsRoute)
 app.route("/api/orgs", reposRoute) // Nested under /api/orgs for /:org/repos/... routes
-app.route("/api/auth", authApiRoute)
+app.route("/api/users", authApiRoute) // Custom user endpoints (e.g., /api/users/me)
 app.route("/api", healthRoute)
-
-// OpenAuth issuer mounted at root - handles /authorize, /token, /jwks, /.well-known/*, /:provider/*
-// Must be last so it doesn't intercept /api routes
-app.route("/", authRoute)
 
 const port = Number(process.env.PORT ?? 3000)
 

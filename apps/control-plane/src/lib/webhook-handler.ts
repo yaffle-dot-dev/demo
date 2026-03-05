@@ -17,7 +17,7 @@ import {
   validateConfig,
 } from "./config.ts"
 import { executeApplyCallbacks } from "./apply-callbacks.ts"
-import { ensureOrg, findOrgById } from "../db/queries/organizations.ts"
+import { ensureOrg, findGithubInstallationsForOrg } from "../db/queries/organizations.ts"
 import { findPreview, findPreviewById, markRemovedWorkspacesDestroyed, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
 import { appendRunLog, createTfRun, findLatestRun, updateRunStatus } from "../db/queries/tf-runs.ts"
 import {
@@ -128,8 +128,7 @@ export async function handleWebhookEvent(ctx: WebhookContext): Promise<void> {
  */
 export async function approvePreviewApply(opts: {
   previewId: string
-  approverLogin: string
-  githubUserId: number
+  approverLogin?: string | null
 }): Promise<void> {
   return previewMutex.run(`approve:${opts.previewId}`, async () => {
     const preview = await findPreviewById(opts.previewId)
@@ -149,24 +148,30 @@ export async function approvePreviewApply(opts: {
     const approvers = Array.isArray(preview.approvers) ? preview.approvers : []
     if (
       approvers.length > 0 &&
+      opts.approverLogin &&
       !approvers.map((a) => a.toLowerCase()).includes(opts.approverLogin.toLowerCase())
     ) {
       throw new Error("approver not authorized")
     }
 
-    const org = await findOrgById(preview.orgId)
-    if (!org) {
-      throw new Error("organization not found")
+    // Get the GitHub org info from the installation
+    const installations = await findGithubInstallationsForOrg(preview.orgId)
+    const installation = installations.find((i) => i.installationId === preview.installationId)
+    if (!installation) {
+      throw new Error("github installation not found for this preview")
     }
 
     const ctx: PushContext = {
       kind: "push",
       installationId: preview.installationId,
-      ownerGithubId: org.githubId,
-      owner: org.login,
+      ownerGithubId: installation.githubOrgId,
+      owner: installation.githubOrgLogin,
       repo: preview.repo,
       headSha: preview.headSha,
       branch: preview.branch,
+      // Synthetic context for destroy - no pusher info available
+      pusherGithubId: null,
+      pusherLogin: null,
       defaultBranch: preview.branch,
     }
 
@@ -203,7 +208,7 @@ export async function approvePreviewApply(opts: {
       await updateCheckRun(preview.installationId, ctx.owner, ctx.repo, planRun.checkRunId, {
         status: "in_progress",
         title: "Applying after approval",
-        summary: `Approved by @${opts.approverLogin}`,
+        summary: opts.approverLogin ? `Approved by @${opts.approverLogin}` : "Approved",
       })
     }
 
@@ -388,6 +393,7 @@ async function handlePrOpenedOrUpdated(
         workspacePath: ws.path,
         branch: ctx.branch,
         headSha: ctx.headSha,
+        authorGithubId: ctx.authorGithubId,
         authorLogin: ctx.authorLogin,
         stateKey,
         mode: "terraform",
@@ -645,6 +651,8 @@ async function handlePushEvent(
         workspacePath: ws.path,
         branch: ctx.branch,
         headSha: ctx.headSha,
+        authorGithubId: ctx.pusherGithubId ?? undefined,
+        authorLogin: ctx.pusherLogin ?? undefined,
         stateKey,
         mode: "terraform",
         requireApproval: ws.require_approval ?? false,

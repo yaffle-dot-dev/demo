@@ -1,103 +1,72 @@
 <script lang="ts">
   import { browser } from "$app/environment"
   import { goto } from "$app/navigation"
-  import { page } from "$app/state"
   import { onMount, onDestroy } from "svelte"
   import { listOrgs } from "$lib/api"
+  import { useSession } from "$lib/auth"
 
   let status = $state<"loading" | "waiting" | "redirecting" | "error">("loading")
   let targetOrg = $state<string | null>(null)
-  let stream: EventSource | null = null
+  let pollInterval: ReturnType<typeof setInterval> | null = null
+  let hasInitialized = false
 
-  // GitHub passes installation_id in the query params after install
-  const installationId = $derived(page.url.searchParams.get("installation_id"))
+  // BetterAuth session
+  const session = useSession()
 
-  function connectStream(knownOrgs: Set<string>) {
-    if (!browser || stream) return
-    const token = localStorage.getItem("yaffle.accessToken")
-    if (!token) {
-      status = "error"
-      return
-    }
-
-    const params = new URLSearchParams()
-    params.set("token", token)
-
-    stream = new EventSource(`/api/orgs/stream?${params.toString()}`)
-    stream.addEventListener("update", (event) => {
-      if (status === "redirecting") return
-      try {
-        const payload = JSON.parse((event as MessageEvent).data) as { data: Array<{ login: string }> }
-        // Find the NEW org that wasn't in our initial set
-        const newOrg = payload.data.find(org => !knownOrgs.has(org.login))
-        if (newOrg) {
-          status = "redirecting"
-          targetOrg = newOrg.login
-          stream?.close()
-          goto(`/${newOrg.login}`, { replaceState: true })
-        }
-      } catch {
-        // ignore
-      }
-    })
-    stream.addEventListener("error", () => {
-      stream?.close()
-      stream = null
-      // Retry after delay
-      setTimeout(() => connectStream(knownOrgs), 2000)
-    })
-  }
-
-  onMount(async () => {
+  onMount(() => {
     if (!browser) return
 
-    const token = localStorage.getItem("yaffle.accessToken")
-    if (!token) {
-      // Not logged in - redirect to home to login first
-      goto("/", { replaceState: true })
-      return
-    }
+    // Subscribe to session changes
+    const unsubscribe = session.subscribe(async (state) => {
+      // Still loading session
+      if (state.isPending) return
 
-    // Get current orgs to know what's "new"
-    let knownOrgs = new Set<string>()
-    try {
-      const res = await listOrgs()
-      knownOrgs = new Set(res.data.map(org => org.login))
-    } catch {
-      // Continue anyway
-    }
+      // Only initialize once
+      if (hasInitialized) return
+      hasInitialized = true
 
-    status = "waiting"
-    
-    // Poll for the new org - webhook should create it shortly
-    connectStream(knownOrgs)
+      if (!state.data?.user) {
+        // Not logged in - redirect to home to login first
+        goto("/", { replaceState: true })
+        return
+      }
 
-    // Also poll once immediately and a few times quickly
-    // (webhook might have already fired before we got here)
-    const checkForNewOrg = async () => {
+      // User is logged in - get current orgs to know what's "new"
+      let knownOrgs = new Set<string>()
       try {
         const res = await listOrgs()
-        const newOrg = res.data.find(org => !knownOrgs.has(org.login))
-        if (newOrg) {
-          status = "redirecting"
-          targetOrg = newOrg.login
-          stream?.close()
-          goto(`/${newOrg.login}`, { replaceState: true })
-        }
+        knownOrgs = new Set(res.data.map(org => org.slug))
       } catch {
-        // ignore
+        // Continue anyway
       }
+
+      status = "waiting"
+
+      // Poll for the new org - webhook should create it shortly
+      const checkForNewOrg = async () => {
+        try {
+          const res = await listOrgs()
+          const newOrg = res.data.find(org => !knownOrgs.has(org.slug))
+          if (newOrg) {
+            status = "redirecting"
+            targetOrg = newOrg.slug
+            if (pollInterval) clearInterval(pollInterval)
+            goto(`/${newOrg.slug}`, { replaceState: true })
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      // Check immediately, then poll every 2 seconds
+      await checkForNewOrg()
+      pollInterval = setInterval(checkForNewOrg, 2000)
+    })
+
+    return () => {
+      unsubscribe()
+      if (pollInterval) clearInterval(pollInterval)
     }
-
-    // Check immediately, then at 1s and 3s
-    await checkForNewOrg()
-    setTimeout(checkForNewOrg, 1000)
-    setTimeout(checkForNewOrg, 3000)
-  })
-
-  onDestroy(() => {
-    stream?.close()
-    stream = null
   })
 </script>
 

@@ -125,6 +125,7 @@ function makePrContext(overrides?: Partial<PullRequestContext>): PullRequestCont
     action: "opened",
     headSha: "abc123def456",
     branch: "feature/test",
+    authorGithubId: 12345,
     authorLogin: "octocat",
     merged: false,
     defaultBranch: "main",
@@ -141,6 +142,8 @@ function makePushContext(overrides?: Partial<PushContext>): PushContext {
     repo: "test-repo",
     headSha: "abc123def456",
     branch: "main",
+    pusherGithubId: 12345,
+    pusherLogin: "octocat",
     defaultBranch: "main",
     ...overrides,
   }

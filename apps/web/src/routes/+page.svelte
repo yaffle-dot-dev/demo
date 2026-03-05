@@ -3,44 +3,80 @@
   import { goto } from "$app/navigation"
   import { onMount } from "svelte"
   import { listOrgs } from "$lib/api"
-  import { getLastOrg } from "$lib/auth"
+  import { getLastOrg, useSession, startGithubLogin } from "$lib/auth"
 
-  let hasToken = $state<boolean | null>(null)
-  let redirecting = $state(false)
+  // State flags - use regular variables since we control all mutations
+  let hasCheckedSession = false
+  let hasCheckedOrgs = false
+  let isRedirecting = false
+
+  // Reactive state for UI
+  let showLoading = $state(true)
+  let showLanding = $state(false)
+  let showNoOrgs = $state(false)
 
   const GITHUB_APP_NAME = "yaffle-dot-dev"
   const installUrl = `https://github.com/apps/${GITHUB_APP_NAME}/installations/new`
 
-  onMount(async () => {
-    if (!browser) return
-    hasToken = Boolean(localStorage.getItem("yaffle.accessToken"))
+  // BetterAuth session store
+  const session = useSession()
 
-    if (hasToken) {
-      // Check if user has any orgs
-      redirecting = true
-      try {
-        const res = await listOrgs()
-        if (res.data.length > 0) {
-          // Check for last visited org, otherwise use first available
-          const lastOrg = getLastOrg()
-          const targetOrg = lastOrg && res.data.some(o => o.login === lastOrg)
-            ? lastOrg
-            : res.data[0].login
-          goto(`/${targetOrg}`, { replaceState: true })
-          return
-        }
-      } catch {
-        // If we can't fetch orgs, stay on landing page
+  async function checkOrgsAndRedirect(): Promise<void> {
+    if (hasCheckedOrgs || isRedirecting) return
+    hasCheckedOrgs = true
+    isRedirecting = true
+
+    try {
+      const res = await listOrgs()
+      if (res.data.length > 0) {
+        // Check for last visited org, otherwise use first available
+        const lastOrg = getLastOrg()
+        const targetOrg = lastOrg && res.data.some(o => o.slug === lastOrg)
+          ? lastOrg
+          : res.data[0].slug
+        goto(`/${targetOrg}`, { replaceState: true })
+        return
       }
-      redirecting = false
+      // User is logged in but has no orgs
+      showLoading = false
+      showNoOrgs = true
+    } catch {
+      // If we can't fetch orgs, show the "no orgs" prompt
+      showLoading = false
+      showNoOrgs = true
     }
+  }
+
+  onMount(() => {
+    if (!browser) return
+
+    // Subscribe to session changes and handle auth state
+    const unsubscribe = session.subscribe((state) => {
+      // Still loading session
+      if (state.isPending) return
+
+      // Prevent multiple checks
+      if (hasCheckedSession) return
+      hasCheckedSession = true
+
+      if (state.data?.user) {
+        // User is logged in - check for orgs
+        checkOrgsAndRedirect()
+      } else {
+        // User is not logged in - show landing page
+        showLoading = false
+        showLanding = true
+      }
+    })
+
+    return unsubscribe
   })
 </script>
 
-{#if hasToken === null || redirecting}
+{#if showLoading}
   <!-- Checking auth state / redirecting -->
   <div class="min-h-[60vh]"></div>
-{:else if !hasToken}
+{:else if showLanding}
   <div class="min-h-[70vh] flex flex-col items-center justify-center text-center px-4">
     <div class="max-w-2xl space-y-8">
       <div class="space-y-4">
@@ -56,7 +92,7 @@
 
       <div class="flex flex-col sm:flex-row gap-4 justify-center">
         <button
-          onclick={() => import('$lib/auth').then(m => m.startGithubLogin())}
+          onclick={startGithubLogin}
           class="inline-flex items-center justify-center gap-2 px-6 py-3 rounded-lg
                  bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
                  transition-colors"
@@ -95,7 +131,7 @@
       <p class="text-sm text-text-dim pt-4">
         Already have an account?
         <button
-          onclick={() => import('$lib/auth').then(m => m.startGithubLogin())}
+          onclick={startGithubLogin}
           class="text-yaffle-400 hover:underline"
         >
           Sign in
@@ -103,7 +139,7 @@
       </p>
     </div>
   </div>
-{:else}
+{:else if showNoOrgs}
   <!-- Signed in but no orgs - prompt to install GitHub App -->
   <div class="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
     <div class="max-w-md space-y-4">

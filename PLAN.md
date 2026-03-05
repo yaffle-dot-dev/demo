@@ -438,7 +438,8 @@ components:
 |-------|--------|-----------|
 | **Control Plane** | Hono + Bun | Lightweight |
 | **Frontend** | SvelteKit | Elegant |
-| **Database** | Postgres (Neon → RDS) | Jobs, metadata |
+| **Auth** | BetterAuth | SSO-ready, DB sessions |
+| **Database** | Postgres (Neon → RDS) | Jobs, metadata, sessions |
 | **TF Execution** | ECS Fargate | Isolated, scalable |
 | **State Storage** | S3 | Standard TF backend |
 | **State Locking** | DynamoDB | Standard TF locking |
@@ -446,17 +447,98 @@ components:
 
 ---
 
+## Authentication & Authorization
+
+> Full details in [docs/authentication.md](docs/authentication.md)
+
+### Design Principles
+
+1. **Frictionless for early adopters** - Install GitHub App, share link, team joins in minutes
+2. **Enterprise-ready** - SSO/SAML, audit trails, compliance when needed
+3. **Decoupled from GitHub** - Yaffle orgs are independent; GitHub is one integration
+
+### How Membership Works
+
+**Default mode: GitHub Self-Join**
+
+```
+Alice installs GitHub App on "acme-corp"
+    │
+    ▼
+Yaffle creates org, Alice is admin
+    │
+    ▼
+Alice shares link: "Sign in at yaffle.dev"
+    │
+    ▼
+Bob signs in with GitHub
+    │
+    ▼
+Bob sees: "Join acme-corp? (You're a member on GitHub)"
+    │
+    ▼
+One click → Bob is a viewer
+```
+
+- **Trust signal**: GitHub org membership = trusted with code = can see TF plans
+- **Explicit action**: Users click "Join", not auto-added
+- **Auditable**: Every membership records its source
+
+**Enterprise upgrade path:**
+
+- Set `membership_mode = 'invite_only'` or `'sso_only'`
+- Self-join disabled, existing members keep access
+- New members via invite or SCIM provisioning
+
+### Roles
+
+| Role | Can Do |
+|------|--------|
+| `viewer` | View previews, plans, logs |
+| `approver` | + Approve applies |
+| `admin` | + Manage members, org settings |
+
+---
+
 ## Database Schema
 
+> **Note:** Auth tables (`user`, `account`, `session`, `verification`) are managed
+> by BetterAuth. See [docs/authentication.md](docs/authentication.md) for the
+> complete auth schema.
+
 ```sql
--- Organizations
+-- Organizations (decoupled from GitHub)
 CREATE TABLE organizations (
   id UUID PRIMARY KEY,
-  github_id BIGINT UNIQUE NOT NULL,
-  login TEXT NOT NULL,
-  state_bucket TEXT NOT NULL,       -- S3 bucket for this org
+  name TEXT NOT NULL,
+  slug TEXT UNIQUE NOT NULL,
+  state_bucket TEXT,                -- S3 bucket for TF state (nullable until configured)
   runner_mode TEXT DEFAULT 'saas',  -- 'saas' | 'byoa'
+  membership_mode TEXT DEFAULT 'github_self_join',  -- 'github_self_join' | 'invite_only' | 'sso_only'
   created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Links Yaffle orgs to GitHub App installations
+CREATE TABLE github_installations (
+  id UUID PRIMARY KEY,
+  org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+  github_org_id BIGINT NOT NULL,
+  github_org_login TEXT NOT NULL,
+  installation_id BIGINT UNIQUE NOT NULL,
+  installation_status TEXT DEFAULT 'active',  -- 'active' | 'suspended' | 'uninstalled'
+  installed_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- User membership in organizations
+CREATE TABLE org_memberships (
+  id UUID PRIMARY KEY,
+  org_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
+  user_id TEXT REFERENCES "user"(id) ON DELETE CASCADE,  -- BetterAuth user ID
+  role TEXT NOT NULL,               -- 'viewer' | 'approver' | 'admin'
+  source TEXT NOT NULL,             -- 'github_self_join' | 'invite' | 'scim' | 'admin_bootstrap'
+  created_at TIMESTAMP DEFAULT NOW(),
+  UNIQUE(org_id, user_id)
 );
 
 -- Connections (for codegen mode)
@@ -505,7 +587,7 @@ CREATE TABLE tf_runs (
 CREATE TABLE approvals (
   id UUID PRIMARY KEY,
   preview_id UUID REFERENCES previews(id),
-  user_id UUID REFERENCES users(id),
+  user_id TEXT REFERENCES "user"(id),  -- BetterAuth user ID
   approved_at TIMESTAMP DEFAULT NOW()
 );
 

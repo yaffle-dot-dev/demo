@@ -125,6 +125,7 @@ webhooksRoute.post("/github", async (c) => {
       action: action as PullRequestAction,
       headSha,
       branch: payload.pull_request.head.ref,
+      authorGithubId: payload.pull_request.user?.id ?? 0,
       authorLogin: payload.pull_request.user?.login ?? "unknown",
       merged: payload.pull_request.merged ?? false,
       defaultBranch: payload.repository.default_branch,
@@ -159,6 +160,8 @@ webhooksRoute.post("/github", async (c) => {
       repo: payload.repository.name,
       headSha: payload.after,
       branch,
+      pusherGithubId: payload.sender?.id ?? null,
+      pusherLogin: payload.sender?.login ?? null,
       defaultBranch: payload.repository.default_branch,
     }
 
@@ -221,6 +224,7 @@ webhooksRoute.post("/github", async (c) => {
           orgId: org.id,
           userId: user.id,
           role: "admin", // installer gets admin
+          source: "admin_bootstrap",
         })
         logger.info(`created admin membership for installer: user=${sender.login} org=${login}`, {
           "yaffle.org": login,

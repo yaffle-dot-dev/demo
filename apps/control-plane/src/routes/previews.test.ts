@@ -18,8 +18,8 @@ async function seedOrg(): Promise<string> {
   const rows = await db
     .insert(organizations)
     .values({
-      githubId: 99999,
-      login: "test-org",
+      name: "Test Org",
+      slug: "test-org",
       stateBucket: "test-bucket",
     })
     .returning()

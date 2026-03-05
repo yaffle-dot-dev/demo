@@ -64,6 +64,8 @@ export interface PreviewListStreamState {
 export interface SSEConnectionOptions {
   /** URL to connect to */
   url: string
+  /** Whether to send credentials (cookies) with the request */
+  withCredentials?: boolean
   /** Called with parsed data on each "update" event */
   onMessage: (data: unknown) => void
   /** Called when connection state changes */

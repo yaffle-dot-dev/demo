@@ -58,7 +58,9 @@ export class SSEConnection {
 
     this.options.onStateChange("connecting")
 
-    const es = new EventSource(this.options.url)
+    const es = new EventSource(this.options.url, {
+      withCredentials: this.options.withCredentials ?? false,
+    })
     this.es = es
 
     es.addEventListener("open", () => {

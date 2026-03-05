@@ -34,13 +34,15 @@ orgsRoute.get("/", async (c) => {
 
   // In dev mode, return the single org from headers
   if (env.authMode === "dev" && auth.orgId && auth.role) {
-    const orgLogin = c.req.header("x-yaffle-org") ?? auth.login
+    const orgSlug = c.req.header("x-yaffle-org") ?? auth.name
     return c.json({
       data: [
         {
           id: auth.orgId,
-          login: orgLogin,
+          slug: orgSlug,
+          name: orgSlug,
           role: auth.role,
+          source: "admin_bootstrap",
         },
       ],
     })
