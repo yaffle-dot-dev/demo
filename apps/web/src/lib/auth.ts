@@ -8,9 +8,9 @@ function getApiUrl(): string {
   if (env) {
     return env.trim().replace(/\/+$/, "")
   }
-  // Default for local development
+  // Default: same origin (works with Caddy reverse proxy in dev and production)
   if (typeof window !== "undefined") {
-    return `${window.location.protocol}//${window.location.hostname}:3000`
+    return window.location.origin
   }
   return "http://localhost:3000"
 }

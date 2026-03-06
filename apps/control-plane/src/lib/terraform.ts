@@ -95,8 +95,9 @@ async function execTf(
 export async function tfInit(
   workDir: string,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
+  extraEnv?: Record<string, string>,
 ): Promise<TfExecResult> {
-  return execTf(["init", "-input=false"], workDir, undefined, onOutput)
+  return execTf(["init", "-input=false"], workDir, extraEnv, onOutput)
 }
 
 /**
@@ -107,6 +108,7 @@ export async function tfPlan(
   workDir: string,
   variables?: Record<string, string>,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
+  extraEnv?: Record<string, string>,
 ): Promise<{ output: string; planJson: unknown; summary: string }> {
   // Write variables file if provided
   if (variables && Object.keys(variables).length > 0) {
@@ -121,7 +123,7 @@ export async function tfPlan(
   const result = await execTf(
     ["plan", "-out=tfplan", "-input=false", "-detailed-exitcode"],
     workDir,
-    undefined,
+    extraEnv,
     onOutput,
   )
 
@@ -157,6 +159,7 @@ export async function tfApply(
   workDir: string,
   variables?: Record<string, string>,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
+  extraEnv?: Record<string, string>,
 ): Promise<{ output: string; outputs: Record<string, unknown> }> {
   if (variables && Object.keys(variables).length > 0) {
     await writeFile(
@@ -168,7 +171,7 @@ export async function tfApply(
   const result = await execTf(
     ["apply", "-auto-approve", "-input=false"],
     workDir,
-    undefined,
+    extraEnv,
     onOutput,
   )
 
@@ -196,11 +199,12 @@ export async function tfApply(
 export async function tfDestroy(
   workDir: string,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
+  extraEnv?: Record<string, string>,
 ): Promise<{ output: string }> {
   const result = await execTf(
     ["destroy", "-auto-approve", "-input=false"],
     workDir,
-    undefined,
+    extraEnv,
     onOutput,
   )
 
@@ -220,12 +224,14 @@ export async function runTerraform(opts: {
   command: RunType
   variables?: Record<string, string>
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
+  /** Extra environment variables to pass to terraform (e.g., TFC tokens) */
+  extraEnv?: Record<string, string>
 }): Promise<TerraformResult> {
   const start = Date.now()
 
   try {
     // Always init first
-    const initResult = await tfInit(opts.workDir, opts.onOutput)
+    const initResult = await tfInit(opts.workDir, opts.onOutput, opts.extraEnv)
     if (initResult.exitCode !== 0) {
       return {
         success: false,
@@ -242,6 +248,7 @@ export async function runTerraform(opts: {
           opts.workDir,
           opts.variables,
           opts.onOutput,
+          opts.extraEnv,
         )
         return {
           success: true,
@@ -254,7 +261,7 @@ export async function runTerraform(opts: {
       }
 
       case "apply": {
-        const { output, outputs } = await tfApply(opts.workDir, opts.variables, opts.onOutput)
+        const { output, outputs } = await tfApply(opts.workDir, opts.variables, opts.onOutput, opts.extraEnv)
         return {
           success: true,
           command: "apply",
@@ -265,7 +272,7 @@ export async function runTerraform(opts: {
       }
 
       case "destroy": {
-        const { output } = await tfDestroy(opts.workDir, opts.onOutput)
+        const { output } = await tfDestroy(opts.workDir, opts.onOutput, opts.extraEnv)
         return {
           success: true,
           command: "destroy",

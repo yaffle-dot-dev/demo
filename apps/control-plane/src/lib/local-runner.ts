@@ -4,6 +4,8 @@ import type { TerraformResult } from "@yaffle/shared"
 
 import type { RunOpts, Runner } from "./runner.ts"
 import { configureBackend } from "./state.ts"
+import { configureTfcBackend, buildTfcEnvVars, useTfcBackend } from "./tfc-backend.ts"
+import { getTfcApiHost } from "./run-token.ts"
 import { logger, withSpan } from "./telemetry.ts"
 import { runTerraform } from "./terraform.ts"
 import { cleanupWorkspace, prepareWorkspace } from "./workspace.ts"
@@ -11,15 +13,22 @@ import { cleanupWorkspace, prepareWorkspace } from "./workspace.ts"
 /**
  * Local runner: clones the repo, configures a persistent local backend
  * for the specified workspace path, and shells out to tofu/terraform.
+ *
+ * Supports two backend modes:
+ * 1. S3/Local backend (default): Direct S3 state storage with DynamoDB locking
+ * 2. TFC backend: Uses Yaffle's TFC-compatible API for state management
  */
 export class LocalRunner implements Runner {
   async run(opts: RunOpts): Promise<TerraformResult> {
     return withSpan("local_runner.run", async (span) => {
+      const backendMode = useTfcBackend() && opts.tfcWorkspaceName ? "tfc" : "s3"
+
       span.setAttributes({
         "runner.type": "local",
         "runner.command": opts.command,
         "runner.workspace_path": opts.workspacePath,
         "runner.state_key": opts.stateKey,
+        "runner.backend_mode": backendMode,
       })
 
       let workDir: string | undefined
@@ -53,14 +62,29 @@ export class LocalRunner implements Runner {
           }
         }
 
-        // Configure backend (S3 in production, local in dev)
-        await configureBackend(tfDir, opts.owner, opts.repo, opts.stateKey)
+        // Configure backend based on mode
+        let extraEnv: Record<string, string> = {}
+
+        if (backendMode === "tfc" && opts.tfcWorkspaceName && opts.tfcOrganization && opts.tfcToken) {
+          // TFC backend mode: Use Yaffle's TFC-compatible API
+          await configureTfcBackend(tfDir, {
+            hostname: getTfcApiHost(),
+            organization: opts.tfcOrganization,
+            workspaceName: opts.tfcWorkspaceName,
+            token: opts.tfcToken,
+          })
+          extraEnv = buildTfcEnvVars(opts.tfcToken)
+        } else {
+          // Legacy S3/local backend mode
+          await configureBackend(tfDir, opts.owner, opts.repo, opts.stateKey)
+        }
 
         return await runTerraform({
           workDir: tfDir,
           command: opts.command,
           variables: opts.variables,
           onOutput: opts.onOutput,
+          extraEnv,
         })
       } finally {
         if (workDir) {

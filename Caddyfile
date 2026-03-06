@@ -1,0 +1,48 @@
+# Caddy reverse proxy for local development
+# Provides HTTPS on localhost:6969 for all Yaffle services
+#
+# Usage: caddy run (started automatically by devenv up)
+# First run: caddy trust (to install Caddy's local CA)
+{
+	# Use Caddy's internal CA for localhost HTTPS
+	local_certs
+}
+
+https://localhost:6969 {
+	# TFC-compatible API (terraform login, state backend)
+	handle /.well-known/* {
+		reverse_proxy localhost:3000
+	}
+
+	handle /tfc/* {
+		reverse_proxy localhost:3000
+	}
+
+	# Control plane API
+	handle /api/* {
+		reverse_proxy localhost:3000
+	}
+
+	# SvelteKit web app (served at root for dev)
+	# Vite dev server paths
+	handle /@fs/* {
+		reverse_proxy localhost:5173
+	}
+
+	handle /@vite/* {
+		reverse_proxy localhost:5173
+	}
+
+	handle /@id/* {
+		reverse_proxy localhost:5173
+	}
+
+	handle /node_modules/* {
+		reverse_proxy localhost:5173
+	}
+
+	# Default: SvelteKit app (replaces MLP for local dev)
+	handle {
+		reverse_proxy localhost:5173
+	}
+}

@@ -1,12 +1,13 @@
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
-import { organizations, githubInstallations } from "../schema.ts"
+import { organizations, githubInstallations, orgMemberships } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 
 export type Organization = typeof organizations.$inferSelect
 export type NewOrganization = typeof organizations.$inferInsert
 export type GithubInstallation = typeof githubInstallations.$inferSelect
+export type OrgMembership = typeof orgMemberships.$inferSelect
 
 /**
  * Find an organization by its slug (URL-safe identifier).
@@ -330,4 +331,25 @@ export async function updateOrgInstallationStatus(
     .update(githubInstallations)
     .set({ installationStatus: status })
     .where(eq(githubInstallations.githubOrgId, githubOrgId))
+}
+
+// =============================================================================
+// Org Membership Queries
+// =============================================================================
+
+/**
+ * Find a user's membership in an organization.
+ */
+export async function findOrgMembership(
+  orgId: string,
+  userId: string,
+): Promise<OrgMembership | undefined> {
+  return withDbSpan("select", "org_memberships", async () => {
+    const rows = await db
+      .select()
+      .from(orgMemberships)
+      .where(and(eq(orgMemberships.orgId, orgId), eq(orgMemberships.userId, userId)))
+      .limit(1)
+    return rows[0]
+  })
 }

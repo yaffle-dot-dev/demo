@@ -193,3 +193,72 @@ export const repositories = pgTable(
   },
   (t) => [unique("repositories_github_id").on(t.githubId)],
 )
+
+// =============================================================================
+// TFC State Backend: Workspaces
+// =============================================================================
+
+export const workspaces = pgTable(
+  "workspaces",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    name: text("name").notNull(),
+    repo: text("repo").notNull(),
+    workspacePath: text("workspace_path").notNull(),
+    environment: text("environment").notNull(), // "preview" | "production"
+    prNumber: integer("pr_number"),
+    branch: text("branch").notNull(),
+    locked: boolean("locked").default(false).notNull(),
+    lockedBy: text("locked_by"), // "user:{id}" or "run:{id}"
+    lockedAt: timestamp("locked_at"),
+    lockReason: text("lock_reason"),
+    currentStateVersionId: uuid("current_state_version_id"), // FK added below
+    terraformVersion: text("terraform_version"),
+    status: text("status").default("active").notNull(), // "active" | "destroying" | "archived"
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [unique("workspaces_org_name").on(t.orgId, t.name)],
+)
+
+// =============================================================================
+// TFC State Backend: State Versions
+// =============================================================================
+
+export const stateVersions = pgTable("state_versions", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspaces.id, { onDelete: "cascade" })
+    .notNull(),
+  serial: integer("serial").notNull(),
+  lineage: uuid("lineage"),
+  md5: text("md5").notNull(),
+  size: integer("size").notNull(),
+  s3Key: text("s3_key").notNull(),
+  status: text("status").default("pending").notNull(), // "pending" | "finalized" | "discarded"
+  terraformVersion: text("terraform_version"),
+  resources: jsonb("resources"),
+  outputs: jsonb("outputs"),
+  resourcesProcessed: boolean("resources_processed").default(false).notNull(),
+  runId: uuid("run_id").references(() => tfRuns.id),
+  createdBy: text("created_by"), // user_id or "run:{id}"
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+})
+
+// =============================================================================
+// TFC State Backend: API Tokens (for terraform login)
+// =============================================================================
+
+export const apiTokens = pgTable("api_tokens", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  userId: text("user_id")
+    .references(() => user.id, { onDelete: "cascade" })
+    .notNull(),
+  description: text("description"),
+  tokenHash: text("token_hash").notNull(),
+  lastUsedAt: timestamp("last_used_at"),
+  expiresAt: timestamp("expires_at"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+})

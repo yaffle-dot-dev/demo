@@ -12,6 +12,8 @@ import { orgsRoute } from "./routes/orgs.ts"
 import { reposRoute } from "./routes/repos.ts"
 import { authApiRoute } from "./routes/auth-api.ts"
 import { healthRoute } from "./routes/health.ts"
+import { wellKnownRoute } from "./routes/well-known.ts"
+import { tfcRoute } from "./routes/tfc/index.ts"
 import { auth } from "./lib/better-auth.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
@@ -63,6 +65,12 @@ app.on(["POST", "GET"], "/api/auth/*", async (c) => {
     throw err
   }
 })
+
+// Service discovery for Terraform CLI
+app.route("/.well-known", wellKnownRoute)
+
+// TFC-compatible API (for terraform login, state, workspaces)
+app.route("/tfc", tfcRoute)
 
 // API routes
 app.route("/api/webhooks", webhooksRoute)

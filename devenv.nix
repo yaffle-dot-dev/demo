@@ -29,6 +29,9 @@
 
     # Dev tooling
     opencode
+
+    # Local HTTPS reverse proxy
+    caddy
   ];
 
   # ── Environment variables ────────────────────────────────────────
@@ -45,10 +48,17 @@
 
     # Auth defaults (OpenAuth - mounted at root, not /auth)
     YAFFLE_AUTH_MODE = "required";
-    YAFFLE_AUTH_ISSUER = "http://localhost:3000";
+    YAFFLE_AUTH_ISSUER = "https://localhost:6969";
     YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
-    VITE_YAFFLE_AUTH_ISSUER = "http://localhost:3000";
+    VITE_YAFFLE_AUTH_ISSUER = "https://localhost:6969";
     VITE_YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
+
+    # TFC backend (use local Caddy HTTPS endpoint)
+    YAFFLE_TFC_API_HOST = "localhost:6969";
+
+    # BetterAuth config for Caddy proxy
+    BETTER_AUTH_URL = "https://localhost:6969";
+    TRUSTED_ORIGINS = "https://localhost:6969,http://localhost:5173,http://localhost:3000";
 
     # Telemetry defaults for local dev (disabled, no endpoint)
     YAFFLE_ENV = "development";
@@ -78,6 +88,17 @@
   process.manager.implementation = "native";
 
   processes = {
+    # Caddy reverse proxy - provides HTTPS on localhost:6969
+    # First run: `caddy trust` to install the local CA
+    caddy = {
+      exec = "caddy run --config Caddyfile";
+      ready = {
+        http.get = { port = 6969; path = "/api/health"; scheme = "https"; };
+        period = 10;
+        failure_threshold = 5;
+      };
+    };
+
     control-plane = {
       exec = "op whoami >/dev/null 2>&1 || op signin; secretspec run -- bun run dev:control-plane";
       ready = {
@@ -108,6 +129,12 @@
 
   # ── Shell hook ───────────────────────────────────────────────────
   enterShell = ''
+    # Install Caddy's local CA if not already trusted
+    if ! security find-certificate -c "Caddy Local Authority" /Library/Keychains/System.keychain &>/dev/null; then
+      echo "Installing Caddy's local CA (requires sudo)..."
+      caddy trust 2>/dev/null || echo "  Run 'caddy trust' manually if needed"
+    fi
+
     echo ""
     echo "yaffle dev environment"
     echo "  bun         $(bun --version)"
@@ -116,9 +143,11 @@
     echo "  jj          $(jj --version)"
     echo "  secretspec  $(secretspec --version)"
     echo "  op          $(op --version)"
+    echo "  caddy       $(caddy version)"
     echo ""
     echo "commands:"
-    echo "  devenv up              - start postgres, control-plane, web, and smee"
+    echo "  devenv up              - start caddy, postgres, control-plane, web, and smee"
+    echo "  tofu login localhost:6969 - authenticate with Yaffle TFC backend"
     echo "  bun install            - install dependencies"
     echo "  bun test               - run tests"
     echo "  tofu plan              - run opentofu plan (from infra/)"
@@ -126,6 +155,11 @@
     echo "  secretspec config init - set up 1Password provider"
     echo "  secretspec run -- cmd  - run cmd with secrets injected"
     echo "  op signin"
+    echo ""
+    echo "endpoints (after devenv up):"
+    echo "  https://localhost:6969/api   - control plane API"
+    echo "  https://localhost:6969/tfc   - TFC-compatible state backend"
+    echo "  https://localhost:6969/app   - web app"
     echo ""
   '';
 }

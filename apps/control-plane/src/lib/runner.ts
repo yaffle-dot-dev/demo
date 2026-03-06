@@ -27,6 +27,14 @@ export interface RunOpts {
   variables?: Record<string, string>
   installationToken?: string
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
+
+  // TFC backend options (optional, used when YAFFLE_TFC_API_HOST is set)
+  /** TFC workspace name (e.g., "preview-pr-42-control-plane-infra") */
+  tfcWorkspaceName?: string
+  /** Organization slug for TFC backend */
+  tfcOrganization?: string
+  /** Run token JWT for TFC authentication */
+  tfcToken?: string
 }
 
 /**
