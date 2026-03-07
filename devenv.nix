@@ -122,6 +122,15 @@ in
       };
     };
 
+    marketing = {
+      exec = "bun run --filter=@yaffle/marketing dev";
+      ready = {
+        http.get = { port = 4000; path = "/"; };
+        period = 10;
+        failure_threshold = 3;
+      };
+    };
+
     smee = {
       exec = "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github";
       ready = {
@@ -140,8 +149,11 @@ in
   };
 
   # Control-plane API container
-  # Build: devenv container build control-plane -s aarch64-linux
-  # Push:  devenv container --registry docker://ghcr.io/yaffle-dev/ copy control-plane
+  # Build: devenv container build control-plane -s x86_64-linux
+  # Push:  devenv container --registry docker://ghcr.io/yaffle-dot-dev/yaffle/ copy control-plane
+  #
+  # Environment variables (PORT, NODE_ENV, DATABASE_URL, etc.) should be set
+  # at runtime when deploying the container. The app defaults PORT to 3000.
   containers."control-plane" = {
     name = "yaffle-control-plane";
 
@@ -153,18 +165,6 @@ in
       name = "control-plane-root";
       paths = [ pkgs.cacert ];
       pathsToLink = [ "/etc/ssl" ];
-    };
-
-    # OCI image configuration
-    config = {
-      Env = [
-        "PORT=3000"
-        "NODE_ENV=production"
-        "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
-      ];
-      ExposedPorts = {
-        "3000/tcp" = {};
-      };
     };
   };
 
@@ -200,9 +200,10 @@ in
     echo "  op signin"
     echo ""
     echo "endpoints (after devenv up):"
+    echo "  https://localhost:6969       - marketing site"
+    echo "  https://localhost:6969/app   - web app"
     echo "  https://localhost:6969/api   - control plane API"
     echo "  https://localhost:6969/tfc   - TFC-compatible state backend"
-    echo "  https://localhost:6969/app   - web app"
     echo ""
   '';
 }

@@ -1,0 +1,50 @@
+/*
+ * Yaffle Design System - Theme Tokens
+ * 
+ * Import this in your Tailwind CSS file:
+ *   @import "@yaffle/design/theme";
+ *
+ * This defines the @theme block for Tailwind v4.
+ */
+
+@theme {
+  /* Brand colors - Blue */
+  --color-yaffle-50: #f0f7ff;
+  --color-yaffle-100: #e0effe;
+  --color-yaffle-200: #b9dffe;
+  --color-yaffle-300: #7cc5fd;
+  --color-yaffle-400: #36a9fa;
+  --color-yaffle-500: #0c8eeb;
+  --color-yaffle-600: #006fc9;
+  --color-yaffle-700: #0159a3;
+  --color-yaffle-800: #064c86;
+  --color-yaffle-900: #0b406f;
+  --color-yaffle-950: #07284a;
+
+  /* Surface colors - Dark mode */
+  --color-surface: #09090b;
+  --color-surface-raised: #18181b;
+  --color-surface-overlay: #27272a;
+
+  /* Border colors */
+  --color-border: #3f3f46;
+  --color-border-subtle: #27272a;
+
+  /* Text colors */
+  --color-text: #fafafa;
+  --color-text-muted: #a1a1aa;
+  --color-text-dim: #71717a;
+
+  /* Status colors */
+  --color-status-pending: #a1a1aa;
+  --color-status-planning: #facc15;
+  --color-status-applying: #3b82f6;
+  --color-status-ready: #22c55e;
+  --color-status-failed: #ef4444;
+  --color-status-destroying: #f97316;
+  --color-status-destroyed: #6b7280;
+
+  /* Typography */
+  --font-family-sans: system-ui, -apple-system, sans-serif;
+  --font-family-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+}

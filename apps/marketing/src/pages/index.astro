@@ -1,0 +1,300 @@
+---
+import Base from "../layouts/Base.astro"
+---
+
+<Base title="Yaffle - Preview your whole system">
+  <!-- Nav -->
+  <nav class="fixed top-0 left-0 right-0 z-50 border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-sm">
+    <div class="mx-auto max-w-6xl px-6 py-4 flex items-center justify-between">
+      <a href="/" class="text-xl font-semibold text-white">
+        yaffle
+      </a>
+      <div class="flex items-center gap-6">
+        <a href="#how-it-works" class="text-sm text-zinc-400 hover:text-white transition-colors hidden md:block">
+          How it works
+        </a>
+        <a href="#pricing" class="text-sm text-zinc-400 hover:text-white transition-colors">
+          Pricing
+        </a>
+        <a 
+          href="/app" 
+          class="text-sm font-medium px-4 py-2 rounded-lg bg-yaffle-600 text-white hover:bg-yaffle-500 transition-colors"
+        >
+          Get started
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Hero - Compact, CTA focused -->
+  <section class="pt-28 pb-12 px-6">
+    <div class="mx-auto max-w-4xl text-center">
+      <h1 class="text-4xl md:text-5xl font-bold text-white leading-tight mb-4">
+        Preview your whole system,<br />
+        <span class="text-yaffle-400">not just your code.</span>
+      </h1>
+      
+      <p class="text-lg text-zinc-400 max-w-xl mx-auto mb-8">
+        Spin up isolated infrastructure for every PR. Test infra + code together before production.
+      </p>
+      
+      <div class="flex flex-col sm:flex-row items-center justify-center gap-3 mb-6">
+        <a 
+          href="/app" 
+          class="w-full sm:w-auto px-6 py-3 rounded-lg bg-yaffle-600 text-white font-medium hover:bg-yaffle-500 transition-colors"
+        >
+          Start free &rarr;
+        </a>
+        <a 
+          href="#how-it-works" 
+          class="w-full sm:w-auto px-6 py-3 rounded-lg border border-zinc-700 text-zinc-300 font-medium hover:border-zinc-500 hover:text-white transition-colors"
+        >
+          See how it works
+        </a>
+      </div>
+      
+      <p class="text-sm text-zinc-500">
+        Free for small teams. No credit card required.
+      </p>
+    </div>
+  </section>
+
+  <!-- Social proof placeholder / Problem statement - compact -->
+  <section class="py-8 px-6 border-t border-zinc-800">
+    <div class="mx-auto max-w-4xl">
+      <div class="grid md:grid-cols-3 gap-6 text-center">
+        <div>
+          <div class="text-2xl font-bold text-white mb-1">terraform plan</div>
+          <div class="text-sm text-zinc-500">isn't enough</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white mb-1">Staging</div>
+          <div class="text-sm text-zinc-500">is always broken</div>
+        </div>
+        <div>
+          <div class="text-2xl font-bold text-white mb-1">AI agents</div>
+          <div class="text-sm text-zinc-500">need guardrails</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works - streamlined -->
+  <section id="how-it-works" class="py-12 px-6 border-t border-zinc-800">
+    <div class="mx-auto max-w-4xl">
+      <h2 class="text-2xl font-bold text-white text-center mb-8">
+        How it works
+      </h2>
+      
+      <div class="grid md:grid-cols-3 gap-6">
+        <div class="text-center">
+          <div class="w-10 h-10 rounded-full bg-yaffle-600 flex items-center justify-center mx-auto mb-3 text-white font-semibold">
+            1
+          </div>
+          <h3 class="font-semibold text-white mb-2">Open a PR</h3>
+          <p class="text-sm text-zinc-400">
+            Yaffle detects infra changes and spins up an isolated preview environment.
+          </p>
+        </div>
+        
+        <div class="text-center">
+          <div class="w-10 h-10 rounded-full bg-yaffle-600 flex items-center justify-center mx-auto mb-3 text-white font-semibold">
+            2
+          </div>
+          <h3 class="font-semibold text-white mb-2">Deploy & test</h3>
+          <p class="text-sm text-zinc-400">
+            Use our GitHub Action to deploy your app onto the preview infra.
+          </p>
+        </div>
+        
+        <div class="text-center">
+          <div class="w-10 h-10 rounded-full bg-yaffle-600 flex items-center justify-center mx-auto mb-3 text-white font-semibold">
+            3
+          </div>
+          <h3 class="font-semibold text-white mb-2">Merge safely</h3>
+          <p class="text-sm text-zinc-400">
+            Yaffle applies to production. Same plan, same state. No surprises.
+          </p>
+        </div>
+      </div>
+      
+      <!-- Code snippet -->
+      <div class="mt-8 rounded-lg bg-zinc-900 border border-zinc-800 p-4 font-mono text-sm overflow-x-auto max-w-2xl mx-auto">
+        <pre class="text-zinc-300"><span class="text-zinc-500"># Deploy onto preview infra</span>
+<span class="text-yaffle-400">- uses:</span> yaffle-dev/outputs-action@v1
+  <span class="text-yaffle-400">id:</span> infra
+  <span class="text-yaffle-400">with:</span>
+    <span class="text-yaffle-400">workspace:</span> my-app/infra
+
+<span class="text-yaffle-400">- run:</span> deploy --db=$&#123;&#123; steps.infra.outputs.database_url &#125;&#125;</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pricing - moved up, realistic tiers -->
+  <section id="pricing" class="py-12 px-6 border-t border-zinc-800 bg-zinc-900/50">
+    <div class="mx-auto max-w-4xl">
+      <h2 class="text-2xl font-bold text-white text-center mb-2">
+        Simple, transparent pricing
+      </h2>
+      <p class="text-zinc-400 text-center mb-8">
+        Pay for what you use. Cancel anytime.
+      </p>
+      
+      <div class="grid md:grid-cols-3 gap-6">
+        <!-- Free -->
+        <div class="p-6 rounded-xl bg-zinc-900 border border-zinc-800">
+          <h3 class="text-lg font-semibold text-white mb-1">Free</h3>
+          <p class="text-zinc-500 text-sm mb-4">For trying it out</p>
+          <div class="text-3xl font-bold text-white mb-4">
+            $0<span class="text-sm font-normal text-zinc-500">/mo</span>
+          </div>
+          <ul class="space-y-2 text-sm text-zinc-300 mb-6">
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              1 workspace
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              10 preview runs/month
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              GitHub integration
+            </li>
+          </ul>
+          <a 
+            href="/app" 
+            class="block w-full text-center px-4 py-2 rounded-lg border border-zinc-700 text-zinc-300 text-sm font-medium hover:border-zinc-500 hover:text-white transition-colors"
+          >
+            Get started
+          </a>
+        </div>
+        
+        <!-- Team - highlighted -->
+        <div class="p-6 rounded-xl bg-zinc-900 border-2 border-yaffle-600 relative">
+          <div class="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-yaffle-600 text-white text-xs font-medium rounded-full">
+            Most popular
+          </div>
+          <h3 class="text-lg font-semibold text-white mb-1">Team</h3>
+          <p class="text-zinc-500 text-sm mb-4">For small teams</p>
+          <div class="text-3xl font-bold text-white mb-4">
+            $29<span class="text-sm font-normal text-zinc-500">/mo</span>
+          </div>
+          <ul class="space-y-2 text-sm text-zinc-300 mb-6">
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              5 workspaces
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              Unlimited preview runs
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              5 team members
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              Email support
+            </li>
+          </ul>
+          <a 
+            href="/app" 
+            class="block w-full text-center px-4 py-2 rounded-lg bg-yaffle-600 text-white text-sm font-medium hover:bg-yaffle-500 transition-colors"
+          >
+            Start free trial
+          </a>
+        </div>
+        
+        <!-- Business -->
+        <div class="p-6 rounded-xl bg-zinc-900 border border-zinc-800">
+          <h3 class="text-lg font-semibold text-white mb-1">Business</h3>
+          <p class="text-zinc-500 text-sm mb-4">For growing teams</p>
+          <div class="text-3xl font-bold text-white mb-4">
+            $99<span class="text-sm font-normal text-zinc-500">/mo</span>
+          </div>
+          <ul class="space-y-2 text-sm text-zinc-300 mb-6">
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              Unlimited workspaces
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              Unlimited preview runs
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              Unlimited team members
+            </li>
+            <li class="flex items-center gap-2">
+              <span class="text-yaffle-400">&#10003;</span>
+              Priority support
+            </li>
+          </ul>
+          <a 
+            href="/app" 
+            class="block w-full text-center px-4 py-2 rounded-lg border border-zinc-700 text-zinc-300 text-sm font-medium hover:border-zinc-500 hover:text-white transition-colors"
+          >
+            Start free trial
+          </a>
+        </div>
+      </div>
+      
+      <p class="text-center text-sm text-zinc-500 mt-6">
+        All plans include a 14-day free trial. Your AWS costs are separate.
+      </p>
+    </div>
+  </section>
+
+  <!-- AI angle - brief -->
+  <section class="py-12 px-6 border-t border-zinc-800">
+    <div class="mx-auto max-w-2xl text-center">
+      <h2 class="text-2xl font-bold text-white mb-3">
+        Safe for humans and AI agents
+      </h2>
+      <p class="text-zinc-400">
+        AI is writing more infrastructure. Yaffle gives you a safety net&mdash;preview 
+        what agents create before it hits production. Review results, not code.
+      </p>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="py-12 px-6 border-t border-zinc-800 bg-zinc-900/50">
+    <div class="mx-auto max-w-2xl text-center">
+      <h2 class="text-2xl font-bold text-white mb-3">
+        Stop breaking production
+      </h2>
+      <p class="text-zinc-400 mb-6">
+        Preview your infrastructure and code together. Start free.
+      </p>
+      <a 
+        href="/app" 
+        class="inline-block px-6 py-3 rounded-lg bg-yaffle-600 text-white font-medium hover:bg-yaffle-500 transition-colors"
+      >
+        Get started free &rarr;
+      </a>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer class="py-8 px-6 border-t border-zinc-800">
+    <div class="mx-auto max-w-6xl flex flex-col md:flex-row items-center justify-between gap-4">
+      <div class="text-zinc-500 text-sm">
+        &copy; 2026 Yaffle
+      </div>
+      <div class="flex items-center gap-6 text-sm text-zinc-400">
+        <a href="https://github.com/yaffle-dev/yaffle" target="_blank" rel="noopener" class="hover:text-white transition-colors">
+          GitHub
+        </a>
+        <a href="/docs" class="hover:text-white transition-colors">
+          Docs
+        </a>
+        <a href="mailto:hello@yaffle.dev" class="hover:text-white transition-colors">
+          Contact
+        </a>
+      </div>
+    </div>
+  </footer>
+</Base>

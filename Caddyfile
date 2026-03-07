@@ -23,8 +23,13 @@ https://localhost:6969 {
 		reverse_proxy localhost:3000
 	}
 
-	# SvelteKit web app (served at root for dev)
-	# Vite dev server paths
+	# SvelteKit web app at /app
+	handle /app/* {
+		uri strip_prefix /app
+		reverse_proxy localhost:5173
+	}
+
+	# Vite dev server paths (for SvelteKit HMR)
 	handle /@fs/* {
 		reverse_proxy localhost:5173
 	}
@@ -41,8 +46,8 @@ https://localhost:6969 {
 		reverse_proxy localhost:5173
 	}
 
-	# Default: SvelteKit app (replaces MLP for local dev)
+	# Marketing site at root
 	handle {
-		reverse_proxy localhost:5173
+		reverse_proxy localhost:4000
 	}
 }
