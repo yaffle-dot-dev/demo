@@ -1,0 +1,77 @@
+# Continuous Integration workflow
+#
+# Runs tests, type checking, and linting on every push and PR.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Type check & lint
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Set up FlakeHub Cache
+        uses: DeterminateSystems/flakehub-cache-action@v3
+
+      - name: Install dependencies
+        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun install --frozen-lockfile
+
+      - name: Type check
+        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun run typecheck
+
+      - name: Lint
+        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun run lint
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: yaffle
+          POSTGRES_DB: yaffle_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Set up FlakeHub Cache
+        uses: DeterminateSystems/flakehub-cache-action@v3
+
+      - name: Install dependencies
+        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun install --frozen-lockfile
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://yaffle@localhost:5432/yaffle_test
+        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun test

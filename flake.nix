@@ -6,6 +6,9 @@
     systems.url = "github:nix-systems/default";
     # Latest devenv 2.x (may have cached binaries)
     devenv.url = "github:cachix/devenv";
+    # nix2container for building OCI images
+    nix2container.url = "github:nlewo/nix2container";
+    nix2container.inputs.nixpkgs.follows = "nixpkgs";
   };
 
   nixConfig = {
@@ -13,10 +16,54 @@
     extra-substituters = "https://devenv.cachix.org";
   };
 
-  outputs = { self, nixpkgs, devenv, systems, ... }:
+  outputs = { self, nixpkgs, devenv, systems, nix2container, ... }:
     let
       forEachSystem = nixpkgs.lib.genAttrs (import systems);
     in {
+      # Packages - these get cached by FlakeHub Cache
+      packages = forEachSystem (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          n2c = nix2container.packages.${system}.nix2container;
+
+          # Control-plane application
+          control-plane = pkgs.callPackage ./nix/control-plane.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+            src = ./.;
+          };
+
+          # OCI container image for control-plane
+          control-plane-image = n2c.buildImage {
+            name = "ghcr.io/yaffle-dot-dev/yaffle/control-plane";
+            tag = "latest";
+
+            config = {
+              entrypoint = [ "${control-plane}/bin/yaffle-control-plane" ];
+              env = [
+                "PORT=3000"
+                "NODE_ENV=production"
+                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              ];
+              exposedPorts = {
+                "3000/tcp" = {};
+              };
+            };
+
+            # Copy CA certs for HTTPS
+            copyToRoot = pkgs.buildEnv {
+              name = "root";
+              paths = [ pkgs.cacert ];
+              pathsToLink = [ "/etc/ssl" ];
+            };
+          };
+        in {
+          inherit control-plane;
+          control-plane-image = control-plane-image;
+          default = control-plane;
+        }
+      );
+
       devShells = forEachSystem (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};

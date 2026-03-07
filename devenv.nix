@@ -1,5 +1,12 @@
-{ pkgs, ... }:
+{ pkgs, lib, config, ... }:
 
+let
+  # Build the control-plane application
+  controlPlane = pkgs.callPackage ./nix/control-plane.nix {
+    inherit pkgs lib;
+    src = ./.;
+  };
+in
 {
   # Override devenv to use 2.x CLI via nix run (avoids rebuilds)
   scripts.devenv.exec = ''
@@ -123,6 +130,42 @@
         exec = "pgrep -f smee-client";
         period = 10;
         failure_threshold = 3;
+      };
+    };
+  };
+
+  # ── Containers ───────────────────────────────────────────────────
+  # Test container to verify devenv + Determinate Nix Linux builder works
+  containers."hello-test" = {
+    name = "yaffle-hello-test";
+    startupCommand = "${pkgs.hello}/bin/hello";
+  };
+
+  # Control-plane API container
+  # Build: devenv container build control-plane -s aarch64-linux
+  # Push:  devenv container --registry docker://ghcr.io/yaffle-dev/ copy control-plane
+  containers."control-plane" = {
+    name = "yaffle-control-plane";
+
+    # Run the built application
+    startupCommand = "${controlPlane}/bin/yaffle-control-plane";
+
+    # Copy CA certs for HTTPS connections to external services
+    copyToRoot = pkgs.buildEnv {
+      name = "control-plane-root";
+      paths = [ pkgs.cacert ];
+      pathsToLink = [ "/etc/ssl" ];
+    };
+
+    # OCI image configuration
+    config = {
+      Env = [
+        "PORT=3000"
+        "NODE_ENV=production"
+        "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+      ];
+      ExposedPorts = {
+        "3000/tcp" = {};
       };
     };
   };

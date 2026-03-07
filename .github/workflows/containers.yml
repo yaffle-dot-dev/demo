@@ -1,0 +1,111 @@
+# Build and push container images using Nix/devenv
+#
+# This workflow builds Linux containers on GitHub Actions runners (which are Linux)
+# and pushes them to GitHub Container Registry (ghcr.io).
+#
+# Containers are built using devenv's nix2container integration.
+
+name: Build Containers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/control-plane/**"
+      - "packages/shared/**"
+      - "nix/**"
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "flake.nix"
+      - "flake.lock"
+      - "bun.lock"
+      - "package.json"
+      - ".github/workflows/containers.yml"
+  pull_request:
+    paths:
+      - "apps/control-plane/**"
+      - "packages/shared/**"
+      - "nix/**"
+      - "devenv.nix"
+      - "devenv.yaml"
+      - "flake.nix"
+      - "flake.lock"
+      - "bun.lock"
+      - "package.json"
+      - ".github/workflows/containers.yml"
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "Push images to registry"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/control-plane
+
+jobs:
+  build-control-plane:
+    name: Build control-plane container
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Set up FlakeHub Cache
+        uses: DeterminateSystems/flakehub-cache-action@v3
+
+      - name: Build container image
+        run: |
+          # Build the container for x86_64-linux (native on GHA runner)
+          # Use nix run to invoke devenv 2.x directly (cached by FlakeHub)
+          # Disable sandbox to allow bun install to fetch packages
+          # (bun.lock ensures reproducibility at the package level)
+          nix run github:cachix/devenv/v2.0.2 -- container build control-plane --nix-option sandbox false
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push)
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push container image
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push)
+        run: |
+          # Generate image tags
+          SHA_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          LATEST_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+
+          # Copy to registry with SHA tag
+          nix run github:cachix/devenv/v2.0.2 -- container copy control-plane --nix-option sandbox false --registry "docker://${SHA_TAG}"
+
+          # Also tag as latest on main branch
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            nix run github:cachix/devenv/v2.0.2 -- container copy control-plane --nix-option sandbox false --registry "docker://${LATEST_TAG}"
+          fi
+
+          echo "Pushed: ${SHA_TAG}"
+          echo "image_sha=${SHA_TAG}" >> $GITHUB_OUTPUT
+
+      - name: Summary
+        run: |
+          echo "## Container Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA Tag**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.push }}" = "true" ]; then
+            echo "- **Status**: Pushed to registry" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- **Status**: Build only (not pushed)" >> $GITHUB_STEP_SUMMARY
+          fi
