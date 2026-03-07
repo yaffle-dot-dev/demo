@@ -1034,6 +1034,9 @@ async function executeRun(opts: {
         stateKey: opts.stateKey,
         variables: opts.variables,
         installationToken: opts.installationToken,
+        // Yaffle context for provider tags
+        runId: run.id,
+        prNumber: ctx.kind === "pull_request" ? ctx.prNumber : undefined,
         // TFC backend options
         tfcWorkspaceName: opts.tfcWorkspaceName,
         tfcOrganization: opts.tfcOrganization,

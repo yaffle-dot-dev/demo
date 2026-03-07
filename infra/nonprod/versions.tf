@@ -1,8 +1,8 @@
 # =============================================================================
-# Control Plane Application Infrastructure
+# Non-Production Infrastructure
 # =============================================================================
-# This is application-level infrastructure that can be previewed per PR.
-# Core infrastructure (VPC, ECS cluster, state storage) is in /infra.
+# Non-production VPC and EC2-backed ECS cluster.
+# Used for preview environments. Cost-optimized with spot instances.
 # =============================================================================
 
 terraform {
@@ -25,10 +25,8 @@ provider "aws" {
   default_tags {
     tags = {
       project     = "yaffle"
-      layer       = "app"
-      app         = "control-plane"
-      environment = var.environment
-      managed_by  = "yaffle"
+      layer       = "core"
+      environment = "nonprod"
     }
   }
 }

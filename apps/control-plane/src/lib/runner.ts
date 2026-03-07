@@ -28,6 +28,12 @@ export interface RunOpts {
   installationToken?: string
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
 
+  // Yaffle context for provider tags
+  /** Run ID from Yaffle (for tagging resources) */
+  runId?: string
+  /** PR number (undefined for production runs) */
+  prNumber?: number
+
   // TFC backend options (optional, used when YAFFLE_TFC_API_HOST is set)
   /** TFC workspace name (e.g., "preview-pr-42-control-plane-infra") */
   tfcWorkspaceName?: string

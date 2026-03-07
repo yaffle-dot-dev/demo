@@ -1,8 +1,12 @@
 # =============================================================================
-# Control Plane Application Infrastructure
+# Shared Infrastructure
 # =============================================================================
-# This is application-level infrastructure that can be previewed per PR.
-# Core infrastructure (VPC, ECS cluster, state storage) is in /infra.
+# Resources shared across all environments:
+# - S3 bucket for Terraform state
+# - DynamoDB table for state locking
+# - Route53 hosted zone
+#
+# This must be deployed first, before production or nonprod.
 # =============================================================================
 
 terraform {
@@ -24,11 +28,21 @@ provider "aws" {
 
   default_tags {
     tags = {
-      project     = "yaffle"
-      layer       = "app"
-      app         = "control-plane"
-      environment = var.environment
-      managed_by  = "yaffle"
+      project = "yaffle"
+      layer   = "shared"
+    }
+  }
+}
+
+# Replica region provider for cross-region replication
+provider "aws" {
+  alias  = "replica"
+  region = var.replica_region
+
+  default_tags {
+    tags = {
+      project = "yaffle"
+      layer   = "shared"
     }
   }
 }

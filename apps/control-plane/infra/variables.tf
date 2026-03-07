@@ -9,6 +9,23 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "domain" {
+  type        = string
+  description = "Base domain for the application (e.g., 'yaffle.dev')"
+  default     = "yaffle.dev"
+}
+
+variable "control_plane_image" {
+  type        = string
+  description = "Docker image for the control plane container"
+  default     = "ghcr.io/yaffle-dot-dev/yaffle/control-plane:latest"
+}
+
+variable "secrets_arn_prefix" {
+  type        = string
+  description = "ARN prefix for Secrets Manager secrets (e.g., 'arn:aws:secretsmanager:us-east-1:123456789:secret:yaffle')"
+}
+
 locals {
   # Normalize environment for resource naming
   # Production uses clean names, previews get prefixed
@@ -16,10 +33,7 @@ locals {
   
   # Resource naming: production gets clean names, previews get environment prefix
   name_prefix = local.is_production ? "yaffle" : "yaffle-${var.environment}"
-  
-  # S3 bucket names must be globally unique and lowercase
-  state_bucket_name = "${local.name_prefix}-state"
-  
-  # DynamoDB table for state locking
-  lock_table_name = "${local.name_prefix}-locks"
+
+  # API domain
+  api_domain = local.is_production ? "api.${var.domain}" : "${var.environment}.api.${var.domain}"
 }

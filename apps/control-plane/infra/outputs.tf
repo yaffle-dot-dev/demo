@@ -1,38 +1,53 @@
 # =============================================================================
 # Outputs
 # =============================================================================
-# These outputs are consumed by:
-# - The control plane API (to configure S3 backend for user workspaces)
-# - CI pipelines (via yaffle-dev/outputs-action)
-# - Other infrastructure that depends on state storage
+# Control plane application outputs.
+# Core infrastructure outputs (VPC, ECS cluster, state storage) are in infra/.
 # =============================================================================
+
+# -----------------------------------------------------------------------------
+# Environment
+# -----------------------------------------------------------------------------
 
 output "environment" {
   value       = var.environment
   description = "The environment this infrastructure belongs to"
 }
 
-output "state_bucket_name" {
-  value       = aws_s3_bucket.state.id
-  description = "S3 bucket name for terraform state storage"
+# -----------------------------------------------------------------------------
+# ECS Service
+# -----------------------------------------------------------------------------
+
+output "control_plane_service_name" {
+  value       = aws_ecs_service.control_plane.name
+  description = "Control plane ECS service name"
 }
 
-output "state_bucket_arn" {
-  value       = aws_s3_bucket.state.arn
-  description = "S3 bucket ARN for IAM policies"
+output "control_plane_task_definition_arn" {
+  value       = aws_ecs_task_definition.control_plane.arn
+  description = "Control plane task definition ARN"
 }
 
-output "lock_table_name" {
-  value       = aws_dynamodb_table.locks.name
-  description = "DynamoDB table name for state locking"
+output "control_plane_task_role_arn" {
+  value       = aws_iam_role.control_plane_task.arn
+  description = "Control plane task IAM role ARN"
 }
 
-output "lock_table_arn" {
-  value       = aws_dynamodb_table.locks.arn
-  description = "DynamoDB table ARN for IAM policies"
+output "tf_runner_task_role_arn" {
+  value       = aws_iam_role.tf_runner_task.arn
+  description = "TF runner task IAM role ARN"
 }
 
-output "aws_region" {
-  value       = var.aws_region
-  description = "AWS region where resources are deployed"
+# -----------------------------------------------------------------------------
+# Load Balancer
+# -----------------------------------------------------------------------------
+
+output "alb_dns_name" {
+  value       = aws_lb.main.dns_name
+  description = "ALB DNS name"
+}
+
+output "api_url" {
+  value       = "https://${local.api_domain}"
+  description = "Control plane API URL"
 }

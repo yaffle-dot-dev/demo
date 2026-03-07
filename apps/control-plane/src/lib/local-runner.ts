@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import type { TerraformResult } from "@yaffle/shared"
 
 import type { RunOpts, Runner } from "./runner.ts"
-import { configureBackend } from "./state.ts"
+import { configureBackend, configureProviderOverride } from "./state.ts"
 import { configureTfcBackend, buildTfcEnvVars, useTfcBackend } from "./tfc-backend.ts"
 import { getTfcApiHost } from "./run-token.ts"
 import { logger, withSpan } from "./telemetry.ts"
@@ -78,6 +78,13 @@ export class LocalRunner implements Runner {
           // Legacy S3/local backend mode
           await configureBackend(tfDir, opts.owner, opts.repo, opts.stateKey)
         }
+
+        // Inject Yaffle tags into AWS provider default_tags
+        await configureProviderOverride(tfDir, {
+          workspacePath: opts.workspacePath,
+          runId: opts.runId,
+          prNumber: opts.prNumber,
+        })
 
         return await runTerraform({
           workDir: tfDir,
