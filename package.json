@@ -8,6 +8,7 @@
   "scripts": {
     "dev:control-plane": "bun run --filter=@yaffle/control-plane dev",
     "dev:web": "bun run --filter=@yaffle/web dev",
+    "dev:mlp": "bun run --filter=@yaffle/marketing dev",
     "build": "bun run --filter='*' build",
     "typecheck": "bun run --filter='*' typecheck",
     "lint": "biome check .",

@@ -16,6 +16,7 @@
   let term = $state<import("xterm").Terminal | null>(null)
   let fitAddon: import("@xterm/addon-fit").FitAddon | null = null
   let resizeObserver: ResizeObserver | null = null
+  let termReady = $state(false)
   let lastOutput = ""
 
   // Buffer for streaming mode - batch writes for performance
@@ -35,25 +36,25 @@
 
     term = new Terminal({
       theme: {
-        background: "#18181b", // surface-raised
-        foreground: "#fafafa", // text
-        cursor: "#0c8eeb", // yaffle-500
-        cursorAccent: "#18181b",
-        selectionBackground: "#27272a", // surface-overlay
-        selectionForeground: "#fafafa",
-        black: "#09090b",
-        red: "#ef4444", // status-failed
-        green: "#22c55e", // status-ready
-        yellow: "#facc15", // status-planning
-        blue: "#3b82f6", // status-applying
+        background: "#18181a", // surface-raised
+        foreground: "#fafaf8", // text
+        cursor: "#8bc431", // yaffle-500
+        cursorAccent: "#18181a",
+        selectionBackground: "#242420", // surface-overlay
+        selectionForeground: "#fafaf8",
+        black: "#0c0c0b",
+        red: "#fa2d2d", // accent-500 (crimson)
+        green: "#8bc431", // yaffle-500
+        yellow: "#fce047", // cream-500
+        blue: "#6da323", // yaffle-600
         magenta: "#a855f7",
         cyan: "#06b6d4",
-        white: "#fafafa",
-        brightBlack: "#71717a", // text-dim
-        brightRed: "#f87171",
-        brightGreen: "#4ade80",
-        brightYellow: "#fde047",
-        brightBlue: "#60a5fa",
+        white: "#fafaf8",
+        brightBlack: "#787870", // text-dim
+        brightRed: "#ff6161", // accent-400
+        brightGreen: "#a8db4f", // yaffle-400
+        brightYellow: "#ffed75", // cream-400
+        brightBlue: "#a8db4f", // yaffle-400
         brightMagenta: "#c084fc",
         brightCyan: "#22d3ee",
         brightWhite: "#ffffff",
@@ -86,11 +87,16 @@
       term.write(output)
       lastOutput = output
     }
+
+    // Mark terminal as ready after initial render completes
+    requestAnimationFrame(() => {
+      termReady = true
+    })
   })
 
   // Handle output changes
   $effect(() => {
-    if (!term || !browser) return
+    if (!term || !browser || !termReady) return
 
     if (streaming) {
       // In streaming mode, append only new content if this looks like a continuation
