@@ -108,10 +108,12 @@ export async function createStateVersion(values: NewStateVersion): Promise<State
 
 /**
  * Finalize a state version (mark as uploaded and ready).
+ * Optionally stores outputs extracted from the state file.
  */
 export async function finalizeStateVersion(
   stateVersionId: string,
   terraformVersion?: string,
+  outputs?: Record<string, unknown>,
 ): Promise<StateVersion | undefined> {
   return withDbSpan("update", "state_versions", async () => {
     const rows = await db
@@ -119,6 +121,7 @@ export async function finalizeStateVersion(
       .set({
         status: "finalized",
         terraformVersion,
+        outputs: outputs ?? null,
       })
       .where(and(eq(stateVersions.id, stateVersionId), eq(stateVersions.status, "pending")))
       .returning()
@@ -164,4 +167,49 @@ export async function discardStateVersion(stateVersionId: string): Promise<void>
  */
 export function buildS3Key(workspaceId: string, serial: number): string {
   return `${workspaceId}/v${serial}.tfstate`
+}
+
+/**
+ * List finalized state versions for module registry.
+ * Returns versions in descending serial order (newest first).
+ */
+export async function listStateVersionsForModule(
+  workspaceId: string,
+  limit: number = 50,
+): Promise<StateVersion[]> {
+  return withDbSpan("select", "state_versions", async () => {
+    return db
+      .select()
+      .from(stateVersions)
+      .where(
+        and(
+          eq(stateVersions.workspaceId, workspaceId),
+          eq(stateVersions.status, "finalized"),
+        ),
+      )
+      .orderBy(desc(stateVersions.serial))
+      .limit(limit)
+  })
+}
+
+/**
+ * Find a specific state version by workspace ID and serial number.
+ */
+export async function findStateVersionBySerial(
+  workspaceId: string,
+  serial: number,
+): Promise<StateVersion | undefined> {
+  return withDbSpan("select", "state_versions", async () => {
+    const rows = await db
+      .select()
+      .from(stateVersions)
+      .where(
+        and(
+          eq(stateVersions.workspaceId, workspaceId),
+          eq(stateVersions.serial, serial),
+        ),
+      )
+      .limit(1)
+    return rows[0]
+  })
 }

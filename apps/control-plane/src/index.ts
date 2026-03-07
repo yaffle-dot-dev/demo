@@ -10,6 +10,7 @@ import { previewsRoute } from "./routes/previews.ts"
 import { environmentsRoute } from "./routes/environments.ts"
 import { orgsRoute } from "./routes/orgs.ts"
 import { reposRoute } from "./routes/repos.ts"
+import { dependenciesRoute } from "./routes/dependencies.ts"
 import { authApiRoute } from "./routes/auth-api.ts"
 import { healthRoute } from "./routes/health.ts"
 import { wellKnownRoute } from "./routes/well-known.ts"
@@ -78,6 +79,7 @@ app.route("/api/previews", previewsRoute)
 app.route("/api/environments", environmentsRoute)
 app.route("/api/orgs", orgsRoute)
 app.route("/api/orgs", reposRoute) // Nested under /api/orgs for /:org/repos/... routes
+app.route("/api", dependenciesRoute) // Dependency graph API (/api/orgs/:org/dependencies/*)
 app.route("/api/users", authApiRoute) // Custom user endpoints (e.g., /api/users/me)
 app.route("/api", healthRoute)
 

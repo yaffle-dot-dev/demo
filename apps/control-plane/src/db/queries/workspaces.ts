@@ -321,3 +321,59 @@ export async function deleteWorkspace(workspaceId: string): Promise<boolean> {
     return rows.length > 0
   })
 }
+
+/**
+ * Find a workspace by org, workspace path, and environment.
+ * Used by the module registry to look up workspaces.
+ *
+ * The workspace path is stored in the `workspacePath` column.
+ * For production workspaces, environment is "production".
+ */
+export async function findWorkspaceByPath(
+  orgId: string,
+  workspacePath: string,
+  environment: WorkspaceEnvironment,
+): Promise<Workspace | undefined> {
+  return withDbSpan("select", "workspaces", async () => {
+    const rows = await db
+      .select()
+      .from(workspaces)
+      .where(
+        and(
+          eq(workspaces.orgId, orgId),
+          eq(workspaces.workspacePath, workspacePath),
+          eq(workspaces.environment, environment),
+          eq(workspaces.status, "active"),
+        ),
+      )
+      .limit(1)
+    return rows[0]
+  })
+}
+
+/**
+ * Find a preview workspace by org, workspace path, and PR number.
+ * Used by the module registry for preview-aware resolution.
+ */
+export async function findPreviewWorkspace(
+  orgId: string,
+  workspacePath: string,
+  prNumber: number,
+): Promise<Workspace | undefined> {
+  return withDbSpan("select", "workspaces", async () => {
+    const rows = await db
+      .select()
+      .from(workspaces)
+      .where(
+        and(
+          eq(workspaces.orgId, orgId),
+          eq(workspaces.workspacePath, workspacePath),
+          eq(workspaces.environment, "preview"),
+          eq(workspaces.prNumber, prNumber),
+          eq(workspaces.status, "active"),
+        ),
+      )
+      .limit(1)
+    return rows[0]
+  })
+}

@@ -3,6 +3,7 @@ import { Hono } from "hono"
 import { oauthCliRoute } from "./oauth-cli.ts"
 import { workspacesRoute } from "./workspaces.ts"
 import { stateVersionsRoute } from "./state-versions.ts"
+import { registryRoute } from "./registry.ts"
 
 /**
  * TFC-compatible API router.
@@ -10,6 +11,7 @@ import { stateVersionsRoute } from "./state-versions.ts"
  * This namespace contains:
  * - OAuth endpoints for `terraform login` (/tfc/oauth/*)
  * - TFC API v2 endpoints (/tfc/api/v2/*)
+ * - Module Registry v1 endpoints (/tfc/registry/v1/modules/*)
  *
  * All endpoints here implement (a subset of) the Terraform Cloud API
  * to enable native Terraform CLI integration.
@@ -27,10 +29,15 @@ tfcRoute.route("/api/v2", workspacesRoute)
 // State version routes handle workspace state management
 tfcRoute.route("/api/v2", stateVersionsRoute)
 
+// Module Registry v1
+// Implements Terraform Module Registry Protocol for workspace-as-module consumption
+// See: https://developer.hashicorp.com/terraform/internals/module-registry-protocol
+tfcRoute.route("/registry/v1/modules", registryRoute)
+
 // Ping endpoint for connectivity testing
 tfcRoute.get("/api/v2/ping", (c) => {
   return c.json({ data: { type: "pings", id: "1" } })
 })
 
 // Re-export for convenience
-export { oauthCliRoute, workspacesRoute, stateVersionsRoute }
+export { oauthCliRoute, workspacesRoute, stateVersionsRoute, registryRoute }

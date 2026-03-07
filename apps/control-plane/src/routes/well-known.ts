@@ -22,6 +22,10 @@ wellKnownRoute.get("/terraform.json", (c) => {
     "tfe.v2.1": "/tfc/api/v2/",
     "tfe.v2.2": "/tfc/api/v2/",
 
+    // Module registry protocol
+    // See: https://developer.hashicorp.com/terraform/internals/module-registry-protocol
+    "modules.v1": "/tfc/registry/v1/modules/",
+
     // OAuth configuration for `terraform login`
     "login.v1": {
       // Client ID - advisory only since Terraform CLI is a public client

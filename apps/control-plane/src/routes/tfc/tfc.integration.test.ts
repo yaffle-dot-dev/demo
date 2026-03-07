@@ -1060,6 +1060,297 @@ describe("State Versions", () => {
 })
 
 // =============================================================================
+// Module Registry Tests
+// =============================================================================
+
+describe("Module Registry", () => {
+  const testState = JSON.stringify({
+    version: 4,
+    terraform_version: "1.7.0",
+    serial: 1,
+    lineage: "12345678-1234-1234-1234-123456789012",
+    outputs: {
+      vpc_id: { value: "vpc-0123456789abcdef0", type: "string" },
+      private_subnet_ids: { value: ["subnet-aaa", "subnet-bbb"], type: ["list", "string"] },
+      is_production: { value: true, type: "bool" },
+    },
+    resources: [],
+  })
+
+  test("service discovery includes modules.v1", async () => {
+    const res = await app.fetch(new Request("http://localhost/.well-known/terraform.json"))
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body["modules.v1"]).toBe("/tfc/registry/v1/modules/")
+  })
+
+  test("lists module versions for a workspace", async () => {
+    // Create workspace with a workspace_path
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: {
+              name: TEST_WORKSPACE_NAME,
+              environment: "production",
+              "workspace-path": "core-infrastructure/vpc",
+            },
+          },
+        },
+      ),
+    )
+    expect(createRes.status).toBe(201)
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    // Lock and upload state
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const stateMd5 = md5(testState)
+    const svRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: stateMd5,
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+    const svBody = await svRes.json()
+
+    await app.fetch(
+      new Request(`http://localhost${svBody.data.attributes["hosted-state-upload-url"]}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: testState,
+      }),
+    )
+
+    // Now query the module registry
+    // Module name is workspace path with / replaced by --
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/core-infrastructure--vpc/yaffle/versions`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.modules).toBeDefined()
+    expect(body.modules[0].versions).toHaveLength(1)
+    expect(body.modules[0].versions[0].version).toBe("1.0.1")
+  })
+
+  test("returns 404 for non-existent module", async () => {
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/non-existent--module/yaffle/versions`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(404)
+  })
+
+  test("returns 404 for wrong provider", async () => {
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/some-module/aws/versions`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(404)
+  })
+
+  test("download returns X-Terraform-Get header", async () => {
+    // Create workspace with a workspace_path
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: {
+              name: TEST_WORKSPACE_NAME,
+              environment: "production",
+              "workspace-path": "infra/networking",
+            },
+          },
+        },
+      ),
+    )
+    expect(createRes.status).toBe(201)
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    // Lock and upload state
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const stateMd5 = md5(testState)
+    const svRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: stateMd5,
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+    const svBody = await svRes.json()
+
+    await app.fetch(
+      new Request(`http://localhost${svBody.data.attributes["hosted-state-upload-url"]}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: testState,
+      }),
+    )
+
+    // Request module download
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/infra--networking/yaffle/1.0.1/download`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(204)
+    expect(res.headers.get("X-Terraform-Get")).toBe(
+      `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/infra--networking/yaffle/1.0.1/archive.tar.gz`,
+    )
+  })
+
+  test("archive returns valid tar.gz with generated module", async () => {
+    // Create workspace with a workspace_path
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: {
+              name: TEST_WORKSPACE_NAME,
+              environment: "production",
+              "workspace-path": "test/outputs",
+            },
+          },
+        },
+      ),
+    )
+    expect(createRes.status).toBe(201)
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    // Lock and upload state
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const stateMd5 = md5(testState)
+    const svRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: stateMd5,
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+    const svBody = await svRes.json()
+
+    await app.fetch(
+      new Request(`http://localhost${svBody.data.attributes["hosted-state-upload-url"]}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: testState,
+      }),
+    )
+
+    // Request module archive
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/test--outputs/yaffle/1.0.1/archive.tar.gz`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(200)
+    expect(res.headers.get("Content-Type")).toBe("application/gzip")
+
+    // Verify it's a valid gzip file (starts with magic bytes 1f 8b)
+    const body = await res.arrayBuffer()
+    const bytes = new Uint8Array(body)
+    expect(bytes[0]).toBe(0x1f)
+    expect(bytes[1]).toBe(0x8b)
+  })
+})
+
+// =============================================================================
 // Run Token Scope Tests
 // =============================================================================
 

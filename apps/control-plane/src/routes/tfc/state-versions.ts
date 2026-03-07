@@ -399,17 +399,19 @@ stateVersionsRoute.put(
         )
       }
 
-      // Extract terraform version from state JSON
+      // Extract terraform version and outputs from state JSON
       let terraformVersion: string | undefined
+      let outputs: Record<string, unknown> | undefined
       try {
         const stateJson = JSON.parse(new TextDecoder().decode(content))
         terraformVersion = stateJson.terraform_version
+        outputs = stateJson.outputs
       } catch {
         // State might not be valid JSON, that's OK
       }
 
       // Finalize the state version
-      const finalized = await finalizeStateVersion(svId, terraformVersion)
+      const finalized = await finalizeStateVersion(svId, terraformVersion, outputs)
       if (!finalized) {
         return c.json(
           { errors: [{ status: "500", title: "Failed to finalize state version" }] },
