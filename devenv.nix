@@ -42,16 +42,14 @@ in
   ];
 
   # ── Environment variables ────────────────────────────────────────
+  # Secrets are loaded automatically via devenv.yaml secretspec integration
+  # See secretspec.toml for secret definitions and profiles
   env = {
     # Use opentofu as the terraform binary
     YAFFLE_TF_BINARY = "${pkgs.opentofu}/bin/tofu";
 
     # Smee webhook proxy for local GitHub App development
     SMEE_URL = "https://smee.io/AMHdVEIzSjKsXVkb";
-
-    # Secretspec defaults for local dev
-    SECRETSPEC_PROFILE = "development";
-    SECRETSPEC_PROVIDER = "onepassword://yaffle.dev";
 
     # Auth defaults (OpenAuth - mounted at root, not /auth)
     YAFFLE_AUTH_MODE = "required";
@@ -107,7 +105,7 @@ in
     };
 
     control-plane = {
-      exec = "op whoami >/dev/null 2>&1 || op signin; secretspec run -- bun run dev:control-plane";
+      exec = "bun run dev:control-plane";
       ready = {
         http.get = { port = 3000; path = "/api/health"; };
         period = 10;
@@ -187,6 +185,8 @@ in
     echo "  secretspec  $(secretspec --version)"
     echo "  op          $(op --version)"
     echo "  caddy       $(caddy version)"
+    echo ""
+    echo "secrets: loaded via devenv secretspec integration (1password/development)"
     echo ""
     echo "commands:"
     echo "  devenv up              - start caddy, postgres, control-plane, web, and smee"

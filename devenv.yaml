@@ -8,4 +8,11 @@ inputs:
         follows: nixpkgs
   nixpkgs:
     url: github:cachix/devenv-nixpkgs/rolling
-secretspec: {}
+ 
+# Native secretspec integration - loads secrets from 1Password for development
+# Secrets are defined in secretspec.toml and loaded into the shell environment
+# Can be overridden via CLI: devenv --secretspec-provider dotenv --secretspec-profile test shell
+secretspec:
+  enable: true
+  provider: 1password
+  profile: development
