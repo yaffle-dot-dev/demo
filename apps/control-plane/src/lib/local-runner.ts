@@ -6,6 +6,7 @@ import type { RunOpts, Runner } from "./runner.ts"
 import { configureBackend, configureProviderOverride } from "./state.ts"
 import { configureTfcBackend, buildTfcEnvVars, useTfcBackend } from "./tfc-backend.ts"
 import { getTfcApiHost } from "./run-token.ts"
+import { forceUnlockWorkspace } from "../db/queries/workspaces.ts"
 import { logger, withSpan } from "./telemetry.ts"
 import { runTerraform } from "./terraform.ts"
 import { cleanupWorkspace, prepareWorkspace } from "./workspace.ts"
@@ -67,13 +68,22 @@ export class LocalRunner implements Runner {
 
         if (backendMode === "tfc" && opts.tfcWorkspaceName && opts.tfcOrganization && opts.tfcToken) {
           // TFC backend mode: Use Yaffle's TFC-compatible API
+          const tfcHost = getTfcApiHost()
           await configureTfcBackend(tfDir, {
-            hostname: getTfcApiHost(),
+            hostname: tfcHost,
             organization: opts.tfcOrganization,
             workspaceName: opts.tfcWorkspaceName,
             token: opts.tfcToken,
           })
           extraEnv = buildTfcEnvVars(opts.tfcToken)
+          
+          logger.info("TFC backend configured", {
+            hostname: tfcHost,
+            organization: opts.tfcOrganization,
+            workspaceName: opts.tfcWorkspaceName,
+            tokenEnvVar: `TF_TOKEN_${tfcHost.replace(/[.:]/g, "_")}`,
+            tokenPrefix: opts.tfcToken.slice(0, 20) + "...",
+          })
         } else {
           // Legacy S3/local backend mode
           await configureBackend(tfDir, opts.owner, opts.repo, opts.stateKey)
@@ -94,6 +104,25 @@ export class LocalRunner implements Runner {
           extraEnv,
         })
       } finally {
+        // Always unlock TFC workspace when terraform exits (success, failure, or crash)
+        // This prevents orphaned locks when terraform doesn't send the unlock request
+        if (backendMode === "tfc" && opts.tfcWorkspaceId) {
+          try {
+            const unlocked = await forceUnlockWorkspace(opts.tfcWorkspaceId)
+            if (unlocked) {
+              logger.info("Force unlocked TFC workspace on runner exit", {
+                workspaceId: opts.tfcWorkspaceId,
+                workspaceName: opts.tfcWorkspaceName,
+              })
+            }
+          } catch (err) {
+            logger.warn("Failed to force unlock TFC workspace on runner exit", {
+              workspaceId: opts.tfcWorkspaceId,
+              error: err instanceof Error ? err.message : String(err),
+            })
+          }
+        }
+
         if (workDir) {
           await cleanupWorkspace(workDir)
         }

@@ -3,6 +3,7 @@
   import { browser } from "$app/environment"
   import { page } from "$app/state"
   import { goto } from "$app/navigation"
+  import { base } from "$app/paths"
   import { onMount } from "svelte"
   import { logout, startGithubLogin, useSession, setLastOrg, getLastOrg } from "$lib/auth"
   import { listOrgs, type OrgInfo } from "$lib/api"
@@ -59,7 +60,7 @@
   function selectOrg(slug: string) {
     showOrgMenu = false
     setLastOrg(slug)
-    goto(`/${slug}`)
+    goto(`${base}/${slug}`)
   }
 </script>
 
@@ -69,7 +70,7 @@
   <nav class="border-b border-border bg-surface-raised">
     <div class="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between gap-6">
       <div class="flex items-center gap-3">
-        <a href="/" class="font-mono text-lg font-bold text-yaffle-400 tracking-tight">
+        <a href="{base}/" class="font-mono text-lg font-bold text-yaffle-400 tracking-tight">
           yaffle
         </a>
         {#if orgs.length > 0}

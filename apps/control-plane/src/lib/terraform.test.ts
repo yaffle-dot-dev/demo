@@ -115,7 +115,7 @@ resource "null_resource" "example" {
     const result = await runTerraform({
       workDir,
       command: "plan",
-      variables: { environment: "preview-pr-1" },
+      variables: { environment: "prvw-1" },
     })
 
     expect(result.success).toBe(true)

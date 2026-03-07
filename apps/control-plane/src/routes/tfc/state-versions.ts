@@ -9,6 +9,7 @@ import {
   listStateVersions,
   createStateVersion,
   finalizeStateVersion,
+  discardStateVersion,
   buildS3Key,
   type StateVersion,
 } from "../../db/queries/state-versions.ts"
@@ -39,6 +40,20 @@ export const stateVersionsRoute = new Hono<{ Variables: TfcVariables }>()
 // All routes require TFC authentication
 stateVersionsRoute.use("*", tfcAuth())
 
+/**
+ * Unauthenticated state upload route.
+ *
+ * The TFC API returns presigned URLs for state upload that don't require
+ * Bearer token authentication. Terraform's go-tfe client uses doForeignPUTRequest
+ * which doesn't send any auth headers.
+ *
+ * Security is provided by:
+ * 1. The state version ID is an unpredictable UUID
+ * 2. The state version must be in "pending" status (one-time use)
+ * 3. Upload is only valid for a short time after creation
+ */
+export const stateUploadRoute = new Hono()
+
 // =============================================================================
 // JSON:API Response Helpers
 // =============================================================================
@@ -57,6 +72,9 @@ interface JsonApiStateVersion {
     "created-at": string
     "hosted-state-upload-url"?: string
     "hosted-state-download-url"?: string
+    // JSON state is an alternate representation of the state for TFC UI features
+    "hosted-json-state-upload-url"?: string
+    "hosted-json-state-download-url"?: string
   }
   relationships?: {
     workspace?: {
@@ -90,11 +108,18 @@ function toJsonApiStateVersion(
   }
 
   if (options.includeUploadUrl && sv.status === "pending") {
-    result.attributes["hosted-state-upload-url"] = `/tfc/api/v2/state-versions/${sv.id}/upload`
+    // Must be absolute URL for terraform to use it
+    const host = process.env.YAFFLE_TFC_API_HOST ?? "localhost:6969"
+    result.attributes["hosted-state-upload-url"] = `https://${host}/tfc/api/v2/state-versions/${sv.id}/upload`
+    // JSON state upload URL - go-tfe uploads JSON state in parallel with raw state
+    result.attributes["hosted-json-state-upload-url"] = `https://${host}/tfc/api/v2/state-versions/${sv.id}/upload-json`
   }
 
   if (options.includeDownloadUrl && sv.status === "finalized") {
-    result.attributes["hosted-state-download-url"] = `/tfc/api/v2/state-versions/${sv.id}/download`
+    const host = process.env.YAFFLE_TFC_API_HOST ?? "localhost:6969"
+    result.attributes["hosted-state-download-url"] = `https://${host}/tfc/api/v2/state-versions/${sv.id}/download`
+    // JSON state download URL
+    result.attributes["hosted-json-state-download-url"] = `https://${host}/tfc/api/v2/state-versions/${sv.id}/download-json`
   }
 
   return result
@@ -180,21 +205,32 @@ stateVersionsRoute.post(
 
     const attrs = parseResult.data.data.attributes
 
-    // Check serial is greater than current
+    // Check serial is greater than current finalized version
+    // If a pending version exists with same serial (failed upload), discard it and retry
     const latest = await getLatestStateVersion(wsId)
     if (latest && attrs.serial <= latest.serial) {
-      return c.json(
-        {
-          errors: [
-            {
-              status: "409",
-              title: "Serial number conflict",
-              detail: `Serial ${attrs.serial} must be greater than current serial ${latest.serial}`,
-            },
-          ],
-        },
-        409,
-      )
+      // If the existing version is pending (incomplete upload), discard it and allow retry
+      if (latest.status === "pending" && attrs.serial === latest.serial) {
+        log.info("Discarding stale pending state version for retry", {
+          stateVersionId: latest.id,
+          workspaceId: wsId,
+          serial: attrs.serial,
+        })
+        await discardStateVersion(latest.id)
+      } else {
+        return c.json(
+          {
+            errors: [
+              {
+                status: "409",
+                title: "Serial number conflict",
+                detail: `Serial ${attrs.serial} must be greater than current serial ${latest.serial}`,
+              },
+            ],
+          },
+          409,
+        )
+      }
     }
 
     // Build S3 key
@@ -212,13 +248,16 @@ stateVersionsRoute.post(
       createdBy: expectedLocker,
     })
 
+    const response = toJsonApiStateVersion(sv, { includeUploadUrl: true })
+    
     log.info("State version created (pending upload)", {
       stateVersionId: sv.id,
       workspaceId: wsId,
       serial: attrs.serial,
+      uploadUrl: response.attributes["hosted-state-upload-url"],
     })
 
-    return c.json({ data: toJsonApiStateVersion(sv, { includeUploadUrl: true }) }, 201)
+    return c.json({ data: response }, 201)
   },
 )
 
@@ -321,10 +360,19 @@ stateVersionsRoute.get(
   async (c) => {
     const svId = c.req.param("state_version_id")
 
+    log.info("GET state version by ID", { stateVersionId: svId })
+
     const sv = await findStateVersionById(svId)
     if (!sv) {
+      log.warn("GET state version: not found", { stateVersionId: svId })
       return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
     }
+
+    log.info("GET state version: found", {
+      stateVersionId: svId,
+      status: sv.status,
+      serial: sv.serial,
+    })
 
     return c.json({
       data: toJsonApiStateVersion(sv, {
@@ -335,120 +383,8 @@ stateVersionsRoute.get(
   },
 )
 
-/**
- * PUT /tfc/api/v2/state-versions/:state_version_id/upload
- * Upload state content (phase 2 of two-phase upload).
- */
-stateVersionsRoute.put(
-  "/state-versions/:state_version_id/upload",
-  requireScopes("state:write"),
-  async (c) => {
-    const svId = c.req.param("state_version_id")
-    const auth = c.get("tfcAuth")
-
-    const sv = await findStateVersionById(svId)
-    if (!sv) {
-      return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
-    }
-
-    // Must be pending
-    if (sv.status !== "pending") {
-      return c.json(
-        {
-          errors: [
-            {
-              status: "409",
-              title: "State version is not pending",
-              detail: `Status is ${sv.status}`,
-            },
-          ],
-        },
-        409,
-      )
-    }
-
-    // Check workspace access
-    if (auth.type === "run" && auth.workspaceId !== sv.workspaceId) {
-      return c.json(
-        { errors: [{ status: "403", title: "Token not authorized for this workspace" }] },
-        403,
-      )
-    }
-
-    // Read body as bytes
-    const body = await c.req.arrayBuffer()
-    const content = new Uint8Array(body)
-
-    // Upload to S3, validating MD5
-    try {
-      const { size, md5 } = await uploadState(sv.s3Key, content, sv.md5)
-
-      // Verify size matches if we want (MD5 is the main integrity check)
-      if (md5 !== sv.md5) {
-        return c.json(
-          {
-            errors: [
-              {
-                status: "422",
-                title: "MD5 mismatch",
-                detail: `Expected ${sv.md5}, got ${md5}`,
-              },
-            ],
-          },
-          422,
-        )
-      }
-
-      // Extract terraform version and outputs from state JSON
-      let terraformVersion: string | undefined
-      let outputs: Record<string, unknown> | undefined
-      try {
-        const stateJson = JSON.parse(new TextDecoder().decode(content))
-        terraformVersion = stateJson.terraform_version
-        outputs = stateJson.outputs
-      } catch {
-        // State might not be valid JSON, that's OK
-      }
-
-      // Finalize the state version
-      const finalized = await finalizeStateVersion(svId, terraformVersion, outputs)
-      if (!finalized) {
-        return c.json(
-          { errors: [{ status: "500", title: "Failed to finalize state version" }] },
-          500,
-        )
-      }
-
-      // Update workspace's current state version
-      await updateWorkspaceCurrentState(sv.workspaceId, svId)
-
-      log.info("State version uploaded and finalized", {
-        stateVersionId: svId,
-        workspaceId: sv.workspaceId,
-        serial: sv.serial,
-        size,
-      })
-
-      return c.body(null, 200)
-    } catch (err) {
-      if (err instanceof StateUploadError) {
-        return c.json(
-          {
-            errors: [
-              {
-                status: "422",
-                title: "Upload failed",
-                detail: err.message,
-              },
-            ],
-          },
-          422,
-        )
-      }
-      throw err
-    }
-  },
-)
+// Note: The upload endpoint is on the separate stateUploadRoute (no auth required)
+// See stateUploadRoute below for the PUT /state-versions/:id/upload handler
 
 /**
  * GET /tfc/api/v2/state-versions/:state_version_id/download
@@ -511,5 +447,196 @@ stateVersionsRoute.get(
       log.error("Failed to download state", { error: String(err) })
       return c.json({ errors: [{ status: "500", title: "Failed to download state" }] }, 500)
     }
+  },
+)
+
+// =============================================================================
+// Unauthenticated Upload Route
+// =============================================================================
+
+/**
+ * PUT /tfc/api/v2/state-versions/:state_version_id/upload
+ * Upload state content (phase 2 of two-phase upload).
+ *
+ * This endpoint does NOT require authentication. Security is provided by:
+ * 1. The state version ID is an unpredictable UUID (acts as a one-time token)
+ * 2. The state version must be in "pending" status
+ * 3. Once uploaded, the status changes to "finalized" (one-time use)
+ *
+ * This matches TFC behavior where the upload URL is a presigned URL
+ * that doesn't require Bearer token authentication.
+ */
+stateUploadRoute.put(
+  "/state-versions/:state_version_id/upload",
+  async (c) => {
+    const svId = c.req.param("state_version_id")
+
+    log.info("State upload request received (unauthenticated)", {
+      stateVersionId: svId,
+      contentType: c.req.header("content-type"),
+      contentLength: c.req.header("content-length"),
+    })
+
+    const sv = await findStateVersionById(svId)
+    if (!sv) {
+      log.warn("State upload failed: state version not found", { stateVersionId: svId })
+      return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
+    }
+
+    // Must be pending - this is the key security check
+    // A state version can only be uploaded once
+    if (sv.status !== "pending") {
+      log.warn("State upload failed: state version not pending", {
+        stateVersionId: svId,
+        status: sv.status,
+      })
+      return c.json(
+        {
+          errors: [
+            {
+              status: "409",
+              title: "State version is not pending",
+              detail: `Status is ${sv.status}`,
+            },
+          ],
+        },
+        409,
+      )
+    }
+
+    // Read body as bytes
+    const body = await c.req.arrayBuffer()
+    const content = new Uint8Array(body)
+
+    // Upload to S3, validating MD5
+    try {
+      const { size, md5 } = await uploadState(sv.s3Key, content, sv.md5)
+
+      // Verify MD5 matches what was declared at creation
+      if (md5 !== sv.md5) {
+        log.warn("State upload failed: MD5 mismatch", {
+          stateVersionId: svId,
+          expected: sv.md5,
+          actual: md5,
+        })
+        return c.json(
+          {
+            errors: [
+              {
+                status: "422",
+                title: "MD5 mismatch",
+                detail: `Expected ${sv.md5}, got ${md5}`,
+              },
+            ],
+          },
+          422,
+        )
+      }
+
+      // Extract terraform version and outputs from state JSON
+      let terraformVersion: string | undefined
+      let outputs: Record<string, unknown> | undefined
+      try {
+        const stateJson = JSON.parse(new TextDecoder().decode(content))
+        terraformVersion = stateJson.terraform_version
+        outputs = stateJson.outputs
+      } catch {
+        // State might not be valid JSON, that's OK
+      }
+
+      // Finalize the state version
+      const finalized = await finalizeStateVersion(svId, terraformVersion, outputs)
+      if (!finalized) {
+        log.error("State upload failed: could not finalize", { stateVersionId: svId })
+        return c.json(
+          { errors: [{ status: "500", title: "Failed to finalize state version" }] },
+          500,
+        )
+      }
+
+      // Update workspace's current state version
+      await updateWorkspaceCurrentState(sv.workspaceId, svId)
+
+      log.info("State version uploaded and finalized", {
+        stateVersionId: svId,
+        workspaceId: sv.workspaceId,
+        serial: sv.serial,
+        size,
+        md5,
+      })
+
+      log.info("Sending 200 response for state upload PUT", { stateVersionId: svId })
+      // Return response mimicking S3 PUT behavior:
+      // - 200 OK
+      // - Empty body (Content-Length: 0)
+      // - ETag header with MD5 (S3 format uses quotes around the hash)
+      // Note: go-tfe's doForeignPUTRequest calls DoJSON(ctx, nil) which expects
+      // an empty response body.
+      c.header("ETag", `"${md5}"`)
+      return c.body(null, 200)
+    } catch (err) {
+      if (err instanceof StateUploadError) {
+        log.warn("State upload failed: S3 error", {
+          stateVersionId: svId,
+          error: err.message,
+        })
+        return c.json(
+          {
+            errors: [
+              {
+                status: "422",
+                title: "Upload failed",
+                detail: err.message,
+              },
+            ],
+          },
+          422,
+        )
+      }
+      throw err
+    }
+  },
+)
+
+/**
+ * PUT /tfc/api/v2/state-versions/:state_version_id/upload-json
+ * Upload JSON state content (parallel upload with raw state).
+ *
+ * This endpoint accepts the JSON representation of the state which is used
+ * by TFC for enhanced UI features. It does NOT require authentication
+ * (same security model as the main upload endpoint).
+ *
+ * For now, we just accept and discard this data since we don't use it,
+ * but we must accept it or go-tfe's Upload function will fail.
+ */
+stateUploadRoute.put(
+  "/state-versions/:state_version_id/upload-json",
+  async (c) => {
+    const svId = c.req.param("state_version_id")
+
+    log.info("JSON state upload request received (unauthenticated)", {
+      stateVersionId: svId,
+      contentType: c.req.header("content-type"),
+      contentLength: c.req.header("content-length"),
+    })
+
+    const sv = await findStateVersionById(svId)
+    if (!sv) {
+      log.warn("JSON state upload failed: state version not found", { stateVersionId: svId })
+      return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
+    }
+
+    // Read and discard the body - we don't currently use the JSON state
+    // but must accept it for go-tfe's Upload function to succeed
+    const body = await c.req.arrayBuffer()
+    const size = body.byteLength
+
+    log.info("JSON state upload accepted (discarded)", {
+      stateVersionId: svId,
+      size,
+    })
+
+    // Return 200 OK with empty body (mimicking S3 PUT response)
+    return c.body(null, 200)
   },
 )

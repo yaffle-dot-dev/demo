@@ -44,6 +44,12 @@ export async function prepareWorkspace(opts: {
   })
   const currentHead = headResult.stdout.toString().trim()
 
+  logger.info(`workspace clone check: requested=${opts.headSha} cloned=${currentHead}`, {
+    "workspace.requested_sha": opts.headSha,
+    "workspace.cloned_sha": currentHead,
+    "workspace.sha_match": currentHead === opts.headSha,
+  })
+
   if (currentHead !== opts.headSha) {
     const fetchResult = Bun.spawnSync(
       ["git", "fetch", "origin", opts.headSha, "--depth", "1"],
@@ -66,6 +72,18 @@ export async function prepareWorkspace(opts: {
       await cleanupWorkspace(workDir)
       throw new Error(`git checkout failed (exit ${checkoutResult.exitCode}): ${stderr}`)
     }
+
+    // Verify we're now at the correct SHA
+    const verifyResult = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
+      cwd: workDir,
+      stdout: "pipe",
+    })
+    const finalSha = verifyResult.stdout.toString().trim()
+    logger.info(`workspace checkout complete: final=${finalSha}`, {
+      "workspace.final_sha": finalSha,
+      "workspace.requested_sha": opts.headSha,
+      "workspace.checkout_success": finalSha === opts.headSha,
+    })
   }
 
   return workDir

@@ -6,10 +6,29 @@
 {
 	# Use Caddy's internal CA for localhost HTTPS
 	local_certs
+	
+	# Increase HTTP keep-alive timeout for Terraform client connections
+	# Terraform's go-tfe client can have gaps between requests during apply
+	servers {
+		timeouts {
+			idle 5m
+		}
+		# Force HTTP/1.1 only - disable HTTP/2 and HTTP/3
+		# This works around Terraform's go-tfe client having issues with HTTP/2 streams
+		protocols h1
+	}
 }
 
 https://localhost:6969 {
+	# Log all requests for debugging
+	log {
+		output stdout
+		format console
+		level DEBUG
+	}
+
 	# TFC-compatible API (terraform login, state backend)
+	# Force HTTP/1.1 for TFC routes to avoid HTTP/2 stream issues with Terraform
 	handle /.well-known/* {
 		reverse_proxy localhost:3000
 	}
@@ -23,13 +42,16 @@ https://localhost:6969 {
 		reverse_proxy localhost:3000
 	}
 
-	# SvelteKit web app at /app
+	# SvelteKit web app at /app (base path configured in svelte.config.js)
 	handle /app/* {
-		uri strip_prefix /app
 		reverse_proxy localhost:5173
 	}
 
-	# Vite dev server paths (for SvelteKit HMR)
+	handle /app {
+		reverse_proxy localhost:5173
+	}
+
+	# Vite/SvelteKit dev server paths
 	handle /@fs/* {
 		reverse_proxy localhost:5173
 	}
@@ -43,6 +65,10 @@ https://localhost:6969 {
 	}
 
 	handle /node_modules/* {
+		reverse_proxy localhost:5173
+	}
+
+	handle /.svelte-kit/* {
 		reverse_proxy localhost:5173
 	}
 

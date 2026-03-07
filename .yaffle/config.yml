@@ -11,6 +11,7 @@ workspaces:
     auto_apply: false
     auto_apply_on_merge: true
     variables:
+      environment: "{{ env }}"
       aws_region: "us-east-1"
 
   - path: infra/production
@@ -28,10 +29,12 @@ workspaces:
   # ==========================================================================
   # Application Infrastructure
   # ==========================================================================
+  # TODO: Uncomment after core infra is deployed (PR2)
+  # Depends on module outputs from infra/shared, infra/production, infra/nonprod
 
-  - path: apps/control-plane/infra
-    auto_apply: true
-    auto_apply_on_merge: true
-    variables:
-      environment: "{{ env }}"
-      aws_region: "us-east-1"
+  # - path: apps/control-plane/infra
+  #   auto_apply: true
+  #   auto_apply_on_merge: true
+  #   variables:
+  #     environment: "{{ env }}"
+  #     aws_region: "us-east-1"

@@ -152,6 +152,19 @@ webhooksRoute.post("/github", async (c) => {
 
     const branch = ref.replace("refs/heads/", "")
 
+    // Log both `after` and `head_commit.id` to diagnose SHA discrepancies
+    const afterSha = payload.after as string
+    const headCommitSha = payload.head_commit?.id as string | undefined
+    const beforeSha = payload.before as string
+    console.log(`[webhook] push event: branch=${branch} after=${afterSha} head_commit=${headCommitSha} before=${beforeSha}`)
+    logger.info(`push webhook received`, {
+      "webhook.branch": branch,
+      "webhook.after": afterSha,
+      "webhook.head_commit_id": headCommitSha ?? "none",
+      "webhook.before": beforeSha,
+      "webhook.sha_match": afterSha === headCommitSha,
+    })
+
     const context: PushContext = {
       kind: "push",
       installationId: payload.installation?.id,

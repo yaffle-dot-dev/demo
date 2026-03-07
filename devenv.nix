@@ -10,7 +10,7 @@ in
 {
   # Override devenv to use 2.x CLI via nix run (avoids rebuilds)
   scripts.devenv.exec = ''
-    exec nix run github:cachix/devenv/v2.0.1 -- "$@"
+    exec nix run github:cachix/devenv/v2.0.3 -- "$@"
   '';
 
   # ── Core tools ───────────────────────────────────────────────────
@@ -42,11 +42,15 @@ in
   ];
 
   # ── Environment variables ────────────────────────────────────────
-  # Secrets are loaded automatically via devenv.yaml secretspec integration
-  # See secretspec.toml for secret definitions and profiles
+  # Non-secret env vars shared across all processes.
+  # Secrets are injected per-process via processes.<name>.env using
+  # config.secretspec.secrets (see control-plane process below).
   env = {
     # Use opentofu as the terraform binary
     YAFFLE_TF_BINARY = "${pkgs.opentofu}/bin/tofu";
+    YAFFLE_STATE_BUCKET = "yaffle-state-production-use1";
+    YAFFLE_TFC_DEBUG = "1";
+    YAFFLE_TF_DEBUG = "1";
 
     # Smee webhook proxy for local GitHub App development
     SMEE_URL = "https://smee.io/AMHdVEIzSjKsXVkb";
@@ -67,6 +71,9 @@ in
 
     # Telemetry defaults for local dev (disabled, no endpoint)
     YAFFLE_ENV = "development";
+
+    # Debug TFC backend issues - set to TRACE for very verbose output
+    # Uncomment to enable: YAFFLE_TF_DEBUG = "1";
   };
 
   # ── Postgres ─────────────────────────────────────────────────────
@@ -92,11 +99,17 @@ in
   # devenv 2.0 uses native process manager
   process.manager.implementation = "native";
 
+  # Create logs directory before starting processes
+  process.manager.before = ''
+    mkdir -p .devenv/logs
+    echo "Logs will be written to .devenv/logs/"
+  '';
+
   processes = {
     # Caddy reverse proxy - provides HTTPS on localhost:6969
     # First run: `caddy trust` to install the local CA
     caddy = {
-      exec = "caddy run --config Caddyfile";
+      exec = "caddy run --config Caddyfile 2>&1 | tee -a .devenv/logs/caddy.log";
       ready = {
         http.get = { port = 6969; path = "/api/health"; scheme = "https"; };
         period = 10;
@@ -105,7 +118,23 @@ in
     };
 
     control-plane = {
-      exec = "bun run dev:control-plane";
+      exec = "bun run dev:control-plane 2>&1 | tee -a .devenv/logs/control-plane.log";
+      # Secrets injected via secretspec integration (only this process needs them)
+      env = {
+        DATABASE_URL = config.secretspec.secrets.DATABASE_URL or "";
+        GITHUB_APP_ID = config.secretspec.secrets.GITHUB_APP_ID or "";
+        GITHUB_APP_PRIVATE_KEY = config.secretspec.secrets.GITHUB_APP_PRIVATE_KEY or "";
+        GITHUB_WEBHOOK_SECRET = config.secretspec.secrets.GITHUB_WEBHOOK_SECRET or "";
+        GITHUB_OAUTH_CLIENT_ID = config.secretspec.secrets.GITHUB_OAUTH_CLIENT_ID or "";
+        GITHUB_OAUTH_CLIENT_SECRET = config.secretspec.secrets.GITHUB_OAUTH_CLIENT_SECRET or "";
+        AWS_ACCESS_KEY_ID = config.secretspec.secrets.AWS_ACCESS_KEY_ID or "";
+        AWS_SECRET_ACCESS_KEY = config.secretspec.secrets.AWS_SECRET_ACCESS_KEY or "";
+        AWS_ACCOUNT_ID = config.secretspec.secrets.AWS_ACCOUNT_ID or "";
+        AWS_REGION = config.secretspec.secrets.AWS_REGION or "us-east-1";
+        OTEL_EXPORTER_OTLP_ENDPOINT = config.secretspec.secrets.OTEL_EXPORTER_OTLP_ENDPOINT or "";
+        OTEL_EXPORTER_OTLP_HEADERS = config.secretspec.secrets.OTEL_EXPORTER_OTLP_HEADERS or "";
+        BETTER_AUTH_SECRET = config.secretspec.secrets.BETTER_AUTH_SECRET or "";
+      };
       ready = {
         http.get = { port = 3000; path = "/api/health"; };
         period = 10;
@@ -114,7 +143,7 @@ in
     };
 
     web = {
-      exec = "bun run dev:web";
+      exec = "bun run dev:web 2>&1 | tee -a .devenv/logs/web.log";
       ready = {
         http.get = { port = 5173; path = "/"; };
         period = 10;
@@ -123,7 +152,7 @@ in
     };
 
     marketing = {
-      exec = "bun run --filter=@yaffle/marketing dev";
+      exec = "bun run --filter=@yaffle/marketing dev 2>&1 | tee -a .devenv/logs/marketing.log";
       ready = {
         http.get = { port = 4000; path = "/"; };
         period = 10;
@@ -132,7 +161,7 @@ in
     };
 
     smee = {
-      exec = "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github";
+      exec = "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github 2>&1 | tee -a .devenv/logs/smee.log";
       ready = {
         exec = "pgrep -f smee-client";
         period = 10;
@@ -186,18 +215,23 @@ in
     echo "  op          $(op --version)"
     echo "  caddy       $(caddy version)"
     echo ""
-    echo "secrets: loaded via devenv secretspec integration (1password/development)"
+    echo "secrets: auto-injected to control-plane via devenv secretspec (1password/development)"
     echo ""
     echo "commands:"
     echo "  devenv up              - start caddy, postgres, control-plane, web, and smee"
+    echo "                           (secrets auto-injected to control-plane only)"
     echo "  tofu login localhost:6969 - authenticate with Yaffle TFC backend"
     echo "  bun install            - install dependencies"
     echo "  bun test               - run tests"
     echo "  tofu plan              - run opentofu plan (from infra/)"
     echo "  secretspec check       - verify all secrets are configured"
     echo "  secretspec config init - set up 1Password provider"
-    echo "  secretspec run -- cmd  - run cmd with secrets injected"
     echo "  op signin"
+    echo ""
+    echo "logs (when devenv up is running):"
+    echo "  tail -f .devenv/logs/control-plane.log"
+    echo "  tail -f .devenv/logs/web.log"
+    echo "  tail -f .devenv/logs/caddy.log"
     echo ""
     echo "endpoints (after devenv up):"
     echo "  https://localhost:6969       - marketing site"

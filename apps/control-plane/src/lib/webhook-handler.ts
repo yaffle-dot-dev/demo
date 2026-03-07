@@ -214,6 +214,7 @@ export async function approvePreviewApply(opts: {
     const installationToken = await getInstallationToken(preview.installationId)
 
     // TFC backend: get or create production workspace and generate run token
+    let tfcWorkspaceId: string | undefined
     let tfcWorkspaceName: string | undefined
     let tfcOrganization: string | undefined
     let tfcToken: string | undefined
@@ -229,6 +230,7 @@ export async function approvePreviewApply(opts: {
           branch: preview.branch,
           workspacePath: preview.workspacePath,
         })
+        tfcWorkspaceId = tfcWorkspace.id
         tfcWorkspaceName = tfcWorkspace.name
         tfcOrganization = org.slug
         tfcToken = await generateRunToken(preview.id, tfcWorkspace.id, org.id)
@@ -256,6 +258,7 @@ export async function approvePreviewApply(opts: {
       variables,
       installationToken,
       wsTag: `${ctx.owner}/${ctx.repo}@${ctx.branch}:${preview.workspacePath}`,
+      tfcWorkspaceId,
       tfcWorkspaceName,
       tfcOrganization,
       tfcToken,
@@ -438,6 +441,7 @@ async function handlePrOpenedOrUpdated(
       })
 
       // TFC backend: ensure workspace exists and generate run token
+      let tfcWorkspaceId: string | undefined
       let tfcWorkspaceName: string | undefined
       let tfcOrganization: string | undefined
       let tfcToken: string | undefined
@@ -451,6 +455,7 @@ async function handlePrOpenedOrUpdated(
           workspacePath: ws.path,
           branch: ctx.branch,
         })
+        tfcWorkspaceId = tfcWorkspace.id
         tfcWorkspaceName = tfcWorkspace.name
         tfcOrganization = org.slug
         tfcToken = await generateRunToken(preview.id, tfcWorkspace.id, org.id)
@@ -480,6 +485,7 @@ async function handlePrOpenedOrUpdated(
         installationToken,
         wsTag,
         createCheckRun: ws.require_approval ?? false,
+        tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
         tfcToken,
@@ -516,6 +522,7 @@ async function handlePrOpenedOrUpdated(
           variables,
           installationToken,
           wsTag,
+          tfcWorkspaceId,
           tfcWorkspaceName,
           tfcOrganization,
           tfcToken,
@@ -600,6 +607,13 @@ async function handlePrClosed(
   )
 
   const statePrefix = previewStatePrefix(ctx.prNumber)
+  const varCtx = prVariableContext({
+    prNumber: ctx.prNumber,
+    branch: ctx.branch,
+    sha: ctx.headSha,
+    owner: ctx.owner,
+    repo: ctx.repo,
+  })
   const comment = createCommentManager(ctx)
   const usingTfcBackend = useTfcBackend()
 
@@ -639,15 +653,19 @@ async function handlePrClosed(
       }
 
       // Generate TFC token for destroy if using TFC backend
+      let tfcWorkspaceId: string | undefined
       let tfcWorkspaceName: string | undefined
       let tfcOrganization: string | undefined
       let tfcToken: string | undefined
 
       if (tfcWorkspace) {
+        tfcWorkspaceId = tfcWorkspace.id
         tfcWorkspaceName = tfcWorkspace.name
         tfcOrganization = org.slug
         tfcToken = await generateRunToken(preview.id, tfcWorkspace.id, org.id)
       }
+
+      const variables = interpolateVariables(ws.variables, varCtx)
 
       logger.info("destroying preview", wsAttrs)
       await updatePreviewStatus(preview.id, "destroying")
@@ -660,9 +678,10 @@ async function handlePrClosed(
         command: "destroy",
         stateKey,
         workspacePath: ws.path,
-        variables: {},
+        variables,
         installationToken,
         wsTag,
+        tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
         tfcToken,
@@ -780,6 +799,7 @@ async function handlePushEvent(
       })
 
       // TFC backend: ensure production workspace exists and generate run token
+      let tfcWorkspaceId: string | undefined
       let tfcWorkspaceName: string | undefined
       let tfcOrganization: string | undefined
       let tfcToken: string | undefined
@@ -792,6 +812,7 @@ async function handlePushEvent(
           branch: ctx.branch,
           workspacePath: ws.path,
         })
+        tfcWorkspaceId = tfcWorkspace.id
         tfcWorkspaceName = tfcWorkspace.name
         tfcOrganization = org.slug
         tfcToken = await generateRunToken(preview.id, tfcWorkspace.id, org.id)
@@ -818,6 +839,7 @@ async function handlePushEvent(
         installationToken,
         wsTag,
         createCheckRun: true, // Create check run for production pushes
+        tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
         tfcToken,
@@ -865,6 +887,7 @@ async function handlePushEvent(
         installationToken,
         wsTag,
         checkRunId: planResult.checkRunId, // Reuse plan's check run
+        tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
         tfcToken,
@@ -934,6 +957,7 @@ async function executeRun(opts: {
   createCheckRun?: boolean
   checkRunId?: number // Existing check run to update (instead of creating new)
   // TFC backend options (when YAFFLE_TFC_API_HOST is set)
+  tfcWorkspaceId?: string
   tfcWorkspaceName?: string
   tfcOrganization?: string
   tfcToken?: string
@@ -1038,6 +1062,7 @@ async function executeRun(opts: {
         runId: run.id,
         prNumber: ctx.kind === "pull_request" ? ctx.prNumber : undefined,
         // TFC backend options
+        tfcWorkspaceId: opts.tfcWorkspaceId,
         tfcWorkspaceName: opts.tfcWorkspaceName,
         tfcOrganization: opts.tfcOrganization,
         tfcToken: opts.tfcToken,

@@ -53,6 +53,12 @@ export function tfcAuth(): MiddlewareHandler {
     }
 
     // Try JWT verification first (run tokens are JWTs)
+    log.debug("TFC auth: attempting token verification", {
+      tokenPrefix: token.slice(0, 20) + "...",
+      tokenLength: token.length,
+      looksLikeJwt: token.split(".").length === 3,
+    })
+
     const runPayload = await verifyRunToken(token)
     if (runPayload) {
       const runId = runPayload.sub.replace("run:", "")
@@ -73,10 +79,15 @@ export function tfcAuth(): MiddlewareHandler {
     }
 
     // Not a JWT - try as API token (opaque)
+    log.debug("TFC auth: JWT verification failed, trying API token")
     const tokenHash = hashToken(token)
     const apiToken = await findApiTokenByHash(tokenHash)
 
     if (!apiToken) {
+      log.warn("TFC auth: token verification failed", {
+        tokenPrefix: token.slice(0, 20) + "...",
+        tokenHash: tokenHash.slice(0, 16) + "...",
+      })
       return c.json(
         { errors: [{ status: "401", title: "Invalid token" }] },
         401,

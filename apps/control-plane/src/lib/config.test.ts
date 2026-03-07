@@ -172,7 +172,7 @@ describe("loadConfig", () => {
 
 describe("interpolateVariables", () => {
   const ctx: VariableContext = {
-    env: "preview-pr-42",
+    env: "prvw-42",
     pr_number: "42",
     branch: "feature/test",
     sha: "abc123",
@@ -191,7 +191,7 @@ describe("interpolateVariables", () => {
     }
 
     const result = interpolateVariables(vars, ctx)
-    expect(result.environment).toBe("preview-pr-42")
+    expect(result.environment).toBe("prvw-42")
     expect(result.pr).toBe("42")
     expect(result.ref).toBe("feature/test")
     expect(result.commit).toBe("abc123")
@@ -212,7 +212,7 @@ describe("interpolateVariables", () => {
       region: "us-east-1",
     }
     const result = interpolateVariables(vars, ctx)
-    expect(result.environment).toBe("preview-pr-42")
+    expect(result.environment).toBe("prvw-42")
     expect(result.region).toBe("us-east-1")
   })
 
@@ -223,9 +223,9 @@ describe("interpolateVariables", () => {
       c: "{{  env  }}",
     }
     const result = interpolateVariables(vars, ctx)
-    expect(result.a).toBe("preview-pr-42")
-    expect(result.b).toBe("preview-pr-42")
-    expect(result.c).toBe("preview-pr-42")
+    expect(result.a).toBe("prvw-42")
+    expect(result.b).toBe("prvw-42")
+    expect(result.c).toBe("prvw-42")
   })
 
   test("leaves unknown placeholders as-is", () => {
@@ -234,9 +234,14 @@ describe("interpolateVariables", () => {
     expect(result.x).toBe("{{ unknown_var }}")
   })
 
-  test("returns empty object for undefined variables", () => {
+  test("always injects environment even with undefined variables", () => {
     const result = interpolateVariables(undefined, ctx)
-    expect(result).toEqual({})
+    expect(result).toEqual({ environment: "prvw-42" })
+  })
+
+  test("always injects environment even with empty variables", () => {
+    const result = interpolateVariables({}, ctx)
+    expect(result).toEqual({ environment: "prvw-42" })
   })
 })
 
@@ -249,7 +254,7 @@ describe("prVariableContext", () => {
       owner: "lamalex",
       repo: "yaffle",
     })
-    expect(ctx.env).toBe("preview-pr-42")
+    expect(ctx.env).toBe("prvw-42")
     expect(ctx.pr_number).toBe("42")
     expect(ctx.branch).toBe("feature/foo")
     expect(ctx.sha).toBe("abc123")

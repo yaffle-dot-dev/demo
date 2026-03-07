@@ -1,6 +1,7 @@
 <script lang="ts">
   import { browser } from "$app/environment"
   import { goto } from "$app/navigation"
+  import { base } from "$app/paths"
   import { onMount } from "svelte"
   import { listOrgs } from "$lib/api"
   import { getLastOrg, useSession, startGithubLogin } from "$lib/auth"
@@ -34,7 +35,7 @@
         const targetOrg = lastOrg && res.data.some(o => o.slug === lastOrg)
           ? lastOrg
           : res.data[0].slug
-        goto(`/${targetOrg}`, { replaceState: true })
+        goto(`${base}/${targetOrg}`, { replaceState: true })
         return
       }
       // User is logged in but has no orgs

@@ -13,6 +13,7 @@ import {
   forceUnlockWorkspace,
   type Workspace,
 } from "../../db/queries/workspaces.ts"
+import { discardPendingStateVersions } from "../../db/queries/state-versions.ts"
 import {
   tfcAuth,
   requireScopes,
@@ -39,6 +40,24 @@ workspacesRoute.use("*", tfcAuth())
 // JSON:API Response Helpers
 // =============================================================================
 
+/**
+ * Workspace permissions - determines what operations the token can perform.
+ * These map to go-tfe's WorkspacePermissions struct.
+ */
+interface WorkspacePermissions {
+  "can-destroy": boolean
+  "can-force-unlock": boolean
+  "can-lock": boolean
+  "can-manage-run-tasks": boolean
+  "can-queue-apply": boolean
+  "can-queue-destroy": boolean
+  "can-queue-run": boolean
+  "can-read-settings": boolean
+  "can-unlock": boolean
+  "can-update": boolean
+  "can-update-variable": boolean
+}
+
 interface JsonApiWorkspace {
   id: string
   type: "workspaces"
@@ -51,6 +70,17 @@ interface JsonApiWorkspace {
     "terraform-version"?: string | null
     environment: string
     "created-at": string
+    // Additional fields required by Terraform/OpenTofu cloud backend
+    "execution-mode": string
+    "operations": boolean
+    "permissions": WorkspacePermissions
+    "auto-apply": boolean
+    "speculative-enabled": boolean
+    "structured-run-output-enabled": boolean
+    "source"?: string
+    "source-name"?: string
+    "source-url"?: string
+    "working-directory"?: string
   }
   relationships?: {
     organization?: {
@@ -72,9 +102,34 @@ function toJsonApiWorkspace(ws: Workspace): JsonApiWorkspace {
       "locked-by": ws.lockedBy,
       "locked-at": ws.lockedAt?.toISOString() ?? null,
       "locked-reason": ws.lockReason,
-      "terraform-version": ws.terraformVersion,
+      "terraform-version": ws.terraformVersion ?? "latest",
       environment: ws.environment,
       "created-at": ws.createdAt.toISOString(),
+      // Yaffle uses local execution mode - plans run locally, state stored remotely
+      "execution-mode": "local",
+      // Enable operations (required for cloud backend)
+      "operations": true,
+      // Allow all operations - Yaffle manages auth via tokens
+      "permissions": {
+        "can-destroy": true,
+        "can-force-unlock": true,
+        "can-lock": true,
+        "can-manage-run-tasks": false,
+        "can-queue-apply": true,
+        "can-queue-destroy": true,
+        "can-queue-run": true,
+        "can-read-settings": true,
+        "can-unlock": true,
+        "can-update": true,
+        "can-update-variable": true,
+      },
+      "auto-apply": false,
+      "speculative-enabled": true,
+      "structured-run-output-enabled": true,
+      "source": "yaffle",
+      "source-name": "Yaffle",
+      "source-url": "",
+      "working-directory": "",
     },
     relationships: {
       organization: {
@@ -86,6 +141,130 @@ function toJsonApiWorkspace(ws: Workspace): JsonApiWorkspace {
     },
   }
 }
+
+// =============================================================================
+// Organization routes (/organizations/:org_name)
+// =============================================================================
+
+/**
+ * GET /tfc/api/v2/organizations/:org_name
+ * Get organization details. Required by Terraform cloud backend during init.
+ */
+workspacesRoute.get(
+  "/organizations/:org_name",
+  async (c) => {
+    const orgName = c.req.param("org_name")
+
+    const org = await findOrgBySlug(orgName)
+    if (!org) {
+      return c.json(
+        { errors: [{ status: "404", title: `Organization "${orgName}" not found` }] },
+        404,
+      )
+    }
+
+    log.info("TFC: organization fetched", {
+      "tfc.organization": orgName,
+      "tfc.org_id": org.id,
+    })
+
+    // Return organization in TFE-compatible format
+    return c.json({
+      data: {
+        id: org.slug,
+        type: "organizations",
+        attributes: {
+          "external-id": org.id,
+          "created-at": org.createdAt.toISOString(),
+          "name": org.slug,
+          "cost-estimation-enabled": false,
+          "default-execution-mode": "local",
+          "permissions": {
+            "can-update": true,
+            "can-destroy": false,
+            "can-create-workspace": true,
+            "can-traverse": true,
+          },
+        },
+        relationships: {
+          "entitlement-set": {
+            data: { id: org.id, type: "entitlement-sets" },
+            links: {
+              related: `/api/v2/organizations/${org.slug}/entitlement-set`,
+            },
+          },
+        },
+        links: {
+          self: `/api/v2/organizations/${org.slug}`,
+        },
+      },
+    })
+  },
+)
+
+/**
+ * GET /tfc/api/v2/organizations/:org_name/entitlement-set
+ * Get organization entitlements. Required by Terraform cloud backend during init.
+ * We return a minimal set enabling all features.
+ */
+workspacesRoute.get(
+  "/organizations/:org_name/entitlement-set",
+  async (c) => {
+    const orgName = c.req.param("org_name")
+
+    const org = await findOrgBySlug(orgName)
+    if (!org) {
+      return c.json(
+        { errors: [{ status: "404", title: `Organization "${orgName}" not found` }] },
+        404,
+      )
+    }
+
+    log.info("TFC: entitlement-set fetched", {
+      "tfc.organization": orgName,
+      "tfc.org_id": org.id,
+    })
+
+    // Return entitlements that enable state storage and the cloud backend
+    // Based on TFE API docs sample response
+    return c.json({
+      data: {
+        id: org.id,
+        type: "entitlement-sets",
+        attributes: {
+          "agents": false,
+          "audit-logging": false,
+          "configuration-designer": true,
+          "cost-estimation": false,
+          "global-run-tasks": false,
+          "module-tests-generation": false,
+          "operations": true,
+          "policy-enforcement": false,
+          "policy-limit": null,
+          "policy-mandatory-enforcement-limit": null,
+          "policy-set-limit": null,
+          "private-module-registry": true,
+          "run-task-limit": null,
+          "run-task-mandatory-enforcement-limit": null,
+          "run-task-workspace-limit": null,
+          "run-tasks": false,
+          "self-serve-billing": true,
+          "sentinel": false,
+          "sso": false,
+          "state-storage": true,
+          "teams": false,
+          "usage-reporting": false,
+          "user-limit": null,
+          "vcs-integrations": true,
+          "versioned-policy-set-limit": null,
+        },
+        links: {
+          self: `/api/v2/entitlement-sets/${org.id}`,
+        },
+      },
+    })
+  },
+)
 
 // =============================================================================
 // Organization-scoped routes (/organizations/:org_name/workspaces)
@@ -151,7 +330,24 @@ workspacesRoute.get(
       return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
     }
 
-    return c.json({ data: toJsonApiWorkspace(ws) })
+    const response = { data: toJsonApiWorkspace(ws) }
+    
+    // Always log key fields for debugging TFC compatibility
+    log.info("TFC: workspace fetched by name", {
+      "tfc.workspace": wsName,
+      "tfc.workspace_id": ws.id,
+      "tfc.execution_mode": response.data.attributes["execution-mode"],
+      "tfc.operations": response.data.attributes.operations,
+      "tfc.has_permissions": !!response.data.attributes.permissions,
+      "tfc.permissions_can_queue_run": response.data.attributes.permissions?.["can-queue-run"],
+    })
+    // Debug: Log full response if YAFFLE_TFC_DEBUG env var is set
+    if (process.env.YAFFLE_TFC_DEBUG) {
+      log.info("TFC: workspace response JSON (by name)", {
+        "tfc.response": JSON.stringify(response, null, 2),
+      })
+    }
+    return c.json(response)
   },
 )
 
@@ -248,7 +444,24 @@ workspacesRoute.get(
       return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
     }
 
-    return c.json({ data: toJsonApiWorkspace(ws) })
+    const response = { data: toJsonApiWorkspace(ws) }
+    
+    // Always log key fields for debugging TFC compatibility
+    log.info("TFC: workspace fetched by ID", {
+      "tfc.workspace_id": wsId,
+      "tfc.workspace_name": ws.name,
+      "tfc.execution_mode": response.data.attributes["execution-mode"],
+      "tfc.operations": response.data.attributes.operations,
+      "tfc.has_permissions": !!response.data.attributes.permissions,
+      "tfc.permissions_can_queue_run": response.data.attributes.permissions?.["can-queue-run"],
+    })
+    // Debug: Log full response if YAFFLE_TFC_DEBUG env var is set
+    if (process.env.YAFFLE_TFC_DEBUG) {
+      log.info("TFC: workspace response JSON (by ID)", {
+        "tfc.response": JSON.stringify(response, null, 2),
+      })
+    }
+    return c.json(response)
   },
 )
 
@@ -301,6 +514,15 @@ workspacesRoute.post(
         },
         409,
       )
+    }
+
+    // Clean up any stale pending state versions from failed previous runs
+    const discarded = await discardPendingStateVersions(wsId)
+    if (discarded > 0) {
+      log.info("Discarded stale pending state versions on lock", {
+        workspaceId: wsId,
+        discardedCount: discarded,
+      })
     }
 
     log.info("Workspace locked", { workspaceId: wsId, lockedBy })

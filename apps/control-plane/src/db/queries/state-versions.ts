@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, type SQL } from "drizzle-orm"
+import { and, desc, eq, gt, not, type SQL } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { stateVersions, workspaces } from "../schema.ts"
@@ -47,7 +47,9 @@ export async function getCurrentStateVersion(
 }
 
 /**
- * Get the latest state version by serial (regardless of status).
+ * Get the latest state version by serial for serial conflict checks.
+ * Excludes discarded versions since they don't count toward the serial sequence.
+ * Includes pending versions since they represent in-flight uploads.
  */
 export async function getLatestStateVersion(
   workspaceId: string,
@@ -56,7 +58,14 @@ export async function getLatestStateVersion(
     const rows = await db
       .select()
       .from(stateVersions)
-      .where(eq(stateVersions.workspaceId, workspaceId))
+      .where(
+        and(
+          eq(stateVersions.workspaceId, workspaceId),
+          // Exclude discarded - they don't count toward serial sequence
+          // Include pending (in-flight) and finalized (complete)
+          not(eq(stateVersions.status, "discarded")),
+        ),
+      )
       .orderBy(desc(stateVersions.serial))
       .limit(1)
     return rows[0]
@@ -158,6 +167,26 @@ export async function discardStateVersion(stateVersionId: string): Promise<void>
       .update(stateVersions)
       .set({ status: "discarded" })
       .where(and(eq(stateVersions.id, stateVersionId), eq(stateVersions.status, "pending")))
+  })
+}
+
+/**
+ * Discard all pending state versions for a workspace.
+ * Used to clean up stale uploads when a new lock is acquired.
+ */
+export async function discardPendingStateVersions(workspaceId: string): Promise<number> {
+  return withDbSpan("update", "state_versions", async () => {
+    const result = await db
+      .update(stateVersions)
+      .set({ status: "discarded" })
+      .where(
+        and(
+          eq(stateVersions.workspaceId, workspaceId),
+          eq(stateVersions.status, "pending"),
+        ),
+      )
+      .returning({ id: stateVersions.id })
+    return result.length
   })
 }
 

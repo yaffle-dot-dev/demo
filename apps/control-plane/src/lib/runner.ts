@@ -35,6 +35,8 @@ export interface RunOpts {
   prNumber?: number
 
   // TFC backend options (optional, used when YAFFLE_TFC_API_HOST is set)
+  /** TFC workspace ID (UUID) for cleanup on exit */
+  tfcWorkspaceId?: string
   /** TFC workspace name (e.g., "preview-pr-42-control-plane-infra") */
   tfcWorkspaceName?: string
   /** Organization slug for TFC backend */

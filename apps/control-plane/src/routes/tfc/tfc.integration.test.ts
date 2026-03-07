@@ -161,6 +161,23 @@ describe("Service Discovery", () => {
     expect(body["login.v1"].authz).toBe("/tfc/oauth/authorize")
     expect(body["login.v1"].token).toBe("/tfc/oauth/token")
   })
+
+  test("GET /tfc/api/v2/ping returns TFP-API-Version header >= 2.5", async () => {
+    const res = await app.fetch(new Request("http://localhost/tfc/api/v2/ping"))
+
+    expect(res.status).toBe(200)
+
+    // Terraform requires TFP-API-Version >= 2.5 for the cloud backend
+    const apiVersion = res.headers.get("TFP-API-Version")
+    expect(apiVersion).toBeDefined()
+
+    // Parse and verify version is >= 2.5
+    const [major, minor] = apiVersion!.split(".").map(Number)
+    expect(major).toBeGreaterThanOrEqual(2)
+    if (major === 2) {
+      expect(minor).toBeGreaterThanOrEqual(5)
+    }
+  })
 })
 
 // =============================================================================
@@ -341,6 +358,132 @@ describe("Workspace CRUD", () => {
     const body = await res.json()
     expect(body.data.id).toBe(testWorkspaceId)
     expect(body.data.attributes.name).toBe(TEST_WORKSPACE_NAME)
+  })
+
+  test("workspace response includes all required TFC fields for cloud backend", async () => {
+    // Create workspace first
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    // Get the workspace
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces/${TEST_WORKSPACE_NAME}`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    const attrs = body.data.attributes
+
+    // Verify execution-mode is set to "local" for Yaffle
+    expect(attrs["execution-mode"]).toBe("local")
+
+    // Verify operations is enabled
+    expect(attrs.operations).toBe(true)
+
+    // Verify permissions object exists with required fields
+    expect(attrs.permissions).toBeDefined()
+    expect(attrs.permissions["can-queue-run"]).toBe(true)
+    expect(attrs.permissions["can-queue-apply"]).toBe(true)
+    expect(attrs.permissions["can-destroy"]).toBe(true)
+    expect(attrs.permissions["can-lock"]).toBe(true)
+    expect(attrs.permissions["can-unlock"]).toBe(true)
+
+    // Verify other required fields
+    expect(attrs["terraform-version"]).toBeDefined()
+    expect(attrs["speculative-enabled"]).toBeDefined()
+  })
+
+  test("workspace response JSON matches go-tfe expected structure", async () => {
+    // This test verifies the exact JSON structure that go-tfe/jsonapi expects
+    // Create workspace first
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    // Get the raw response text to verify JSON structure
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces/${TEST_WORKSPACE_NAME}`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(200)
+    
+    // Check Content-Type header
+    const contentType = res.headers.get("Content-Type")
+    expect(contentType).toBe("application/vnd.api+json")
+    
+    // Check TFP-API-Version header
+    const apiVersion = res.headers.get("TFP-API-Version")
+    expect(apiVersion).toBeDefined()
+    
+    const body = await res.json()
+    
+    // Verify top-level structure
+    expect(body).toHaveProperty("data")
+    expect(body.data).toHaveProperty("id")
+    expect(body.data).toHaveProperty("type", "workspaces")
+    expect(body.data).toHaveProperty("attributes")
+    
+    // Verify attributes structure (these are what go-tfe parses)
+    const attrs = body.data.attributes
+    
+    // execution-mode must be a string at the attribute level
+    expect(typeof attrs["execution-mode"]).toBe("string")
+    expect(attrs["execution-mode"]).toBe("local")
+    
+    // operations must be a boolean
+    expect(typeof attrs.operations).toBe("boolean")
+    expect(attrs.operations).toBe(true)
+    
+    // permissions must be an object (go-tfe will recursively unmarshal this)
+    expect(typeof attrs.permissions).toBe("object")
+    expect(attrs.permissions).not.toBeNull()
+    
+    // Verify permissions nested structure
+    expect(typeof attrs.permissions["can-queue-run"]).toBe("boolean")
+    expect(typeof attrs.permissions["can-destroy"]).toBe("boolean")
+    expect(typeof attrs.permissions["can-lock"]).toBe("boolean")
+    expect(typeof attrs.permissions["can-unlock"]).toBe("boolean")
+    expect(typeof attrs.permissions["can-force-unlock"]).toBe("boolean")
+    expect(typeof attrs.permissions["can-queue-apply"]).toBe("boolean")
+    
+    // Verify relationships exist (required by go-tfe)
+    expect(body.data).toHaveProperty("relationships")
+    expect(body.data.relationships).toHaveProperty("organization")
+    expect(body.data.relationships.organization).toHaveProperty("data")
+    expect(body.data.relationships.organization.data).toHaveProperty("type", "organizations")
   })
 
   test("gets workspace by ID", async () => {

@@ -1,36 +1,34 @@
 # =============================================================================
 # Data Sources
 # =============================================================================
-# References to core infrastructure via remote state.
+# References to core infrastructure via Yaffle module registry.
 # Production uses infra/production, previews use infra/nonprod.
+#
+# Yaffle generates shim modules from workspace outputs, enabling cross-workspace
+# references without hardcoded remote state configuration.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
 # Shared Infrastructure (state bucket, Route53)
 # -----------------------------------------------------------------------------
 
-data "terraform_remote_state" "shared" {
-  backend = "s3"
-
-  config = {
-    bucket = "yaffle-state"
-    key    = "shared/terraform.tfstate"
-    region = "us-east-1"
-  }
+module "shared" {
+  source = "yaffle.dev/yaffle-dot-dev/infra--shared/yaffle"
 }
 
 # -----------------------------------------------------------------------------
 # Environment-Specific Infrastructure (VPC, ECS cluster)
 # -----------------------------------------------------------------------------
+# Terraform requires static module sources, so we define both and select via count.
 
-data "terraform_remote_state" "core" {
-  backend = "s3"
+module "production" {
+  count  = local.is_production ? 1 : 0
+  source = "yaffle.dev/yaffle-dot-dev/infra--production/yaffle"
+}
 
-  config = {
-    bucket = "yaffle-state"
-    key    = "${local.is_production ? "production" : "nonprod"}/terraform.tfstate"
-    region = "us-east-1"
-  }
+module "nonprod" {
+  count  = local.is_production ? 0 : 1
+  source = "yaffle.dev/yaffle-dot-dev/infra--nonprod/yaffle"
 }
 
 # -----------------------------------------------------------------------------
@@ -39,16 +37,18 @@ data "terraform_remote_state" "core" {
 
 locals {
   # Shared outputs
-  state_bucket_name = data.terraform_remote_state.shared.outputs.state_bucket_name
-  state_bucket_arn  = data.terraform_remote_state.shared.outputs.state_bucket_arn
-  lock_table_name   = data.terraform_remote_state.shared.outputs.lock_table_name
-  lock_table_arn    = data.terraform_remote_state.shared.outputs.lock_table_arn
-  route53_zone_id   = data.terraform_remote_state.shared.outputs.route53_zone_id
+  state_bucket_name = module.shared.state_bucket_name
+  state_bucket_arn  = module.shared.state_bucket_arn
+  lock_table_name   = module.shared.lock_table_name
+  lock_table_arn    = module.shared.lock_table_arn
+  route53_zone_id   = module.shared.route53_zone_id
 
-  # Core outputs (environment-specific)
-  vpc_id             = data.terraform_remote_state.core.outputs.vpc_id
-  public_subnet_ids  = data.terraform_remote_state.core.outputs.public_subnet_ids
-  private_subnet_ids = data.terraform_remote_state.core.outputs.private_subnet_ids
-  ecs_cluster_arn    = data.terraform_remote_state.core.outputs.ecs_cluster_arn
-  ecs_cluster_name   = data.terraform_remote_state.core.outputs.ecs_cluster_name
+  # Core outputs (environment-specific) - select from whichever module is active
+  _core = local.is_production ? module.production[0] : module.nonprod[0]
+
+  vpc_id             = local._core.vpc_id
+  public_subnet_ids  = local._core.public_subnet_ids
+  private_subnet_ids = local._core.private_subnet_ids
+  ecs_cluster_arn    = local._core.ecs_cluster_arn
+  ecs_cluster_name   = local._core.ecs_cluster_name
 }

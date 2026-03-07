@@ -14,7 +14,7 @@ import { dependenciesRoute } from "./routes/dependencies.ts"
 import { authApiRoute } from "./routes/auth-api.ts"
 import { healthRoute } from "./routes/health.ts"
 import { wellKnownRoute } from "./routes/well-known.ts"
-import { tfcRoute } from "./routes/tfc/index.ts"
+import { tfcRoute, stateUploadRoute } from "./routes/tfc/index.ts"
 import { auth } from "./lib/better-auth.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
@@ -51,6 +51,7 @@ app.onError((err, c) => {
 
 // 404 handler
 app.notFound((c) => {
+  log.warn("404 Not Found", { method: c.req.method, path: c.req.path, url: c.req.url })
   return c.json({ error: { code: "NOT_FOUND", message: "not found" } }, 404)
 })
 
@@ -69,6 +70,10 @@ app.on(["POST", "GET"], "/api/auth/*", async (c) => {
 
 // Service discovery for Terraform CLI
 app.route("/.well-known", wellKnownRoute)
+
+// State upload endpoint (unauthenticated - acts like presigned URL)
+// Must be registered BEFORE /tfc route to take precedence
+app.route("/tfc/api/v2", stateUploadRoute)
 
 // TFC-compatible API (for terraform login, state, workspaces)
 app.route("/tfc", tfcRoute)

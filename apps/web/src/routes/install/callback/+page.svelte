@@ -1,6 +1,7 @@
 <script lang="ts">
   import { browser } from "$app/environment"
   import { goto } from "$app/navigation"
+  import { base } from "$app/paths"
   import { onMount, onDestroy } from "svelte"
   import { listOrgs } from "$lib/api"
   import { useSession } from "$lib/auth"
@@ -27,7 +28,7 @@
 
       if (!state.data?.user) {
         // Not logged in - redirect to home to login first
-        goto("/", { replaceState: true })
+        goto(`${base}/`, { replaceState: true })
         return
       }
 
@@ -51,7 +52,7 @@
             status = "redirecting"
             targetOrg = newOrg.slug
             if (pollInterval) clearInterval(pollInterval)
-            goto(`/${newOrg.slug}`, { replaceState: true })
+            goto(`${base}/${newOrg.slug}`, { replaceState: true })
           }
         } catch {
           // ignore
@@ -102,7 +103,7 @@
       <p class="text-text-muted">
         Please try signing in again.
       </p>
-      <a href="/" class="inline-block px-4 py-2 rounded-lg bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium transition-colors">
+      <a href="{base}/" class="inline-block px-4 py-2 rounded-lg bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium transition-colors">
         Go to home
       </a>
     {/if}

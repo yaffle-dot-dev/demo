@@ -58,11 +58,24 @@ async function execTf(
 
     logger.debug(`${binary} ${args.join(" ")}`, { "tf.cwd": cwd })
 
+    // Merge environment variables, allowing TF_LOG from parent env
+    // Set TF_LOG=DEBUG to debug cloud backend issues
+    const tfEnv = {
+      ...process.env,
+      ...env,
+      TF_IN_AUTOMATION: "1",
+      TF_INPUT: "0",
+      // Enable debug logging if YAFFLE_TF_DEBUG is set
+      ...(process.env.YAFFLE_TF_DEBUG ? { TF_LOG: "DEBUG" } : {}),
+      // Or preserve TF_LOG if already set
+      ...(process.env.TF_LOG ? { TF_LOG: process.env.TF_LOG } : {}),
+    }
+
     const proc = Bun.spawn([binary, ...args], {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
-      env: { ...process.env, ...env, TF_IN_AUTOMATION: "1", TF_INPUT: "0" },
+      env: tfEnv,
     })
 
     const stdoutPromise = readStream(proc.stdout, (chunk) => {

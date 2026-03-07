@@ -34,7 +34,7 @@ export const {
  * BetterAuth handles the OAuth dance and redirects back to the callback URL.
  */
 export async function startGithubLogin(): Promise<void> {
-  const callbackURL = `${window.location.origin}/auth/callback`
+  const callbackURL = `${window.location.origin}/app/auth/callback`
   await signIn.social({
     provider: "github",
     callbackURL,
@@ -49,7 +49,7 @@ export async function logout(): Promise<void> {
   await signOut()
   // Clear local storage preferences
   localStorage.removeItem(LAST_ORG_KEY)
-  window.location.href = "/"
+  window.location.href = "/app/"
 }
 
 /**

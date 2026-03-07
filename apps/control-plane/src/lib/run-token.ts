@@ -74,12 +74,19 @@ export async function verifyRunToken(token: string): Promise<RunTokenPayload | n
       typeof payload.org_id !== "string" ||
       !Array.isArray(payload.scopes)
     ) {
+      log.debug("Run token validation failed: missing required fields", {
+        hasSub: !!payload.sub,
+        subStartsWithRun: payload.sub?.startsWith("run:"),
+        hasWorkspaceId: typeof payload.workspace_id === "string",
+        hasOrgId: typeof payload.org_id === "string",
+        hasScopes: Array.isArray(payload.scopes),
+      })
       return null
     }
 
     return payload as RunTokenPayload
   } catch (err) {
-    log.debug("Run token verification failed", { error: String(err) })
+    log.debug("Run token JWT verification failed", { error: String(err) })
     return null
   }
 }

@@ -21,11 +21,11 @@ export interface TfcS3Config {
  * Get TFC state storage configuration from environment.
  */
 export function getTfcS3Config(): TfcS3Config {
-  const bucket = process.env.YAFFLE_TFC_STATE_S3_BUCKET ?? process.env.STATE_BUCKET
-  const region = process.env.YAFFLE_TFC_STATE_S3_REGION ?? process.env.AWS_REGION ?? "us-east-1"
+  const bucket = process.env.YAFFLE_STATE_BUCKET
+  const region = process.env.AWS_REGION ?? "us-east-1"
 
   if (!bucket) {
-    throw new Error("YAFFLE_TFC_STATE_S3_BUCKET or STATE_BUCKET environment variable required")
+    throw new Error("YAFFLE_STATE_BUCKET environment variable required")
   }
 
   return { bucket, region }

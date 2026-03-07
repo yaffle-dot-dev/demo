@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/stores"
   import { goto } from "$app/navigation"
+  import { untrack } from "svelte"
   import type { WorkspaceWithRuns, Run } from "$lib/api"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
   import WorkspaceSidebar from "./WorkspaceSidebar.svelte"
@@ -134,13 +135,16 @@
   // Auto-select tab: switch to apply when plan finishes and apply starts
   $effect(() => {
     if (tabs.length === 0) return
+    // Use untrack to read activeTab without creating a dependency on it
+    // This prevents infinite loops when we write to activeTab
+    const currentTab = untrack(() => activeTab)
     // If current tab isn't available, pick the first one
-    if (!tabs.some((t) => t.id === activeTab)) {
+    if (!tabs.some((t) => t.id === currentTab)) {
       activeTab = tabs[0].id
       return
     }
     // Auto-switch from plan to apply when apply is running/pending
-    if (activeTab === "plan" && latestPlan?.status === "success" && latestApply) {
+    if (currentTab === "plan" && latestPlan?.status === "success" && latestApply) {
       if (latestApply.status === "running" || latestApply.status === "pending") {
         activeTab = "apply"
       }

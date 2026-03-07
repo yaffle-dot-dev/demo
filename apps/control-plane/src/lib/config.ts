@@ -54,7 +54,7 @@ export function validateConfig(parsed: unknown): YaffleConfig {
  * Context available for variable interpolation.
  */
 export interface VariableContext {
-  /** "preview-pr-42" or "production" */
+  /** "prvw-42" or "production" */
   env: string
   pr_number: string
   branch: string
@@ -87,17 +87,25 @@ export async function loadConfig(workDir: string): Promise<YaffleConfig> {
  * Interpolate variable templates in a workspace's variables.
  * Replaces {{ name }} placeholders with values from the context.
  * Unknown placeholders are left as-is.
+ *
+ * Always injects `environment` from the context - this is a required
+ * variable for all Yaffle-managed terraform workspaces.
  */
 export function interpolateVariables(
   variables: Record<string, string> | undefined,
   ctx: VariableContext,
 ): Record<string, string> {
-  if (!variables) return {}
-
-  const result: Record<string, string> = {}
-  for (const [key, value] of Object.entries(variables)) {
-    result[key] = interpolate(value, ctx)
+  // Always inject environment - it's required for all workspaces
+  const result: Record<string, string> = {
+    environment: ctx.env,
   }
+
+  if (variables) {
+    for (const [key, value] of Object.entries(variables)) {
+      result[key] = interpolate(value, ctx)
+    }
+  }
+
   return result
 }
 
@@ -125,7 +133,7 @@ export function prVariableContext(opts: {
   repo: string
 }): VariableContext {
   return {
-    env: `preview-pr-${opts.prNumber}`,
+    env: `prvw-${opts.prNumber}`,
     pr_number: String(opts.prNumber),
     branch: opts.branch,
     sha: opts.sha,

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte"
   import { goto } from "$app/navigation"
+  import { base } from "$app/paths"
 
   let error = $state("")
   let status = $state("Completing sign-in...")
@@ -23,7 +24,7 @@
     
     // Small delay for UX, then redirect
     setTimeout(() => {
-      goto("/", { replaceState: true })
+      goto(`${base}/`, { replaceState: true })
     }, 300)
   })
 </script>
@@ -34,7 +35,7 @@
       <div class="text-status-failed text-center">
         <p class="font-medium">Sign-in failed</p>
         <p class="mt-1">{error}</p>
-        <a href="/" class="mt-4 inline-block text-yaffle-400 hover:underline">Return home</a>
+        <a href="{base}/" class="mt-4 inline-block text-yaffle-400 hover:underline">Return home</a>
       </div>
     {:else}
       <p>{status}</p>
