@@ -43,7 +43,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}/control-plane
 
 jobs:
   build-control-plane:
@@ -70,7 +69,11 @@ jobs:
           # Use nix run to invoke devenv 2.x directly (cached by FlakeHub)
           # Disable sandbox to allow bun install to fetch packages
           # (bun.lock ensures reproducibility at the package level)
-          nix run github:cachix/devenv/v2.0.2 -- container build control-plane --nix-option sandbox false
+          # Use CI profile with dotenv - secrets are injected at runtime, not build time
+          nix run github:cachix/devenv/v2.0.2 -- container build control-plane \
+            --nix-option sandbox false \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci
 
       - name: Log in to GitHub Container Registry
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push)
@@ -83,26 +86,35 @@ jobs:
       - name: Push container image
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push)
         run: |
-          # Generate image tags
-          SHA_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          LATEST_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest"
+          # Registry base URL (devenv appends container name:version)
+          REGISTRY_BASE="docker://${{ env.REGISTRY }}/${{ github.repository }}/"
 
           # Copy to registry with SHA tag
-          nix run github:cachix/devenv/v2.0.2 -- container copy control-plane --nix-option sandbox false --registry "docker://${SHA_TAG}"
+          nix run github:cachix/devenv/v2.0.2 -- container copy control-plane \
+            --nix-option sandbox false \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci \
+            -O containers.control-plane.version:string "${{ github.sha }}" \
+            --registry "${REGISTRY_BASE}"
 
           # Also tag as latest on main branch
           if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            nix run github:cachix/devenv/v2.0.2 -- container copy control-plane --nix-option sandbox false --registry "docker://${LATEST_TAG}"
+            nix run github:cachix/devenv/v2.0.2 -- container copy control-plane \
+              --nix-option sandbox false \
+              --secretspec-provider dotenv \
+              --secretspec-profile ci \
+              -O containers.control-plane.version:string "latest" \
+              --registry "${REGISTRY_BASE}"
           fi
 
-          echo "Pushed: ${SHA_TAG}"
-          echo "image_sha=${SHA_TAG}" >> $GITHUB_OUTPUT
+          echo "Pushed: ${{ env.REGISTRY }}/${{ github.repository }}/control-plane:${{ github.sha }}"
+          echo "image_sha=${{ env.REGISTRY }}/${{ github.repository }}/control-plane:${{ github.sha }}" >> $GITHUB_OUTPUT
 
       - name: Summary
         run: |
           echo "## Container Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: \`${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Image**: \`${{ env.REGISTRY }}/${{ github.repository }}/control-plane\`" >> $GITHUB_STEP_SUMMARY
           echo "- **SHA Tag**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
           if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.push }}" = "true" ]; then
             echo "- **Status**: Pushed to registry" >> $GITHUB_STEP_SUMMARY

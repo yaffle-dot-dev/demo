@@ -155,7 +155,7 @@ in
   # Environment variables (PORT, NODE_ENV, DATABASE_URL, etc.) should be set
   # at runtime when deploying the container. The app defaults PORT to 3000.
   containers."control-plane" = {
-    name = "yaffle-control-plane";
+    name = "control-plane";
 
     # Run the built application
     startupCommand = "${controlPlane}/bin/yaffle-control-plane";

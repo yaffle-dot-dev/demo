@@ -28,13 +28,25 @@ jobs:
         uses: DeterminateSystems/flakehub-cache-action@v3
 
       - name: Install dependencies
-        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun install --frozen-lockfile
+        run: |
+          nix run github:cachix/devenv/v2.0.2 -- shell \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci \
+            -- bun install --frozen-lockfile
 
       - name: Type check
-        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun run typecheck
+        run: |
+          nix run github:cachix/devenv/v2.0.2 -- shell \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci \
+            -- bun run typecheck
 
       - name: Lint
-        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun run lint
+        run: |
+          nix run github:cachix/devenv/v2.0.2 -- shell \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci \
+            -- bun run lint
 
   test:
     name: Test
@@ -69,9 +81,17 @@ jobs:
         uses: DeterminateSystems/flakehub-cache-action@v3
 
       - name: Install dependencies
-        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun install --frozen-lockfile
+        run: |
+          nix run github:cachix/devenv/v2.0.2 -- shell \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci \
+            -- bun install --frozen-lockfile
 
       - name: Run tests
         env:
           DATABASE_URL: postgresql://yaffle@localhost:5432/yaffle_test
-        run: nix run github:cachix/devenv/v2.0.2 -- shell -- bun test
+        run: |
+          nix run github:cachix/devenv/v2.0.2 -- shell \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci \
+            -- bun test
