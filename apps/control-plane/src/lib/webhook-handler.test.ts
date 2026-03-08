@@ -9,8 +9,10 @@ import type {
 } from "@yaffle/shared"
 
 import type { YaffleConfig } from "./config.ts"
+import { sql } from "drizzle-orm"
+
 import { db } from "./db.ts"
-import { organizations, previews, tfRuns } from "../db/schema.ts"
+import { previews, tfRuns } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
 import { createHandler } from "./webhook-handler.ts"
 import type { Runner, RunOpts } from "./runner.ts"
@@ -154,17 +156,37 @@ describe("webhook-handler", () => {
   let handler: ReturnType<typeof createHandler>
 
   beforeEach(async () => {
-    await db.delete(tfRuns)
-    await db.delete(previews)
-    await db.delete(organizations)
+    // Use TRUNCATE CASCADE to properly handle all FK constraints
+    // This is faster and more reliable than DELETE in order
+    await db.execute(
+      sql`TRUNCATE TABLE 
+        tf_runs, 
+        previews, 
+        state_versions, 
+        workspaces, 
+        connections, 
+        repositories, 
+        github_installations, 
+        organizations 
+      CASCADE`
+    )
     runner = new FakeRunner()
     handler = createHandler(runner, { configLoader: fakeConfigLoader(DEFAULT_CONFIG) })
   })
 
   afterAll(async () => {
-    await db.delete(tfRuns)
-    await db.delete(previews)
-    await db.delete(organizations)
+    await db.execute(
+      sql`TRUNCATE TABLE 
+        tf_runs, 
+        previews, 
+        state_versions, 
+        workspaces, 
+        connections, 
+        repositories, 
+        github_installations, 
+        organizations 
+      CASCADE`
+    )
   })
 
   // -----------------------------------------------------------------------

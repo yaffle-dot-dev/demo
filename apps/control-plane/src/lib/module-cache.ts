@@ -6,7 +6,7 @@ import {
 } from "@aws-sdk/client-s3"
 
 import { logger } from "./telemetry.ts"
-import { getTfcS3Config } from "./s3-state.ts"
+import { getTfcS3Config, isS3Configured } from "./s3-state.ts"
 
 // Cached S3 client
 let s3Client: S3Client | undefined
@@ -18,6 +18,20 @@ function getS3Client(region: string): S3Client {
   return s3Client
 }
 
+// =============================================================================
+// In-Memory Module Cache (for tests)
+// =============================================================================
+
+// In-memory cache for module archives when S3 is not configured
+const inMemoryModuleCache = new Map<string, Uint8Array>()
+
+/**
+ * Clear all in-memory modules. Call this in test cleanup.
+ */
+export function clearInMemoryModuleCache(): void {
+  inMemoryModuleCache.clear()
+}
+
 /**
  * Build the S3 key for a cached module archive.
  * Pattern: {workspace_id}/modules/v{serial}.tar.gz
@@ -27,16 +41,35 @@ export function buildModuleS3Key(workspaceId: string, serial: number): string {
 }
 
 /**
- * Get a cached module archive from S3.
+ * Get a cached module archive from S3 (or in-memory if S3 not configured).
  * Returns null if the module is not cached.
  */
 export async function getCachedModule(
   workspaceId: string,
   serial: number,
 ): Promise<Uint8Array | null> {
+  const s3Key = buildModuleS3Key(workspaceId, serial)
+
+  // Use in-memory cache if S3 not configured (tests)
+  if (!isS3Configured()) {
+    const cached = inMemoryModuleCache.get(s3Key)
+    if (cached) {
+      logger.debug("Module cache hit (in-memory)", {
+        "module.workspaceId": workspaceId,
+        "module.serial": serial,
+        "module.size": cached.length,
+      })
+      return cached
+    }
+    logger.debug("Module cache miss (in-memory)", {
+      "module.workspaceId": workspaceId,
+      "module.serial": serial,
+    })
+    return null
+  }
+
   const config = getTfcS3Config()
   const client = getS3Client(config.region)
-  const s3Key = buildModuleS3Key(workspaceId, serial)
 
   try {
     const response = await client.send(
@@ -89,16 +122,27 @@ export async function getCachedModule(
 }
 
 /**
- * Cache a generated module archive in S3.
+ * Cache a generated module archive in S3 (or in-memory if S3 not configured).
  */
 export async function cacheModule(
   workspaceId: string,
   serial: number,
   archive: Uint8Array,
 ): Promise<void> {
+  const s3Key = buildModuleS3Key(workspaceId, serial)
+
+  // Use in-memory cache if S3 not configured (tests)
+  if (!isS3Configured()) {
+    inMemoryModuleCache.set(s3Key, archive)
+    logger.info("Module cached (in-memory)", {
+      "module.key": s3Key,
+      "module.size": archive.length,
+    })
+    return
+  }
+
   const config = getTfcS3Config()
   const client = getS3Client(config.region)
-  const s3Key = buildModuleS3Key(workspaceId, serial)
 
   await client.send(
     new PutObjectCommand({

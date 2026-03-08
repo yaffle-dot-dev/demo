@@ -67,9 +67,17 @@ export function buildTfcEnvVars(token: string): Record<string, string> {
 }
 
 /**
- * Determine if the TFC backend should be used.
+ * Check if the TFC backend is configured.
+ * TFC backend is required for Yaffle to function.
  * Returns true if YAFFLE_TFC_API_HOST is set.
  */
-export function useTfcBackend(): boolean {
+export function isTfcConfigured(): boolean {
   return !!process.env.YAFFLE_TFC_API_HOST
+}
+
+/**
+ * @deprecated Use isTfcConfigured() instead
+ */
+export function useTfcBackend(): boolean {
+  return isTfcConfigured()
 }

@@ -62,39 +62,6 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
   return async (c: Context, next: Next) => {
     const env = getEnv()
 
-    // Skip auth entirely if disabled
-    if (env.authMode === "off") {
-      // Still need to resolve org for the handler
-      const orgSlug = orgSource === "query" ? c.req.query(orgKey) : c.req.param(orgKey)
-      if (!orgSlug) {
-        return c.json(
-          { error: { code: "VALIDATION_ERROR", message: `${orgKey} is required` } },
-          400,
-        )
-      }
-
-      const org = await findOrgBySlug(orgSlug)
-      if (!org) {
-        return c.json(
-          { error: { code: "ORG_NOT_FOUND", message: `organization not found: ${orgSlug}` } },
-          404,
-        )
-      }
-
-      // Set minimal context for handler
-      c.set("auth", {
-        userId: "",
-        email: "",
-        name: "",
-        image: null,
-        orgId: org.id,
-        role: "admin",
-      } as OrgAuthContext)
-
-      await next()
-      return
-    }
-
     // Get token from query if allowed (for SSE)
     const queryToken = allowQueryToken ? c.req.query("token") : undefined
 
@@ -198,20 +165,6 @@ export function requireResourceAccess(options: ResourceAuthOptions) {
         { error: { code: "NOT_FOUND", message: "resource not found" } },
         404,
       )
-    }
-
-    // Skip auth entirely if disabled
-    if (env.authMode === "off") {
-      c.set("auth", {
-        userId: "",
-        email: "",
-        name: "",
-        image: null,
-        orgId,
-        role: "admin",
-      } as OrgAuthContext)
-      await next()
-      return
     }
 
     // Get token from query if allowed (for SSE)

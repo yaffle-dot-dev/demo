@@ -4,10 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { LocalRunner } from "./local-runner.ts"
-import { type BackendConfig, configureLocalBackend, removeState, stateExists } from "./state.ts"
-
-// Force local backend for tests
-const LOCAL_CONFIG: BackendConfig = { mode: "local" }
+import { configureLocalBackend, removeLocalState, stateExistsSync } from "./state.ts"
 import { runTerraform } from "./terraform.ts"
 
 const TF_CONFIG = `
@@ -28,8 +25,8 @@ const STATE_KEY = "previews/pr-100/terraform.tfstate"
 
 /**
  * Helper: create a fresh work directory with main.tf, configure the persistent
- * backend, and return the path. This simulates what LocalRunner does on each
- * invocation: clone repo, write backend override, run tofu.
+ * local backend, and return the path. This simulates what the local backend
+ * does in dev mode.
  */
 async function freshWorkDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "yaffle-integration-"))
@@ -38,7 +35,7 @@ async function freshWorkDir(): Promise<string> {
   return dir
 }
 
-describe("persistent state integration", () => {
+describe("persistent state integration (local dev mode)", () => {
   const workDirs: string[] = []
 
   afterAll(async () => {
@@ -47,7 +44,7 @@ describe("persistent state integration", () => {
       await rm(dir, { recursive: true, force: true })
     }
     // Clean up persistent state
-    await removeState(OWNER, REPO, STATE_KEY, LOCAL_CONFIG)
+    await removeLocalState(OWNER, REPO, STATE_KEY)
   })
 
   test("plan -> apply -> plan (no changes) -> destroy lifecycle with persistent state", async () => {
@@ -78,7 +75,7 @@ describe("persistent state integration", () => {
     expect(applyResult.outputs?.resource_id).toBeTruthy()
 
     // State file should now exist
-    expect(await stateExists(OWNER, REPO, STATE_KEY, LOCAL_CONFIG)).toBe(true)
+    expect(stateExistsSync(OWNER, REPO, STATE_KEY)).toBe(true)
 
     // 3. Plan again in yet another fresh workspace -- should show no changes
     //    This is the critical assertion: state from apply persists across workspaces
@@ -103,8 +100,8 @@ describe("persistent state integration", () => {
     expect(destroyResult.success).toBe(true)
 
     // 5. Clean up persistent state (like the handler does)
-    await removeState(OWNER, REPO, STATE_KEY, LOCAL_CONFIG)
-    expect(await stateExists(OWNER, REPO, STATE_KEY, LOCAL_CONFIG)).toBe(false)
+    await removeLocalState(OWNER, REPO, STATE_KEY)
+    expect(stateExistsSync(OWNER, REPO, STATE_KEY)).toBe(false)
 
     // 6. Plan one more time -- should show 1 to add again (state is gone)
     const finalPlanDir = await freshWorkDir()
@@ -120,25 +117,21 @@ describe("persistent state integration", () => {
 })
 
 describe("LocalRunner", () => {
-  test("returns clear error when workspace path does not exist in repo", async () => {
+  test("returns clear error when TFC backend is not configured", async () => {
     const runner = new LocalRunner()
 
-    // Use the real repo (yaffle itself) but point at a nonexistent workspace path
+    // Run without TFC config - should fail with clear error
     const result = await runner.run({
-      owner: "lamalex",
-      repo: "yaffle",
-      headSha: "HEAD",
+      owner: "test-owner",
+      repo: "test-repo",
+      headSha: "abc123",
       command: "plan",
-      workspacePath: "this/path/does/not/exist",
-      stateKey: "previews/pr-999/this/path/does/not/exist/terraform.tfstate",
+      workspacePath: "infra",
+      stateKey: "test/terraform.tfstate",
+      // Missing: tfcWorkspaceName, tfcOrganization, tfcToken
     })
 
     expect(result.success).toBe(false)
-    expect(result.errorMessage).toContain("this/path/does/not/exist")
-    expect(result.errorMessage).toContain("not found")
-    expect(result.errorMessage).toContain(".yaffle/config.yml")
-    // Should NOT contain internal temp paths
-    expect(result.errorMessage).not.toContain("/var/folders")
-    expect(result.errorMessage).not.toContain("yaffle-ws-")
-  }, 30_000)
+    expect(result.errorMessage).toContain("TFC backend configuration is required")
+  })
 })

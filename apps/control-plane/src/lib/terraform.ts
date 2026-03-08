@@ -6,6 +6,12 @@ import type { RunType, TerraformResult } from "@yaffle/shared"
 
 import { logger, tracer } from "./telemetry.ts"
 
+/** Strip ANSI escape codes from a string. */
+function stripAnsi(str: string): string {
+  // eslint-disable-next-line no-control-regex
+  return str.replace(/\x1b\[[0-9;]*m/g, "")
+}
+
 /** Resolve the terraform/tofu binary path. */
 function getTfBinary(): string {
   return process.env.YAFFLE_TF_BINARY ?? "terraform"
@@ -327,8 +333,12 @@ export function sanitizeOutput(raw: string): string {
  * or "No changes. Infrastructure is up-to-date."
  */
 export function parsePlanSummary(output: string): string {
+  // Strip ANSI escape codes before parsing
+  // Terraform/OpenTofu output contains color codes that break regex matching
+  const clean = stripAnsi(output)
+
   // Match "Plan: X to add, Y to change, Z to destroy."
-  const planMatch = output.match(
+  const planMatch = clean.match(
     /Plan:\s*(\d+)\s*to add,\s*(\d+)\s*to change,\s*(\d+)\s*to destroy/,
   )
   if (planMatch) {
@@ -336,7 +346,7 @@ export function parsePlanSummary(output: string): string {
   }
 
   // Match "No changes"
-  if (/No changes/.test(output)) {
+  if (/No changes/.test(clean)) {
     return "no changes"
   }
 

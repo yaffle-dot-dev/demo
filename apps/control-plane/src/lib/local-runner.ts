@@ -3,8 +3,8 @@ import { existsSync } from "node:fs"
 import type { TerraformResult } from "@yaffle/shared"
 
 import type { RunOpts, Runner } from "./runner.ts"
-import { configureBackend, configureProviderOverride } from "./state.ts"
-import { configureTfcBackend, buildTfcEnvVars, useTfcBackend } from "./tfc-backend.ts"
+import { configureProviderOverride } from "./state.ts"
+import { configureTfcBackend, buildTfcEnvVars } from "./tfc-backend.ts"
 import { getTfcApiHost } from "./run-token.ts"
 import { forceUnlockWorkspace } from "../db/queries/workspaces.ts"
 import { logger, withSpan } from "./telemetry.ts"
@@ -12,25 +12,33 @@ import { runTerraform } from "./terraform.ts"
 import { cleanupWorkspace, prepareWorkspace } from "./workspace.ts"
 
 /**
- * Local runner: clones the repo, configures a persistent local backend
- * for the specified workspace path, and shells out to tofu/terraform.
+ * Local runner: clones the repo, configures the TFC backend,
+ * and shells out to tofu/terraform.
  *
- * Supports two backend modes:
- * 1. S3/Local backend (default): Direct S3 state storage with DynamoDB locking
- * 2. TFC backend: Uses Yaffle's TFC-compatible API for state management
+ * Uses Yaffle's TFC-compatible API for state management with Postgres locking.
  */
 export class LocalRunner implements Runner {
   async run(opts: RunOpts): Promise<TerraformResult> {
     return withSpan("local_runner.run", async (span) => {
-      const backendMode = useTfcBackend() && opts.tfcWorkspaceName ? "tfc" : "s3"
-
       span.setAttributes({
         "runner.type": "local",
         "runner.command": opts.command,
         "runner.workspace_path": opts.workspacePath,
         "runner.state_key": opts.stateKey,
-        "runner.backend_mode": backendMode,
       })
+
+      // TFC backend is required
+      if (!opts.tfcWorkspaceName || !opts.tfcOrganization || !opts.tfcToken) {
+        return {
+          success: false,
+          command: opts.command,
+          output: "",
+          errorMessage:
+            "TFC backend configuration is required. " +
+            "Ensure YAFFLE_TFC_API_HOST is set and workspace is properly configured.",
+          durationMs: 0,
+        }
+      }
 
       let workDir: string | undefined
 
@@ -63,31 +71,23 @@ export class LocalRunner implements Runner {
           }
         }
 
-        // Configure backend based on mode
-        let extraEnv: Record<string, string> = {}
+        // Configure TFC backend
+        const tfcHost = getTfcApiHost()
+        await configureTfcBackend(tfDir, {
+          hostname: tfcHost,
+          organization: opts.tfcOrganization,
+          workspaceName: opts.tfcWorkspaceName,
+          token: opts.tfcToken,
+        })
+        const extraEnv = buildTfcEnvVars(opts.tfcToken)
 
-        if (backendMode === "tfc" && opts.tfcWorkspaceName && opts.tfcOrganization && opts.tfcToken) {
-          // TFC backend mode: Use Yaffle's TFC-compatible API
-          const tfcHost = getTfcApiHost()
-          await configureTfcBackend(tfDir, {
-            hostname: tfcHost,
-            organization: opts.tfcOrganization,
-            workspaceName: opts.tfcWorkspaceName,
-            token: opts.tfcToken,
-          })
-          extraEnv = buildTfcEnvVars(opts.tfcToken)
-          
-          logger.info("TFC backend configured", {
-            hostname: tfcHost,
-            organization: opts.tfcOrganization,
-            workspaceName: opts.tfcWorkspaceName,
-            tokenEnvVar: `TF_TOKEN_${tfcHost.replace(/[.:]/g, "_")}`,
-            tokenPrefix: opts.tfcToken.slice(0, 20) + "...",
-          })
-        } else {
-          // Legacy S3/local backend mode
-          await configureBackend(tfDir, opts.owner, opts.repo, opts.stateKey)
-        }
+        logger.info("TFC backend configured", {
+          hostname: tfcHost,
+          organization: opts.tfcOrganization,
+          workspaceName: opts.tfcWorkspaceName,
+          tokenEnvVar: `TF_TOKEN_${tfcHost.replace(/[.:]/g, "_")}`,
+          tokenPrefix: opts.tfcToken.slice(0, 20) + "...",
+        })
 
         // Inject Yaffle tags into AWS provider default_tags
         await configureProviderOverride(tfDir, {
@@ -106,7 +106,7 @@ export class LocalRunner implements Runner {
       } finally {
         // Always unlock TFC workspace when terraform exits (success, failure, or crash)
         // This prevents orphaned locks when terraform doesn't send the unlock request
-        if (backendMode === "tfc" && opts.tfcWorkspaceId) {
+        if (opts.tfcWorkspaceId) {
           try {
             const unlocked = await forceUnlockWorkspace(opts.tfcWorkspaceId)
             if (unlocked) {

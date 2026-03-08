@@ -140,7 +140,7 @@ export async function requireAuth(
         span.setStatus({ code: SpanStatusCode.ERROR, message: "missing dev auth headers" })
         getAuthCounter().add(1, { operation: "require_auth", result: "missing_headers" })
         getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "missing_headers" })
-        throw new AuthError("missing dev auth headers (x-yaffle-user-id, x-yaffle-user-email)", "MISSING_HEADERS")
+        throw new AuthError("missing dev auth headers (x-yaffle-user-id, x-yaffle-user-email)", "AUTH_REQUIRED")
       }
 
       span.setAttributes({

@@ -107,27 +107,6 @@ resource "aws_iam_role_policy" "control_plane_s3" {
   })
 }
 
-# DynamoDB access for state locking
-resource "aws_iam_role_policy" "control_plane_dynamodb" {
-  name = "dynamodb-lock-access"
-  role = aws_iam_role.control_plane_task.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:DeleteItem"
-        ]
-        Resource = local.lock_table_arn
-      }
-    ]
-  })
-}
-
 # ECS access for launching TF runner tasks
 resource "aws_iam_role_policy" "control_plane_ecs" {
   name = "ecs-runner-access"
@@ -232,27 +211,6 @@ resource "aws_iam_role_policy" "tf_runner_s3" {
           local.state_bucket_arn,
           "${local.state_bucket_arn}/*"
         ]
-      }
-    ]
-  })
-}
-
-# DynamoDB access for state locking
-resource "aws_iam_role_policy" "tf_runner_dynamodb" {
-  name = "dynamodb-lock-access"
-  role = aws_iam_role.tf_runner_task.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:DeleteItem"
-        ]
-        Resource = local.lock_table_arn
       }
     ]
   })

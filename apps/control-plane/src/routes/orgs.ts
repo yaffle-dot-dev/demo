@@ -16,11 +16,6 @@ export const orgsRoute = new Hono()
 orgsRoute.get("/", async (c) => {
   const env = getEnv()
 
-  // This endpoint always requires auth (even if authMode is "off" for other endpoints)
-  if (env.authMode === "off") {
-    return c.json({ error: { code: "UNAUTHORIZED", message: "authentication required" } }, 401)
-  }
-
   let auth
   try {
     auth = await requireAuth(c.req.raw.headers)
@@ -61,10 +56,6 @@ orgsRoute.get("/", async (c) => {
 orgsRoute.get("/stream", async (c) => {
   const env = getEnv()
   const token = c.req.query("token")
-
-  if (env.authMode === "off") {
-    return c.json({ error: { code: "UNAUTHORIZED", message: "authentication required" } }, 401)
-  }
 
   let auth
   try {

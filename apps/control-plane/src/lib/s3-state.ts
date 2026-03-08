@@ -18,6 +18,14 @@ export interface TfcS3Config {
 }
 
 /**
+ * Check if S3 state storage is configured.
+ * Returns false when YAFFLE_STATE_BUCKET is not set (e.g., in tests).
+ */
+export function isS3Configured(): boolean {
+  return !!process.env.YAFFLE_STATE_BUCKET
+}
+
+/**
  * Get TFC state storage configuration from environment.
  */
 export function getTfcS3Config(): TfcS3Config {
@@ -42,6 +50,20 @@ function getS3Client(region: string): S3Client {
 }
 
 // =============================================================================
+// In-Memory State Storage (for tests)
+// =============================================================================
+
+// In-memory store for state content when S3 is not configured
+const inMemoryStateStore = new Map<string, Uint8Array>()
+
+/**
+ * Clear all in-memory state. Call this in test cleanup.
+ */
+export function clearInMemoryState(): void {
+  inMemoryStateStore.clear()
+}
+
+// =============================================================================
 // State Storage Operations
 // =============================================================================
 
@@ -54,7 +76,7 @@ export function buildStateS3Key(workspaceId: string, serial: number): string {
 }
 
 /**
- * Upload state content to S3.
+ * Upload state content to S3 (or in-memory if S3 not configured).
  *
  * @param s3Key - The S3 key (e.g., "ws-uuid/v42.tfstate")
  * @param content - The raw state bytes
@@ -66,9 +88,6 @@ export async function uploadState(
   content: Uint8Array,
   expectedMd5?: string,
 ): Promise<{ size: number; md5: string }> {
-  const config = getTfcS3Config()
-  const client = getS3Client(config.region)
-
   // Calculate MD5 of content
   const actualMd5 = createHash("md5").update(content).digest("hex")
 
@@ -79,6 +98,20 @@ export async function uploadState(
       "MD5_MISMATCH",
     )
   }
+
+  // Use in-memory storage if S3 not configured (tests)
+  if (!isS3Configured()) {
+    inMemoryStateStore.set(s3Key, content)
+    logger.info("State uploaded to in-memory store", {
+      "state.key": s3Key,
+      "state.size": content.length,
+      "state.md5": actualMd5,
+    })
+    return { size: content.length, md5: actualMd5 }
+  }
+
+  const config = getTfcS3Config()
+  const client = getS3Client(config.region)
 
   // Upload to S3
   await client.send(
@@ -103,6 +136,7 @@ export async function uploadState(
 
 /**
  * Generate a presigned URL for downloading state from S3.
+ * For in-memory storage (tests), returns a placeholder URL.
  *
  * @param s3Key - The S3 key
  * @param expiresInSeconds - URL expiry time (default 5 minutes)
@@ -111,6 +145,12 @@ export async function getStateDownloadUrl(
   s3Key: string,
   expiresInSeconds: number = 300,
 ): Promise<string> {
+  // For in-memory storage, return a placeholder URL
+  // The actual download will use downloadState() directly
+  if (!isS3Configured()) {
+    return `http://localhost/state/${encodeURIComponent(s3Key)}`
+  }
+
   const config = getTfcS3Config()
   const client = getS3Client(config.region)
 
@@ -125,13 +165,25 @@ export async function getStateDownloadUrl(
 }
 
 /**
- * Download state content directly from S3.
+ * Download state content directly from S3 (or in-memory if S3 not configured).
  * Use this for streaming to clients without redirect.
  */
 export async function downloadState(s3Key: string): Promise<{
   content: Uint8Array
   contentType: string | undefined
 }> {
+  // Use in-memory storage if S3 not configured (tests)
+  if (!isS3Configured()) {
+    const content = inMemoryStateStore.get(s3Key)
+    if (!content) {
+      throw new StateDownloadError(`State not found: ${s3Key}`, "NOT_FOUND")
+    }
+    return {
+      content,
+      contentType: "application/json",
+    }
+  }
+
   const config = getTfcS3Config()
   const client = getS3Client(config.region)
 

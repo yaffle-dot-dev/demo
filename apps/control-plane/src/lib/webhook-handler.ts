@@ -39,7 +39,7 @@ import {
   previewStatePrefix,
   productionStatePrefix,
 } from "./runner.ts"
-import { removeState } from "./state.ts"
+
 import {
   beginWorkspaceArchive,
   completeWorkspaceArchive,
@@ -383,7 +383,7 @@ async function handlePrOpenedOrUpdated(
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   const attrs = contextAttrs(ctx)
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
+  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId, ctx.installationId)
   const installationToken = await acquireToken(ctx)
 
   // Load config
@@ -585,7 +585,7 @@ async function handlePrClosed(
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   const attrs = contextAttrs(ctx)
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
+  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId, ctx.installationId)
   const installationToken = await acquireToken(ctx)
 
   // Load config to know which workspaces to destroy
@@ -688,8 +688,6 @@ async function handlePrClosed(
       })
 
       if (destroyResult.success) {
-        // Clean up state storage
-        await removeState(ctx.owner, ctx.repo, stateKey)
         await updatePreviewStatus(preview.id, "destroyed")
         await comment.update(ws.path, { phase: "destroyed" })
 
@@ -725,7 +723,7 @@ async function handlePushEvent(
   const attrs = contextAttrs(ctx)
   logger.info(`handling push event: ${tag} sha=${ctx.headSha}`, attrs)
 
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId)
+  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId, ctx.installationId)
   const installationToken = await acquireToken(ctx)
 
   // Load config -- no PR to annotate on push events, just log

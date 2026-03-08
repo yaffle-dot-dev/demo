@@ -11,8 +11,8 @@ export interface AppEnv {
   otelHeaders: string
   /** YAFFLE_ENV -- deployment environment name (development, staging, production) */
   yaffleEnv: string
-  /** YAFFLE_AUTH_MODE -- off | dev | required */
-  authMode: string
+  /** YAFFLE_AUTH_MODE -- dev | required (default: required) */
+  authMode: "dev" | "required"
   /** BETTER_AUTH_SECRET -- 32+ char secret for BetterAuth encryption */
   betterAuthSecret: string
   /** BETTER_AUTH_URL -- Base URL for BetterAuth (e.g., https://api.yaffle.dev) */
@@ -92,7 +92,7 @@ export function getEnv(): AppEnv {
     otelEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "",
     otelHeaders: process.env.OTEL_EXPORTER_OTLP_HEADERS ?? "",
     yaffleEnv: process.env.YAFFLE_ENV ?? "development",
-    authMode: process.env.YAFFLE_AUTH_MODE ?? "off",
+    authMode: (process.env.YAFFLE_AUTH_MODE === "dev" ? "dev" : "required") as "dev" | "required",
     betterAuthSecret: process.env.BETTER_AUTH_SECRET ?? "",
     betterAuthUrl: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
     trustedOrigins: process.env.TRUSTED_ORIGINS ?? "",

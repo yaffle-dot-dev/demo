@@ -39,8 +39,6 @@ locals {
   # Shared outputs
   state_bucket_name = module.shared.state_bucket_name
   state_bucket_arn  = module.shared.state_bucket_arn
-  lock_table_name   = module.shared.lock_table_name
-  lock_table_arn    = module.shared.lock_table_arn
   route53_zone_id   = module.shared.route53_zone_id
 
   # Core outputs (environment-specific) - select from whichever module is active

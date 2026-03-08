@@ -15,6 +15,7 @@ import {
   findWorkspaceByName,
 } from "../../db/queries/workspaces.ts"
 import { findOrgBySlug, createOrg } from "../../db/queries/organizations.ts"
+import { ensureMembership } from "../../db/queries/users.ts"
 import { db } from "../../lib/db.ts"
 import { user } from "../../db/schema.ts"
 import { eq } from "drizzle-orm"
@@ -109,6 +110,14 @@ beforeAll(async () => {
     })
   }
   testOrgId = org.id
+
+  // Ensure test user is a member of the org (required for registry access)
+  await ensureMembership({
+    orgId: testOrgId,
+    userId: TEST_USER_ID,
+    role: "admin",
+    source: "manual",
+  })
 
   // Clean up any existing test tokens first
   await deleteApiTokensByUserId(TEST_USER_ID)
@@ -863,10 +872,12 @@ describe("State Versions", () => {
 
     const stateVersionId = svBody.data.id
     const uploadUrl = svBody.data.attributes["hosted-state-upload-url"]
+    // Extract path from full URL (https://host:port/path -> /path)
+    const uploadPath = new URL(uploadUrl).pathname
 
     // Phase 2: Upload state content
     const uploadRes = await app.fetch(
-      new Request(`http://localhost${uploadUrl}`, {
+      new Request(`http://localhost${uploadPath}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${testUserToken}`,
@@ -1028,8 +1039,9 @@ describe("State Versions", () => {
     const sv5Body = await sv5Res.json()
 
     // Upload to finalize
+    const uploadPath5 = new URL(sv5Body.data.attributes["hosted-state-upload-url"]).pathname
     await app.fetch(
-      new Request(`http://localhost${sv5Body.data.attributes["hosted-state-upload-url"]}`, {
+      new Request(`http://localhost${uploadPath5}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${testUserToken}`,
@@ -1100,9 +1112,10 @@ describe("State Versions", () => {
       ),
     )
     const svBody = await svRes.json()
+    const uploadPathCurrent = new URL(svBody.data.attributes["hosted-state-upload-url"]).pathname
 
     await app.fetch(
-      new Request(`http://localhost${svBody.data.attributes["hosted-state-upload-url"]}`, {
+      new Request(`http://localhost${uploadPathCurrent}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${testUserToken}`,
@@ -1169,9 +1182,10 @@ describe("State Versions", () => {
     )
     const svBody = await svRes.json()
     const stateVersionId = svBody.data.id
+    const uploadPathDownload = new URL(svBody.data.attributes["hosted-state-upload-url"]).pathname
 
     await app.fetch(
-      new Request(`http://localhost${svBody.data.attributes["hosted-state-upload-url"]}`, {
+      new Request(`http://localhost${uploadPathDownload}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${testUserToken}`,
@@ -1279,9 +1293,10 @@ describe("Module Registry", () => {
       ),
     )
     const svBody = await svRes.json()
+    const uploadPathReg = new URL(svBody.data.attributes["hosted-state-upload-url"]).pathname
 
     await app.fetch(
-      new Request(`http://localhost${svBody.data.attributes["hosted-state-upload-url"]}`, {
+      new Request(`http://localhost${uploadPathReg}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${testUserToken}`,
@@ -1383,9 +1398,10 @@ describe("Module Registry", () => {
       ),
     )
     const svBody = await svRes.json()
+    const uploadPathDl = new URL(svBody.data.attributes["hosted-state-upload-url"]).pathname
 
     await app.fetch(
-      new Request(`http://localhost${svBody.data.attributes["hosted-state-upload-url"]}`, {
+      new Request(`http://localhost${uploadPathDl}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${testUserToken}`,
@@ -1461,9 +1477,10 @@ describe("Module Registry", () => {
       ),
     )
     const svBody = await svRes.json()
+    const uploadPathArch = new URL(svBody.data.attributes["hosted-state-upload-url"]).pathname
 
     await app.fetch(
-      new Request(`http://localhost${svBody.data.attributes["hosted-state-upload-url"]}`, {
+      new Request(`http://localhost${uploadPathArch}`, {
         method: "PUT",
         headers: {
           Authorization: `Bearer ${testUserToken}`,

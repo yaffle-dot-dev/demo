@@ -294,7 +294,8 @@ export async function ensureOrg(
   installationId?: number,
 ): Promise<Organization> {
   // If we have an installation ID, use the new function
-  if (installationId) {
+  // Note: Check for undefined specifically because 0 is a valid (though unlikely) installation ID
+  if (installationId !== undefined) {
     const result = await ensureOrgAndInstallation({
       githubOrgLogin,
       githubOrgId,

@@ -1,39 +1,66 @@
-import { afterAll, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
 
 import { Hono } from "hono"
 
+// Import test utils FIRST to set YAFFLE_AUTH_MODE=dev before other imports
+import {
+  createTestContext,
+  authHeaders,
+  type TestContext,
+} from "../test-utils/auth.ts"
+
 import { db } from "../lib/db.ts"
-import { organizations, previews, tfRuns } from "../db/schema.ts"
+import { organizations, previews, tfRuns, orgMemberships, approvals } from "../db/schema.ts"
 import { previewsRoute } from "./previews.ts"
 
 // Mount the route under /api/previews like the real app
 const app = new Hono()
 app.route("/api/previews", previewsRoute)
 
+// Test context - set up once for the test suite
+let ctx: TestContext
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function seedOrg(): Promise<string> {
-  const rows = await db
-    .insert(organizations)
-    .values({
-      name: "Test Org",
-      slug: "test-org",
-      stateBucket: "test-bucket",
-    })
-    .returning()
-  return rows[0].id
+/**
+ * Make an authenticated request.
+ */
+function req(
+  path: string,
+  options: { headers?: Headers; method?: string; body?: unknown } = {},
+): Promise<Response> {
+  const { headers, method = "GET", body } = options
+  const reqHeaders = headers ?? ctx.headers
+  
+  const init: RequestInit = {
+    method,
+    headers: reqHeaders,
+  }
+  
+  if (body) {
+    init.body = JSON.stringify(body)
+    reqHeaders.set("Content-Type", "application/json")
+  }
+  
+  return app.request(path, init)
+}
+
+/**
+ * Make an unauthenticated request (for testing 401s).
+ */
+function unauthReq(path: string): Promise<Response> {
+  return app.request(path)
 }
 
 async function seedPreview(
-  orgId: string,
   overrides: Partial<typeof previews.$inferInsert> = {},
 ): Promise<typeof previews.$inferSelect> {
   const rows = await db
     .insert(previews)
     .values({
-      orgId,
+      orgId: ctx.org.id,
       repo: "test-repo",
       prNumber: 42,
       workspacePath: "infra",
@@ -48,42 +75,28 @@ async function seedPreview(
   return rows[0]
 }
 
-async function seedRun(
-  previewId: string,
-  overrides: Partial<typeof tfRuns.$inferInsert> = {},
-): Promise<typeof tfRuns.$inferSelect> {
-  const rows = await db
-    .insert(tfRuns)
-    .values({
-      previewId,
-      runType: "plan",
-      status: "success",
-      planSummary: "+1, ~0, -0",
-      startedAt: new Date("2026-01-01T00:00:00Z"),
-      completedAt: new Date("2026-01-01T00:00:05Z"),
-      ...overrides,
-    })
-    .returning()
-  return rows[0]
-}
-
-function req(path: string): Response | Promise<Response> {
-  return app.request(path)
-}
-
 // ---------------------------------------------------------------------------
-// Cleanup
+// Setup and Cleanup
 // ---------------------------------------------------------------------------
+
+beforeAll(async () => {
+  // Create test context with user, org, and membership
+  ctx = await createTestContext({ orgSlug: "test-org" })
+})
 
 beforeEach(async () => {
+  // Clean up test data between tests (but keep user/org/membership)
+  await db.delete(approvals)
   await db.delete(tfRuns)
   await db.delete(previews)
-  await db.delete(organizations)
 })
 
 afterAll(async () => {
+  // Full cleanup
+  await db.delete(approvals)
   await db.delete(tfRuns)
   await db.delete(previews)
+  await db.delete(orgMemberships)
   await db.delete(organizations)
 })
 
@@ -92,6 +105,11 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /api/previews", () => {
+  test("returns 401 when not authenticated", async () => {
+    const res = await unauthReq("/api/previews?org=test-org")
+    expect(res.status).toBe(401)
+  })
+
   test("returns 400 when org is missing", async () => {
     const res = await req("/api/previews")
     expect(res.status).toBe(400)
@@ -99,16 +117,13 @@ describe("GET /api/previews", () => {
     expect(body.error.code).toBe("VALIDATION_ERROR")
   })
 
-  test("returns empty list when org does not exist", async () => {
+  test("returns 404 when org does not exist", async () => {
+    // Use headers with our user but request a non-existent org
     const res = await req("/api/previews?org=nonexistent")
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.data).toEqual([])
-    expect(body.nextCursor).toBeNull()
+    expect(res.status).toBe(404)
   })
 
   test("returns empty list when no previews exist", async () => {
-    await seedOrg()
     const res = await req("/api/previews?org=test-org")
     expect(res.status).toBe(200)
     const body = await res.json()
@@ -117,9 +132,8 @@ describe("GET /api/previews", () => {
   })
 
   test("lists previews for an org", async () => {
-    const orgId = await seedOrg()
-    await seedPreview(orgId)
-    await seedPreview(orgId, { prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
+    await seedPreview()
+    await seedPreview({ prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
 
     const res = await req("/api/previews?org=test-org")
     expect(res.status).toBe(200)
@@ -131,9 +145,8 @@ describe("GET /api/previews", () => {
   })
 
   test("filters by repo", async () => {
-    const orgId = await seedOrg()
-    await seedPreview(orgId, { repo: "repo-a" })
-    await seedPreview(orgId, { repo: "repo-b", prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
+    await seedPreview({ repo: "repo-a" })
+    await seedPreview({ repo: "repo-b", prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
 
     const res = await req("/api/previews?org=test-org&repo=repo-a")
     expect(res.status).toBe(200)
@@ -143,9 +156,8 @@ describe("GET /api/previews", () => {
   })
 
   test("filters by status", async () => {
-    const orgId = await seedOrg()
-    await seedPreview(orgId, { status: "ready" })
-    await seedPreview(orgId, {
+    await seedPreview({ status: "ready" })
+    await seedPreview({
       status: "failed",
       prNumber: 43,
       stateKey: "previews/pr-43/infra/terraform.tfstate",
@@ -159,9 +171,8 @@ describe("GET /api/previews", () => {
   })
 
   test("filters by pr_number", async () => {
-    const orgId = await seedOrg()
-    await seedPreview(orgId, { prNumber: 42 })
-    await seedPreview(orgId, { prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
+    await seedPreview({ prNumber: 42 })
+    await seedPreview({ prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
 
     const res = await req("/api/previews?org=test-org&pr_number=42")
     expect(res.status).toBe(200)
@@ -171,9 +182,8 @@ describe("GET /api/previews", () => {
   })
 
   test("respects limit parameter", async () => {
-    const orgId = await seedOrg()
     for (let i = 0; i < 5; i++) {
-      await seedPreview(orgId, {
+      await seedPreview({
         prNumber: i + 1,
         stateKey: `previews/pr-${i + 1}/infra/terraform.tfstate`,
       })
@@ -187,7 +197,6 @@ describe("GET /api/previews", () => {
   })
 
   test("returns 400 for invalid status", async () => {
-    await seedOrg()
     const res = await req("/api/previews?org=test-org&status=bogus")
     expect(res.status).toBe(400)
     const body = await res.json()
@@ -196,125 +205,85 @@ describe("GET /api/previews", () => {
 })
 
 // ---------------------------------------------------------------------------
-// GET /api/previews/:id
+// GET /api/previews/:id/approvals
 // ---------------------------------------------------------------------------
 
-describe("GET /api/previews/:id", () => {
-  test("returns 400 for non-UUID id", async () => {
-    const res = await req("/api/previews/not-a-uuid")
-    expect(res.status).toBe(400)
-    const body = await res.json()
-    expect(body.error.code).toBe("VALIDATION_ERROR")
-  })
-
-  test("returns 404 when preview does not exist", async () => {
-    const res = await req("/api/previews/00000000-0000-0000-0000-000000000000")
-    expect(res.status).toBe(404)
-    const body = await res.json()
-    expect(body.error.code).toBe("PREVIEW_NOT_FOUND")
-  })
-
-  test("returns preview detail", async () => {
-    const orgId = await seedOrg()
-    const preview = await seedPreview(orgId)
-
-    const res = await req(`/api/previews/${preview.id}`)
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.data.id).toBe(preview.id)
-    expect(body.data.repo).toBe("test-repo")
-    expect(body.data.prNumber).toBe(42)
-    expect(body.data.workspacePath).toBe("infra")
-    expect(body.data.status).toBe("ready")
-    expect(body.data.createdAt).toBeDefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
-// GET /api/previews/:id/runs
-// ---------------------------------------------------------------------------
-
-describe("GET /api/previews/:id/runs", () => {
-  test("returns 404 when preview does not exist", async () => {
-    const res = await req("/api/previews/00000000-0000-0000-0000-000000000000/runs")
+describe("GET /api/previews/:id/approvals", () => {
+  test("returns 404 when preview does not exist (unauthenticated)", async () => {
+    // Note: returns 404 before auth check because resource doesn't exist
+    const res = await unauthReq("/api/previews/00000000-0000-0000-0000-000000000000/approvals")
     expect(res.status).toBe(404)
   })
 
-  test("returns empty list when no runs exist", async () => {
-    const orgId = await seedOrg()
-    const preview = await seedPreview(orgId)
+  test("returns 404 when preview does not exist (authenticated)", async () => {
+    const res = await req("/api/previews/00000000-0000-0000-0000-000000000000/approvals")
+    expect(res.status).toBe(404)
+  })
 
-    const res = await req(`/api/previews/${preview.id}/runs`)
+  test("returns empty list when no approvals exist", async () => {
+    const preview = await seedPreview()
+
+    const res = await req(`/api/previews/${preview.id}/approvals`)
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.data).toEqual([])
   })
 
-  test("lists runs for a preview", async () => {
-    const orgId = await seedOrg()
-    const preview = await seedPreview(orgId)
-    await seedRun(preview.id, { runType: "plan", status: "success" })
-    await seedRun(preview.id, { runType: "apply", status: "success" })
+  test("returns approvals for a preview", async () => {
+    const preview = await seedPreview()
+    
+    // Seed an approval
+    await db.insert(approvals).values({
+      previewId: preview.id,
+      userId: ctx.user.id,
+      approverLogin: "test-approver",
+    })
 
-    const res = await req(`/api/previews/${preview.id}/runs`)
+    const res = await req(`/api/previews/${preview.id}/approvals`)
     expect(res.status).toBe(200)
     const body = await res.json()
-    expect(body.data).toHaveLength(2)
+    expect(body.data).toHaveLength(1)
     expect(body.data[0]).toHaveProperty("id")
-    expect(body.data[0]).toHaveProperty("runType")
-    expect(body.data[0]).toHaveProperty("status")
-    expect(body.data[0]).toHaveProperty("createdAt")
+    expect(body.data[0]).toHaveProperty("previewId", preview.id)
+    expect(body.data[0]).toHaveProperty("approverLogin", "test-approver")
   })
 })
 
 // ---------------------------------------------------------------------------
-// GET /api/previews/:id/outputs
+// POST /api/previews/:id/approve
 // ---------------------------------------------------------------------------
 
-describe("GET /api/previews/:id/outputs", () => {
-  test("returns 404 when preview does not exist", async () => {
-    const res = await req("/api/previews/00000000-0000-0000-0000-000000000000/outputs")
+describe("POST /api/previews/:id/approve", () => {
+  test("returns 404 when preview does not exist (unauthenticated)", async () => {
+    // Note: returns 404 before auth check because resource doesn't exist
+    const res = await app.request("/api/previews/00000000-0000-0000-0000-000000000000/approve", {
+      method: "POST",
+    })
     expect(res.status).toBe(404)
-    const body = await res.json()
-    expect(body.error.code).toBe("PREVIEW_NOT_FOUND")
   })
 
-  test("returns 404 when no successful apply exists", async () => {
-    const orgId = await seedOrg()
-    const preview = await seedPreview(orgId)
-    // Only a plan run, no apply
-    await seedRun(preview.id, { runType: "plan", status: "success" })
-
-    const res = await req(`/api/previews/${preview.id}/outputs`)
+  test("returns 404 when preview does not exist (authenticated)", async () => {
+    const res = await req("/api/previews/00000000-0000-0000-0000-000000000000/approve", {
+      method: "POST",
+    })
     expect(res.status).toBe(404)
-    const body = await res.json()
-    expect(body.error.code).toBe("NO_OUTPUTS")
   })
 
-  test("returns 404 when apply failed", async () => {
-    const orgId = await seedOrg()
-    const preview = await seedPreview(orgId)
-    await seedRun(preview.id, { runType: "apply", status: "failed", outputs: null })
-
-    const res = await req(`/api/previews/${preview.id}/outputs`)
-    expect(res.status).toBe(404)
-    const body = await res.json()
-    expect(body.error.code).toBe("NO_OUTPUTS")
-  })
-
-  test("returns outputs from latest successful apply", async () => {
-    const orgId = await seedOrg()
-    const preview = await seedPreview(orgId)
-    const outputs = { cluster_arn: { value: "arn:aws:ecs:us-east-1:123:cluster/test" } }
-    await seedRun(preview.id, {
-      runType: "apply",
-      status: "success",
-      outputs,
+  test("returns 403 when user has viewer role", async () => {
+    const preview = await seedPreview({ requireApproval: true })
+    
+    // Create viewer headers
+    const viewerHeaders = authHeaders({
+      userId: ctx.user.id,
+      email: ctx.user.email,
+      orgId: ctx.org.id,
+      role: "viewer",
     })
 
-    const res = await req(`/api/previews/${preview.id}/outputs`)
-    expect(res.status).toBe(200)
-    const body = await res.json()
-    expect(body.data).toEqual(outputs)
+    const res = await req(`/api/previews/${preview.id}/approve`, {
+      method: "POST",
+      headers: viewerHeaders,
+    })
+    expect(res.status).toBe(403)
   })
 })

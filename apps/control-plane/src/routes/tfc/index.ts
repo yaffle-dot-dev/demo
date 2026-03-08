@@ -33,9 +33,9 @@ tfcRoute.use("/api/v2/*", async (c, next) => {
   await next()
   c.header("TFP-API-Version", TFC_API_VERSION)
   // Force Content-Type to JSON:API spec - go-tfe expects this
-  // BUT skip for state upload endpoint which emulates S3 blob storage
-  // The upload endpoint returns empty body and shouldn't claim to be JSON
-  if (!c.req.path.endsWith("/upload")) {
+  // BUT skip for state upload endpoints which emulate S3 blob storage
+  // The upload endpoints return empty body and shouldn't claim to be JSON
+  if (!c.req.path.endsWith("/upload") && !c.req.path.endsWith("/upload-json")) {
     c.header("Content-Type", "application/vnd.api+json")
   }
 })

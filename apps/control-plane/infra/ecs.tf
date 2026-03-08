@@ -49,7 +49,6 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "NODE_ENV", value = local.is_production ? "production" : "development" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "STATE_BUCKET", value = local.state_bucket_name },
-        { name = "LOCK_TABLE", value = local.lock_table_name },
         { name = "ECS_CLUSTER", value = local.ecs_cluster_name },
       ]
 
