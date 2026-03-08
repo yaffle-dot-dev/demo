@@ -47,16 +47,16 @@ in
   # config.secretspec.secrets (see control-plane process below).
   env = {
     # Use opentofu as the terraform binary
+    YAFFLE_AUTH_MODE = "required";
     YAFFLE_TF_BINARY = "${pkgs.opentofu}/bin/tofu";
-    YAFFLE_STATE_BUCKET = "yaffle-state-production-use1";
-    YAFFLE_TFC_DEBUG = "1";
-    YAFFLE_TF_DEBUG = "1";
+    YAFFLE_STATE_BUCKET = "yaffle-state-main-use1";
+    # YAFFLE_TFC_DEBUG = "1";
+    # YAFFLE_TF_DEBUG = "1";
 
     # Smee webhook proxy for local GitHub App development
     SMEE_URL = "https://smee.io/AMHdVEIzSjKsXVkb";
 
     # Auth defaults (OpenAuth - mounted at root, not /auth)
-    YAFFLE_AUTH_MODE = "required";
     YAFFLE_AUTH_ISSUER = "https://localhost:6969";
     YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
     VITE_YAFFLE_AUTH_ISSUER = "https://localhost:6969";

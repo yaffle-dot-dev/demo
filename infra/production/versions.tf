@@ -1,8 +1,7 @@
 # =============================================================================
 # Production Infrastructure
 # =============================================================================
-# Production VPC and EC2-backed ECS cluster.
-# Isolated from non-production for security and reliability.
+# VPC and EC2-backed ECS cluster for production workloads.
 # =============================================================================
 
 terraform {
@@ -11,12 +10,11 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
   }
 
   # Backend is injected by Yaffle via backend_override.tf
-  # Do not add a backend block here - Yaffle manages state storage
 }
 
 provider "aws" {
@@ -26,7 +24,9 @@ provider "aws" {
     tags = {
       project     = "yaffle"
       layer       = "core"
-      environment = "production"
+      tier        = "production"
+      environment = var.environment
+      managed_by  = "yaffle"
     }
   }
 }

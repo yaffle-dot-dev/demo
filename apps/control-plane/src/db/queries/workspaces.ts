@@ -7,7 +7,12 @@ import { withDbSpan } from "../../lib/telemetry.ts"
 export type Workspace = typeof workspaces.$inferSelect
 export type NewWorkspace = typeof workspaces.$inferInsert
 export type WorkspaceStatus = "active" | "destroying" | "archived"
-export type WorkspaceEnvironment = "preview" | "production"
+/**
+ * Workspace environment type.
+ * - "preview": ephemeral workspace for a PR
+ * - string: branch name for non-preview workspaces (e.g. "main", "staging")
+ */
+export type WorkspaceEnvironment = "preview" | string
 
 export interface ListWorkspacesOptions {
   repo?: string
@@ -236,10 +241,11 @@ export function buildPreviewWorkspaceName(prNumber: number, workspacePath: strin
 }
 
 /**
- * Build a production workspace name.
+ * Build a branch workspace name (non-preview).
+ * Uses the branch name as both the environment and identifier.
  */
-export function buildProductionWorkspaceName(branch: string, workspacePath: string): string {
-  return buildWorkspaceName("production", branch, workspacePath)
+export function buildBranchWorkspaceName(branch: string, workspacePath: string): string {
+  return buildWorkspaceName(branch, branch, workspacePath)
 }
 
 /**
@@ -327,7 +333,7 @@ export async function deleteWorkspace(workspaceId: string): Promise<boolean> {
  * Used by the module registry to look up workspaces.
  *
  * The workspace path is stored in the `workspacePath` column.
- * For production workspaces, environment is "production".
+ * For non-preview workspaces, environment is the branch name (e.g. "main").
  */
 export async function findWorkspaceByPath(
   orgId: string,
@@ -348,6 +354,36 @@ export async function findWorkspaceByPath(
       )
       .limit(1)
     return rows[0]
+  })
+}
+
+/**
+ * Find a non-preview workspace by org and workspace path.
+ * Returns the first active workspace that is not a preview.
+ * Used for module resolution when the caller doesn't know the branch name.
+ */
+export async function findNonPreviewWorkspace(
+  orgId: string,
+  workspacePath: string,
+): Promise<Workspace | undefined> {
+  return withDbSpan("select", "workspaces", async () => {
+    const rows = await db
+      .select()
+      .from(workspaces)
+      .where(
+        and(
+          eq(workspaces.orgId, orgId),
+          eq(workspaces.workspacePath, workspacePath),
+          // Non-preview means environment is NOT "preview"
+          // In SQL: environment != 'preview'
+        ),
+      )
+      .limit(10) // Get a few to filter
+    // Filter out preview workspaces and find first active non-preview
+    const nonPreview = rows.find(
+      (row) => row.environment !== "preview" && row.status === "active",
+    )
+    return nonPreview
   })
 }
 

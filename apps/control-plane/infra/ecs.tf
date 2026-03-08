@@ -11,7 +11,7 @@
 
 resource "aws_cloudwatch_log_group" "control_plane" {
   name              = "/ecs/${local.name_prefix}/control-plane"
-  retention_in_days = local.is_production ? 30 : 7
+  retention_in_days = var.is_preview ? 7 : 30
 
   tags = {
     Name = "${local.name_prefix}-control-plane-logs"
@@ -26,8 +26,8 @@ resource "aws_ecs_task_definition" "control_plane" {
   family                   = "${local.name_prefix}-control-plane"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = local.is_production ? 512 : 256
-  memory                   = local.is_production ? 1024 : 512
+  cpu                      = var.is_preview ? 256 : 512
+  memory                   = var.is_preview ? 512 : 1024
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.control_plane_task.arn
 
@@ -46,7 +46,7 @@ resource "aws_ecs_task_definition" "control_plane" {
 
       environment = [
         { name = "PORT", value = "3000" },
-        { name = "NODE_ENV", value = local.is_production ? "production" : "development" },
+        { name = "NODE_ENV", value = var.is_preview ? "development" : "production" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "STATE_BUCKET", value = local.state_bucket_name },
         { name = "ECS_CLUSTER", value = local.ecs_cluster_name },
@@ -94,8 +94,8 @@ resource "aws_ecs_service" "control_plane" {
   name            = "${local.name_prefix}-control-plane"
   cluster         = local.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.control_plane.arn
-  desired_count   = local.is_production ? 2 : 1
-  launch_type     = local.is_production ? "FARGATE" : "FARGATE_SPOT"
+  desired_count   = var.is_preview ? 1 : 2
+  launch_type     = var.is_preview ? "FARGATE_SPOT" : "FARGATE"
 
   network_configuration {
     subnets          = local.private_subnet_ids
@@ -110,10 +110,8 @@ resource "aws_ecs_service" "control_plane" {
   }
 
   # Allow deployments to proceed even if desired count can't be reached
-  deployment_configuration {
-    minimum_healthy_percent = local.is_production ? 50 : 0
-    maximum_percent         = 200
-  }
+  deployment_minimum_healthy_percent = var.is_preview ? 0 : 50
+  deployment_maximum_percent         = 200
 
   # Enable ECS managed tags for cost allocation
   enable_ecs_managed_tags = true

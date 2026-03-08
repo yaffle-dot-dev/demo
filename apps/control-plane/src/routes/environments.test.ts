@@ -49,7 +49,7 @@ async function seedProductionPreview(
       branch: "main",
       headSha: "abc123",
       status: "ready",
-      stateKey: "production/main/infra/terraform.tfstate",
+      stateKey: "main/infra/terraform.tfstate",
       mode: "terraform",
       ...overrides,
     })

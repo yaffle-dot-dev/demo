@@ -158,7 +158,8 @@ export async function ensurePreviewWorkspace(opts: {
 }
 
 /**
- * Find or create a TFC workspace for production.
+ * Find or create a TFC workspace for a branch (non-preview).
+ * The environment is set to the branch name (e.g. "main").
  */
 export async function ensureProductionWorkspace(opts: {
   orgId: string
@@ -167,9 +168,9 @@ export async function ensureProductionWorkspace(opts: {
   branch: string
   workspacePath: string
 }): Promise<Workspace> {
-  const { buildProductionWorkspaceName, createWorkspace } = await import("../db/queries/workspaces.ts")
+  const { buildBranchWorkspaceName, createWorkspace } = await import("../db/queries/workspaces.ts")
 
-  const workspaceName = buildProductionWorkspaceName(opts.branch, opts.workspacePath)
+  const workspaceName = buildBranchWorkspaceName(opts.branch, opts.workspacePath)
 
   // Check if workspace already exists
   let workspace = await findWorkspaceByName(opts.orgId, workspaceName)
@@ -177,19 +178,19 @@ export async function ensureProductionWorkspace(opts: {
     return workspace
   }
 
-  // Create new workspace
+  // Create new workspace - environment is the branch name
   workspace = await createWorkspace({
     orgId: opts.orgId,
     name: workspaceName,
     repo: opts.repo,
     workspacePath: opts.workspacePath,
-    environment: "production",
+    environment: opts.branch,
     prNumber: null,
     branch: opts.branch,
     status: "active",
   })
 
-  logger.info("Production workspace created", {
+  logger.info("Branch workspace created", {
     workspaceId: workspace.id,
     workspaceName,
     branch: opts.branch,

@@ -1,8 +1,10 @@
 # =============================================================================
 # Control Plane Application Infrastructure
 # =============================================================================
-# This is application-level infrastructure that can be previewed per PR.
-# Core infrastructure (VPC, ECS cluster, state storage) is in /infra.
+# This is the complete infrastructure for a Yaffle environment, including:
+# - State storage (S3 bucket + replication)
+# - ECS service, ALB, IAM roles
+# - References to shared infra (Route53, OIDC) and core infra (VPC, ECS cluster)
 # =============================================================================
 
 terraform {
@@ -11,7 +13,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
   }
 
@@ -21,6 +23,22 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
+
+  default_tags {
+    tags = {
+      project     = "yaffle"
+      layer       = "app"
+      app         = "control-plane"
+      environment = var.environment
+      managed_by  = "yaffle"
+    }
+  }
+}
+
+# Replica provider for cross-region state bucket replication
+provider "aws" {
+  alias  = "replica"
+  region = var.replica_region
 
   default_tags {
     tags = {

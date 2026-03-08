@@ -69,7 +69,7 @@ ${tagLines}
     "provider.override_path": overridePath,
     "provider.workspace": ctx.workspacePath,
     "provider.run_id": ctx.runId ?? "none",
-    "provider.pr_number": ctx.prNumber ?? "production",
+    "provider.pr_number": ctx.prNumber ?? "none",
   })
 }
 
@@ -81,16 +81,16 @@ const STATE_ROOT = join(homedir(), ".yaffle", "state")
 
 /**
  * Resolve the local state directory for a given owner/repo/stateKey.
- * State keys follow the PLAN.md convention:
- *   - previews/pr-{n}/terraform.tfstate
- *   - production/main/terraform.tfstate
+ * State key patterns:
+ *   - preview-pr-{n}/{workspace}/terraform.tfstate
+ *   - {branch}/{workspace}/terraform.tfstate (e.g., main/infra/terraform.tfstate)
  *
  * The local path becomes:
- *   ~/.yaffle/state/{owner}/{repo}/previews/pr-{n}/
- *   ~/.yaffle/state/{owner}/{repo}/production/main/
+ *   ~/.yaffle/state/{owner}/{repo}/preview-pr-{n}/{workspace}/
+ *   ~/.yaffle/state/{owner}/{repo}/{branch}/{workspace}/
  */
 export function resolveStateDir(owner: string, repo: string, stateKey: string): string {
-  // stateKey is like "previews/pr-42/terraform.tfstate"
+  // stateKey is like "preview-pr-42/infra/terraform.tfstate"
   // We want the directory containing the state file
   const dir = stateKey.includes("/")
     ? stateKey.substring(0, stateKey.lastIndexOf("/"))

@@ -1,12 +1,11 @@
 # =============================================================================
 # Shared Infrastructure
 # =============================================================================
-# Resources shared across all environments:
-# - S3 bucket for Terraform state
-# - DynamoDB table for state locking
-# - Route53 hosted zone
+# True singletons - resources that exist once per AWS account/domain:
+# - Route53 hosted zone for yaffle.dev
+# - GitHub Actions OIDC provider
 #
-# This must be deployed first, before production or nonprod.
+# These are never previewed. Deployed once manually or by bootstrap.
 # =============================================================================
 
 terraform {
@@ -15,7 +14,7 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 6.0"
     }
   }
 
@@ -25,19 +24,6 @@ terraform {
 
 provider "aws" {
   region = var.aws_region
-
-  default_tags {
-    tags = {
-      project = "yaffle"
-      layer   = "shared"
-    }
-  }
-}
-
-# Replica region provider for cross-region replication
-provider "aws" {
-  alias  = "replica"
-  region = var.replica_region
 
   default_tags {
     tags = {

@@ -54,7 +54,7 @@ export function validateConfig(parsed: unknown): YaffleConfig {
  * Context available for variable interpolation.
  */
 export interface VariableContext {
-  /** "prvw-42" or "production" */
+  /** "prvw-42" for previews, or branch name (e.g. "main") for non-preview */
   env: string
   pr_number: string
   branch: string
@@ -144,6 +144,7 @@ export function prVariableContext(opts: {
 
 /**
  * Build a VariableContext for a push-to-default-branch event.
+ * The env is set to the branch name (e.g. "main").
  */
 export function pushVariableContext(opts: {
   branch: string
@@ -152,7 +153,7 @@ export function pushVariableContext(opts: {
   repo: string
 }): VariableContext {
   return {
-    env: "production",
+    env: opts.branch,
     pr_number: "",
     branch: opts.branch,
     sha: opts.sha,

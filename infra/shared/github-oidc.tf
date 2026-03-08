@@ -20,9 +20,8 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
   thumbprint_list = ["ffffffffffffffffffffffffffffffffffffffff"]
 
   tags = {
-    Name        = "github-actions-oidc"
-    Environment = var.environment
-    ManagedBy   = "terraform"
+    Name      = "github-actions-oidc"
+    ManagedBy = "terraform"
   }
 }
 
@@ -36,7 +35,7 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 data "aws_caller_identity" "current" {}
 
 resource "aws_iam_role" "github_actions_ci" {
-  name        = "yaffle-github-actions-ci-${local.name_suffix}"
+  name        = "yaffle-github-actions-ci"
   description = "Role for GitHub Actions CI to run integration tests"
 
   assume_role_policy = jsonencode({
@@ -68,13 +67,13 @@ resource "aws_iam_role" "github_actions_ci" {
   })
 
   tags = {
-    Name        = "yaffle-github-actions-ci"
-    Environment = var.environment
-    ManagedBy   = "terraform"
+    Name      = "yaffle-github-actions-ci"
+    ManagedBy = "terraform"
   }
 }
 
 # Policy for S3 state bucket access (needed for TFC integration tests)
+# Grants access to ALL yaffle state buckets (main and previews)
 resource "aws_iam_role_policy" "github_actions_ci_s3" {
   name = "s3-state-access"
   role = aws_iam_role.github_actions_ci.id
@@ -92,31 +91,8 @@ resource "aws_iam_role_policy" "github_actions_ci_s3" {
           "s3:ListBucket"
         ]
         Resource = [
-          aws_s3_bucket.state.arn,
-          "${aws_s3_bucket.state.arn}/*"
-        ]
-      }
-    ]
-  })
-}
-
-# Policy to allow reading Terraform state (for outputs-action)
-# This uses the same state bucket but limits to reading only
-resource "aws_iam_role_policy" "github_actions_ci_tfstate_read" {
-  name = "tfstate-read"
-  role = aws_iam_role.github_actions_ci.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "ReadTerraformState"
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject"
-        ]
-        Resource = [
-          "${aws_s3_bucket.state.arn}/env:*/yaffle/*"
+          "arn:aws:s3:::yaffle-state-*",
+          "arn:aws:s3:::yaffle-state-*/*"
         ]
       }
     ]

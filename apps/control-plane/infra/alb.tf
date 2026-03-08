@@ -16,7 +16,7 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = local.public_subnet_ids
 
-  enable_deletion_protection = local.is_production
+  enable_deletion_protection = !var.is_preview
 
   tags = {
     Name = "${local.name_prefix}-alb"
@@ -89,12 +89,10 @@ resource "aws_lb_listener" "https" {
 # -----------------------------------------------------------------------------
 
 resource "aws_acm_certificate" "main" {
-  domain_name       = local.api_domain
+  domain_name       = var.domain
   validation_method = "DNS"
 
-  subject_alternative_names = local.is_production ? [
-    "*.${var.domain}"
-  ] : []
+  subject_alternative_names = var.is_preview ? [] : ["*.${var.domain}"]
 
   lifecycle {
     create_before_destroy = true
@@ -132,10 +130,10 @@ resource "aws_route53_record" "cert_validation" {
   zone_id         = local.route53_zone_id
 }
 
-# API DNS record pointing to ALB
+# DNS record pointing to ALB
 resource "aws_route53_record" "api" {
   zone_id = local.route53_zone_id
-  name    = local.api_domain
+  name    = var.domain
   type    = "A"
 
   alias {

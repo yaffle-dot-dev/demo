@@ -7,22 +7,22 @@
 # -----------------------------------------------------------------------------
 
 output "vpc_id" {
-  value       = aws_vpc.main.id
+  value       = module.core.vpc_id
   description = "VPC ID"
 }
 
 output "vpc_cidr_block" {
-  value       = aws_vpc.main.cidr_block
+  value       = module.core.vpc_cidr_block
   description = "VPC CIDR block"
 }
 
 output "public_subnet_ids" {
-  value       = aws_subnet.public[*].id
+  value       = module.core.public_subnet_ids
   description = "Public subnet IDs (for ALB)"
 }
 
 output "private_subnet_ids" {
-  value       = aws_subnet.private[*].id
+  value       = module.core.private_subnet_ids
   description = "Private subnet IDs (for ECS tasks)"
 }
 
@@ -31,22 +31,22 @@ output "private_subnet_ids" {
 # -----------------------------------------------------------------------------
 
 output "ecs_cluster_arn" {
-  value       = aws_ecs_cluster.main.arn
+  value       = module.core.ecs_cluster_arn
   description = "ECS cluster ARN"
 }
 
 output "ecs_cluster_name" {
-  value       = aws_ecs_cluster.main.name
+  value       = module.core.ecs_cluster_name
   description = "ECS cluster name"
 }
 
 output "ecs_capacity_provider_name" {
-  value       = aws_ecs_capacity_provider.spot.name
+  value       = module.core.ecs_capacity_provider_name
   description = "ECS capacity provider name"
 }
 
 output "ecs_instance_security_group_id" {
-  value       = aws_security_group.ecs_instances.id
+  value       = module.core.ecs_instance_security_group_id
   description = "Security group ID for ECS instances"
 }
 
@@ -55,11 +55,11 @@ output "ecs_instance_security_group_id" {
 # -----------------------------------------------------------------------------
 
 output "environment" {
-  value       = local.environment
+  value       = module.core.environment
   description = "Environment name"
 }
 
 output "aws_region" {
-  value       = var.aws_region
+  value       = module.core.aws_region
   description = "AWS region"
 }

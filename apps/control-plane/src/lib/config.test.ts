@@ -271,7 +271,7 @@ describe("pushVariableContext", () => {
       owner: "lamalex",
       repo: "yaffle",
     })
-    expect(ctx.env).toBe("production")
+    expect(ctx.env).toBe("main") // env is the branch name
     expect(ctx.pr_number).toBe("")
     expect(ctx.branch).toBe("main")
     expect(ctx.sha).toBe("def456")

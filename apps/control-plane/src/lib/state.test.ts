@@ -25,13 +25,13 @@ afterEach(async () => {
 
 describe("resolveStateDir", () => {
   test("returns directory containing the state file", () => {
-    const dir = resolveStateDir(TEST_OWNER, TEST_REPO, "previews/pr-42/terraform.tfstate")
-    expect(dir).toBe(join(STATE_ROOT, TEST_OWNER, TEST_REPO, "previews/pr-42"))
+    const dir = resolveStateDir(TEST_OWNER, TEST_REPO, "preview-pr-42/infra/terraform.tfstate")
+    expect(dir).toBe(join(STATE_ROOT, TEST_OWNER, TEST_REPO, "preview-pr-42/infra"))
   })
 
-  test("handles production state key", () => {
-    const dir = resolveStateDir(TEST_OWNER, TEST_REPO, "production/main/terraform.tfstate")
-    expect(dir).toBe(join(STATE_ROOT, TEST_OWNER, TEST_REPO, "production/main"))
+  test("handles branch state key", () => {
+    const dir = resolveStateDir(TEST_OWNER, TEST_REPO, "main/infra/terraform.tfstate")
+    expect(dir).toBe(join(STATE_ROOT, TEST_OWNER, TEST_REPO, "main/infra"))
   })
 
   test("handles state key without subdirectory", () => {
@@ -42,9 +42,9 @@ describe("resolveStateDir", () => {
 
 describe("resolveStatePath", () => {
   test("returns full path to the state file", () => {
-    const path = resolveStatePath(TEST_OWNER, TEST_REPO, "previews/pr-42/terraform.tfstate")
+    const path = resolveStatePath(TEST_OWNER, TEST_REPO, "preview-pr-42/infra/terraform.tfstate")
     expect(path).toBe(
-      join(STATE_ROOT, TEST_OWNER, TEST_REPO, "previews/pr-42/terraform.tfstate"),
+      join(STATE_ROOT, TEST_OWNER, TEST_REPO, "preview-pr-42/infra/terraform.tfstate"),
     )
   })
 })
@@ -55,7 +55,7 @@ describe("configureLocalBackend", () => {
     await mkdir(tmpDir, { recursive: true })
 
     try {
-      const stateKey = "previews/pr-99/terraform.tfstate"
+      const stateKey = "preview-pr-99/infra/terraform.tfstate"
       const returnedPath = await configureLocalBackend(tmpDir, TEST_OWNER, TEST_REPO, stateKey)
 
       // Returns the full state path
@@ -81,11 +81,11 @@ describe("configureLocalBackend", () => {
 
 describe("stateExistsSync", () => {
   test("returns false when no state file exists", () => {
-    expect(stateExistsSync(TEST_OWNER, TEST_REPO, "previews/pr-0/terraform.tfstate")).toBe(false)
+    expect(stateExistsSync(TEST_OWNER, TEST_REPO, "preview-pr-0/infra/terraform.tfstate")).toBe(false)
   })
 
   test("returns true when state file exists", async () => {
-    const stateKey = "previews/pr-77/terraform.tfstate"
+    const stateKey = "preview-pr-77/infra/terraform.tfstate"
     const statePath = resolveStatePath(TEST_OWNER, TEST_REPO, stateKey)
     const stateDir = resolveStateDir(TEST_OWNER, TEST_REPO, stateKey)
 
@@ -98,7 +98,7 @@ describe("stateExistsSync", () => {
 
 describe("removeLocalState", () => {
   test("removes the state directory", async () => {
-    const stateKey = "previews/pr-55/terraform.tfstate"
+    const stateKey = "preview-pr-55/infra/terraform.tfstate"
     const statePath = resolveStatePath(TEST_OWNER, TEST_REPO, stateKey)
     const stateDir = resolveStateDir(TEST_OWNER, TEST_REPO, stateKey)
 
@@ -114,6 +114,6 @@ describe("removeLocalState", () => {
 
   test("does not throw when directory does not exist", async () => {
     // Should not throw
-    await removeLocalState(TEST_OWNER, TEST_REPO, "previews/pr-0/terraform.tfstate")
+    await removeLocalState(TEST_OWNER, TEST_REPO, "preview-pr-0/infra/terraform.tfstate")
   })
 })

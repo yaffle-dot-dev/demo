@@ -21,7 +21,7 @@ output "resource_id" {
 
 const OWNER = "integration-test"
 const REPO = "persistent-state"
-const STATE_KEY = "previews/pr-100/terraform.tfstate"
+const STATE_KEY = "preview-pr-100/infra/terraform.tfstate"
 
 /**
  * Helper: create a fresh work directory with main.tf, configure the persistent

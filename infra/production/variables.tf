@@ -4,6 +4,11 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "environment" {
+  type        = string
+  description = "Environment name (branch name, e.g. 'main')"
+}
+
 variable "instance_type" {
   type        = string
   description = "EC2 instance type for ECS cluster"
@@ -20,12 +25,4 @@ variable "max_instances" {
   type        = number
   description = "Maximum number of EC2 instances in the cluster"
   default     = 10
-}
-
-locals {
-  name_prefix = "yaffle-prod"
-  environment = "production"
-
-  # VPC CIDR - production uses 10.0.x.x
-  vpc_cidr = "10.0.0.0/16"
 }

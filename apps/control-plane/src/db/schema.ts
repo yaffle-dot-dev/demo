@@ -208,7 +208,7 @@ export const workspaces = pgTable(
     name: text("name").notNull(),
     repo: text("repo").notNull(),
     workspacePath: text("workspace_path").notNull(),
-    environment: text("environment").notNull(), // "preview" | "production"
+    environment: text("environment").notNull(), // "preview" or branch name (e.g. "main")
     prNumber: integer("pr_number"),
     branch: text("branch").notNull(),
     locked: boolean("locked").default(false).notNull(),

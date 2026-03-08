@@ -1254,7 +1254,7 @@ describe("Module Registry", () => {
             type: "workspaces",
             attributes: {
               name: TEST_WORKSPACE_NAME,
-              environment: "production",
+              environment: "main",
               "workspace-path": "core-infrastructure/vpc",
             },
           },
@@ -1359,7 +1359,7 @@ describe("Module Registry", () => {
             type: "workspaces",
             attributes: {
               name: TEST_WORKSPACE_NAME,
-              environment: "production",
+              environment: "main",
               "workspace-path": "infra/networking",
             },
           },
@@ -1438,7 +1438,7 @@ describe("Module Registry", () => {
             type: "workspaces",
             attributes: {
               name: TEST_WORKSPACE_NAME,
-              environment: "production",
+              environment: "main",
               "workspace-path": "test/outputs",
             },
           },

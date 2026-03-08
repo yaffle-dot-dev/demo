@@ -37,7 +37,7 @@ import {
   type Runner,
   buildStateKey,
   previewStatePrefix,
-  productionStatePrefix,
+  branchStatePrefix,
 } from "./runner.ts"
 
 import {
@@ -753,7 +753,7 @@ async function handlePushEvent(
     return
   }
 
-  const statePrefix = productionStatePrefix(ctx.branch)
+  const statePrefix = branchStatePrefix(ctx.branch)
   const varCtx = pushVariableContext({
     branch: ctx.branch,
     sha: ctx.headSha,

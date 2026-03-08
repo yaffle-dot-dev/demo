@@ -1,33 +1,26 @@
 # =============================================================================
-# Non-Production ECS Cluster (EC2-backed, Spot)
-# =============================================================================
-# EC2-backed ECS cluster for preview environments.
-# Uses spot instances for cost savings. Can scale to zero.
-# =============================================================================
-
-# -----------------------------------------------------------------------------
 # ECS Cluster
-# -----------------------------------------------------------------------------
+# =============================================================================
 
 resource "aws_ecs_cluster" "main" {
-  name = "${local.name_prefix}-cluster"
+  name = "yaffle-cluster-${local.name_suffix}"
 
   setting {
     name  = "containerInsights"
-    value = "disabled" # Save costs in nonprod
+    value = var.container_insights ? "enabled" : "disabled"
   }
 
   tags = {
-    Name = "${local.name_prefix}-cluster"
+    Name = "yaffle-cluster-${local.name_suffix}"
   }
 }
 
 # -----------------------------------------------------------------------------
-# Capacity Provider (links ASG to ECS)
+# Capacity Provider
 # -----------------------------------------------------------------------------
 
-resource "aws_ecs_capacity_provider" "spot" {
-  name = "${local.name_prefix}-spot-capacity-provider"
+resource "aws_ecs_capacity_provider" "main" {
+  name = "yaffle-capacity-${local.name_suffix}"
 
   auto_scaling_group_provider {
     auto_scaling_group_arn         = aws_autoscaling_group.ecs.arn
@@ -42,29 +35,32 @@ resource "aws_ecs_capacity_provider" "spot" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-spot-capacity-provider"
+    Name = "yaffle-capacity-${local.name_suffix}"
   }
 }
 
 resource "aws_ecs_cluster_capacity_providers" "main" {
   cluster_name = aws_ecs_cluster.main.name
 
-  capacity_providers = [aws_ecs_capacity_provider.spot.name]
+  capacity_providers = [aws_ecs_capacity_provider.main.name]
 
   default_capacity_provider_strategy {
-    capacity_provider = aws_ecs_capacity_provider.spot.name
+    capacity_provider = aws_ecs_capacity_provider.main.name
     weight            = 1
-    base              = 0 # Can scale to zero
+    base              = var.use_spot ? 0 : 1
   }
 }
 
 # -----------------------------------------------------------------------------
-# Launch Template (Spot instances with multiple instance types)
+# Launch Template
 # -----------------------------------------------------------------------------
 
 resource "aws_launch_template" "ecs" {
-  name_prefix   = "${local.name_prefix}-ecs-"
-  image_id      = data.aws_ssm_parameter.ecs_ami.value
+  name_prefix = "yaffle-ecs-${local.name_suffix}-"
+  image_id    = data.aws_ssm_parameter.ecs_ami.value
+
+  # Only set instance_type for on-demand (spot uses mixed instances policy)
+  instance_type = var.use_spot ? null : var.instance_types[0]
 
   iam_instance_profile {
     arn = aws_iam_instance_profile.ecs_instance.arn
@@ -79,18 +75,20 @@ resource "aws_launch_template" "ecs" {
     #!/bin/bash
     echo "ECS_CLUSTER=${aws_ecs_cluster.main.name}" >> /etc/ecs/ecs.config
     echo "ECS_ENABLE_CONTAINER_METADATA=true" >> /etc/ecs/ecs.config
+    %{if var.use_spot}
     echo "ECS_ENABLE_SPOT_INSTANCE_DRAINING=true" >> /etc/ecs/ecs.config
+    %{endif}
   EOF
   )
 
   monitoring {
-    enabled = false # Save costs
+    enabled = var.container_insights
   }
 
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name = "${local.name_prefix}-ecs-instance"
+      Name = "yaffle-ecs-instance-${local.name_suffix}"
     }
   }
 
@@ -100,50 +98,68 @@ resource "aws_launch_template" "ecs" {
 }
 
 # -----------------------------------------------------------------------------
-# Auto Scaling Group (Mixed instances with spot)
+# Auto Scaling Group
 # -----------------------------------------------------------------------------
 
 resource "aws_autoscaling_group" "ecs" {
-  name_prefix         = "${local.name_prefix}-ecs-"
+  name_prefix         = "yaffle-ecs-${local.name_suffix}-"
   vpc_zone_identifier = aws_subnet.private[*].id
   min_size            = var.min_instances
   max_size            = var.max_instances
   desired_capacity    = var.min_instances
 
-  # Mixed instances policy for spot
-  mixed_instances_policy {
-    launch_template {
-      launch_template_specification {
-        launch_template_id = aws_launch_template.ecs.id
-        version            = "$Latest"
-      }
-
-      # Override with multiple instance types for spot availability
-      dynamic "override" {
-        for_each = var.instance_types
-        content {
-          instance_type = override.value
-        }
-      }
-    }
-
-    instances_distribution {
-      on_demand_base_capacity                  = 0
-      on_demand_percentage_above_base_capacity = 0 # 100% spot
-      spot_allocation_strategy                 = "capacity-optimized"
+  # Use mixed instances policy for spot, simple launch template for on-demand
+  dynamic "launch_template" {
+    for_each = var.use_spot ? [] : [1]
+    content {
+      id      = aws_launch_template.ecs.id
+      version = "$Latest"
     }
   }
 
-  # Protect instances that have running tasks
+  dynamic "mixed_instances_policy" {
+    for_each = var.use_spot ? [1] : []
+    content {
+      launch_template {
+        launch_template_specification {
+          launch_template_id = aws_launch_template.ecs.id
+          version            = "$Latest"
+        }
+
+        dynamic "override" {
+          for_each = var.instance_types
+          content {
+            instance_type = override.value
+          }
+        }
+      }
+
+      instances_distribution {
+        on_demand_base_capacity                  = 0
+        on_demand_percentage_above_base_capacity = 0
+        spot_allocation_strategy                 = "capacity-optimized"
+      }
+    }
+  }
+
   protect_from_scale_in = true
 
-  # Health checks
   health_check_type         = "EC2"
   health_check_grace_period = 300
 
+  dynamic "instance_refresh" {
+    for_each = var.use_spot ? [] : [1]
+    content {
+      strategy = "Rolling"
+      preferences {
+        min_healthy_percentage = 50
+      }
+    }
+  }
+
   tag {
     key                 = "Name"
-    value               = "${local.name_prefix}-ecs-instance"
+    value               = "yaffle-ecs-instance-${local.name_suffix}"
     propagate_at_launch = true
   }
 
@@ -159,21 +175,20 @@ resource "aws_autoscaling_group" "ecs" {
 }
 
 # -----------------------------------------------------------------------------
-# Security Group for ECS Instances
+# Security Group
 # -----------------------------------------------------------------------------
 
 resource "aws_security_group" "ecs_instances" {
-  name        = "${local.name_prefix}-ecs-instances-sg"
+  name        = "yaffle-sg-ecs-${local.name_suffix}"
   description = "Security group for ECS container instances"
   vpc_id      = aws_vpc.main.id
 
-  # Allow all traffic from within VPC
   ingress {
     description = "All traffic from VPC"
     from_port   = 0
     to_port     = 0
     protocol    = "-1"
-    cidr_blocks = [local.vpc_cidr]
+    cidr_blocks = [var.vpc_cidr]
   }
 
   egress {
@@ -185,16 +200,16 @@ resource "aws_security_group" "ecs_instances" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-ecs-instances-sg"
+    Name = "yaffle-sg-ecs-${local.name_suffix}"
   }
 }
 
 # -----------------------------------------------------------------------------
-# IAM Role for ECS Instances
+# IAM
 # -----------------------------------------------------------------------------
 
 resource "aws_iam_role" "ecs_instance" {
-  name = "${local.name_prefix}-ecs-instance-role"
+  name = "yaffle-role-ecs-instance-${local.name_suffix}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -210,7 +225,7 @@ resource "aws_iam_role" "ecs_instance" {
   })
 
   tags = {
-    Name = "${local.name_prefix}-ecs-instance-role"
+    Name = "yaffle-role-ecs-instance-${local.name_suffix}"
   }
 }
 
@@ -225,6 +240,6 @@ resource "aws_iam_role_policy_attachment" "ecs_instance_ssm" {
 }
 
 resource "aws_iam_instance_profile" "ecs_instance" {
-  name = "${local.name_prefix}-ecs-instance-profile"
+  name = "yaffle-profile-ecs-instance-${local.name_suffix}"
   role = aws_iam_role.ecs_instance.name
 }

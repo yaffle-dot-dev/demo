@@ -67,7 +67,7 @@ async function seedPreview(
       branch: "feature/test",
       headSha: "abc123",
       status: "ready",
-      stateKey: "previews/pr-42/infra/terraform.tfstate",
+      stateKey: "preview-pr-42/infra/terraform.tfstate",
       mode: "saas",
       ...overrides,
     })
@@ -133,7 +133,7 @@ describe("GET /api/previews", () => {
 
   test("lists previews for an org", async () => {
     await seedPreview()
-    await seedPreview({ prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
+    await seedPreview({ prNumber: 43, stateKey: "preview-pr-43/infra/terraform.tfstate" })
 
     const res = await req("/api/previews?org=test-org")
     expect(res.status).toBe(200)
@@ -172,7 +172,7 @@ describe("GET /api/previews", () => {
 
   test("filters by pr_number", async () => {
     await seedPreview({ prNumber: 42 })
-    await seedPreview({ prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
+    await seedPreview({ prNumber: 43, stateKey: "preview-pr-43/infra/terraform.tfstate" })
 
     const res = await req("/api/previews?org=test-org&pr_number=42")
     expect(res.status).toBe(200)
@@ -185,7 +185,7 @@ describe("GET /api/previews", () => {
     for (let i = 0; i < 5; i++) {
       await seedPreview({
         prNumber: i + 1,
-        stateKey: `previews/pr-${i + 1}/infra/terraform.tfstate`,
+        stateKey: `preview-pr-${i + 1}/infra/terraform.tfstate`,
       })
     }
 

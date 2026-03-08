@@ -18,12 +18,14 @@ workspaces:
     auto_apply: false
     auto_apply_on_merge: true
     variables:
+      environment: "{{ env }}"
       aws_region: "us-east-1"
 
   - path: infra/nonprod
     auto_apply: false
     auto_apply_on_merge: true
     variables:
+      environment: "{{ env }}"
       aws_region: "us-east-1"
 
   # ==========================================================================

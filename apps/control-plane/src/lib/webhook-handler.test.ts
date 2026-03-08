@@ -199,7 +199,7 @@ describe("webhook-handler", () => {
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].status).toBe("ready")
-    expect(pvs[0].stateKey).toBe("previews/pr-42/infra/terraform.tfstate")
+    expect(pvs[0].stateKey).toBe("preview-pr-42/infra/terraform.tfstate")
 
     const runs = await db.select().from(tfRuns)
     expect(runs).toHaveLength(2) // plan + apply
@@ -296,7 +296,7 @@ describe("webhook-handler", () => {
     // No production apply -- that comes from a push event
     expect(runner.calls.filter((c) => c.command === "apply")).toHaveLength(1)
     expect(runner.calls.find((c) => c.command === "apply")?.stateKey).toBe(
-      "previews/pr-42/infra/terraform.tfstate",
+      "preview-pr-42/infra/terraform.tfstate",
     )
   })
 
@@ -441,7 +441,7 @@ describe("webhook-handler", () => {
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].prNumber).toBe(0) // sentinel for production
-    expect(pvs[0].stateKey).toBe("production/main/infra/terraform.tfstate")
+    expect(pvs[0].stateKey).toBe("main/infra/terraform.tfstate")
     expect(pvs[0].status).toBe("ready")
 
     const runs = await db.select().from(tfRuns)
@@ -449,7 +449,7 @@ describe("webhook-handler", () => {
     expect(runs[0].runType).toBe("plan")
     expect(runs[1].runType).toBe("apply")
 
-    expect(runner.calls[0].stateKey).toBe("production/main/infra/terraform.tfstate")
+    expect(runner.calls[0].stateKey).toBe("main/infra/terraform.tfstate")
   })
 
   test("push to default branch with require_approval plans only", async () => {
@@ -541,8 +541,8 @@ describe("webhook-handler", () => {
     // Each preview has its own state key
     const stateKeys = pvs.map((p) => p.stateKey).sort()
     expect(stateKeys).toEqual([
-      "previews/pr-42/infra/monitoring/terraform.tfstate",
-      "previews/pr-42/infra/terraform.tfstate",
+      "preview-pr-42/infra/monitoring/terraform.tfstate",
+      "preview-pr-42/infra/terraform.tfstate",
     ])
   })
 })

@@ -1,12 +1,24 @@
 variable "environment" {
   type        = string
-  description = "Environment name (e.g., 'production', 'preview-pr-42')"
+  description = "Environment name - branch name (e.g., 'main') or preview (e.g., 'prvw-42')"
+}
+
+variable "is_preview" {
+  type        = bool
+  description = "Whether this is a preview environment (ephemeral, for PRs)"
+  default     = false
 }
 
 variable "aws_region" {
   type        = string
   description = "AWS region for all resources"
   default     = "us-east-1"
+}
+
+variable "replica_region" {
+  type        = string
+  description = "AWS region for state bucket replication"
+  default     = "us-west-2"
 }
 
 variable "domain" {
@@ -26,14 +38,19 @@ variable "secrets_arn_prefix" {
   description = "ARN prefix for Secrets Manager secrets (e.g., 'arn:aws:secretsmanager:us-east-1:123456789:secret:yaffle')"
 }
 
-locals {
-  # Normalize environment for resource naming
-  # Production uses clean names, previews get prefixed
-  is_production = var.environment == "production"
-  
-  # Resource naming: production gets clean names, previews get environment prefix
-  name_prefix = local.is_production ? "yaffle" : "yaffle-${var.environment}"
+module "aws_utils" {
+  source  = "cloudposse/utils/aws"
+  version = "1.4.0"
+}
 
-  # API domain
-  api_domain = local.is_production ? "api.${var.domain}" : "${var.environment}.api.${var.domain}"
+locals {
+  # Resource naming includes environment
+  name_prefix = "yaffle-${var.environment}"
+
+  # Region shortcodes from cloudposse/utils/aws
+  region_short         = module.aws_utils.region_az_alt_code_maps.to_short[var.aws_region]
+  replica_region_short = module.aws_utils.region_az_alt_code_maps.to_short[var.replica_region]
+
+  # State bucket naming: yaffle-state-{environment}-{region}
+  name_suffix = "${var.environment}-${local.region_short}"
 }

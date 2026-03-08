@@ -1,5 +1,5 @@
 import {
-  findWorkspaceByPath,
+  findNonPreviewWorkspace,
   findPreviewWorkspace,
   type Workspace,
 } from "../db/queries/workspaces.ts"
@@ -94,13 +94,14 @@ export async function resolveModule(
     }
   }
 
-  // Fall back to production if no preview workspace found
+  // Fall back to non-preview workspace (e.g. main branch) if no preview workspace found
   if (!workspace) {
-    workspace = await findWorkspaceByPath(orgId, workspacePath, "production")
+    workspace = await findNonPreviewWorkspace(orgId, workspacePath)
     if (workspace) {
-      logger.debug("Resolved to production workspace", {
+      logger.debug("Resolved to non-preview workspace", {
         workspacePath,
         workspaceId: workspace.id,
+        environment: workspace.environment,
         hadPreviewContext: !!previewContext,
       })
     }

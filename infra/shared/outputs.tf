@@ -1,16 +1,9 @@
 # =============================================================================
 # Shared Infrastructure Outputs
 # =============================================================================
-
-output "state_bucket_name" {
-  value       = aws_s3_bucket.state.id
-  description = "S3 bucket name for terraform state storage"
-}
-
-output "state_bucket_arn" {
-  value       = aws_s3_bucket.state.arn
-  description = "S3 bucket ARN for IAM policies"
-}
+# True singletons: Route53 zone, GitHub OIDC provider
+# These are never previewed - only one per AWS account/domain.
+# =============================================================================
 
 output "route53_zone_id" {
   value       = aws_route53_zone.main.zone_id
@@ -25,26 +18,6 @@ output "route53_nameservers" {
 output "domain" {
   value       = var.domain
   description = "Base domain"
-}
-
-output "aws_region" {
-  value       = var.aws_region
-  description = "AWS region"
-}
-
-output "region_short" {
-  value       = local.region_short
-  description = "Abbreviated region code (e.g., use1)"
-}
-
-output "environment" {
-  value       = var.environment
-  description = "Environment name"
-}
-
-output "name_suffix" {
-  value       = local.name_suffix
-  description = "Standard naming suffix ({env}-{region})"
 }
 
 # -----------------------------------------------------------------------------

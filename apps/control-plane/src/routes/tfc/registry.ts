@@ -6,7 +6,7 @@ import {
   findOrgMembership,
 } from "../../db/queries/organizations.ts"
 import {
-  findWorkspaceByPath,
+  findNonPreviewWorkspace,
   findPreviewWorkspace,
 } from "../../db/queries/workspaces.ts"
 import {
@@ -182,8 +182,8 @@ registryRoute.get(
       workspace = await findPreviewWorkspace(org.id, workspacePath, previewContext.prNumber)
     }
     if (!workspace) {
-      // Fall back to production
-      workspace = await findWorkspaceByPath(org.id, workspacePath, "production")
+      // Fall back to non-preview (e.g. main branch) workspace
+      workspace = await findNonPreviewWorkspace(org.id, workspacePath)
     }
 
     if (!workspace) {

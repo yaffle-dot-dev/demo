@@ -374,7 +374,7 @@ workspacesRoute.post(
           name: z.string().min(1).max(90),
           repo: z.string().optional(),
           "workspace-path": z.string().optional(),
-          environment: z.enum(["preview", "production"]).optional(),
+          environment: z.string().min(1).max(50).optional(),
           branch: z.string().optional(),
           "pr-number": z.number().optional(),
           "terraform-version": z.string().optional(),

@@ -22,7 +22,7 @@ export interface RunOpts {
   command: RunType
   /** Workspace path from config, e.g. "infra" */
   workspacePath: string
-  /** State key, e.g. "previews/pr-42/infra/terraform.tfstate" */
+  /** State key, e.g. "preview-pr-42/infra/terraform.tfstate" */
   stateKey: string
   variables?: Record<string, string>
   installationToken?: string
@@ -47,8 +47,8 @@ export interface RunOpts {
 
 /**
  * Build a state key for a workspace.
- * Preview: previews/pr-{n}/{workspacePath}/terraform.tfstate
- * Production: production/main/{workspacePath}/terraform.tfstate
+ * Preview: preview-pr-{n}/{workspacePath}/terraform.tfstate
+ * Non-preview: {branch}/{workspacePath}/terraform.tfstate
  */
 export function buildStateKey(
   prefix: string,
@@ -59,14 +59,16 @@ export function buildStateKey(
 
 /**
  * Build a preview state key prefix for a PR.
+ * Format: preview-pr-{n}
  */
 export function previewStatePrefix(prNumber: number): string {
-  return `previews/pr-${prNumber}`
+  return `preview-pr-${prNumber}`
 }
 
 /**
- * Build a production state key prefix.
+ * Build a state key prefix for a branch (non-preview).
+ * Format: {branch}
  */
-export function productionStatePrefix(branch: string): string {
-  return `production/${branch}`
+export function branchStatePrefix(branch: string): string {
+  return branch
 }

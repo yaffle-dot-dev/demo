@@ -48,6 +48,20 @@ output "alb_dns_name" {
 }
 
 output "api_url" {
-  value       = "https://${local.api_domain}"
+  value       = "https://${var.domain}"
   description = "Control plane API URL"
+}
+
+# -----------------------------------------------------------------------------
+# State Storage
+# -----------------------------------------------------------------------------
+
+output "state_bucket_name" {
+  value       = aws_s3_bucket.state.id
+  description = "S3 bucket for this environment's terraform state"
+}
+
+output "state_bucket_arn" {
+  value       = aws_s3_bucket.state.arn
+  description = "S3 bucket ARN"
 }
