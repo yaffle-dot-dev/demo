@@ -110,3 +110,32 @@ export function hasActiveRun(group: PreviewGroup): boolean {
     ws.runs.some((r) => r.status === "running" || r.status === "pending"),
   )
 }
+
+/**
+ * Filter runs to the current cycle only.
+ * A cycle starts with a plan - any apply older than the latest plan is stale.
+ * Returns only runs from the current cycle.
+ */
+export function filterToCurrentCycle(runs: Run[]): Run[] {
+  if (runs.length === 0) return []
+
+  // Find the latest plan (runs are sorted desc by createdAt)
+  const latestPlan = runs.find((r) => r.runType === "plan")
+  if (!latestPlan) return runs // No plan, return all runs
+
+  // Only include runs created at or after the latest plan
+  return runs.filter((r) => r.createdAt >= latestPlan.createdAt)
+}
+
+/**
+ * Filter workspaces' runs to current cycle only.
+ * Use this for sidebar display when not pinned.
+ */
+export function filterWorkspacesToCurrentCycle(
+  workspaces: WorkspaceWithRuns[],
+): WorkspaceWithRuns[] {
+  return workspaces.map((ws) => ({
+    ...ws,
+    runs: filterToCurrentCycle(ws.runs),
+  }))
+}

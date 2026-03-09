@@ -4,6 +4,7 @@
   import { untrack } from "svelte"
   import type { WorkspaceWithRuns, Run } from "$lib/api"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
+  import { filterWorkspacesToCurrentCycle, filterToCurrentCycle } from "$lib/sse/types"
   import WorkspaceSidebar from "./WorkspaceSidebar.svelte"
   import Terminal from "./Terminal.svelte"
   import PlanSummary from "./PlanSummary.svelte"
@@ -79,20 +80,30 @@
   // The timestamp boundary: when pinned, only show runs created at or before this time
   const pinnedBoundary = $derived(pinnedRun?.createdAt ?? null)
 
-  // When pinned, only show runs from the same cycle (created at or before the pinned run)
+  // Filter runs to the appropriate cycle:
+  // - When pinned: show runs from the pinned cycle
+  // - When not pinned: show only current cycle (no stale applies)
   const visibleRuns = $derived.by((): Run[] => {
     const runs = selectedWorkspace?.runs ?? []
-    if (!pinnedBoundary) return runs
-    return runs.filter((r: Run) => r.createdAt <= pinnedBoundary)
+    if (pinnedBoundary) {
+      return runs.filter((r: Run) => r.createdAt <= pinnedBoundary)
+    }
+    return filterToCurrentCycle(runs)
   })
 
-  // Frozen workspaces for sidebar: when pinned, filter runs to the pinned cycle
+  // Workspaces for sidebar: filter runs to the appropriate cycle
+  // - When pinned: show runs from the pinned cycle (created at or before pinned run)
+  // - When not pinned: show only current cycle runs (no stale applies from previous pushes)
   const sidebarWorkspaces = $derived.by((): WorkspaceWithRuns[] => {
-    if (!pinnedBoundary) return workspaces
-    return workspaces.map((ws) => ({
-      ...ws,
-      runs: ws.runs.filter((r: Run) => r.createdAt <= pinnedBoundary),
-    }))
+    if (pinnedBoundary) {
+      // Pinned: show runs up to the pinned timestamp
+      return workspaces.map((ws) => ({
+        ...ws,
+        runs: ws.runs.filter((r: Run) => r.createdAt <= pinnedBoundary),
+      }))
+    }
+    // Not pinned: show only current cycle (filters out stale applies)
+    return filterWorkspacesToCurrentCycle(workspaces)
   })
 
   // Get latest plan/apply from the visible (possibly filtered) runs
