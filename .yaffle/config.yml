@@ -15,19 +15,19 @@ workspaces:
       aws_region: "us-east-1"
       cloudflare_zone_id: "ba87a43c4698d9a9ca066c62311445b6"
 
-  # - path: infra/production
-  #   auto_apply: false
-  #   auto_apply_on_merge: true
-  #   variables:
-  #     environment: "{{ env }}"
-  #     aws_region: "us-east-1"
+  - path: infra/production
+    auto_apply: false
+    auto_apply_on_merge: true
+    variables:
+      environment: "{{ env }}"
+      aws_region: "us-east-1"
 
-  # - path: infra/nonprod
-  #   auto_apply: false
-  #   auto_apply_on_merge: true
-  #   variables:
-  #     environment: "{{ env }}"
-  #     aws_region: "us-east-1"
+  - path: infra/nonprod
+    auto_apply: false
+    auto_apply_on_merge: true
+    variables:
+      environment: "{{ env }}"
+      aws_region: "us-east-1"
 
   # ==========================================================================
   # Application Infrastructure

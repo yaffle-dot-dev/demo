@@ -16,8 +16,6 @@ import { logger } from "./telemetry.ts"
 export interface YaffleTagContext {
   /** Workspace path, e.g. "infra/shared" */
   workspacePath: string
-  /** Run ID from Yaffle */
-  runId?: string
   /** PR number (undefined for production) */
   prNumber?: number
 }
@@ -37,10 +35,6 @@ export async function configureProviderOverride(
   const tags: Record<string, string> = {
     yaf_managed: "true",
     yaf_workspace: ctx.workspacePath,
-  }
-
-  if (ctx.runId) {
-    tags.yaf_run_id = ctx.runId
   }
 
   if (ctx.prNumber !== undefined) {
@@ -68,7 +62,6 @@ ${tagLines}
   logger.info(`provider override written: ${overridePath}`, {
     "provider.override_path": overridePath,
     "provider.workspace": ctx.workspacePath,
-    "provider.run_id": ctx.runId ?? "none",
     "provider.pr_number": ctx.prNumber ?? "none",
   })
 }

@@ -92,7 +92,6 @@ export class LocalRunner implements Runner {
         // Inject Yaffle tags into AWS provider default_tags
         await configureProviderOverride(tfDir, {
           workspacePath: opts.workspacePath,
-          runId: opts.runId,
           prNumber: opts.prNumber,
         })
 
