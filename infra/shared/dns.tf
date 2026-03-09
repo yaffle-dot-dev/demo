@@ -32,3 +32,71 @@ resource "aws_route53_record" "www" {
   ttl     = 300
   records = [var.domain]
 }
+
+# =============================================================================
+# ACM Certificate
+# =============================================================================
+# Wildcard certificate for yaffle.dev - used by all applications.
+# Validation records are in Route53, same zone as the domain.
+# =============================================================================
+
+resource "aws_acm_certificate" "main" {
+  domain_name       = var.domain
+  validation_method = "DNS"
+
+  subject_alternative_names = ["*.${var.domain}"]
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  tags = {
+    Name = "${var.domain}-wildcard"
+  }
+}
+
+resource "aws_route53_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = aws_route53_zone.main.zone_id
+}
+
+resource "aws_acm_certificate_validation" "main" {
+  certificate_arn         = aws_acm_certificate.main.arn
+  validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
+}
+
+# =============================================================================
+# Cloudflare DNS (Dual DNS)
+# =============================================================================
+# yaffle.dev uses dual DNS - both Route53 and Cloudflare have the zone.
+# ACM validation records must exist in both for reliable certificate validation.
+# =============================================================================
+
+resource "cloudflare_dns_record" "cert_validation" {
+  for_each = {
+    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  }
+
+  zone_id = var.cloudflare_zone_id
+  name    = each.value.name
+  content = each.value.record
+  type    = each.value.type
+  ttl     = 60
+  proxied = false
+}

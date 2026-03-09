@@ -33,3 +33,17 @@ output "github_actions_oidc_provider_arn" {
   value       = aws_iam_openid_connect_provider.github_actions.arn
   description = "GitHub Actions OIDC provider ARN"
 }
+
+# -----------------------------------------------------------------------------
+# ACM Certificate
+# -----------------------------------------------------------------------------
+
+output "acm_certificate_arn" {
+  value       = aws_acm_certificate.main.arn
+  description = "ARN of the wildcard ACM certificate for yaffle.dev"
+}
+
+output "acm_certificate_validated_arn" {
+  value       = aws_acm_certificate_validation.main.certificate_arn
+  description = "ARN of the validated ACM certificate (use this for ALB listeners)"
+}

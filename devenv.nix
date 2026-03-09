@@ -93,6 +93,15 @@ in
       GRANT ALL PRIVILEGES ON DATABASE yaffle_dev TO yaffle;
       GRANT ALL PRIVILEGES ON DATABASE yaffle_test TO yaffle;
     '';
+
+    # Log to file for easier debugging
+    settings = {
+      logging_collector = "on";
+      log_directory = "${config.devenv.root}/.devenv/logs";
+      log_filename = "postgres.log";
+      log_statement = "all";  # Log all statements (useful for debugging)
+      log_min_messages = "info";
+    };
   };
 
   # ── Process management (devenv up) ──────────────────────────────
@@ -127,6 +136,7 @@ in
         GITHUB_WEBHOOK_SECRET = config.secretspec.secrets.GITHUB_WEBHOOK_SECRET or "";
         GITHUB_OAUTH_CLIENT_ID = config.secretspec.secrets.GITHUB_OAUTH_CLIENT_ID or "";
         GITHUB_OAUTH_CLIENT_SECRET = config.secretspec.secrets.GITHUB_OAUTH_CLIENT_SECRET or "";
+        CLOUDFLARE_API_TOKEN = config.secretspec.secrets.CLOUDFLARE_API_TOKEN or "";
         AWS_ACCESS_KEY_ID = config.secretspec.secrets.AWS_ACCESS_KEY_ID or "";
         AWS_SECRET_ACCESS_KEY = config.secretspec.secrets.AWS_SECRET_ACCESS_KEY or "";
         AWS_ACCOUNT_ID = config.secretspec.secrets.AWS_ACCOUNT_ID or "";
@@ -232,6 +242,7 @@ in
     echo "  tail -f .devenv/logs/control-plane.log"
     echo "  tail -f .devenv/logs/web.log"
     echo "  tail -f .devenv/logs/caddy.log"
+    echo "  tail -f .devenv/logs/postgres.log"
     echo ""
     echo "endpoints (after devenv up):"
     echo "  https://localhost:6969       - marketing site"

@@ -165,6 +165,12 @@ webhooksRoute.post("/github", async (c) => {
       "webhook.sha_match": afterSha === headCommitSha,
     })
 
+    // Ignore branch deletion events (after SHA is all zeros)
+    const nullSha = "0000000000000000000000000000000000000000"
+    if (!afterSha || afterSha === nullSha) {
+      return c.json({ data: { ignored: true, reason: "branch deletion push (no head SHA)" } })
+    }
+
     const context: PushContext = {
       kind: "push",
       installationId: payload.installation?.id,
