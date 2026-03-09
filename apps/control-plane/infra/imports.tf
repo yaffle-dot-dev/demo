@@ -29,7 +29,5 @@ import {
   id = "yaffle-state-main-use1"
 }
 
-import {
-  to = aws_s3_bucket_lifecycle_configuration.state
-  id = "yaffle-state-main-use1"
-}
+# Note: lifecycle_configuration is created by this workspace, not imported
+# The bootstrap only creates the bare bucket with public access block

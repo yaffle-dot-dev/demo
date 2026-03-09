@@ -40,3 +40,4 @@ workspaces:
     variables:
       environment: "{{ env }}"
       aws_region: "us-east-1"
+      secrets_arn_prefix: "arn:aws:secretsmanager:us-east-1:870923192739:secret:yaffle"
