@@ -27,6 +27,7 @@ apps/control-plane/drizzle/
 *.tfstate.*
 crash.log
 crash.*.log
+**/backend.tf
 
 # Svelte
 **/.svelte-kit

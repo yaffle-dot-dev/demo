@@ -6,6 +6,8 @@ export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
   server: {
     port: 5173,
+    host: true,
+    allowedHosts: ["yaffle.local"],
     proxy: {
       "/api": {
         target: "http://localhost:3000",

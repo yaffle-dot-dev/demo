@@ -75,6 +75,13 @@ resource "aws_route53_record" "cert_validation" {
 resource "aws_acm_certificate_validation" "main" {
   certificate_arn         = aws_acm_certificate.main.arn
   validation_record_fqdns = [for record in aws_route53_record.cert_validation : record.fqdn]
+
+  # Dual DNS: wait for both Route53 AND Cloudflare records before validating
+  # AWS may query either DNS provider, so both must have the validation records
+  depends_on = [
+    aws_route53_record.cert_validation,
+    cloudflare_dns_record.cert_validation,
+  ]
 }
 
 # =============================================================================
@@ -84,14 +91,23 @@ resource "aws_acm_certificate_validation" "main" {
 # ACM validation records must exist in both for reliable certificate validation.
 # =============================================================================
 
-resource "cloudflare_dns_record" "cert_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
+# Dedupe by record name since yaffle.dev and *.yaffle.dev share the same validation record
+locals {
+  cf_cert_validation_grouped = {
+    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.resource_record_name => {
       name   = dvo.resource_record_name
       record = dvo.resource_record_value
       type   = dvo.resource_record_type
-    }
+    }...
   }
+  # Take first element from each group (they're identical anyway)
+  cf_cert_validation_records = {
+    for k, v in local.cf_cert_validation_grouped : k => v[0]
+  }
+}
+
+resource "cloudflare_dns_record" "cert_validation" {
+  for_each = local.cf_cert_validation_records
 
   zone_id = var.cloudflare_zone_id
   name    = each.value.name

@@ -6,5 +6,9 @@ import tailwindcss from "@tailwindcss/vite"
 export default defineConfig({
   vite: {
     plugins: [tailwindcss()],
+    server: {
+      host: true,
+      allowedHosts: ["yaffle.local"],
+    },
   },
 })

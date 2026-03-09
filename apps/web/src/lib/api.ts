@@ -254,6 +254,14 @@ export async function approvePreview(
 }
 
 /**
+ * Cancel a running terraform operation.
+ */
+export async function cancelRun(runId: string): Promise<{ cancelled: boolean }> {
+  const res = await postJson<{ data: { cancelled: boolean } }>(`/runs/${runId}/cancel`)
+  return res.data
+}
+
+/**
  * Get all previews (workspaces) for a PR.
  */
 export async function getPreviewsByPr(

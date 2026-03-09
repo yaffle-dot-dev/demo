@@ -3,6 +3,7 @@
   import { goto } from "$app/navigation"
   import { untrack } from "svelte"
   import type { WorkspaceWithRuns, Run } from "$lib/api"
+  import { cancelRun } from "$lib/api"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
   import { filterWorkspacesToCurrentCycle, filterToCurrentCycle } from "$lib/sse/types"
   import WorkspaceSidebar from "./WorkspaceSidebar.svelte"
@@ -66,6 +67,10 @@
   // Tab state
   type TabId = "plan" | "apply" | "outputs"
   let activeTab = $state<TabId>("plan")
+  
+  // Cancel state
+  let cancellingRunId = $state<string | null>(null)
+  let cancelError = $state<string | null>(null)
 
   // When viewedRunId is set, find it across ALL workspaces to get the timestamp boundary
   const pinnedRun = $derived.by((): Run | null => {
@@ -207,6 +212,82 @@
       default: return "text-text-muted"
     }
   }
+
+  // Get the currently running run (if any) - check both plan and apply
+  const runningRun = $derived.by((): Run | null => {
+    if (latestPlan?.status === "running") return latestPlan
+    if (latestApply?.status === "running") return latestApply
+    return null
+  })
+
+  async function handleCancel() {
+    if (!runningRun) return
+    
+    const runType = runningRun.runType === "apply" ? "apply" : "plan"
+    const confirmed = confirm(`Cancel the running ${runType}? This will send SIGINT to terraform for graceful shutdown.`)
+    if (!confirmed) return
+    
+    cancellingRunId = runningRun.id
+    cancelError = null
+    
+    try {
+      await cancelRun(runningRun.id)
+    } catch (err) {
+      cancelError = err instanceof Error ? err.message : "Failed to cancel run"
+    } finally {
+      cancellingRunId = null
+    }
+  }
+
+  // Build workspace name matching server-side logic
+  function buildWorkspaceName(environment: string, identifier: string, workspacePath: string): string {
+    const pathSlug = workspacePath.replace(/\//g, "-").replace(/[^a-z0-9-]/gi, "")
+    return `${environment}-${identifier}-${pathSlug}`
+  }
+
+  // Generate the backend config block for local tofu usage
+  const backendConfig = $derived.by(() => {
+    if (!selectedWorkspace) return null
+    
+    const workspacePath = selectedWorkspace.preview.workspacePath
+    let workspaceName: string
+    
+    if (type === "pr") {
+      workspaceName = buildWorkspaceName("preview", `pr-${identifier}`, workspacePath)
+    } else {
+      // Branch workspace: uses branch as both environment and identifier
+      workspaceName = buildWorkspaceName(String(identifier), String(identifier), workspacePath)
+    }
+    
+    // Use current hostname for the TFC API
+    const hostname = typeof window !== "undefined" ? window.location.host : "api.yaffle.dev"
+    
+    return `# terraform login ${hostname}
+terraform {
+  cloud {
+    hostname     = "${hostname}"
+    organization = "${org}"
+
+    workspaces {
+      name = "${workspaceName}"
+    }
+  }
+}`
+  })
+
+  let copiedBackend = $state(false)
+  
+  async function handleCopyBackend() {
+    if (!backendConfig) return
+    
+    try {
+      await navigator.clipboard.writeText(backendConfig)
+      copiedBackend = true
+      setTimeout(() => copiedBackend = false, 2000)
+    } catch (err) {
+      console.error("Failed to copy backend config:", err)
+    }
+  }
 </script>
 
 <div class="h-full flex flex-col">
@@ -273,7 +354,25 @@
         <div class="flex-shrink-0 px-6 py-4 border-b border-border">
           <div class="flex items-center justify-between">
             <div>
-              <h2 class="font-mono text-sm text-text">{selectedWorkspace.preview.workspacePath}</h2>
+              <div class="flex items-center gap-1.5">
+                <h2 class="font-mono text-sm text-text">{selectedWorkspace.preview.workspacePath}</h2>
+                <button
+                  onclick={handleCopyBackend}
+                  class="p-1 text-text-dim hover:text-text rounded transition-colors"
+                  title="Copy backend configuration"
+                >
+                  {#if copiedBackend}
+                    <svg class="w-3.5 h-3.5 text-status-ready" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <path d="M3 8l3 3 7-7" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  {:else}
+                    <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <rect x="5" y="5" width="8" height="10" rx="1"/>
+                      <path d="M3 11V3a1 1 0 0 1 1-1h6"/>
+                    </svg>
+                  {/if}
+                </button>
+              </div>
               <div class="flex items-center gap-2 mt-1">
                 <span class="text-xs {cfg.color}">{cfg.icon} {cfg.label}</span>
                 {#if selectedWorkspace.preview.requireApproval}
@@ -283,23 +382,52 @@
                 {/if}
               </div>
             </div>
-            {#if hasNewerRun && onSwitchToLatest}
-              <button
-                onclick={onSwitchToLatest}
-                class="flex items-center gap-2 px-3 py-1.5 bg-status-planning/15 hover:bg-status-planning/25 border border-status-planning/30 rounded text-status-planning transition-colors"
-              >
-                <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
-                  <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-                <div class="text-left">
-                  <div class="text-xs font-medium leading-tight">new run</div>
-                  {#if latestHeadSha}
-                    <div class="font-mono text-[10px] leading-tight opacity-75">{shortSha(latestHeadSha)}</div>
+            <div class="flex items-center gap-2">
+              {#if runningRun}
+                <button
+                  onclick={handleCancel}
+                  disabled={cancellingRunId !== null}
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs
+                         text-text-muted hover:text-status-failed hover:bg-status-failed/10 
+                         rounded transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Cancel running {runningRun.runType}"
+                >
+                  {#if cancellingRunId === runningRun.id}
+                    <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <circle cx="8" cy="8" r="6" stroke-opacity="0.3"/>
+                      <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/>
+                    </svg>
+                  {:else}
+                    <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <circle cx="8" cy="8" r="6"/>
+                      <path d="M6 6l4 4M10 6l-4 4" stroke-linecap="round"/>
+                    </svg>
                   {/if}
-                </div>
-              </button>
-            {/if}
+                  <span>{cancellingRunId === runningRun.id ? "cancelling" : "cancel"}</span>
+                </button>
+              {/if}
+              {#if cancelError}
+                <span class="text-xs text-status-failed">{cancelError}</span>
+              {/if}
+              {#if hasNewerRun && onSwitchToLatest}
+                <button
+                  onclick={onSwitchToLatest}
+                  class="flex items-center gap-2 px-3 py-1.5 bg-status-planning/15 hover:bg-status-planning/25 border border-status-planning/30 rounded text-status-planning transition-colors"
+                >
+                  <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
+                    <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                  <div class="text-left">
+                    <div class="text-xs font-medium leading-tight">new run</div>
+                    {#if latestHeadSha}
+                      <div class="font-mono text-[10px] leading-tight opacity-75">{shortSha(latestHeadSha)}</div>
+                    {/if}
+                  </div>
+                </button>
+              {/if}
+            </div>
           </div>
         </div>
 

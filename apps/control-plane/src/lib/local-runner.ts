@@ -102,6 +102,7 @@ export class LocalRunner implements Runner {
           variables: opts.variables,
           onOutput: opts.onOutput,
           extraEnv,
+          runId: opts.runId,
         })
       } finally {
         // Always unlock TFC workspace when terraform exits (success, failure, or crash)

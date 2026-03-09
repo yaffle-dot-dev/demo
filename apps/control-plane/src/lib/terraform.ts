@@ -5,6 +5,7 @@ import { writeFile } from "node:fs/promises"
 import type { RunType, TerraformResult } from "@yaffle/shared"
 
 import { logger, tracer } from "./telemetry.ts"
+import { processRegistry } from "./process-registry.ts"
 
 /** Strip ANSI escape codes from a string. */
 function stripAnsi(str: string): string {
@@ -45,12 +46,14 @@ interface TfExecResult {
 
 /**
  * Execute a terraform/tofu command as a subprocess.
+ * If runId is provided, the process is registered for cancellation.
  */
 async function execTf(
   args: string[],
   cwd: string,
   env?: Record<string, string>,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
+  runId?: string,
 ): Promise<TfExecResult> {
   const binary = getTfBinary()
   const subcommand = args[0] ?? "unknown"
@@ -84,27 +87,39 @@ async function execTf(
       env: tfEnv,
     })
 
-    const stdoutPromise = readStream(proc.stdout, (chunk) => {
-      onOutput?.(sanitizeOutput(chunk), "stdout")
-    })
-    const stderrPromise = readStream(proc.stderr, (chunk) => {
-      onOutput?.(sanitizeOutput(chunk), "stderr")
-    })
-
-    const exitCode = await proc.exited
-    const stdout = await stdoutPromise
-    const stderr = await stderrPromise
-
-    if (stderr) {
-      for (const line of stderr.split("\n").filter(Boolean)) {
-        logger.debug(`[tf:stderr] ${line}`)
-      }
+    // Register process for cancellation if runId provided
+    if (runId) {
+      processRegistry.register(runId, proc)
     }
 
-    span.setAttributes({ "tf.exit_code": exitCode })
-    span.end()
+    try {
+      const stdoutPromise = readStream(proc.stdout, (chunk) => {
+        onOutput?.(sanitizeOutput(chunk), "stdout")
+      })
+      const stderrPromise = readStream(proc.stderr, (chunk) => {
+        onOutput?.(sanitizeOutput(chunk), "stderr")
+      })
 
-    return { exitCode, stdout, stderr }
+      const exitCode = await proc.exited
+      const stdout = await stdoutPromise
+      const stderr = await stderrPromise
+
+      if (stderr) {
+        for (const line of stderr.split("\n").filter(Boolean)) {
+          logger.debug(`[tf:stderr] ${line}`)
+        }
+      }
+
+      span.setAttributes({ "tf.exit_code": exitCode })
+      span.end()
+
+      return { exitCode, stdout, stderr }
+    } finally {
+      // Unregister process when done
+      if (runId) {
+        processRegistry.unregister(runId)
+      }
+    }
   })
 }
 
@@ -115,8 +130,9 @@ export async function tfInit(
   workDir: string,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv?: Record<string, string>,
+  runId?: string,
 ): Promise<TfExecResult> {
-  return execTf(["init", "-input=false"], workDir, extraEnv, onOutput)
+  return execTf(["init", "-input=false"], workDir, extraEnv, onOutput, runId)
 }
 
 /**
@@ -128,6 +144,7 @@ export async function tfPlan(
   variables?: Record<string, string>,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv?: Record<string, string>,
+  runId?: string,
 ): Promise<{ output: string; planJson: unknown; summary: string }> {
   // Write variables file if provided
   if (variables && Object.keys(variables).length > 0) {
@@ -144,6 +161,7 @@ export async function tfPlan(
     workDir,
     extraEnv,
     onOutput,
+    runId,
   )
 
   // Exit code 0 = no changes, 1 = error, 2 = changes present
@@ -179,6 +197,7 @@ export async function tfApply(
   variables?: Record<string, string>,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv?: Record<string, string>,
+  runId?: string,
 ): Promise<{ output: string; outputs: Record<string, unknown> }> {
   if (variables && Object.keys(variables).length > 0) {
     await writeFile(
@@ -192,6 +211,7 @@ export async function tfApply(
     workDir,
     extraEnv,
     onOutput,
+    runId,
   )
 
   if (result.exitCode !== 0) {
@@ -219,12 +239,14 @@ export async function tfDestroy(
   workDir: string,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv?: Record<string, string>,
+  runId?: string,
 ): Promise<{ output: string }> {
   const result = await execTf(
     ["destroy", "-auto-approve", "-input=false"],
     workDir,
     extraEnv,
     onOutput,
+    runId,
   )
 
   if (result.exitCode !== 0) {
@@ -245,12 +267,14 @@ export async function runTerraform(opts: {
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
   /** Extra environment variables to pass to terraform (e.g., TFC tokens) */
   extraEnv?: Record<string, string>
+  /** Run ID for process registry (enables cancellation) */
+  runId?: string
 }): Promise<TerraformResult> {
   const start = Date.now()
 
   try {
     // Always init first
-    const initResult = await tfInit(opts.workDir, opts.onOutput, opts.extraEnv)
+    const initResult = await tfInit(opts.workDir, opts.onOutput, opts.extraEnv, opts.runId)
     if (initResult.exitCode !== 0) {
       return {
         success: false,
@@ -268,6 +292,7 @@ export async function runTerraform(opts: {
           opts.variables,
           opts.onOutput,
           opts.extraEnv,
+          opts.runId,
         )
         return {
           success: true,
@@ -280,7 +305,7 @@ export async function runTerraform(opts: {
       }
 
       case "apply": {
-        const { output, outputs } = await tfApply(opts.workDir, opts.variables, opts.onOutput, opts.extraEnv)
+        const { output, outputs } = await tfApply(opts.workDir, opts.variables, opts.onOutput, opts.extraEnv, opts.runId)
         return {
           success: true,
           command: "apply",
@@ -291,7 +316,7 @@ export async function runTerraform(opts: {
       }
 
       case "destroy": {
-        const { output } = await tfDestroy(opts.workDir, opts.onOutput, opts.extraEnv)
+        const { output } = await tfDestroy(opts.workDir, opts.onOutput, opts.extraEnv, opts.runId)
         return {
           success: true,
           command: "destroy",
