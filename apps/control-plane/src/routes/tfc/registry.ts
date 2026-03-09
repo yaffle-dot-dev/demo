@@ -1,6 +1,8 @@
 import { Hono } from "hono"
+import { createHmac } from "node:crypto"
 
 import { logger as log } from "../../lib/telemetry.ts"
+import { getEnv } from "../../lib/env.ts"
 import {
   findOrgBySlug,
   findOrgMembership,
@@ -49,8 +51,57 @@ type TfcVariables = {
  */
 export const registryRoute = new Hono<{ Variables: TfcVariables }>()
 
-// All routes require TFC authentication
-registryRoute.use("*", tfcAuth())
+// Most routes require TFC authentication
+// Archive endpoint is accessed via redirect and needs special handling
+registryRoute.use("*", async (c, next) => {
+  // Skip auth for archive downloads - they come from X-Terraform-Get redirect
+  // which doesn't include auth headers. We validate via signed token in URL.
+  if (c.req.path.endsWith("/archive.tar.gz")) {
+    return next()
+  }
+  return tfcAuth()(c, next)
+})
+
+// =============================================================================
+// Archive URL Signing
+// =============================================================================
+
+const ARCHIVE_TOKEN_TTL_MS = 5 * 60 * 1000 // 5 minutes
+
+/**
+ * Generate a signed token for archive downloads.
+ * Token format: {expiry_timestamp}.{hmac_signature}
+ */
+function signArchiveUrl(path: string): string {
+  const env = getEnv()
+  const secret = env.betterAuthSecret || "dev-secret"
+  const expiry = Date.now() + ARCHIVE_TOKEN_TTL_MS
+  const data = `${path}:${expiry}`
+  const signature = createHmac("sha256", secret).update(data).digest("base64url")
+  return `${expiry}.${signature}`
+}
+
+/**
+ * Verify a signed archive token.
+ */
+function verifyArchiveToken(path: string, token: string): boolean {
+  const env = getEnv()
+  const secret = env.betterAuthSecret || "dev-secret"
+
+  const parts = token.split(".")
+  if (parts.length !== 2) return false
+
+  const [expiryStr, signature] = parts
+  const expiry = parseInt(expiryStr, 10)
+
+  // Check expiry
+  if (isNaN(expiry) || Date.now() > expiry) return false
+
+  // Verify signature
+  const data = `${path}:${expiry}`
+  const expectedSig = createHmac("sha256", secret).update(data).digest("base64url")
+  return signature === expectedSig
+}
 
 // =============================================================================
 // URL Mapping Helpers
@@ -309,11 +360,14 @@ registryRoute.get(
       isPreview: resolved.isPreview,
     })
 
-    // Build archive URL, preserving preview parameter
-    let archiveUrl = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
+    // Build archive URL with signed token
+    const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
+    const token = signArchiveUrl(archivePath)
+    const params = new URLSearchParams({ token })
     if (previewParam) {
-      archiveUrl += `?preview=${encodeURIComponent(previewParam)}`
+      params.set("preview", previewParam)
     }
+    const archiveUrl = `${archivePath}?${params.toString()}`
 
     return new Response(null, {
       status: 204,
@@ -344,8 +398,17 @@ registryRoute.get(
     const moduleName = c.req.param("name")
     const provider = c.req.param("provider")
     const version = c.req.param("version")
-    const auth = c.get("tfcAuth")
     const previewParam = c.req.query("preview")
+    const token = c.req.query("token")
+
+    // Verify signed token (archive downloads don't have auth headers)
+    const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
+    if (!token || !verifyArchiveToken(archivePath, token)) {
+      return c.json(
+        { errors: [{ status: "401", title: "Invalid or expired token" }] },
+        401,
+      )
+    }
 
     // Provider must be "yaffle"
     if (provider !== "yaffle") {
@@ -364,11 +427,8 @@ registryRoute.get(
       )
     }
 
-    // Check org membership
-    const membershipCheck = await checkOrgMembership(auth, org.id)
-    if (!membershipCheck.allowed && "error" in membershipCheck) {
-      return membershipCheck.error
-    }
+    // Token was verified, no need for membership check on archive download
+    // (membership was checked when the download URL was generated)
 
     // Parse version
     let serial: number | "latest"

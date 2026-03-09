@@ -19,7 +19,7 @@
 	}
 }
 
-https://localhost:6969 {
+https://localhost:6969, https://yaffle.local:6969 {
 	# Log all requests for debugging
 	log {
 		output stdout

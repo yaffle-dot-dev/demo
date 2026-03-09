@@ -66,8 +66,8 @@ in
     YAFFLE_TFC_API_HOST = "localhost:6969";
 
     # BetterAuth config for Caddy proxy
-    BETTER_AUTH_URL = "https://localhost:6969";
-    TRUSTED_ORIGINS = "https://localhost:6969,http://localhost:5173,http://localhost:3000";
+    BETTER_AUTH_URL = "https://yaffle.local:6969";
+    TRUSTED_ORIGINS = "https://localhost:6969,https://yaffle.local:6969,http://localhost:5173,http://localhost:3000";
 
     # Telemetry defaults for local dev (disabled, no endpoint)
     YAFFLE_ENV = "development";

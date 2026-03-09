@@ -15,7 +15,7 @@
 # -----------------------------------------------------------------------------
 
 module "shared" {
-  source = "yaffle.dev/yaffle-dot-dev/infra--shared/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev/infra--shared/yaffle"
 }
 
 # -----------------------------------------------------------------------------
@@ -25,12 +25,12 @@ module "shared" {
 
 module "main" {
   count  = var.is_preview ? 0 : 1
-  source = "yaffle.dev/yaffle-dot-dev/infra--main/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev/infra--production/yaffle"
 }
 
 module "nonprod" {
   count  = var.is_preview ? 1 : 0
-  source = "yaffle.dev/yaffle-dot-dev/infra--nonprod/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev/infra--nonprod/yaffle"
 }
 
 # -----------------------------------------------------------------------------

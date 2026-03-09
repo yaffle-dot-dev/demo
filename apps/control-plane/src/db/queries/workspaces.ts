@@ -359,7 +359,8 @@ export async function findWorkspaceByPath(
 
 /**
  * Find a non-preview workspace by org and workspace path.
- * Returns the first active workspace that is not a preview.
+ * Returns the "main" environment workspace if it exists, otherwise the first
+ * active workspace that is not a preview.
  * Used for module resolution when the caller doesn't know the branch name.
  */
 export async function findNonPreviewWorkspace(
@@ -379,11 +380,14 @@ export async function findNonPreviewWorkspace(
         ),
       )
       .limit(10) // Get a few to filter
-    // Filter out preview workspaces and find first active non-preview
-    const nonPreview = rows.find(
+
+    // Filter out preview workspaces
+    const nonPreviewRows = rows.filter(
       (row) => row.environment !== "preview" && row.status === "active",
     )
-    return nonPreview
+
+    // Prefer "main" environment, then fall back to first found
+    return nonPreviewRows.find((row) => row.environment === "main") ?? nonPreviewRows[0]
   })
 }
 
