@@ -91,28 +91,48 @@ resource "aws_acm_certificate_validation" "main" {
 # ACM validation records must exist in both for reliable certificate validation.
 # =============================================================================
 
-# Dedupe by record name since yaffle.dev and *.yaffle.dev share the same validation record
+# Use static keys (domain names we know upfront) to avoid for_each unknown key errors.
+# ACM creates one validation record per unique domain, and yaffle.dev + *.yaffle.dev
+# share the same validation record, so we only need one.
 locals {
-  cf_cert_validation_grouped = {
-    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.resource_record_name => {
-      name   = dvo.resource_record_name
-      record = dvo.resource_record_value
-      type   = dvo.resource_record_type
-    }...
-  }
-  # Take first element from each group (they're identical anyway)
+  cert_domains = toset([var.domain])
+
   cf_cert_validation_records = {
-    for k, v in local.cf_cert_validation_grouped : k => v[0]
+    for domain in local.cert_domains : domain => {
+      for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
+        name   = dvo.resource_record_name
+        record = dvo.resource_record_value
+        type   = dvo.resource_record_type
+      }
+    }[domain]
   }
 }
 
 resource "cloudflare_dns_record" "cert_validation" {
-  for_each = local.cf_cert_validation_records
+  for_each = local.cert_domains
 
   zone_id = var.cloudflare_zone_id
-  name    = each.value.name
-  content = each.value.record
-  type    = each.value.type
+  name    = local.cf_cert_validation_records[each.key].name
+  content = local.cf_cert_validation_records[each.key].record
+  type    = local.cf_cert_validation_records[each.key].type
   ttl     = 60
+  proxied = false
+}
+
+# -----------------------------------------------------------------------------
+# NS Records - Route53 nameservers in Cloudflare for Multi DNS
+# -----------------------------------------------------------------------------
+# Cloudflare Multi DNS requires NS records pointing to Route53's nameservers.
+# Route53 assigns 4 nameservers to each hosted zone.
+# -----------------------------------------------------------------------------
+
+resource "cloudflare_dns_record" "route53_ns" {
+  count = 4
+
+  zone_id = var.cloudflare_zone_id
+  name    = var.domain
+  type    = "NS"
+  content = aws_route53_zone.main.name_servers[count.index]
+  ttl     = 86400
   proxied = false
 }

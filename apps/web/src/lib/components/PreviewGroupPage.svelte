@@ -191,19 +191,14 @@
   const latestApply = $derived(
     visibleRuns.find((r: Run) => r.runType === "apply") ?? undefined,
   )
-  // Show outputs if:
-  // 1. Apply succeeded with outputs, OR
-  // 2. Apply was skipped (no changes) and we have outputs from a previous apply
+  // Show outputs tab if apply succeeded or was skipped
   const hasOutputs = $derived(
-    (latestApply?.status === "success" && latestApply?.outputs) ||
-    (latestApply?.status === "skipped" && selectedWorkspace?.outputs)
+    latestApply?.status === "success" || latestApply?.status === "skipped"
   )
 
   // Get the outputs to display - prefer current apply's outputs, fall back to workspace outputs
   const displayOutputs = $derived(
-    latestApply?.status === "success" && latestApply?.outputs
-      ? latestApply.outputs
-      : selectedWorkspace?.outputs
+    latestApply?.outputs ?? selectedWorkspace?.outputs
   )
 
   // Available tabs based on what data exists
@@ -391,7 +386,7 @@ terraform {
         <div class="flex items-center gap-3 text-sm text-text-muted">
           <span class="font-mono text-xs">{branch}</span>
           <span class="text-text-dim">@</span>
-          <span class="font-mono text-xs text-text-dim">{shortSha(headSha)}</span>
+          <span class="font-mono text-xs text-text-dim">{shortSha(viewedRunGroup?.headSha ?? headSha)}</span>
           {#if authorLogin}
             <span class="text-text-dim">by {authorLogin}</span>
           {/if}

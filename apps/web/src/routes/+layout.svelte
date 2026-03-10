@@ -133,4 +133,9 @@
   <main class="mx-auto max-w-6xl px-4 py-6">
     {@render children()}
   </main>
+
+  <!-- Build info -->
+  <div class="fixed bottom-2 right-2 text-[10px] font-mono text-text-dim/50 select-all" title="Build: {__BUILD_SHA__} at {__BUILD_TIME__}">
+    {__BUILD_SHA__}
+  </div>
 </div>

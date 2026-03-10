@@ -1,9 +1,38 @@
+import { execSync } from "node:child_process"
 import tailwindcss from "@tailwindcss/vite"
 import { sveltekit } from "@sveltejs/kit/vite"
 import { defineConfig } from "vite"
 
+// Get build identifier at build time (works with both jj and git)
+function getBuildId(): string {
+  // Try jj first - use change ID (more useful in jj workflow)
+  try {
+    const changeId = execSync("jj log -r @ --no-graph -T 'change_id.short(8)'", {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim()
+    if (changeId && !changeId.startsWith("0000000")) return changeId
+  } catch {
+    // jj not available or failed
+  }
+
+  // Fall back to git
+  try {
+    return execSync("git rev-parse --short HEAD", {
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim()
+  } catch {
+    return "unknown"
+  }
+}
+
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
+  define: {
+    __BUILD_SHA__: JSON.stringify(getBuildId()),
+    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+  },
   server: {
     port: 5173,
     host: true,

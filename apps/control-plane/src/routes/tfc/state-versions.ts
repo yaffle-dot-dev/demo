@@ -294,6 +294,82 @@ stateVersionsRoute.get(
   },
 )
 
+/**
+ * GET /tfc/api/v2/workspaces/:workspace_id/current-state-version-outputs
+ * Get the outputs from the current (latest finalized) state version.
+ *
+ * This endpoint allows fetching outputs without full state read permissions.
+ * Terraform's `terraform output -json` command uses this endpoint.
+ */
+stateVersionsRoute.get(
+  "/workspaces/:workspace_id/current-state-version-outputs",
+  requireScopes("state:read"),
+  async (c) => {
+    const wsId = c.req.param("workspace_id")
+    const auth = c.get("tfcAuth")
+
+    log.info("GET current state version outputs", { workspaceId: wsId })
+
+    // Check workspace access
+    const ws = await findWorkspaceById(wsId)
+    if (!ws) {
+      log.warn("GET current state version outputs: workspace not found", { workspaceId: wsId })
+      return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
+    }
+
+    if (auth.type === "run" && auth.workspaceId !== ws.id) {
+      return c.json(
+        { errors: [{ status: "403", title: "Token not authorized for this workspace" }] },
+        403,
+      )
+    }
+
+    const sv = await getCurrentStateVersion(wsId)
+    if (!sv) {
+      log.warn("GET current state version outputs: no state version found", { workspaceId: wsId })
+      return c.json({ errors: [{ status: "404", title: "No state version found" }] }, 404)
+    }
+
+    // Check if outputs are still being processed
+    if (!sv.resourcesProcessed && sv.outputs === null) {
+      log.info("GET current state version outputs: outputs not yet processed", {
+        workspaceId: wsId,
+        stateVersionId: sv.id,
+      })
+      return c.json(
+        { errors: [{ status: "503", title: "Outputs are being processed", detail: "Retry the request" }] },
+        503,
+      )
+    }
+
+    // Convert outputs to JSON:API format
+    // Terraform state outputs are stored as: { "output_name": { "value": ..., "type": ..., "sensitive": ... } }
+    const outputs = (sv.outputs ?? {}) as Record<string, { value: unknown; type?: unknown; sensitive?: boolean }>
+    const data = Object.entries(outputs).map(([name, output]) => ({
+      id: `wsout-${sv.id}-${name}`, // Synthetic ID combining state version + output name
+      type: "state-version-outputs",
+      attributes: {
+        name,
+        sensitive: output.sensitive ?? false,
+        type: typeof output.type === "string" ? output.type : JSON.stringify(output.type),
+        value: output.sensitive ? null : output.value,
+        "detailed-type": output.type,
+      },
+      links: {
+        self: `/api/v2/state-version-outputs/wsout-${sv.id}-${name}`,
+      },
+    }))
+
+    log.info("GET current state version outputs: returning outputs", {
+      workspaceId: wsId,
+      stateVersionId: sv.id,
+      outputCount: data.length,
+    })
+
+    return c.json({ data })
+  },
+)
+
 // =============================================================================
 // State version routes
 // =============================================================================

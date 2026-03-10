@@ -187,8 +187,19 @@ export async function createTestContext(options: {
 /**
  * Clean up test data. Call this in afterAll or afterEach.
  * Uses TRUNCATE CASCADE to handle foreign key constraints.
+ *
+ * SAFETY: This only runs against the test database (enforced by setup.ts).
  */
 export async function cleanupTestData(): Promise<void> {
+  // Safety check - refuse to truncate if not using test database
+  const dbUrl = process.env.DATABASE_URL ?? ""
+  if (!dbUrl.includes("_test")) {
+    throw new Error(
+      `FATAL: cleanupTestData() called but DATABASE_URL doesn't contain '_test'. ` +
+      `Refusing to truncate tables. Current URL: ${dbUrl.replace(/\/\/[^@]+@/, "//***@")}`
+    )
+  }
+
   // Use raw SQL for TRUNCATE CASCADE since Drizzle doesn't support it directly
   await db.execute({ sql: "TRUNCATE TABLE org_memberships CASCADE", args: [] })
   await db.execute({ sql: "TRUNCATE TABLE organizations CASCADE", args: [] })

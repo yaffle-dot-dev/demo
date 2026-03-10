@@ -218,15 +218,21 @@ export async function tfApply(
     throw new TerraformError("apply", result)
   }
 
-  // Fetch outputs
-  const outputResult = await execTf(["output", "-json", "-no-color"], workDir)
+  // Fetch outputs - pass extraEnv for TFC authentication
+  const outputResult = await execTf(["output", "-json", "-no-color"], workDir, extraEnv)
   let outputs: Record<string, unknown> = {}
   if (outputResult.exitCode === 0 && outputResult.stdout.trim()) {
     try {
       outputs = JSON.parse(outputResult.stdout)
-    } catch {
-      logger.warn("failed to parse outputs JSON")
+      logger.info("parsed terraform outputs", { outputCount: Object.keys(outputs).length })
+    } catch (err) {
+      logger.warn("failed to parse outputs JSON", { error: err instanceof Error ? err.message : String(err) })
     }
+  } else if (outputResult.exitCode !== 0) {
+    logger.warn("terraform output command failed", {
+      exitCode: outputResult.exitCode,
+      stderr: outputResult.stderr.slice(0, 500),
+    })
   }
 
   return { output: result.stdout, outputs }

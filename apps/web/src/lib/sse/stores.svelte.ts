@@ -49,13 +49,8 @@ export class PreviewStreamStore {
       const oldLatest = getLatestRunGroup(this.data)
       const newLatest = getLatestRunGroup(typed.data)
 
-      // A new run group appeared that didn't exist before
-      if (
-        oldLatest &&
-        newLatest &&
-        newLatest.id !== oldLatest.id &&
-        (oldLatest.status === "success" || oldLatest.status === "failed" || oldLatest.status === "partial")
-      ) {
+      // A new run group appeared that didn't exist before - pin to old one
+      if (oldLatest && newLatest && newLatest.id !== oldLatest.id) {
         // Pin to the old run group so user keeps seeing it
         // Use the run group's headSha, not the preview's (which may have already updated)
         this.viewedRunGroupId = oldLatest.id

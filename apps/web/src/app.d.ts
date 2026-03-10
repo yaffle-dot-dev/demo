@@ -8,6 +8,10 @@ declare global {
     // interface PageState {}
     // interface Platform {}
   }
+
+  // Build-time constants injected by Vite
+  const __BUILD_SHA__: string
+  const __BUILD_TIME__: string
 }
 
 export {}
