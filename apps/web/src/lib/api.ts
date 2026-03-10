@@ -44,7 +44,6 @@ export interface RunGroup {
   headSha: string
   trigger: string
   status: string
-  runType: string
   createdAt: string
   startedAt: string | null
   completedAt: string | null

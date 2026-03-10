@@ -551,7 +551,6 @@ interface SerializedRunGroup {
   headSha: string
   trigger: string
   status: string
-  runType: string
   createdAt: string
   startedAt: string | null
   completedAt: string | null
@@ -566,7 +565,6 @@ function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
     headSha: rg.headSha,
     trigger: rg.trigger,
     status: rg.status,
-    runType: rg.runType,
     createdAt: rg.createdAt.toISOString(),
     startedAt: rg.startedAt?.toISOString() ?? null,
     completedAt: rg.completedAt?.toISOString() ?? null,

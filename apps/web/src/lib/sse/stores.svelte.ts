@@ -57,8 +57,9 @@ export class PreviewStreamStore {
         (oldLatest.status === "success" || oldLatest.status === "failed" || oldLatest.status === "partial")
       ) {
         // Pin to the old run group so user keeps seeing it
+        // Use the run group's headSha, not the preview's (which may have already updated)
         this.viewedRunGroupId = oldLatest.id
-        this.pinnedHeadSha = this.data.headSha
+        this.pinnedHeadSha = oldLatest.headSha
       }
     }
 

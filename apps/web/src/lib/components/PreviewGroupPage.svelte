@@ -76,13 +76,62 @@
     return getWorkspacesInRunGroup(workspaces, viewedRunGroup.id)
   })
 
+  // Helper: check if a workspace has an in-progress run in the viewed run group
+  function isWorkspaceRunning(ws: WorkspaceWithRuns): boolean {
+    return ws.runs.some((r) => r.status === "running" || r.status === "pending")
+  }
+
   // Selected workspace from URL query param or first workspace
+  // The URL is the source of truth - we update it via effects when needed
   let selectedPath = $derived.by(() => {
     const wsParam = $page.url.searchParams.get("ws")
-    if (wsParam && filteredWorkspaces.some((w) => w.preview.workspacePath === wsParam)) {
+    const wsFromUrl = filteredWorkspaces.find((w) => w.preview.workspacePath === wsParam)
+
+    // If the URL has a valid workspace in this run group, use it
+    if (wsParam && wsFromUrl) {
       return wsParam
     }
+
+    // Fall back to first workspace
     return filteredWorkspaces[0]?.preview.workspacePath ?? ""
+  })
+
+  // Track the last run group we auto-selected for
+  let lastAutoSelectedRunGroupId: string | null = null
+
+  // Auto-select a running workspace when switching to a new run group
+  $effect(() => {
+    const currentRunGroupId = viewedRunGroup?.id ?? null
+    const wsParam = $page.url.searchParams.get("ws")
+
+    // Only auto-select when:
+    // 1. Run group changed (e.g., user clicked "new run")
+    // 2. We haven't already auto-selected for this run group
+    // 3. Either no workspace is selected OR the selected workspace isn't in this run group
+    if (
+      currentRunGroupId &&
+      currentRunGroupId !== lastAutoSelectedRunGroupId
+    ) {
+      lastAutoSelectedRunGroupId = currentRunGroupId
+
+      // Check if current selection is valid for this run group
+      const wsFromUrl = filteredWorkspaces.find((w) => w.preview.workspacePath === wsParam)
+      const currentIsRunning = wsFromUrl && isWorkspaceRunning(wsFromUrl)
+
+      // If current workspace is running, keep it selected
+      if (currentIsRunning) {
+        return
+      }
+
+      // Otherwise, find a running workspace to auto-select
+      const runningWs = filteredWorkspaces.find(isWorkspaceRunning)
+      if (runningWs && runningWs.preview.workspacePath !== wsParam) {
+        // Update URL to select the running workspace
+        const url = new URL($page.url)
+        url.searchParams.set("ws", runningWs.preview.workspacePath)
+        goto(url.toString(), { replaceState: true, noScroll: true })
+      }
+    }
   })
 
   // Current workspace data (from filtered workspaces)

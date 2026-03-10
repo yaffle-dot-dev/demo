@@ -21,6 +21,7 @@ import { ensureOrg, findGithubInstallationsForOrg } from "../db/queries/organiza
 import { findPreview, findPreviewById, markRemovedWorkspacesDestroyed, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
 import { appendRunLog, createTfRun, findLatestRun, updateRunStatus } from "../db/queries/tf-runs.ts"
 import { createRunGroup, type RunGroupTrigger } from "../db/queries/run-groups.ts"
+import { events } from "./events.ts"
 import {
   createCheckRun,
   fetchFileContent,
@@ -417,16 +418,15 @@ async function handlePrOpenedOrUpdated(
   const comment = createCommentManager(ctx)
   const usingTfcBackend = useTfcBackend()
 
-  // Create a run group for this PR event (plan phase)
+  // Create a single run group for this PR event (covers both plan and apply)
   const trigger: RunGroupTrigger = ctx.action === "opened" ? "pr_opened" : "pr_sync"
-  const planRunGroup = await createRunGroup({
+  const runGroup = await createRunGroup({
     orgId: org.id,
     repo: ctx.repo,
     prNumber: ctx.prNumber,
     branch: ctx.branch,
     headSha: ctx.headSha,
     trigger,
-    runType: "plan",
     status: "pending",
   })
 
@@ -464,12 +464,20 @@ async function handlePrOpenedOrUpdated(
     // Create pending run record upfront
     const pendingRun = await createTfRun({
       previewId: preview.id,
-      runGroupId: planRunGroup.id,
+      runGroupId: runGroup.id,
       runType: "plan",
       status: "pending",
     })
 
     workspaceData.push({ ws, preview, pendingRunId: pendingRun.id, stateKey, wsTag })
+  }
+
+  // Emit a single event after all pending runs are created
+  // The preview:update from upsertPreview triggers updatePreviewIds,
+  // this run:update ensures the snapshot includes the new runs
+  if (workspaceData.length > 0) {
+    const first = workspaceData[0]
+    events.emitRunUpdate(first.pendingRunId, first.preview.id)
   }
 
   // Track which workspaces need apply after planning
@@ -538,7 +546,7 @@ async function handlePrOpenedOrUpdated(
         wsTag,
         createCheckRun: ws.require_approval ?? false,
         existingRunId: pendingRunId,
-        runGroupId: planRunGroup.id,
+        runGroupId: runGroup.id,
         tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
@@ -581,20 +589,8 @@ async function handlePrOpenedOrUpdated(
     })
   }
 
-  // Apply phase: process all workspaces that need apply
+  // Apply phase: process all workspaces that need apply (same run group)
   if (workspacesForApply.length > 0) {
-    // Create a run group for the apply phase
-    const applyRunGroup = await createRunGroup({
-      orgId: org.id,
-      repo: ctx.repo,
-      prNumber: ctx.prNumber,
-      branch: ctx.branch,
-      headSha: ctx.headSha,
-      trigger,
-      runType: "apply",
-      status: "pending",
-    })
-
     for (const item of workspacesForApply) {
       const { ws, preview, planResult, tfcWorkspaceId, tfcWorkspaceName, tfcOrganization, tfcToken, variables, stateKey, wsTag } = item
       const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
@@ -618,7 +614,7 @@ async function handlePrOpenedOrUpdated(
         variables,
         installationToken,
         wsTag,
-        runGroupId: applyRunGroup.id,
+        runGroupId: runGroup.id,
         tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
@@ -861,17 +857,65 @@ async function handlePushEvent(
     return
   }
 
-  // Create a run group for the plan phase
-  const planRunGroup = await createRunGroup({
+  // Create a single run group for this push event (covers both plan and apply)
+  const runGroup = await createRunGroup({
     orgId: org.id,
     repo: ctx.repo,
     prNumber: null, // null for branch/env runs
     branch: ctx.branch,
     headSha: ctx.headSha,
     trigger: "push",
-    runType: "plan",
     status: "pending",
   })
+
+  // First pass: upsert all previews and create pending runs upfront
+  const workspaceData: Array<{
+    ws: typeof config.workspaces[0]
+    preview: { id: string }
+    pendingRunId: string
+    stateKey: string
+    wsTag: string
+    variables: Record<string, string>
+  }> = []
+
+  for (const ws of activeWorkspaces) {
+    const stateKey = buildStateKey(statePrefix, ws.path)
+    const wsTag = `${tag}:${ws.path}`
+    const variables = interpolateVariables(ws.variables, varCtx)
+
+    // Upsert preview
+    const preview = await upsertPreview({
+      orgId: org.id,
+      installationId: ctx.installationId,
+      repo: ctx.repo,
+      prNumber: 0,
+      workspacePath: ws.path,
+      branch: ctx.branch,
+      headSha: ctx.headSha,
+      authorGithubId: ctx.pusherGithubId ?? undefined,
+      authorLogin: ctx.pusherLogin ?? undefined,
+      stateKey,
+      mode: "terraform",
+      requireApproval: ws.require_approval ?? false,
+      approvers: ws.approvers ?? null,
+    })
+
+    // Create pending run record upfront
+    const pendingRun = await createTfRun({
+      previewId: preview.id,
+      runGroupId: runGroup.id,
+      runType: "plan",
+      status: "pending",
+    })
+
+    workspaceData.push({ ws, preview, pendingRunId: pendingRun.id, stateKey, wsTag, variables })
+  }
+
+  // Emit a single event after all pending runs are created
+  if (workspaceData.length > 0) {
+    const first = workspaceData[0]
+    events.emitRunUpdate(first.pendingRunId, first.preview.id)
+  }
 
   // Track workspaces for apply
   const workspacesForApply: Array<{
@@ -887,31 +931,11 @@ async function handlePushEvent(
     wsTag: string
   }> = []
 
-  for (const ws of activeWorkspaces) {
+  // Second pass: execute plans sequentially
+  for (const { ws, preview, pendingRunId, stateKey, wsTag, variables } of workspaceData) {
     await withSpan("workspace.production", async (wsSpan) => {
-      const stateKey = buildStateKey(statePrefix, ws.path)
-      const wsTag = `${tag}:${ws.path}`
-      const variables = interpolateVariables(ws.variables, varCtx)
       const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
       wsSpan.setAttributes(wsAttrs)
-
-      // For production, we create a preview record to track the run
-      // Using prNumber=0 as a sentinel for production runs
-      const preview = await upsertPreview({
-        orgId: org.id,
-        installationId: ctx.installationId,
-        repo: ctx.repo,
-        prNumber: 0,
-        workspacePath: ws.path,
-        branch: ctx.branch,
-        headSha: ctx.headSha,
-        authorGithubId: ctx.pusherGithubId ?? undefined,
-        authorLogin: ctx.pusherLogin ?? undefined,
-        stateKey,
-        mode: "terraform",
-        requireApproval: ws.require_approval ?? false,
-        approvers: ws.approvers ?? null,
-      })
 
       // TFC backend: ensure production workspace exists and generate run token
       let tfcWorkspaceId: string | undefined
@@ -954,7 +978,8 @@ async function handlePushEvent(
         installationToken,
         wsTag,
         createCheckRun: true, // Create check run for production pushes
-        runGroupId: planRunGroup.id,
+        existingRunId: pendingRunId,
+        runGroupId: runGroup.id,
         tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
@@ -992,19 +1017,8 @@ async function handlePushEvent(
     })
   }
 
-  // Apply phase: process workspaces that don't require approval
+  // Apply phase: process workspaces that don't require approval (same run group)
   if (workspacesForApply.length > 0) {
-    const applyRunGroup = await createRunGroup({
-      orgId: org.id,
-      repo: ctx.repo,
-      prNumber: null,
-      branch: ctx.branch,
-      headSha: ctx.headSha,
-      trigger: "push",
-      runType: "apply",
-      status: "pending",
-    })
-
     for (const item of workspacesForApply) {
       const { ws, preview, planResult, tfcWorkspaceId, tfcWorkspaceName, tfcOrganization, tfcToken, variables, stateKey, wsTag } = item
       const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
@@ -1035,7 +1049,7 @@ async function handlePushEvent(
         installationToken,
         wsTag,
         checkRunId: planResult.checkRunId, // Reuse plan's check run
-        runGroupId: applyRunGroup.id,
+        runGroupId: runGroup.id,
         tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,

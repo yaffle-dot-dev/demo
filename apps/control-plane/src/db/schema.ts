@@ -131,7 +131,6 @@ export const runGroups = pgTable("run_groups", {
   headSha: text("head_sha").notNull(),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
   status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
-  runType: text("run_type").notNull(), // 'plan' | 'apply' | 'destroy'
   createdAt: timestamp("created_at").defaultNow().notNull(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),

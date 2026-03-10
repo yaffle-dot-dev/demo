@@ -1,6 +1,5 @@
 <script lang="ts">
   import type { WorkspaceWithRuns, Run } from "$lib/api"
-  import { statusConfig } from "$lib/status"
 
   interface Props {
     workspaces: WorkspaceWithRuns[]
@@ -20,12 +19,13 @@
   }
 
   function statusIcon(status: string | null): string {
-    if (!status) return ""
+    if (!status) return "-"
     switch (status) {
       case "success": return "ok"
       case "running": return ".."
       case "pending": return "~"
       case "failed": return "!"
+      case "cancelled": return "x"
       default: return "?"
     }
   }
@@ -37,6 +37,7 @@
       case "running": return "text-status-applying"
       case "pending": return "text-status-pending"
       case "failed": return "text-status-failed"
+      case "cancelled": return "text-text-dim"
       default: return "text-text-muted"
     }
   }
@@ -59,7 +60,6 @@
       {@const isSelected = workspace.preview.workspacePath === selectedPath}
       {@const planStatus = getRunStatus(workspace, "plan")}
       {@const applyStatus = getRunStatus(workspace, "apply")}
-      {@const previewCfg = statusConfig(workspace.preview.status)}
 
       <button
         class="w-full text-left px-3 py-2 transition-colors border-l-2
@@ -73,20 +73,14 @@
             <div class="font-mono text-xs text-text truncate" title={workspace.preview.workspacePath}>
               {shortenPath(workspace.preview.workspacePath)}
             </div>
-            <div class="flex items-center gap-2 mt-1">
-              <!-- Preview status -->
-              <span class="text-[10px] {previewCfg.color}" title="Preview: {previewCfg.label}">
-                {previewCfg.icon}
+            <!-- Plan/Apply status indicators from runs in this run group -->
+            <div class="flex items-center gap-1 text-[10px] font-mono mt-1">
+              <span class={statusColor(planStatus)} title="Plan: {planStatus ?? 'none'}">
+                P:{statusIcon(planStatus)}
               </span>
-              <!-- Plan/Apply status indicators -->
-              <div class="flex items-center gap-1 text-[10px] font-mono">
-                <span class={statusColor(planStatus)} title="Plan: {planStatus ?? 'none'}">
-                  P:{statusIcon(planStatus) || "-"}
-                </span>
-                <span class={statusColor(applyStatus)} title="Apply: {applyStatus ?? 'none'}">
-                  A:{statusIcon(applyStatus) || "-"}
-                </span>
-              </div>
+              <span class={statusColor(applyStatus)} title="Apply: {applyStatus ?? 'none'}">
+                A:{statusIcon(applyStatus)}
+              </span>
             </div>
           </div>
 
