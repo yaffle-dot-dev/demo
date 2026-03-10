@@ -18,15 +18,16 @@
     return run?.status ?? null
   }
 
+  // Standard icons: + ok, x fail, ~ pending, ... in progress
   function statusIcon(status: string | null): string {
-    if (!status) return "-"
+    if (!status) return "~"
     switch (status) {
-      case "success": return "ok"
-      case "running": return ".."
+      case "success": return "+"
+      case "running": return "..."
       case "pending": return "~"
-      case "failed": return "!"
+      case "failed": return "x"
       case "cancelled": return "x"
-      default: return "?"
+      default: return "~"
     }
   }
 
@@ -51,10 +52,6 @@
 </script>
 
 <div class="flex flex-col h-full">
-  <div class="px-3 py-2 text-xs text-text-dim font-medium uppercase tracking-wider">
-    Workspaces
-  </div>
-
   <nav class="flex-1 overflow-y-auto">
     {#each workspaces as workspace (workspace.preview.id)}
       {@const isSelected = workspace.preview.workspacePath === selectedPath}

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { page } from "$app/stores"
   import { usePreviewStream } from "$lib/sse/index.svelte"
+  import { getLatestRunGroup } from "$lib/sse/types"
   import type { EnvPreviewGroup } from "$lib/api"
   import PreviewGroupPage from "$lib/components/PreviewGroupPage.svelte"
 
@@ -14,6 +15,11 @@
 
   // Cast to EnvPreviewGroup for type-safe access
   const displayData = $derived(stream.data as EnvPreviewGroup | null)
+
+  // Get the latest run group's SHA for the "new run" badge
+  const latestRunGroupSha = $derived(
+    displayData ? getLatestRunGroup(displayData)?.headSha ?? null : null
+  )
 
   // GitHub URL for repo
   const githubUrl = $derived(
@@ -45,7 +51,7 @@
     streaming={stream.isStreaming}
     viewedRunGroupId={stream.viewedRunGroupId}
     hasNewerRunGroup={stream.hasNewerRunGroup}
-    latestHeadSha={displayData.headSha}
+    latestHeadSha={latestRunGroupSha}
     onSwitchToLatest={stream.switchToLatest}
   />
 {:else}

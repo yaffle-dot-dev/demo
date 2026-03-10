@@ -76,63 +76,78 @@
     return getWorkspacesInRunGroup(workspaces, viewedRunGroup.id)
   })
 
-  // Helper: check if a workspace has an in-progress run in the viewed run group
-  function isWorkspaceRunning(ws: WorkspaceWithRuns): boolean {
+  // Helper: check if a workspace has an actively running run (not just pending)
+  function isWorkspaceActivelyRunning(ws: WorkspaceWithRuns): boolean {
+    return ws.runs.some((r) => r.status === "running")
+  }
+
+  // Helper: check if a workspace has any in-progress run (running or pending)
+  function isWorkspaceInProgress(ws: WorkspaceWithRuns): boolean {
     return ws.runs.some((r) => r.status === "running" || r.status === "pending")
   }
 
-  // Selected workspace from URL query param or first workspace
-  // The URL is the source of truth - we update it via effects when needed
+  // Follow mode: auto-follow the running workspace unless user manually selected one
+  // Starts true, becomes false when user clicks a workspace
+  let followMode = $state(true)
+
+  // Track the last run group ID to detect run group changes
+  let lastSeenRunGroupId: string | null = null
+
+  // Get the currently running workspace (for follow mode)
+  // Prefer actively running over pending
+  const runningWorkspace = $derived.by(() => {
+    // First, find a workspace with an actively running run
+    const activelyRunning = filteredWorkspaces.find(isWorkspaceActivelyRunning)
+    if (activelyRunning) return activelyRunning
+    // Fall back to any workspace with pending runs
+    return filteredWorkspaces.find(isWorkspaceInProgress) ?? null
+  })
+
+  // Is there any workspace in progress? (for showing follow button)
+  const hasAnyInProgress = $derived(
+    filteredWorkspaces.some(isWorkspaceInProgress)
+  )
+
+  // Selected workspace: follows running workspace in follow mode, or respects URL
   let selectedPath = $derived.by(() => {
     const wsParam = $page.url.searchParams.get("ws")
     const wsFromUrl = filteredWorkspaces.find((w) => w.preview.workspacePath === wsParam)
 
-    // If the URL has a valid workspace in this run group, use it
+    // In follow mode, always show the running workspace (if any)
+    if (followMode && runningWorkspace) {
+      return runningWorkspace.preview.workspacePath
+    }
+
+    // Not in follow mode or no running workspace: use URL param or first workspace
     if (wsParam && wsFromUrl) {
       return wsParam
     }
-
-    // Fall back to first workspace
     return filteredWorkspaces[0]?.preview.workspacePath ?? ""
   })
 
-  // Track the last run group we auto-selected for
-  let lastAutoSelectedRunGroupId: string | null = null
-
-  // Auto-select a running workspace when switching to a new run group
+  // Re-enable follow mode when switching to a new run group
   $effect(() => {
     const currentRunGroupId = viewedRunGroup?.id ?? null
-    const wsParam = $page.url.searchParams.get("ws")
-
-    // Only auto-select when:
-    // 1. Run group changed (e.g., user clicked "new run")
-    // 2. We haven't already auto-selected for this run group
-    // 3. Either no workspace is selected OR the selected workspace isn't in this run group
-    if (
-      currentRunGroupId &&
-      currentRunGroupId !== lastAutoSelectedRunGroupId
-    ) {
-      lastAutoSelectedRunGroupId = currentRunGroupId
-
-      // Check if current selection is valid for this run group
-      const wsFromUrl = filteredWorkspaces.find((w) => w.preview.workspacePath === wsParam)
-      const currentIsRunning = wsFromUrl && isWorkspaceRunning(wsFromUrl)
-
-      // If current workspace is running, keep it selected
-      if (currentIsRunning) {
-        return
-      }
-
-      // Otherwise, find a running workspace to auto-select
-      const runningWs = filteredWorkspaces.find(isWorkspaceRunning)
-      if (runningWs && runningWs.preview.workspacePath !== wsParam) {
-        // Update URL to select the running workspace
-        const url = new URL($page.url)
-        url.searchParams.set("ws", runningWs.preview.workspacePath)
-        goto(url.toString(), { replaceState: true, noScroll: true })
-      }
+    if (currentRunGroupId && currentRunGroupId !== lastSeenRunGroupId) {
+      lastSeenRunGroupId = currentRunGroupId
+      // Re-enable follow mode on run group change
+      followMode = true
     }
   })
+
+  // Handle workspace selection - disables follow mode
+  function handleWorkspaceSelect(path: string) {
+    // Disable follow mode when user manually selects
+    followMode = false
+    const url = new URL($page.url)
+    url.searchParams.set("ws", path)
+    goto(url.toString(), { replaceState: true, noScroll: true })
+  }
+
+  // Re-enable follow mode
+  function enableFollowMode() {
+    followMode = true
+  }
 
   // Current workspace data (from filtered workspaces)
   const selectedWorkspace = $derived(
@@ -158,7 +173,7 @@
     visibleRuns.find((r: Run) => r.runType === "apply") ?? undefined,
   )
   const hasOutputs = $derived(
-    latestApply?.status === "success" && selectedWorkspace?.outputs
+    latestApply?.status === "success" && latestApply?.outputs
   )
 
   // Available tabs based on what data exists
@@ -224,19 +239,14 @@
     return null
   })
 
-  function handleWorkspaceSelect(path: string) {
-    const url = new URL($page.url)
-    url.searchParams.set("ws", path)
-    goto(url.toString(), { replaceState: true, noScroll: true })
-  }
-
+  // Standard icons: + ok, x fail, ~ pending, ... in progress
   function tabStatusIcon(status?: string): string {
     if (!status) return ""
     switch (status) {
-      case "success": return " ok"
-      case "running": return " .."
+      case "success": return " +"
+      case "running": return " ..."
       case "pending": return " ~"
-      case "failed": return " !"
+      case "failed": return " x"
       default: return ""
     }
   }
@@ -355,27 +365,37 @@ terraform {
           {/if}
         </div>
       </div>
-      <a
-        href={githubUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        class="text-sm text-text-muted hover:text-text transition-colors flex items-center gap-1.5"
-      >
-        GitHub
-        <span class="text-xs">-></span>
-      </a>
     </div>
   </header>
 
   <!-- Main content -->
   <div class="flex-1 flex min-h-0">
     <!-- Sidebar -->
-    <aside class="w-56 flex-shrink-0 border-r border-border bg-surface overflow-hidden">
-      <WorkspaceSidebar
-        workspaces={filteredWorkspaces}
-        {selectedPath}
-        onSelect={handleWorkspaceSelect}
-      />
+    <aside class="w-56 flex-shrink-0 border-r border-border bg-surface overflow-hidden flex flex-col">
+      <!-- Sidebar header with follow mode indicator -->
+      <div class="px-3 py-2 border-b border-border flex items-center justify-between">
+        <span class="text-xs text-text-dim font-medium uppercase tracking-wider">Workspaces</span>
+        {#if hasAnyInProgress && !followMode}
+          <button
+            onclick={enableFollowMode}
+            class="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay hover:bg-yaffle-500/20 text-text-muted hover:text-yaffle-400 transition-colors"
+            title="Auto-follow running workspace"
+          >
+            follow
+          </button>
+        {:else if followMode && hasAnyInProgress}
+          <span class="text-[10px] text-yaffle-400" title="Following running workspace">
+            following
+          </span>
+        {/if}
+      </div>
+      <div class="flex-1 overflow-hidden">
+        <WorkspaceSidebar
+          workspaces={filteredWorkspaces}
+          {selectedPath}
+          onSelect={handleWorkspaceSelect}
+        />
+      </div>
     </aside>
 
     <!-- Content area -->
@@ -497,8 +517,8 @@ terraform {
 
         <!-- Tab content -->
         <div class="flex-1 overflow-auto p-6">
-          {#if activeTab === "outputs" && hasOutputs}
-            <OutputsView outputs={selectedWorkspace.outputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
+          {#if activeTab === "outputs" && hasOutputs && latestApply}
+            <OutputsView outputs={latestApply.outputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
           {:else if activeTab === "plan" && latestPlan}
             <!-- Show terminal with plan output -->
             <!-- Key by workspace+tab to force re-mount when switching -->
