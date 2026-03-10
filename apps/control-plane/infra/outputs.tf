@@ -48,8 +48,13 @@ output "alb_dns_name" {
 }
 
 output "api_url" {
-  value       = "https://${var.domain}"
+  value       = "https://${local.api_domain}"
   description = "Control plane API URL"
+}
+
+output "api_domain" {
+  value       = local.api_domain
+  description = "Control plane API domain name"
 }
 
 # -----------------------------------------------------------------------------

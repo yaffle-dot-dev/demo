@@ -396,22 +396,63 @@ terraform {
       <div>
         <div class="flex items-center gap-3 mb-1">
           <h1 class="text-lg font-semibold">
-            <span class="text-text-muted">{org}/</span>{repo.split("/").pop()}
+            <a 
+              href="https://github.com/{repo}" 
+              target="_blank" 
+              rel="noopener noreferrer"
+              class="hover:text-yaffle-400 transition-colors"
+            >
+              <span class="text-text-muted">{org}/</span>{repo.split("/").pop()}
+            </a>
           </h1>
           {#if type === "pr"}
-            <span class="text-text-muted">PR #{identifier}</span>
+            <a 
+              href={githubUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-text-muted hover:text-yaffle-400 transition-colors"
+            >
+              PR #{identifier}
+            </a>
           {:else}
-            <span class="px-2 py-0.5 bg-surface-overlay rounded text-xs text-text-muted">
+            <a
+              href="https://github.com/{repo}/tree/{branch}"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="px-2 py-0.5 bg-surface-overlay rounded text-xs text-text-muted hover:text-yaffle-400 transition-colors"
+            >
               {identifier}
-            </span>
+            </a>
           {/if}
         </div>
         <div class="flex items-center gap-3 text-sm text-text-muted">
-          <span class="font-mono text-xs">{branch}</span>
+          <a
+            href="https://github.com/{repo}/tree/{branch}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="font-mono text-xs hover:text-yaffle-400 transition-colors"
+          >
+            {branch}
+          </a>
           <span class="text-text-dim">@</span>
-          <span class="font-mono text-xs text-text-dim">{shortSha(viewedRunGroup?.headSha ?? headSha)}</span>
+          <a
+            href="https://github.com/{repo}/commit/{viewedRunGroup?.headSha ?? headSha}"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="font-mono text-xs text-text-dim hover:text-yaffle-400 transition-colors"
+          >
+            {shortSha(viewedRunGroup?.headSha ?? headSha)}
+          </a>
           {#if authorLogin}
-            <span class="text-text-dim">by {authorLogin}</span>
+            <span class="text-text-dim">by</span>
+            <a
+              href="https://github.com/{authorLogin}"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-text-dim hover:text-yaffle-400 transition-colors"
+            >
+              {authorLogin}
+            </a>
           {/if}
         </div>
       </div>

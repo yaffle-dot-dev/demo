@@ -1,33 +1,19 @@
 # =============================================================================
 # Import blocks for bootstrapped resources
 # =============================================================================
-# The state bucket is bootstrapped via modules/bootstrap/.
-# These import blocks bring it under management by this workspace.
-# After successful import, these blocks can be removed.
-
-# -----------------------------------------------------------------------------
-# State Storage (bootstrapped for main environment)
-# -----------------------------------------------------------------------------
-
-import {
-  to = aws_s3_bucket.state
-  id = "yaffle-state-main-use1"
-}
-
-import {
-  to = aws_s3_bucket_versioning.state
-  id = "yaffle-state-main-use1"
-}
-
-import {
-  to = aws_s3_bucket_server_side_encryption_configuration.state
-  id = "yaffle-state-main-use1"
-}
-
-import {
-  to = aws_s3_bucket_public_access_block.state
-  id = "yaffle-state-main-use1"
-}
-
-# Note: lifecycle_configuration is created by this workspace, not imported
-# The bootstrap only creates the bare bucket with public access block
+# The state bucket was bootstrapped via modules/bootstrap/ and imported
+# into the production workspace. These import blocks have been removed
+# after successful import.
+#
+# If you need to re-import (e.g., after state loss), temporarily add:
+#
+#   import {
+#     to = aws_s3_bucket.state
+#     id = "yaffle-state-main-use1"
+#   }
+#
+# Then run `terraform apply` and remove the import block.
+#
+# WARNING: Import blocks apply to ALL environments including previews.
+# Never commit import blocks that reference production resources.
+# =============================================================================

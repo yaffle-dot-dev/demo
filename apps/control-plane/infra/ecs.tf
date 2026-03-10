@@ -95,7 +95,7 @@ resource "aws_ecs_service" "control_plane" {
   cluster         = local.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.control_plane.arn
   desired_count   = var.is_preview ? 1 : 2
-  launch_type     = var.is_preview ? "FARGATE_SPOT" : "FARGATE"
+  launch_type     = "FARGATE"
 
   network_configuration {
     subnets          = local.private_subnet_ids

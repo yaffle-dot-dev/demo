@@ -11,13 +11,13 @@ variable "is_preview" {
 
 variable "aws_region" {
   type        = string
-  description = "AWS region for all resources"
+  description = "AWS region for primary resources"
   default     = "us-east-1"
 }
 
 variable "replica_region" {
   type        = string
-  description = "AWS region for state bucket replication"
+  description = "AWS region for S3 bucket replication"
   default     = "us-west-2"
 }
 
@@ -25,17 +25,6 @@ variable "domain" {
   type        = string
   description = "Base domain for the application (e.g., 'yaffle.dev')"
   default     = "yaffle.dev"
-}
-
-variable "control_plane_image" {
-  type        = string
-  description = "Docker image for the control plane container"
-  default     = "ghcr.io/yaffle-dot-dev/yaffle/control-plane:latest"
-}
-
-variable "secrets_arn_prefix" {
-  type        = string
-  description = "ARN prefix for Secrets Manager secrets (e.g., 'arn:aws:secretsmanager:us-east-1:123456789:secret:yaffle')"
 }
 
 module "naming" {
@@ -56,7 +45,7 @@ locals {
   name_suffix         = module.naming.suffix
   replica_name_suffix = module.naming_replica.suffix
 
-  # API domain: api.yaffle.dev for production, api-{env}.preview.yaffle.dev for previews
-  # Uses hyphen (not dot) to stay within *.preview.yaffle.dev wildcard cert coverage
-  api_domain = var.is_preview ? "api-${var.environment}.preview.${var.domain}" : "api.${var.domain}"
+  # Domain: yaffle.dev for production, {env}.preview.yaffle.dev for previews
+  # e.g., pr-4-abc123.preview.yaffle.dev
+  site_domain = var.is_preview ? "${var.environment}.preview.${var.domain}" : var.domain
 }

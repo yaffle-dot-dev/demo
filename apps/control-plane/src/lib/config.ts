@@ -56,6 +56,8 @@ export function validateConfig(parsed: unknown): YaffleConfig {
 export interface VariableContext {
   /** "prvw-42" for previews, or branch name (e.g. "main") for non-preview */
   env: string
+  /** "true" for PR/preview environments, "false" for push to default branch */
+  is_preview: string
   pr_number: string
   branch: string
   sha: string
@@ -94,10 +96,12 @@ export async function loadConfig(workDir: string): Promise<YaffleConfig> {
 export function interpolateVariables(
   variables: Record<string, string> | undefined,
   ctx: VariableContext,
-): Record<string, string> {
-  // Always inject environment - it's required for all workspaces
-  const result: Record<string, string> = {
+): Record<string, string | boolean> {
+  // Always inject environment and is_preview - required for all workspaces
+  // is_preview is a boolean so Terraform interprets it correctly in tfvars.json
+  const result: Record<string, string | boolean> = {
     environment: ctx.env,
+    is_preview: ctx.is_preview === "true",
   }
 
   if (variables) {
@@ -134,6 +138,7 @@ export function prVariableContext(opts: {
 }): VariableContext {
   return {
     env: `prvw-${opts.prNumber}`,
+    is_preview: "true",
     pr_number: String(opts.prNumber),
     branch: opts.branch,
     sha: opts.sha,
@@ -154,6 +159,7 @@ export function pushVariableContext(opts: {
 }): VariableContext {
   return {
     env: opts.branch,
+    is_preview: "false",
     pr_number: "",
     branch: opts.branch,
     sha: opts.sha,

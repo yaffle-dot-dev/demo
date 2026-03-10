@@ -7,7 +7,7 @@
 
 resource "aws_s3_bucket" "state" {
   bucket        = "yaffle-state-${local.name_suffix}"
-  force_destroy = false
+  force_destroy = var.is_preview # Allow cleanup of preview buckets
 
   tags = {
     Name = "yaffle-state-${local.name_suffix}"

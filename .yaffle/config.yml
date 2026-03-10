@@ -11,7 +11,6 @@ workspaces:
     auto_apply: false
     auto_apply_on_merge: true
     variables:
-      environment: "{{ env }}"
       aws_region: "us-east-1"
       cloudflare_zone_id: "ba87a43c4698d9a9ca066c62311445b6"
 
@@ -19,14 +18,12 @@ workspaces:
     auto_apply: false
     auto_apply_on_merge: true
     variables:
-      environment: "{{ env }}"
       aws_region: "us-east-1"
 
   - path: infra/nonprod
     auto_apply: false
     auto_apply_on_merge: true
     variables:
-      environment: "{{ env }}"
       aws_region: "us-east-1"
 
   # ==========================================================================
@@ -35,10 +32,16 @@ workspaces:
   # TODO: Uncomment after core infra is deployed (PR2)
   # Depends on module outputs from infra/shared, infra/production, infra/nonprod
 
-  # - path: apps/control-plane/infra
-  #   auto_apply: true
-  #   auto_apply_on_merge: true
-  #   variables:
-  #     environment: "{{ env }}"
-  #     aws_region: "us-east-1"
-  #     secrets_arn_prefix: "arn:aws:secretsmanager:us-east-1:870923192739:secret:yaffle"
+  - path: apps/control-plane/infra
+    auto_apply: true
+    auto_apply_on_merge: true
+    variables:
+      aws_region: "us-east-1"
+      secrets_arn_prefix: "arn:aws:secretsmanager:us-east-1:870923192739:secret:yaffle"
+
+  - path: apps/web/infra
+    auto_apply: true
+    auto_apply_on_merge: true
+    variables:
+      aws_region: "us-east-1"
+      domain: "yaffle.dev"

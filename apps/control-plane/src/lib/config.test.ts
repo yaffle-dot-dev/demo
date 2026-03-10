@@ -173,6 +173,7 @@ describe("loadConfig", () => {
 describe("interpolateVariables", () => {
   const ctx: VariableContext = {
     env: "prvw-42",
+    is_preview: "true",
     pr_number: "42",
     branch: "feature/test",
     sha: "abc123",
@@ -234,14 +235,28 @@ describe("interpolateVariables", () => {
     expect(result.x).toBe("{{ unknown_var }}")
   })
 
-  test("always injects environment even with undefined variables", () => {
+  test("always injects environment and is_preview even with undefined variables", () => {
     const result = interpolateVariables(undefined, ctx)
-    expect(result).toEqual({ environment: "prvw-42" })
+    expect(result).toEqual({ environment: "prvw-42", is_preview: true })
   })
 
-  test("always injects environment even with empty variables", () => {
+  test("always injects environment and is_preview even with empty variables", () => {
     const result = interpolateVariables({}, ctx)
-    expect(result).toEqual({ environment: "prvw-42" })
+    expect(result).toEqual({ environment: "prvw-42", is_preview: true })
+  })
+
+  test("is_preview is false for non-preview context", () => {
+    const pushCtx: VariableContext = {
+      env: "main",
+      is_preview: "false",
+      pr_number: "",
+      branch: "main",
+      sha: "abc123",
+      owner: "lamalex",
+      repo: "yaffle",
+    }
+    const result = interpolateVariables({}, pushCtx)
+    expect(result.is_preview).toBe(false)
   })
 })
 
@@ -255,6 +270,7 @@ describe("prVariableContext", () => {
       repo: "yaffle",
     })
     expect(ctx.env).toBe("prvw-42")
+    expect(ctx.is_preview).toBe("true")
     expect(ctx.pr_number).toBe("42")
     expect(ctx.branch).toBe("feature/foo")
     expect(ctx.sha).toBe("abc123")
@@ -272,6 +288,7 @@ describe("pushVariableContext", () => {
       repo: "yaffle",
     })
     expect(ctx.env).toBe("main") // env is the branch name
+    expect(ctx.is_preview).toBe("false")
     expect(ctx.pr_number).toBe("")
     expect(ctx.branch).toBe("main")
     expect(ctx.sha).toBe("def456")

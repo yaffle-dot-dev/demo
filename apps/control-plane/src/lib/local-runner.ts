@@ -3,7 +3,7 @@ import { existsSync } from "node:fs"
 import type { TerraformResult } from "@yaffle/shared"
 
 import type { RunOpts, Runner } from "./runner.ts"
-import { configureProviderOverride } from "./state.ts"
+import { configureProviderOverride, configureVariablesOverride } from "./state.ts"
 import { configureTfcBackend, buildTfcEnvVars } from "./tfc-backend.ts"
 import { getTfcApiHost } from "./run-token.ts"
 import { forceUnlockWorkspace } from "../db/queries/workspaces.ts"
@@ -94,6 +94,9 @@ export class LocalRunner implements Runner {
           workspacePath: opts.workspacePath,
           prNumber: opts.prNumber,
         })
+
+        // Inject Yaffle variables (environment, is_preview) if not declared
+        await configureVariablesOverride(tfDir)
 
         return await runTerraform({
           workDir: tfDir,

@@ -88,10 +88,12 @@ resource "aws_lb_listener" "https" {
 # Route53 DNS
 # -----------------------------------------------------------------------------
 
-# DNS record pointing to ALB
+# DNS record for the ALB
+# Production: api.yaffle.dev
+# Preview: api-{env}.preview.yaffle.dev (e.g., api-pr-42.preview.yaffle.dev)
 resource "aws_route53_record" "api" {
   zone_id = local.route53_zone_id
-  name    = var.domain
+  name    = local.api_domain
   type    = "A"
 
   alias {
