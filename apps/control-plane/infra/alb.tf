@@ -10,7 +10,7 @@
 # -----------------------------------------------------------------------------
 
 resource "aws_lb" "main" {
-  name               = "${local.name_prefix}-alb"
+  name               = "yaffle-alb-${local.name_suffix}"
   internal           = false
   load_balancer_type = "application"
   security_groups    = [aws_security_group.alb.id]
@@ -19,7 +19,7 @@ resource "aws_lb" "main" {
   enable_deletion_protection = !var.is_preview
 
   tags = {
-    Name = "${local.name_prefix}-alb"
+    Name = "yaffle-alb-${local.name_suffix}"
   }
 }
 
@@ -28,7 +28,7 @@ resource "aws_lb" "main" {
 # -----------------------------------------------------------------------------
 
 resource "aws_lb_target_group" "control_plane" {
-  name        = "${local.name_prefix}-cp-tg"
+  name        = "yaffle-cp-tg-${local.name_suffix}"
   port        = 3000
   protocol    = "HTTP"
   vpc_id      = local.vpc_id
@@ -45,7 +45,7 @@ resource "aws_lb_target_group" "control_plane" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-control-plane-tg"
+    Name = "yaffle-cp-tg-${local.name_suffix}"
   }
 }
 

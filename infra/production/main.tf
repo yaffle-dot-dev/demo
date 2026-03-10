@@ -6,7 +6,7 @@
 # =============================================================================
 
 module "core" {
-  source = "../modules/core"
+  source = "../../infra_modules/private/core"
 
   tier        = "production"
   environment = var.environment

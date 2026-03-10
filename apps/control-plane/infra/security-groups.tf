@@ -9,7 +9,7 @@
 # -----------------------------------------------------------------------------
 
 resource "aws_security_group" "alb" {
-  name        = "${local.name_prefix}-alb-sg"
+  name        = "yaffle-alb-sg-${local.name_suffix}"
   description = "Security group for control plane ALB"
   vpc_id      = local.vpc_id
 
@@ -38,7 +38,7 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-alb-sg"
+    Name = "yaffle-alb-sg-${local.name_suffix}"
   }
 }
 
@@ -47,7 +47,7 @@ resource "aws_security_group" "alb" {
 # -----------------------------------------------------------------------------
 
 resource "aws_security_group" "control_plane" {
-  name        = "${local.name_prefix}-control-plane-sg"
+  name        = "yaffle-cp-sg-${local.name_suffix}"
   description = "Security group for control plane ECS tasks"
   vpc_id      = local.vpc_id
 
@@ -68,7 +68,7 @@ resource "aws_security_group" "control_plane" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-control-plane-sg"
+    Name = "yaffle-cp-sg-${local.name_suffix}"
   }
 }
 
@@ -77,7 +77,7 @@ resource "aws_security_group" "control_plane" {
 # -----------------------------------------------------------------------------
 
 resource "aws_security_group" "tf_runner" {
-  name        = "${local.name_prefix}-tf-runner-sg"
+  name        = "yaffle-runner-sg-${local.name_suffix}"
   description = "Security group for TF runner ECS tasks"
   vpc_id      = local.vpc_id
 
@@ -92,6 +92,6 @@ resource "aws_security_group" "tf_runner" {
   }
 
   tags = {
-    Name = "${local.name_prefix}-tf-runner-sg"
+    Name = "yaffle-runner-sg-${local.name_suffix}"
   }
 }

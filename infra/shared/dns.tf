@@ -44,7 +44,10 @@ resource "aws_acm_certificate" "main" {
   domain_name       = var.domain
   validation_method = "DNS"
 
-  subject_alternative_names = ["*.${var.domain}"]
+  subject_alternative_names = [
+    "*.${var.domain}",
+    "*.preview.${var.domain}",
+  ]
 
   lifecycle {
     create_before_destroy = true
@@ -86,10 +89,19 @@ resource "aws_acm_certificate_validation" "main" {
 # =============================================================================
 
 # Use static keys (domain names we know upfront) to avoid for_each unknown key errors.
-# ACM creates one validation record per unique domain, and yaffle.dev + *.yaffle.dev
-# share the same validation record, so we only need one.
+# ACM creates one validation record per unique domain:
+# - yaffle.dev + *.yaffle.dev share the same validation record
+# - *.preview.yaffle.dev needs its own validation record (different subdomain level)
+#
+# We key by the base domain for lookups, but ACM uses the wildcard form in domain_validation_options.
 locals {
-  cert_domains = toset([var.domain])
+  # Map base domains to their ACM domain_validation_options key
+  cert_domain_mapping = {
+    (var.domain)            = var.domain                 # yaffle.dev -> yaffle.dev (shared with *.yaffle.dev)
+    "preview.${var.domain}" = "*.preview.${var.domain}"  # preview.yaffle.dev -> *.preview.yaffle.dev
+  }
+
+  cert_domains = toset(keys(local.cert_domain_mapping))
 
   cert_validation_records = {
     for domain in local.cert_domains : domain => {
@@ -98,7 +110,7 @@ locals {
         record = dvo.resource_record_value
         type   = dvo.resource_record_type
       }
-    }[domain]
+    }[local.cert_domain_mapping[domain]]
   }
 }
 

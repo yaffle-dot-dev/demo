@@ -19,16 +19,16 @@ terraform {
   }
 }
 
-module "aws_utils" {
-  source  = "cloudposse/utils/aws"
-  version = "1.4.0"
+module "naming" {
+  source      = "../../public/naming"
+  environment = var.environment
+  aws_region  = var.aws_region
 }
 
 locals {
-  region_short = module.aws_utils.region_az_alt_code_maps.to_short[var.aws_region]
-
   # Consistent naming: yaffle-<resource>-<tier>-<env>-<region>
-  name_suffix = "${var.tier}-${var.environment}-${local.region_short}"
+  # Uses public naming module for {env}-{region}, prepends tier
+  name_suffix = "${var.tier}-${module.naming.suffix}"
 
   # Number of AZs/NATs
   az_count  = 2

@@ -10,11 +10,11 @@
 # -----------------------------------------------------------------------------
 
 resource "aws_cloudwatch_log_group" "control_plane" {
-  name              = "/ecs/${local.name_prefix}/control-plane"
+  name              = "/ecs/yaffle-cp-${local.name_suffix}"
   retention_in_days = var.is_preview ? 7 : 30
 
   tags = {
-    Name = "${local.name_prefix}-control-plane-logs"
+    Name = "yaffle-cp-logs-${local.name_suffix}"
   }
 }
 
@@ -23,7 +23,7 @@ resource "aws_cloudwatch_log_group" "control_plane" {
 # -----------------------------------------------------------------------------
 
 resource "aws_ecs_task_definition" "control_plane" {
-  family                   = "${local.name_prefix}-control-plane"
+  family                   = "yaffle-cp-${local.name_suffix}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
   cpu                      = var.is_preview ? 256 : 512
@@ -82,7 +82,7 @@ resource "aws_ecs_task_definition" "control_plane" {
   ])
 
   tags = {
-    Name = "${local.name_prefix}-control-plane"
+    Name = "yaffle-cp-task-${local.name_suffix}"
   }
 }
 
@@ -91,7 +91,7 @@ resource "aws_ecs_task_definition" "control_plane" {
 # -----------------------------------------------------------------------------
 
 resource "aws_ecs_service" "control_plane" {
-  name            = "${local.name_prefix}-control-plane"
+  name            = "yaffle-cp-${local.name_suffix}"
   cluster         = local.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.control_plane.arn
   desired_count   = var.is_preview ? 1 : 2
@@ -125,6 +125,6 @@ resource "aws_ecs_service" "control_plane" {
   depends_on = [aws_lb_listener.https]
 
   tags = {
-    Name = "${local.name_prefix}-control-plane"
+    Name = "yaffle-cp-svc-${local.name_suffix}"
   }
 }

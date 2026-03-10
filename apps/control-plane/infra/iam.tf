@@ -10,7 +10,7 @@
 # Used by ECS to pull images, write logs, and fetch secrets
 
 resource "aws_iam_role" "ecs_execution" {
-  name = "${local.name_prefix}-ecs-execution"
+  name = "yaffle-ecs-exec-${local.name_suffix}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -26,7 +26,7 @@ resource "aws_iam_role" "ecs_execution" {
   })
 
   tags = {
-    Name = "${local.name_prefix}-ecs-execution"
+    Name = "yaffle-ecs-exec-${local.name_suffix}"
   }
 }
 
@@ -62,7 +62,7 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
 # Runtime permissions for the control plane container
 
 resource "aws_iam_role" "control_plane_task" {
-  name = "${local.name_prefix}-control-plane-task"
+  name = "yaffle-cp-task-${local.name_suffix}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -78,7 +78,7 @@ resource "aws_iam_role" "control_plane_task" {
   })
 
   tags = {
-    Name = "${local.name_prefix}-control-plane-task"
+    Name = "yaffle-cp-task-${local.name_suffix}"
   }
 }
 
@@ -171,7 +171,7 @@ resource "aws_iam_role_policy" "control_plane_secrets" {
 # Runtime permissions for terraform runner containers
 
 resource "aws_iam_role" "tf_runner_task" {
-  name = "${local.name_prefix}-tf-runner-task"
+  name = "yaffle-runner-task-${local.name_suffix}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -187,7 +187,7 @@ resource "aws_iam_role" "tf_runner_task" {
   })
 
   tags = {
-    Name = "${local.name_prefix}-tf-runner-task"
+    Name = "yaffle-runner-task-${local.name_suffix}"
   }
 }
 

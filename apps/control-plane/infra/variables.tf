@@ -38,19 +38,21 @@ variable "secrets_arn_prefix" {
   description = "ARN prefix for Secrets Manager secrets (e.g., 'arn:aws:secretsmanager:us-east-1:123456789:secret:yaffle')"
 }
 
-module "aws_utils" {
-  source  = "cloudposse/utils/aws"
-  version = "1.4.0"
+module "naming" {
+  source      = "../../../infra_modules/public/naming"
+  environment = var.environment
+  aws_region  = var.aws_region
+}
+
+module "naming_replica" {
+  source      = "../../../infra_modules/public/naming"
+  environment = var.environment
+  aws_region  = var.replica_region
 }
 
 locals {
-  # Resource naming includes environment
-  name_prefix = "yaffle-${var.environment}"
-
-  # Region shortcodes from cloudposse/utils/aws
-  region_short         = module.aws_utils.region_az_alt_code_maps.to_short[var.aws_region]
-  replica_region_short = module.aws_utils.region_az_alt_code_maps.to_short[var.replica_region]
-
-  # State bucket naming: yaffle-state-{environment}-{region}
-  name_suffix = "${var.environment}-${local.region_short}"
+  # Naming: yaffle-{resource}-{suffix}
+  # suffix = {environment}-{region_short} (e.g., "main-use1", "prvw-42-use1")
+  name_suffix         = module.naming.suffix
+  replica_name_suffix = module.naming_replica.suffix
 }
