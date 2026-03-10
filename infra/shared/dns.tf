@@ -56,19 +56,13 @@ resource "aws_acm_certificate" "main" {
 }
 
 resource "aws_route53_record" "cert_validation" {
-  for_each = {
-    for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
-      name   = dvo.resource_record_name
-      record = dvo.resource_record_value
-      type   = dvo.resource_record_type
-    }
-  }
+  for_each = local.cert_domains
 
   allow_overwrite = true
-  name            = each.value.name
-  records         = [each.value.record]
+  name            = local.cert_validation_records[each.key].name
+  records         = [local.cert_validation_records[each.key].record]
   ttl             = 60
-  type            = each.value.type
+  type            = local.cert_validation_records[each.key].type
   zone_id         = aws_route53_zone.main.zone_id
 }
 
@@ -97,7 +91,7 @@ resource "aws_acm_certificate_validation" "main" {
 locals {
   cert_domains = toset([var.domain])
 
-  cf_cert_validation_records = {
+  cert_validation_records = {
     for domain in local.cert_domains : domain => {
       for dvo in aws_acm_certificate.main.domain_validation_options : dvo.domain_name => {
         name   = dvo.resource_record_name
@@ -112,9 +106,9 @@ resource "cloudflare_dns_record" "cert_validation" {
   for_each = local.cert_domains
 
   zone_id = var.cloudflare_zone_id
-  name    = local.cf_cert_validation_records[each.key].name
-  content = local.cf_cert_validation_records[each.key].record
-  type    = local.cf_cert_validation_records[each.key].type
+  name    = local.cert_validation_records[each.key].name
+  content = local.cert_validation_records[each.key].record
+  type    = local.cert_validation_records[each.key].type
   ttl     = 60
   proxied = false
 }

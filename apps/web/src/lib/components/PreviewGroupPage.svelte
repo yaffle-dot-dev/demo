@@ -3,7 +3,7 @@
   import { goto } from "$app/navigation"
   import { untrack } from "svelte"
   import type { WorkspaceWithRuns, Run, RunGroup } from "$lib/api"
-  import { cancelRun } from "$lib/api"
+  import { cancelRun, rerunPreview } from "$lib/api"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
   import {
     getWorkspacesInRunGroup,
@@ -181,6 +181,10 @@
   let cancellingRunId = $state<string | null>(null)
   let cancelError = $state<string | null>(null)
 
+  // Rerun state
+  let rerunning = $state(false)
+  let rerunError = $state<string | null>(null)
+
   // Visible runs for the selected workspace (already filtered by run group)
   const visibleRuns = $derived(selectedWorkspace?.runs ?? [])
 
@@ -314,6 +318,25 @@
       cancellingRunId = null
     }
   }
+
+  async function handleRerun() {
+    if (!selectedWorkspace) return
+    
+    rerunning = true
+    rerunError = null
+    
+    try {
+      await rerunPreview(selectedWorkspace.preview.id)
+      // The SSE stream will update with the new run automatically
+    } catch (err) {
+      rerunError = err instanceof Error ? err.message : "Failed to start re-run"
+    } finally {
+      rerunning = false
+    }
+  }
+
+  // Check if a rerun is possible (no run in progress)
+  const canRerun = $derived(!runningRun && selectedWorkspace && !rerunning)
 
   // Build workspace name matching server-side logic
   function buildWorkspaceName(environment: string, identifier: string, workspacePath: string): string {
@@ -472,6 +495,7 @@ terraform {
             </div>
             <div class="flex items-center gap-2">
               {#if runningRun}
+                <!-- Cancel button for running runs -->
                 <button
                   onclick={handleCancel}
                   disabled={cancellingRunId !== null}
@@ -494,11 +518,8 @@ terraform {
                   {/if}
                   <span>{cancellingRunId === runningRun.id ? "cancelling" : "cancel"}</span>
                 </button>
-              {/if}
-              {#if cancelError}
-                <span class="text-xs text-status-failed">{cancelError}</span>
-              {/if}
-              {#if hasNewerRunGroup && onSwitchToLatest}
+              {:else if hasNewerRunGroup && onSwitchToLatest}
+                <!-- New run available - show button to switch to it -->
                 <button
                   onclick={onSwitchToLatest}
                   class="flex items-center gap-2 px-3 py-1.5 bg-status-planning/15 hover:bg-status-planning/25 border border-status-planning/30 rounded text-status-planning transition-colors"
@@ -514,6 +535,36 @@ terraform {
                     {/if}
                   </div>
                 </button>
+              {:else if canRerun}
+                <!-- Run again button for completed runs -->
+                <button
+                  onclick={handleRerun}
+                  disabled={rerunning}
+                  class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs
+                         text-text-muted hover:text-status-planning hover:bg-status-planning/10 
+                         rounded transition-colors
+                         disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Re-run plan and apply"
+                >
+                  {#if rerunning}
+                    <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <circle cx="8" cy="8" r="6" stroke-opacity="0.3"/>
+                      <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/>
+                    </svg>
+                  {:else}
+                    <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                      <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
+                      <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                  {/if}
+                  <span>{rerunning ? "starting..." : "run again"}</span>
+                </button>
+              {/if}
+              {#if cancelError}
+                <span class="text-xs text-status-failed">{cancelError}</span>
+              {/if}
+              {#if rerunError}
+                <span class="text-xs text-status-failed">{rerunError}</span>
               {/if}
             </div>
           </div>

@@ -10,7 +10,7 @@ import {
   requireResourceAccess,
   getAuth,
 } from "../middleware/org-auth.ts"
-import { approvePreviewApply } from "../lib/webhook-handler.ts"
+import { approvePreviewApply, rerunPreview } from "../lib/webhook-handler.ts"
 import { events, type PreviewUpdateEvent } from "../lib/events.ts"
 
 const listQuerySchema = z.object({
@@ -297,6 +297,66 @@ previewsRoute.post(
     })
 
     return c.json({ data: { approved: true } })
+  },
+)
+
+/**
+ * POST /api/previews/:id/rerun
+ *
+ * Manually re-run a preview (plan + apply) without pushing new commits.
+ * Useful for retrying failed runs or forcing a fresh plan.
+ */
+previewsRoute.post(
+  "/:id/rerun",
+  requireResourceAccess({ getOrgId: getPreviewOrgId }),
+  async (c) => {
+    const id = c.req.param("id")
+    const parseResult = uuidParam.safeParse(id)
+    if (!parseResult.success) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+    }
+
+    const auth = getAuth(c)
+    const preview = await findPreviewById(id)
+    if (!preview) {
+      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+    }
+
+    logger.info("Manual re-run requested", {
+      previewId: id,
+      userId: auth.userId,
+      userName: auth.name,
+    })
+
+    try {
+      const result = await rerunPreview({
+        previewId: id,
+        triggeredBy: auth.name || auth.userId,
+      })
+
+      return c.json({
+        data: {
+          rerunStarted: true,
+          runGroupId: result.runGroupId,
+        },
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to start re-run"
+      logger.warn("Re-run failed", {
+        previewId: id,
+        error: message,
+      })
+
+      // Map known errors to appropriate status codes
+      if (message === "preview not found") {
+        return c.json({ error: { code: "PREVIEW_NOT_FOUND", message } }, 404)
+      }
+      if (message === "a run is already in progress") {
+        return c.json({ error: { code: "RUN_IN_PROGRESS", message } }, 409)
+      }
+
+      return c.json({ error: { code: "RERUN_FAILED", message } }, 500)
+    }
   },
 )
 

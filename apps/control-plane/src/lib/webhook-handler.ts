@@ -298,6 +298,305 @@ export async function approvePreviewApply(opts: {
 }
 
 /**
+ * Manually re-run a preview (plan + apply if auto-apply is enabled).
+ * This allows users to re-trigger a run without pushing new commits.
+ */
+export async function rerunPreview(opts: {
+  previewId: string
+  triggeredBy?: string | null
+}): Promise<{ runGroupId: string }> {
+  return previewMutex.run(`rerun:${opts.previewId}`, async () => {
+    const preview = await findPreviewById(opts.previewId)
+    if (!preview) {
+      throw new Error("preview not found")
+    }
+    if (!preview.installationId) {
+      throw new Error("missing installation id")
+    }
+
+    // Don't allow re-run if there's already a run in progress
+    const latestPlan = await findLatestRun(preview.id, "plan")
+    const latestApply = await findLatestRun(preview.id, "apply")
+    const isRunning = (latestPlan?.status === "pending" || latestPlan?.status === "running") ||
+                      (latestApply?.status === "pending" || latestApply?.status === "running")
+    if (isRunning) {
+      throw new Error("a run is already in progress")
+    }
+
+    // Get the GitHub org info from the installation
+    const installations = await findGithubInstallationsForOrg(preview.orgId)
+    const installation = installations.find((i) => i.installationId === preview.installationId)
+    if (!installation) {
+      throw new Error("github installation not found for this preview")
+    }
+
+    const { findOrgById } = await import("../db/queries/organizations.ts")
+    const org = await findOrgById(preview.orgId)
+    if (!org) {
+      throw new Error("organization not found")
+    }
+
+    // Build context based on whether this is a PR or production preview
+    const isPr = preview.prNumber !== 0
+
+    const ctx: PullRequestContext | PushContext = isPr
+      ? {
+          kind: "pull_request",
+          installationId: preview.installationId,
+          ownerGithubId: installation.githubOrgId,
+          owner: installation.githubOrgLogin,
+          repo: preview.repo,
+          prNumber: preview.prNumber,
+          action: "synchronize", // Treat re-run like a sync
+          branch: preview.branch,
+          headSha: preview.headSha,
+          authorGithubId: preview.authorGithubId ?? 0, // 0 for unknown author
+          authorLogin: preview.authorLogin ?? "unknown",
+          merged: false,
+          defaultBranch: preview.branch, // Best guess for re-runs
+        }
+      : {
+          kind: "push",
+          installationId: preview.installationId,
+          ownerGithubId: installation.githubOrgId,
+          owner: installation.githubOrgLogin,
+          repo: preview.repo,
+          headSha: preview.headSha,
+          branch: preview.branch,
+          pusherGithubId: null,
+          pusherLogin: opts.triggeredBy ?? null,
+          defaultBranch: preview.branch,
+        }
+
+    // Fetch and validate config
+    const raw = await fetchFileContent(
+      preview.installationId,
+      ctx.owner,
+      ctx.repo,
+      ".yaffle/config.yml",
+      ctx.headSha,
+    )
+    if (!raw) {
+      throw new Error("config file not found")
+    }
+    const config = validateConfig(parseYaml(raw))
+    const workspace = config.workspaces.find((ws) => ws.path === preview.workspacePath)
+    if (!workspace) {
+      throw new Error("workspace not found in config")
+    }
+
+    // Create run group with manual trigger
+    const runGroup = await createRunGroup({
+      orgId: org.id,
+      repo: preview.repo,
+      prNumber: preview.prNumber,
+      branch: preview.branch,
+      headSha: preview.headSha,
+      trigger: "manual",
+      status: "pending",
+    })
+
+    // Create pending plan run
+    const pendingRun = await createTfRun({
+      previewId: preview.id,
+      runGroupId: runGroup.id,
+      runType: "plan",
+      status: "pending",
+    })
+
+    // Emit update so UI sees the pending run immediately
+    events.emitRunUpdate(pendingRun.id, preview.id)
+
+    // Execute the run asynchronously (don't await - return immediately)
+    // This mirrors how webhook events work: we acknowledge the request
+    // and process in the background
+    executeManualRun({
+      ctx,
+      preview,
+      workspace,
+      config,
+      org,
+      runGroup,
+      pendingRunId: pendingRun.id,
+    }).catch((err) => {
+      logger.error("Manual re-run failed", {
+        previewId: opts.previewId,
+        runGroupId: runGroup.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+
+    return { runGroupId: runGroup.id }
+  })
+}
+
+/**
+ * Execute the actual plan/apply for a manual re-run.
+ * This runs asynchronously after the API returns.
+ */
+async function executeManualRun(opts: {
+  ctx: PullRequestContext | PushContext
+  preview: Awaited<ReturnType<typeof findPreviewById>> & { id: string }
+  workspace: YaffleConfig["workspaces"][0]
+  config: YaffleConfig
+  org: { id: string; slug: string }
+  runGroup: { id: string }
+  pendingRunId: string
+}): Promise<void> {
+  const { ctx, preview, workspace, org, runGroup, pendingRunId } = opts
+  const isPr = ctx.kind === "pull_request"
+
+  const installationToken = await getInstallationToken(ctx.installationId)
+
+  // Build variables
+  const variables = isPr
+    ? interpolateVariables(
+        workspace.variables,
+        prVariableContext({
+          prNumber: (ctx as PullRequestContext).prNumber,
+          branch: ctx.branch,
+          sha: ctx.headSha,
+          owner: ctx.owner,
+          repo: ctx.repo,
+        }),
+      )
+    : interpolateVariables(
+        workspace.variables,
+        pushVariableContext({
+          branch: ctx.branch,
+          sha: ctx.headSha,
+          owner: ctx.owner,
+          repo: ctx.repo,
+        }),
+      )
+
+  const stateKey = preview.stateKey
+  const wsTag = `${ctx.owner}/${ctx.repo}${isPr ? `#${(ctx as PullRequestContext).prNumber}` : `@${ctx.branch}`}:${preview.workspacePath}`
+
+  // TFC backend setup
+  let tfcWorkspaceId: string | undefined
+  let tfcWorkspaceName: string | undefined
+  let tfcOrganization: string | undefined
+  let tfcToken: string | undefined
+
+  if (useTfcBackend()) {
+    const tfcWorkspace = isPr
+      ? await ensurePreviewWorkspace({
+          orgId: org.id,
+          orgSlug: org.slug,
+          repo: preview.repo,
+          prNumber: (ctx as PullRequestContext).prNumber,
+          workspacePath: preview.workspacePath,
+          branch: ctx.branch,
+        })
+      : await ensureProductionWorkspace({
+          orgId: org.id,
+          orgSlug: org.slug,
+          repo: preview.repo,
+          branch: ctx.branch,
+          workspacePath: preview.workspacePath,
+        })
+    tfcWorkspaceId = tfcWorkspace.id
+    tfcWorkspaceName = tfcWorkspace.name
+    tfcOrganization = org.slug
+    tfcToken = await generateRunToken(preview.id, tfcWorkspace.id, org.id)
+  }
+
+  // Update preview status
+  await updatePreviewStatus(preview.id, "planning")
+
+  // Execute plan
+  const planResult = await executeRun({
+    ctx,
+    preview,
+    runner: defaultRunner,
+    command: "plan",
+    stateKey,
+    workspacePath: preview.workspacePath,
+    variables,
+    installationToken,
+    wsTag,
+    tfcWorkspaceId,
+    tfcWorkspaceName,
+    tfcOrganization,
+    tfcToken,
+    existingRunId: pendingRunId,
+    runGroupId: runGroup.id,
+  })
+
+  if (!planResult.success) {
+    await updatePreviewStatus(preview.id, "failed")
+    return
+  }
+
+  // Check if we should auto-apply
+  const hasChanges = planResult.planSummary !== "no changes"
+  const shouldApply = isPr // PR previews auto-apply, production requires approval
+
+  if (!hasChanges) {
+    // No changes - create skipped apply and mark as ready
+    await createTfRun({
+      previewId: preview.id,
+      runGroupId: runGroup.id,
+      runType: "apply",
+      status: "skipped",
+    })
+    await updatePreviewStatus(preview.id, "ready")
+    return
+  }
+
+  if (shouldApply) {
+    // Create apply run and execute
+    const applyRun = await createTfRun({
+      previewId: preview.id,
+      runGroupId: runGroup.id,
+      runType: "apply",
+      status: "pending",
+    })
+    events.emitRunUpdate(applyRun.id, preview.id)
+
+    await updatePreviewStatus(preview.id, "applying")
+
+    const applyResult = await executeRun({
+      ctx,
+      preview,
+      runner: defaultRunner,
+      command: "apply",
+      stateKey,
+      workspacePath: preview.workspacePath,
+      variables,
+      installationToken,
+      wsTag,
+      tfcWorkspaceId,
+      tfcWorkspaceName,
+      tfcOrganization,
+      tfcToken,
+      existingRunId: applyRun.id,
+      runGroupId: runGroup.id,
+    })
+
+    await updatePreviewStatus(preview.id, applyResult.success ? "ready" : "failed")
+
+    // Execute apply callbacks
+    if (applyResult.success && workspace.on_apply && applyResult.outputs) {
+      await executeApplyCallbacks(workspace.on_apply, {
+        owner: ctx.owner,
+        repo: ctx.repo,
+        prNumber: isPr ? (ctx as PullRequestContext).prNumber : 0,
+        branch: ctx.branch,
+        headSha: ctx.headSha,
+        workspacePath: preview.workspacePath,
+        previewId: preview.id,
+        outputs: applyResult.outputs,
+      }, ctx.installationId)
+    }
+  } else {
+    // Production preview - requires approval
+    await updatePreviewStatus(preview.id, "awaiting_approval")
+  }
+}
+
+/**
  * Fetch config from the repo via the GitHub Contents API.
  */
 async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<YaffleConfig> {

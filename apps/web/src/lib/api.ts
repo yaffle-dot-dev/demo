@@ -278,6 +278,14 @@ export async function cancelRun(runId: string): Promise<{ cancelled: boolean }> 
 }
 
 /**
+ * Manually re-run a preview (plan + apply).
+ */
+export async function rerunPreview(previewId: string): Promise<{ rerunStarted: boolean; runGroupId: string }> {
+  const res = await postJson<{ data: { rerunStarted: boolean; runGroupId: string } }>(`/previews/${previewId}/rerun`)
+  return res.data
+}
+
+/**
  * Get all previews (workspaces) for a PR.
  */
 export async function getPreviewsByPr(
