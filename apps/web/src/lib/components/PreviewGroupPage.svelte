@@ -93,6 +93,9 @@
   // Track the last run group ID to detect run group changes
   let lastSeenRunGroupId: string | null = null
 
+  // Track the last workspace we followed (to stay on it when nothing is running)
+  let lastFollowedPath: string | null = null
+
   // Get the currently running workspace (for follow mode)
   // Prefer actively running over pending
   const runningWorkspace = $derived.by(() => {
@@ -113,16 +116,31 @@
     const wsParam = $page.url.searchParams.get("ws")
     const wsFromUrl = filteredWorkspaces.find((w) => w.preview.workspacePath === wsParam)
 
-    // In follow mode, always show the running workspace (if any)
+    // In follow mode with a running workspace, follow it
     if (followMode && runningWorkspace) {
       return runningWorkspace.preview.workspacePath
     }
 
-    // Not in follow mode or no running workspace: use URL param or first workspace
+    // In follow mode but nothing running - stay on last followed workspace if it exists
+    if (followMode && lastFollowedPath) {
+      const lastWs = filteredWorkspaces.find((w) => w.preview.workspacePath === lastFollowedPath)
+      if (lastWs) {
+        return lastFollowedPath
+      }
+    }
+
+    // Not in follow mode or no valid workspace: use URL param or first workspace
     if (wsParam && wsFromUrl) {
       return wsParam
     }
     return filteredWorkspaces[0]?.preview.workspacePath ?? ""
+  })
+
+  // Track the last followed workspace when in follow mode
+  $effect(() => {
+    if (followMode && runningWorkspace) {
+      lastFollowedPath = runningWorkspace.preview.workspacePath
+    }
   })
 
   // Re-enable follow mode when switching to a new run group
@@ -130,8 +148,9 @@
     const currentRunGroupId = viewedRunGroup?.id ?? null
     if (currentRunGroupId && currentRunGroupId !== lastSeenRunGroupId) {
       lastSeenRunGroupId = currentRunGroupId
-      // Re-enable follow mode on run group change
+      // Re-enable follow mode and clear last followed path on run group change
       followMode = true
+      lastFollowedPath = null
     }
   })
 
@@ -172,8 +191,19 @@
   const latestApply = $derived(
     visibleRuns.find((r: Run) => r.runType === "apply") ?? undefined,
   )
+  // Show outputs if:
+  // 1. Apply succeeded with outputs, OR
+  // 2. Apply was skipped (no changes) and we have outputs from a previous apply
   const hasOutputs = $derived(
+    (latestApply?.status === "success" && latestApply?.outputs) ||
+    (latestApply?.status === "skipped" && selectedWorkspace?.outputs)
+  )
+
+  // Get the outputs to display - prefer current apply's outputs, fall back to workspace outputs
+  const displayOutputs = $derived(
     latestApply?.status === "success" && latestApply?.outputs
+      ? latestApply.outputs
+      : selectedWorkspace?.outputs
   )
 
   // Available tabs based on what data exists
@@ -239,14 +269,15 @@
     return null
   })
 
-  // Standard icons: + ok, x fail, ~ pending, ... in progress
+  // Standard icons: ✓ ok, ✗ fail, ~ pending, ... in progress, - skipped
   function tabStatusIcon(status?: string): string {
     if (!status) return ""
     switch (status) {
-      case "success": return " +"
+      case "success": return " ✓"
       case "running": return " ..."
       case "pending": return " ~"
-      case "failed": return " x"
+      case "failed": return " ✗"
+      case "skipped": return " -"
       default: return ""
     }
   }
@@ -258,6 +289,7 @@
       case "running": return "text-status-applying"
       case "pending": return "text-status-pending"
       case "failed": return "text-status-failed"
+      case "skipped": return "text-text-muted"
       default: return "text-text-muted"
     }
   }
@@ -404,6 +436,7 @@ terraform {
         <!-- Workspace header: derive status from the run group / visible runs -->
         {@const displayStatus = viewedRunGroup
           ? (latestApply?.status === "success" ? "ready"
+            : latestApply?.status === "skipped" ? "ready"
             : latestApply?.status === "running" ? "applying"
             : latestPlan?.status === "success" ? "planned"
             : latestPlan?.status === "running" ? "planning"
@@ -517,8 +550,8 @@ terraform {
 
         <!-- Tab content -->
         <div class="flex-1 overflow-auto p-6">
-          {#if activeTab === "outputs" && hasOutputs && latestApply}
-            <OutputsView outputs={latestApply.outputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
+          {#if activeTab === "outputs" && hasOutputs}
+            <OutputsView outputs={displayOutputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
           {:else if activeTab === "plan" && latestPlan}
             <!-- Show terminal with plan output -->
             <!-- Key by workspace+tab to force re-mount when switching -->

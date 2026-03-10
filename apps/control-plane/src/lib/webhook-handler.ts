@@ -564,8 +564,9 @@ async function handlePrOpenedOrUpdated(
         return
       }
 
-      // Queue workspace for apply if auto_apply is enabled
-      if (ws.auto_apply) {
+      // Queue workspace for apply if auto_apply is enabled AND there are changes
+      const hasChanges = planResult.planSummary !== "no changes"
+      if (ws.auto_apply && hasChanges) {
         workspacesForApply.push({
           ws,
           preview,
@@ -579,7 +580,21 @@ async function handlePrOpenedOrUpdated(
           wsTag,
         })
       } else {
+        // No apply needed - either auto_apply disabled or no changes
+        // Both cases result in "ready" state (infrastructure matches desired state)
         await updatePreviewStatus(preview.id, "ready")
+
+        // Create a skipped apply run if no changes (so UI shows A:- instead of A:~)
+        if (!hasChanges) {
+          const skippedApply = await createTfRun({
+            previewId: preview.id,
+            runGroupId: runGroup.id,
+            runType: "apply",
+            status: "skipped",
+          })
+          events.emitRunUpdate(skippedApply.id, preview.id)
+        }
+
         await comment.update(ws.path, {
           phase: "plan_success",
           planSummary: planResult.planSummary,
@@ -987,6 +1002,33 @@ async function handlePushEvent(
       })
 
       if (!planResult.success) return
+
+      // Check if there are changes to apply
+      const hasChanges = planResult.planSummary !== "no changes"
+
+      if (!hasChanges) {
+        // No changes - mark as ready (infrastructure matches desired state)
+        await updatePreviewStatus(preview.id, "ready")
+
+        // Create a skipped apply run (so UI shows A:- instead of A:~)
+        const skippedApply = await createTfRun({
+          previewId: preview.id,
+          runGroupId: runGroup.id,
+          runType: "apply",
+          status: "skipped",
+        })
+        events.emitRunUpdate(skippedApply.id, preview.id)
+
+        if (planResult.checkRunId && ctx.installationId) {
+          await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, planResult.checkRunId, {
+            status: "completed",
+            conclusion: "success",
+            title: "No changes",
+            summary: "Infrastructure is up to date.",
+          })
+        }
+        return
+      }
 
       if (ws.require_approval) {
         await updatePreviewStatus(preview.id, "awaiting_approval")

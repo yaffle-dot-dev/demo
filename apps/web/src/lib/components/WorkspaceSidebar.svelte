@@ -18,15 +18,16 @@
     return run?.status ?? null
   }
 
-  // Standard icons: + ok, x fail, ~ pending, ... in progress
+  // Standard icons: ✓ ok, ✗ fail, ~ pending, ... in progress, - skipped
   function statusIcon(status: string | null): string {
     if (!status) return "~"
     switch (status) {
-      case "success": return "+"
+      case "success": return "✓"
       case "running": return "..."
       case "pending": return "~"
-      case "failed": return "x"
-      case "cancelled": return "x"
+      case "failed": return "✗"
+      case "cancelled": return "✗"
+      case "skipped": return "-"
       default: return "~"
     }
   }
@@ -39,6 +40,7 @@
       case "pending": return "text-status-pending"
       case "failed": return "text-status-failed"
       case "cancelled": return "text-text-dim"
+      case "skipped": return "text-text-muted"
       default: return "text-text-muted"
     }
   }

@@ -10,7 +10,7 @@ export type PreviewStatus =
 
 export type RunType = "plan" | "apply" | "destroy"
 
-export type RunStatus = "pending" | "running" | "success" | "failed" | "cancelled"
+export type RunStatus = "pending" | "running" | "success" | "failed" | "cancelled" | "skipped"
 
 export type RunnerMode = "saas" | "byoa"
 

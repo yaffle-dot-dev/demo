@@ -1,19 +1,20 @@
 // Standard icons:
-// + completed ok
-// x completed failure
+// ✓ completed ok
+// ✗ completed failure
 // ~ pending / not started
 // ... in progress
+// - skipped (no changes)
 
 export const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
   pending: { label: "Pending", color: "text-status-pending", icon: "~" },
   planning: { label: "Planning", color: "text-status-planning", icon: "..." },
-  planned: { label: "Planned", color: "text-status-ready", icon: "+" },
+  planned: { label: "Planned", color: "text-status-ready", icon: "✓" },
   applying: { label: "Applying", color: "text-status-applying", icon: "..." },
   awaiting_approval: { label: "Awaiting approval", color: "text-status-planning", icon: "?" },
-  ready: { label: "Ready", color: "text-status-ready", icon: "+" },
-  failed: { label: "Failed", color: "text-status-failed", icon: "x" },
+  ready: { label: "Ready", color: "text-status-ready", icon: "✓" },
+  failed: { label: "Failed", color: "text-status-failed", icon: "✗" },
   destroying: { label: "Destroying", color: "text-status-destroying", icon: "..." },
-  destroyed: { label: "Destroyed", color: "text-status-destroyed", icon: "+" },
+  destroyed: { label: "Destroyed", color: "text-status-destroyed", icon: "✓" },
 }
 
 export function statusConfig(status: string): { label: string; color: string; icon: string } {
