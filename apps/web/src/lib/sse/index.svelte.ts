@@ -11,7 +11,16 @@ export type {
   ConnectionState,
   PreviewGroup,
 } from "./types"
-export { findRunInGroup, getLatestRunForWorkspace, hasActiveRun } from "./types"
+export {
+  findRunInGroup,
+  getLatestRunForWorkspace,
+  hasActiveRun,
+  getLatestRunGroup,
+  getCurrentRunGroup,
+  getLastCompletedRunGroup,
+  filterWorkspacesByRunGroup,
+  getWorkspacesInRunGroup,
+} from "./types"
 
 // ---------------------------------------------------------------------------
 // usePreviewStream - for PR and env detail pages
@@ -88,8 +97,8 @@ export function usePreviewStream(
     get data() { return store.data },
     get connectionState() { return store.connectionState },
     get isStreaming() { return store.isStreaming },
-    get viewedRunId() { return store.viewedRunId },
-    get hasNewerRun() { return store.hasNewerRun },
+    get viewedRunGroupId() { return store.viewedRunGroupId },
+    get hasNewerRunGroup() { return store.hasNewerRunGroup },
     get pinnedHeadSha() { return store.pinnedHeadSha },
     switchToLatest: () => store.switchToLatest(),
   }

@@ -4,6 +4,7 @@ import type {
   Preview,
   WorkspaceWithRuns,
   Run,
+  RunGroup,
 } from "$lib/api"
 
 // ---------------------------------------------------------------------------
@@ -39,13 +40,13 @@ export interface PreviewStreamState {
   readonly connectionState: ConnectionState
   /** Whether a run is actively streaming (running or pending) */
   readonly isStreaming: boolean
-  /** The run ID the user is currently viewing (null = latest) */
-  readonly viewedRunId: string | null
-  /** Whether a newer run exists beyond the pinned one */
-  readonly hasNewerRun: boolean
+  /** The run group ID the user is currently viewing (null = latest) */
+  readonly viewedRunGroupId: string | null
+  /** Whether a newer run group exists beyond the pinned one */
+  readonly hasNewerRunGroup: boolean
   /** The headSha at the time auto-pin activated (null when not pinned) */
   readonly pinnedHeadSha: string | null
-  /** Switch viewedRunId back to the latest run */
+  /** Switch viewedRunGroupId back to the latest run group */
   switchToLatest: () => void
 }
 
@@ -137,5 +138,78 @@ export function filterWorkspacesToCurrentCycle(
   return workspaces.map((ws) => ({
     ...ws,
     runs: filterToCurrentCycle(ws.runs),
+  }))
+}
+
+// ---------------------------------------------------------------------------
+// Run Group helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the latest run group from a preview group.
+ */
+export function getLatestRunGroup(group: PreviewGroup): RunGroup | null {
+  const runGroups = group.runGroups
+  if (!runGroups || runGroups.length === 0) return null
+  // Run groups are sorted desc by createdAt from backend
+  return runGroups[0]
+}
+
+/**
+ * Get the current/active run group (running or pending).
+ * Returns the latest run group if it's active, otherwise null.
+ */
+export function getCurrentRunGroup(group: PreviewGroup): RunGroup | null {
+  const latest = getLatestRunGroup(group)
+  if (!latest) return null
+  if (latest.status === "running" || latest.status === "pending") {
+    return latest
+  }
+  return null
+}
+
+/**
+ * Get the last completed run group (success, failed, or partial).
+ */
+export function getLastCompletedRunGroup(group: PreviewGroup): RunGroup | null {
+  const runGroups = group.runGroups
+  if (!runGroups || runGroups.length === 0) return null
+  return runGroups.find((rg) =>
+    rg.status === "success" || rg.status === "failed" || rg.status === "partial"
+  ) ?? null
+}
+
+/**
+ * Filter runs to those belonging to a specific run group.
+ */
+export function filterRunsByRunGroup(runs: Run[], runGroupId: string): Run[] {
+  return runs.filter((r) => r.runGroupId === runGroupId)
+}
+
+/**
+ * Filter workspaces' runs to a specific run group.
+ */
+export function filterWorkspacesByRunGroup(
+  workspaces: WorkspaceWithRuns[],
+  runGroupId: string,
+): WorkspaceWithRuns[] {
+  return workspaces.map((ws) => ({
+    ...ws,
+    runs: filterRunsByRunGroup(ws.runs, runGroupId),
+  }))
+}
+
+/**
+ * Get workspaces that have runs in a specific run group.
+ */
+export function getWorkspacesInRunGroup(
+  workspaces: WorkspaceWithRuns[],
+  runGroupId: string,
+): WorkspaceWithRuns[] {
+  return workspaces.filter((ws) =>
+    ws.runs.some((r) => r.runGroupId === runGroupId)
+  ).map((ws) => ({
+    ...ws,
+    runs: filterRunsByRunGroup(ws.runs, runGroupId),
   }))
 }

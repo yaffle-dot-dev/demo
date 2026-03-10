@@ -20,6 +20,7 @@ import { executeApplyCallbacks } from "./apply-callbacks.ts"
 import { ensureOrg, findGithubInstallationsForOrg } from "../db/queries/organizations.ts"
 import { findPreview, findPreviewById, markRemovedWorkspacesDestroyed, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
 import { appendRunLog, createTfRun, findLatestRun, updateRunStatus } from "../db/queries/tf-runs.ts"
+import { createRunGroup, type RunGroupTrigger } from "../db/queries/run-groups.ts"
 import {
   createCheckRun,
   fetchFileContent,
@@ -416,29 +417,80 @@ async function handlePrOpenedOrUpdated(
   const comment = createCommentManager(ctx)
   const usingTfcBackend = useTfcBackend()
 
+  // Create a run group for this PR event (plan phase)
+  const trigger: RunGroupTrigger = ctx.action === "opened" ? "pr_opened" : "pr_sync"
+  const planRunGroup = await createRunGroup({
+    orgId: org.id,
+    repo: ctx.repo,
+    prNumber: ctx.prNumber,
+    branch: ctx.branch,
+    headSha: ctx.headSha,
+    trigger,
+    runType: "plan",
+    status: "pending",
+  })
+
+  // First pass: upsert all previews and create pending runs upfront
+  // This ensures all workspaces appear in the UI immediately
+  const workspaceData: Array<{
+    ws: typeof config.workspaces[0]
+    preview: { id: string }
+    pendingRunId: string
+    stateKey: string
+    wsTag: string
+  }> = []
+
   for (const ws of config.workspaces) {
+    const stateKey = buildStateKey(statePrefix, ws.path)
+    const wsTag = `${tag}:${ws.path}`
+
+    // Upsert preview
+    const preview = await upsertPreview({
+      orgId: org.id,
+      installationId: ctx.installationId,
+      repo: ctx.repo,
+      prNumber: ctx.prNumber,
+      workspacePath: ws.path,
+      branch: ctx.branch,
+      headSha: ctx.headSha,
+      authorGithubId: ctx.authorGithubId,
+      authorLogin: ctx.authorLogin,
+      stateKey,
+      mode: "terraform",
+      requireApproval: false,
+      approvers: null,
+    })
+
+    // Create pending run record upfront
+    const pendingRun = await createTfRun({
+      previewId: preview.id,
+      runGroupId: planRunGroup.id,
+      runType: "plan",
+      status: "pending",
+    })
+
+    workspaceData.push({ ws, preview, pendingRunId: pendingRun.id, stateKey, wsTag })
+  }
+
+  // Track which workspaces need apply after planning
+  const workspacesForApply: Array<{
+    ws: typeof config.workspaces[0]
+    preview: { id: string }
+    planResult: RunResult
+    tfcWorkspaceId?: string
+    tfcWorkspaceName?: string
+    tfcOrganization?: string
+    tfcToken?: string
+    variables: Record<string, string>
+    stateKey: string
+    wsTag: string
+  }> = []
+
+  // Second pass: execute plans sequentially
+  for (const { ws, preview, pendingRunId, stateKey, wsTag } of workspaceData) {
     await withSpan("workspace.preview", async (wsSpan) => {
-      const stateKey = buildStateKey(statePrefix, ws.path)
-      const wsTag = `${tag}:${ws.path}`
       const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
       wsSpan.setAttributes(wsAttrs)
-
-      // Upsert preview
-      const preview = await upsertPreview({
-        orgId: org.id,
-        installationId: ctx.installationId,
-        repo: ctx.repo,
-        prNumber: ctx.prNumber,
-        workspacePath: ws.path,
-        branch: ctx.branch,
-        headSha: ctx.headSha,
-        authorGithubId: ctx.authorGithubId,
-        authorLogin: ctx.authorLogin,
-        stateKey,
-        mode: "terraform",
-        requireApproval: false,
-        approvers: null,
-      })
 
       // TFC backend: ensure workspace exists and generate run token
       let tfcWorkspaceId: string | undefined
@@ -485,6 +537,8 @@ async function handlePrOpenedOrUpdated(
         installationToken,
         wsTag,
         createCheckRun: ws.require_approval ?? false,
+        existingRunId: pendingRunId,
+        runGroupId: planRunGroup.id,
         tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
@@ -502,66 +556,20 @@ async function handlePrOpenedOrUpdated(
         return
       }
 
-      // Apply if auto_apply
+      // Queue workspace for apply if auto_apply is enabled
       if (ws.auto_apply) {
-        logger.info("auto-applying preview", wsAttrs)
-        await updatePreviewStatus(preview.id, "applying")
-        await comment.update(ws.path, {
-          phase: "applying",
-          planSummary: planResult.planSummary,
-          planCheckRun,
-        })
-
-        const applyResult = await executeRun({
-          ctx,
+        workspacesForApply.push({
+          ws,
           preview,
-          runner,
-          command: "apply",
-          stateKey,
-          workspacePath: ws.path,
-          variables,
-          installationToken,
-          wsTag,
+          planResult,
           tfcWorkspaceId,
           tfcWorkspaceName,
           tfcOrganization,
           tfcToken,
+          variables,
+          stateKey,
+          wsTag,
         })
-
-        const applyCheckRun = makeCheckRunRef(ctx, applyResult.checkRunId)
-
-        if (applyResult.success) {
-          await updatePreviewStatus(preview.id, "ready")
-          await comment.update(ws.path, {
-            phase: "ready",
-            planSummary: planResult.planSummary,
-            outputs: applyResult.outputs,
-            planCheckRun,
-            applyCheckRun,
-          })
-
-          // Execute apply callbacks (webhooks, github_dispatch)
-          if (ws.on_apply && applyResult.outputs) {
-            await executeApplyCallbacks(ws.on_apply, {
-              owner: ctx.owner,
-              repo: ctx.repo,
-              prNumber: ctx.prNumber,
-              branch: ctx.branch,
-              headSha: ctx.headSha,
-              workspacePath: ws.path,
-              previewId: preview.id,
-              outputs: applyResult.outputs,
-            }, ctx.installationId)
-          }
-        } else {
-          await comment.update(ws.path, {
-            phase: "apply_failed",
-            planSummary: planResult.planSummary,
-            errorMessage: applyResult.errorMessage,
-            planCheckRun,
-            applyCheckRun,
-          })
-        }
       } else {
         await updatePreviewStatus(preview.id, "ready")
         await comment.update(ws.path, {
@@ -571,6 +579,87 @@ async function handlePrOpenedOrUpdated(
         })
       }
     })
+  }
+
+  // Apply phase: process all workspaces that need apply
+  if (workspacesForApply.length > 0) {
+    // Create a run group for the apply phase
+    const applyRunGroup = await createRunGroup({
+      orgId: org.id,
+      repo: ctx.repo,
+      prNumber: ctx.prNumber,
+      branch: ctx.branch,
+      headSha: ctx.headSha,
+      trigger,
+      runType: "apply",
+      status: "pending",
+    })
+
+    for (const item of workspacesForApply) {
+      const { ws, preview, planResult, tfcWorkspaceId, tfcWorkspaceName, tfcOrganization, tfcToken, variables, stateKey, wsTag } = item
+      const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
+      const planCheckRun = makeCheckRunRef(ctx, planResult.checkRunId)
+
+      logger.info("auto-applying preview", wsAttrs)
+      await updatePreviewStatus(preview.id, "applying")
+      await comment.update(ws.path, {
+        phase: "applying",
+        planSummary: planResult.planSummary,
+        planCheckRun,
+      })
+
+      const applyResult = await executeRun({
+        ctx,
+        preview,
+        runner,
+        command: "apply",
+        stateKey,
+        workspacePath: ws.path,
+        variables,
+        installationToken,
+        wsTag,
+        runGroupId: applyRunGroup.id,
+        tfcWorkspaceId,
+        tfcWorkspaceName,
+        tfcOrganization,
+        tfcToken,
+      })
+
+      const applyCheckRun = makeCheckRunRef(ctx, applyResult.checkRunId)
+
+      if (applyResult.success) {
+        await updatePreviewStatus(preview.id, "ready")
+        await comment.update(ws.path, {
+          phase: "ready",
+          planSummary: planResult.planSummary,
+          outputs: applyResult.outputs,
+          planCheckRun,
+          applyCheckRun,
+        })
+
+        // Execute apply callbacks (webhooks, github_dispatch)
+        if (ws.on_apply && applyResult.outputs) {
+          await executeApplyCallbacks(ws.on_apply, {
+            owner: ctx.owner,
+            repo: ctx.repo,
+            prNumber: ctx.prNumber,
+            branch: ctx.branch,
+            headSha: ctx.headSha,
+            workspacePath: ws.path,
+            previewId: preview.id,
+            outputs: applyResult.outputs,
+          }, ctx.installationId)
+        }
+      } else {
+        await comment.update(ws.path, {
+          phase: "apply_failed",
+          planSummary: planResult.planSummary,
+          errorMessage: applyResult.errorMessage,
+          planCheckRun,
+          applyCheckRun,
+        })
+      }
+    }
   }
 }
 
@@ -762,15 +851,43 @@ async function handlePushEvent(
   })
   const usingTfcBackend = useTfcBackend()
 
-  for (const ws of config.workspaces) {
-    if (!ws.auto_apply_on_merge && !ws.require_approval) {
-      logger.info("auto_apply_on_merge disabled, skipping", {
-        ...attrs,
-        "yaffle.workspace_path": ws.path,
-      })
-      continue
-    }
+  // Filter to workspaces that should run on push
+  const activeWorkspaces = config.workspaces.filter(
+    (ws) => ws.auto_apply_on_merge || ws.require_approval,
+  )
 
+  if (activeWorkspaces.length === 0) {
+    logger.info("no workspaces configured for production deploy", attrs)
+    return
+  }
+
+  // Create a run group for the plan phase
+  const planRunGroup = await createRunGroup({
+    orgId: org.id,
+    repo: ctx.repo,
+    prNumber: null, // null for branch/env runs
+    branch: ctx.branch,
+    headSha: ctx.headSha,
+    trigger: "push",
+    runType: "plan",
+    status: "pending",
+  })
+
+  // Track workspaces for apply
+  const workspacesForApply: Array<{
+    ws: typeof config.workspaces[0]
+    preview: { id: string }
+    planResult: RunResult
+    tfcWorkspaceId?: string
+    tfcWorkspaceName?: string
+    tfcOrganization?: string
+    tfcToken?: string
+    variables: Record<string, string>
+    stateKey: string
+    wsTag: string
+  }> = []
+
+  for (const ws of activeWorkspaces) {
     await withSpan("workspace.production", async (wsSpan) => {
       const stateKey = buildStateKey(statePrefix, ws.path)
       const wsTag = `${tag}:${ws.path}`
@@ -837,6 +954,7 @@ async function handlePushEvent(
         installationToken,
         wsTag,
         createCheckRun: true, // Create check run for production pushes
+        runGroupId: planRunGroup.id,
         tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
@@ -858,7 +976,39 @@ async function handlePushEvent(
         return
       }
 
-      // Apply
+      // Queue for apply phase
+      workspacesForApply.push({
+        ws,
+        preview,
+        planResult,
+        tfcWorkspaceId,
+        tfcWorkspaceName,
+        tfcOrganization,
+        tfcToken,
+        variables,
+        stateKey,
+        wsTag,
+      })
+    })
+  }
+
+  // Apply phase: process workspaces that don't require approval
+  if (workspacesForApply.length > 0) {
+    const applyRunGroup = await createRunGroup({
+      orgId: org.id,
+      repo: ctx.repo,
+      prNumber: null,
+      branch: ctx.branch,
+      headSha: ctx.headSha,
+      trigger: "push",
+      runType: "apply",
+      status: "pending",
+    })
+
+    for (const item of workspacesForApply) {
+      const { ws, preview, planResult, tfcWorkspaceId, tfcWorkspaceName, tfcOrganization, tfcToken, variables, stateKey, wsTag } = item
+      const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
+
       logger.info("applying production", wsAttrs)
       await updatePreviewStatus(preview.id, "applying")
 
@@ -885,6 +1035,7 @@ async function handlePushEvent(
         installationToken,
         wsTag,
         checkRunId: planResult.checkRunId, // Reuse plan's check run
+        runGroupId: applyRunGroup.id,
         tfcWorkspaceId,
         tfcWorkspaceName,
         tfcOrganization,
@@ -910,7 +1061,7 @@ async function handlePushEvent(
       } else {
         await updatePreviewStatus(preview.id, "failed")
       }
-    })
+    }
   }
 
   // Mark workspaces that are no longer in the config as destroyed
@@ -954,6 +1105,8 @@ async function executeRun(opts: {
   wsTag: string
   createCheckRun?: boolean
   checkRunId?: number // Existing check run to update (instead of creating new)
+  existingRunId?: string // Use existing run record instead of creating new
+  runGroupId?: string // Run group this run belongs to
   // TFC backend options (when YAFFLE_TFC_API_HOST is set)
   tfcWorkspaceId?: string
   tfcWorkspaceName?: string
@@ -972,13 +1125,16 @@ async function executeRun(opts: {
     }
     span.setAttributes(runAttrs)
 
-    // Create run record
+    // Use existing run or create new one
     const runCreatedAt = Date.now()
-    const run = await createTfRun({
-      previewId: preview.id,
-      runType: opts.command,
-      status: "pending",
-    })
+    const run = opts.existingRunId
+      ? { id: opts.existingRunId, previewId: preview.id }
+      : await createTfRun({
+          previewId: preview.id,
+          runGroupId: opts.runGroupId,
+          runType: opts.command,
+          status: "pending",
+        })
 
     // Use existing check run or create a new one
     let checkRunId: number | undefined = opts.checkRunId

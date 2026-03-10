@@ -6,6 +6,7 @@ import { db } from "../../lib/db.ts"
 import { tfRuns } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 import { events } from "../../lib/events.ts"
+import { recomputeRunGroupStatus } from "./run-groups.ts"
 
 export type TfRun = typeof tfRuns.$inferSelect
 export type NewTfRun = typeof tfRuns.$inferInsert
@@ -22,6 +23,7 @@ export async function createTfRun(values: NewTfRun): Promise<TfRun> {
 
 /**
  * Update a run's status and optionally set timing fields.
+ * Also recomputes the parent run group's status if applicable.
  */
 export async function updateRunStatus(
   runId: string,
@@ -39,11 +41,19 @@ export async function updateRunStatus(
   },
 ): Promise<void> {
   return withDbSpan("update", "tf_runs", async () => {
-    await db
+    // Update the run
+    const [updated] = await db
       .update(tfRuns)
       .set({ status, ...extra })
       .where(eq(tfRuns.id, runId))
+      .returning({ runGroupId: tfRuns.runGroupId })
+
     events.emitRunUpdate(runId, previewId)
+
+    // Recompute run group status if this run belongs to a group
+    if (updated?.runGroupId) {
+      await recomputeRunGroupStatus(updated.runGroupId)
+    }
   })
 }
 
@@ -114,5 +124,18 @@ export async function findRunById(
       .where(eq(tfRuns.id, runId))
       .limit(1)
     return rows[0]
+  })
+}
+
+/**
+ * List all runs for a run group.
+ */
+export async function listRunsForRunGroup(runGroupId: string): Promise<TfRun[]> {
+  return withDbSpan("select", "tf_runs", async () => {
+    return db
+      .select()
+      .from(tfRuns)
+      .where(eq(tfRuns.runGroupId, runGroupId))
+      .orderBy(desc(tfRuns.createdAt))
   })
 }

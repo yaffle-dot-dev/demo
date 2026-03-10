@@ -5,7 +5,7 @@ import type {
   PreviewStreamPayload,
   PreviewListPayload,
 } from "./types"
-import { hasActiveRun } from "./types"
+import { hasActiveRun, getLatestRunGroup, getCurrentRunGroup } from "./types"
 
 // ---------------------------------------------------------------------------
 // PreviewStreamStore - state for PR/env detail pages
@@ -13,12 +13,13 @@ import { hasActiveRun } from "./types"
 
 /**
  * Reactive state store for a single preview group (PR or env detail page).
- * Implements run-ID-based pinning instead of SHA-based pinning.
+ * Implements run-group-based pinning for multi-workspace runs.
  */
 export class PreviewStreamStore {
   data = $state<PreviewGroup | null>(null)
   connectionState = $state<ConnectionState>("disconnected")
-  viewedRunId = $state<string | null>(null)
+  /** The run group ID being viewed (null = latest) */
+  viewedRunGroupId = $state<string | null>(null)
   /** The headSha at the time auto-pin activated (the SHA being viewed) */
   pinnedHeadSha = $state<string | null>(null)
 
@@ -26,68 +27,53 @@ export class PreviewStreamStore {
     return this.data !== null && hasActiveRun(this.data)
   }
 
-  get hasNewerRun(): boolean {
-    if (!this.viewedRunId || !this.data) return false
-    // Check if the latest run in any workspace differs from the pinned run
-    for (const ws of this.data.workspaces) {
-      if (ws.runs.length > 0 && ws.runs[0].id !== this.viewedRunId) {
-        // Only report newer if the viewed run actually exists in the data
-        const viewedExists = this.data.workspaces.some((w) =>
-          w.runs.some((r) => r.id === this.viewedRunId),
-        )
-        if (viewedExists) return true
-      }
-    }
-    return false
+  get hasNewerRunGroup(): boolean {
+    if (!this.viewedRunGroupId || !this.data) return false
+    const latestRunGroup = getLatestRunGroup(this.data)
+    if (!latestRunGroup) return false
+    // There's a newer run group if the latest ID differs from our pinned one
+    return latestRunGroup.id !== this.viewedRunGroupId
   }
 
   /**
    * Handle an SSE "update" message. Always updates liveData.
-   * Auto-pins to the current latest plan when a new run cycle starts,
+   * Auto-pins to the current run group when a new run group starts,
    * so the user keeps seeing what they had until they click "switch to latest".
    */
   handleMessage(payload: unknown): void {
     const typed = payload as PreviewStreamPayload
     if (!typed.data) return
 
-    // Auto-pin: if unpinned and we already have data, check if a new run
-    // cycle started (new plan appeared that wasn't there before)
-    if (!this.viewedRunId && this.data) {
-      for (const newWs of typed.data.workspaces) {
-        const oldWs = this.data.workspaces.find(
-          (w) => w.preview.workspacePath === newWs.preview.workspacePath,
-        )
-        if (!oldWs) continue
+    // Auto-pin: if unpinned and we already have data, check if a new run group started
+    if (!this.viewedRunGroupId && this.data) {
+      const oldLatest = getLatestRunGroup(this.data)
+      const newLatest = getLatestRunGroup(typed.data)
 
-        const oldLatestPlan = oldWs.runs.find((r) => r.runType === "plan")
-        const newLatestPlan = newWs.runs.find((r) => r.runType === "plan")
-
-        // A new plan appeared that didn't exist before — new run cycle
-        if (
-          newLatestPlan &&
-          oldLatestPlan &&
-          newLatestPlan.id !== oldLatestPlan.id &&
-          (oldLatestPlan.status === "success" || oldLatestPlan.status === "failed")
-        ) {
-          this.viewedRunId = oldLatestPlan.id
-          this.pinnedHeadSha = this.data.headSha
-          break
-        }
+      // A new run group appeared that didn't exist before
+      if (
+        oldLatest &&
+        newLatest &&
+        newLatest.id !== oldLatest.id &&
+        (oldLatest.status === "success" || oldLatest.status === "failed" || oldLatest.status === "partial")
+      ) {
+        // Pin to the old run group so user keeps seeing it
+        this.viewedRunGroupId = oldLatest.id
+        this.pinnedHeadSha = this.data.headSha
       }
     }
 
     this.data = typed.data
   }
 
-  /** Switch back to following the latest run (unpin) */
+  /** Switch back to following the latest run group (unpin) */
   switchToLatest(): void {
-    this.viewedRunId = null
+    this.viewedRunGroupId = null
     this.pinnedHeadSha = null
   }
 
-  /** Pin to a specific run ID */
-  pinToRun(runId: string): void {
-    this.viewedRunId = runId
+  /** Pin to a specific run group ID */
+  pinToRunGroup(runGroupId: string): void {
+    this.viewedRunGroupId = runGroupId
     // pinnedHeadSha is only set during auto-pin; manual pin doesn't change the SHA display
   }
 
@@ -95,7 +81,7 @@ export class PreviewStreamStore {
   reset(): void {
     this.data = null
     this.connectionState = "disconnected"
-    this.viewedRunId = null
+    this.viewedRunGroupId = null
     this.pinnedHeadSha = null
   }
 }

@@ -117,6 +117,27 @@ export const previews = pgTable(
 )
 
 // =============================================================================
+// Run Groups (groups related runs across workspaces)
+// =============================================================================
+
+export const runGroups = pgTable("run_groups", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  orgId: uuid("org_id")
+    .references(() => organizations.id, { onDelete: "cascade" })
+    .notNull(),
+  repo: text("repo").notNull(),
+  prNumber: integer("pr_number"), // NULL for branch/env runs
+  branch: text("branch").notNull(),
+  headSha: text("head_sha").notNull(),
+  trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
+  status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
+  runType: text("run_type").notNull(), // 'plan' | 'apply' | 'destroy'
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  startedAt: timestamp("started_at"),
+  completedAt: timestamp("completed_at"),
+})
+
+// =============================================================================
 // TF Runs
 // =============================================================================
 
@@ -125,6 +146,8 @@ export const tfRuns = pgTable("tf_runs", {
   previewId: uuid("preview_id")
     .references(() => previews.id)
     .notNull(),
+  runGroupId: uuid("run_group_id")
+    .references(() => runGroups.id, { onDelete: "set null" }),
   runType: text("run_type").notNull(),
   status: text("status").notNull(),
   checkRunId: bigint("check_run_id", { mode: "number" }),

@@ -2,10 +2,13 @@
   import { page } from "$app/stores"
   import { goto } from "$app/navigation"
   import { untrack } from "svelte"
-  import type { WorkspaceWithRuns, Run } from "$lib/api"
+  import type { WorkspaceWithRuns, Run, RunGroup } from "$lib/api"
   import { cancelRun } from "$lib/api"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
-  import { filterWorkspacesToCurrentCycle, filterToCurrentCycle } from "$lib/sse/types"
+  import {
+    getWorkspacesInRunGroup,
+    getLatestRunGroup,
+  } from "$lib/sse/types"
   import WorkspaceSidebar from "./WorkspaceSidebar.svelte"
   import Terminal from "./Terminal.svelte"
   import PlanSummary from "./PlanSummary.svelte"
@@ -20,15 +23,16 @@
     headSha: string
     authorLogin?: string | null
     workspaces: WorkspaceWithRuns[]
+    runGroups: RunGroup[]
     githubUrl: string
     streaming?: boolean
-    /** When set, display this specific run instead of the latest */
-    viewedRunId?: string | null
-    /** Whether a newer run exists beyond the pinned view */
-    hasNewerRun?: boolean
+    /** When set, display this specific run group instead of the latest */
+    viewedRunGroupId?: string | null
+    /** Whether a newer run group exists beyond the pinned view */
+    hasNewerRunGroup?: boolean
     /** Latest head SHA (for showing in new run badge) */
     latestHeadSha?: string | null
-    /** Callback to unpin and switch to latest run */
+    /** Callback to unpin and switch to latest run group */
     onSwitchToLatest?: () => void
   }
 
@@ -43,25 +47,47 @@
   const headSha = $derived(props.headSha)
   const authorLogin = $derived(props.authorLogin ?? null)
   const workspaces = $derived(props.workspaces)
+  const runGroups = $derived(props.runGroups ?? [])
   const githubUrl = $derived(props.githubUrl)
   const streaming = $derived(props.streaming ?? false)
-  const viewedRunId = $derived(props.viewedRunId ?? null)
-  const hasNewerRun = $derived(props.hasNewerRun ?? false)
+  const viewedRunGroupId = $derived(props.viewedRunGroupId ?? null)
+  const hasNewerRunGroup = $derived(props.hasNewerRunGroup ?? false)
   const latestHeadSha = $derived(props.latestHeadSha ?? null)
   const onSwitchToLatest = $derived(props.onSwitchToLatest ?? null)
+
+  // Get the run group we're viewing
+  const viewedRunGroup = $derived.by((): RunGroup | null => {
+    if (viewedRunGroupId) {
+      return runGroups.find((rg) => rg.id === viewedRunGroupId) ?? null
+    }
+    // Not pinned: show latest run group (prefer current/running, then latest)
+    const current = runGroups.find((rg) => rg.status === "running" || rg.status === "pending")
+    return current ?? runGroups[0] ?? null
+  })
+
+  // Workspaces filtered to the viewed run group
+  // Only show workspaces that have runs in the viewed run group
+  const filteredWorkspaces = $derived.by((): WorkspaceWithRuns[] => {
+    if (!viewedRunGroup) {
+      // No run groups yet, show no workspaces
+      return []
+    }
+    // Only show workspaces that have runs in this run group
+    return getWorkspacesInRunGroup(workspaces, viewedRunGroup.id)
+  })
 
   // Selected workspace from URL query param or first workspace
   let selectedPath = $derived.by(() => {
     const wsParam = $page.url.searchParams.get("ws")
-    if (wsParam && workspaces.some((w) => w.preview.workspacePath === wsParam)) {
+    if (wsParam && filteredWorkspaces.some((w) => w.preview.workspacePath === wsParam)) {
       return wsParam
     }
-    return workspaces[0]?.preview.workspacePath ?? ""
+    return filteredWorkspaces[0]?.preview.workspacePath ?? ""
   })
 
-  // Current workspace data
+  // Current workspace data (from filtered workspaces)
   const selectedWorkspace = $derived(
-    workspaces.find((w) => w.preview.workspacePath === selectedPath)
+    filteredWorkspaces.find((w) => w.preview.workspacePath === selectedPath)
   )
 
   // Tab state
@@ -72,44 +98,8 @@
   let cancellingRunId = $state<string | null>(null)
   let cancelError = $state<string | null>(null)
 
-  // When viewedRunId is set, find it across ALL workspaces to get the timestamp boundary
-  const pinnedRun = $derived.by((): Run | null => {
-    if (!viewedRunId) return null
-    for (const ws of workspaces) {
-      const run = ws.runs.find((r: Run) => r.id === viewedRunId)
-      if (run) return run
-    }
-    return null
-  })
-
-  // The timestamp boundary: when pinned, only show runs created at or before this time
-  const pinnedBoundary = $derived(pinnedRun?.createdAt ?? null)
-
-  // Filter runs to the appropriate cycle:
-  // - When pinned: show runs from the pinned cycle
-  // - When not pinned: show only current cycle (no stale applies)
-  const visibleRuns = $derived.by((): Run[] => {
-    const runs = selectedWorkspace?.runs ?? []
-    if (pinnedBoundary) {
-      return runs.filter((r: Run) => r.createdAt <= pinnedBoundary)
-    }
-    return filterToCurrentCycle(runs)
-  })
-
-  // Workspaces for sidebar: filter runs to the appropriate cycle
-  // - When pinned: show runs from the pinned cycle (created at or before pinned run)
-  // - When not pinned: show only current cycle runs (no stale applies from previous pushes)
-  const sidebarWorkspaces = $derived.by((): WorkspaceWithRuns[] => {
-    if (pinnedBoundary) {
-      // Pinned: show runs up to the pinned timestamp
-      return workspaces.map((ws) => ({
-        ...ws,
-        runs: ws.runs.filter((r: Run) => r.createdAt <= pinnedBoundary),
-      }))
-    }
-    // Not pinned: show only current cycle (filters out stale applies)
-    return filterWorkspacesToCurrentCycle(workspaces)
-  })
+  // Visible runs for the selected workspace (already filtered by run group)
+  const visibleRuns = $derived(selectedWorkspace?.runs ?? [])
 
   // Get latest plan/apply from the visible (possibly filtered) runs
   const latestPlan = $derived(
@@ -333,7 +323,7 @@ terraform {
     <!-- Sidebar -->
     <aside class="w-56 flex-shrink-0 border-r border-border bg-surface overflow-hidden">
       <WorkspaceSidebar
-        workspaces={sidebarWorkspaces}
+        workspaces={filteredWorkspaces}
         {selectedPath}
         onSelect={handleWorkspaceSelect}
       />
@@ -342,12 +332,13 @@ terraform {
     <!-- Content area -->
     <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
       {#if selectedWorkspace}
-        <!-- Workspace header: when pinned, derive status from visible runs -->
-        {@const displayStatus = pinnedBoundary
+        <!-- Workspace header: derive status from the run group / visible runs -->
+        {@const displayStatus = viewedRunGroup
           ? (latestApply?.status === "success" ? "ready"
             : latestApply?.status === "running" ? "applying"
             : latestPlan?.status === "success" ? "planned"
             : latestPlan?.status === "running" ? "planning"
+            : latestPlan?.status === "pending" ? "pending"
             : selectedWorkspace.preview.status)
           : selectedWorkspace.preview.status}
         {@const cfg = statusConfig(displayStatus)}
@@ -410,7 +401,7 @@ terraform {
               {#if cancelError}
                 <span class="text-xs text-status-failed">{cancelError}</span>
               {/if}
-              {#if hasNewerRun && onSwitchToLatest}
+              {#if hasNewerRunGroup && onSwitchToLatest}
                 <button
                   onclick={onSwitchToLatest}
                   class="flex items-center gap-2 px-3 py-1.5 bg-status-planning/15 hover:bg-status-planning/25 border border-status-planning/30 rounded text-status-planning transition-colors"
@@ -481,8 +472,16 @@ terraform {
           {/if}
         </div>
       {:else}
-        <div class="flex-1 flex items-center justify-center text-text-dim">
-          Select a workspace to view details.
+        <div class="flex-1 flex flex-col items-center justify-center text-text-dim gap-2">
+          {#if filteredWorkspaces.length === 0}
+            <svg class="w-12 h-12 text-text-dim/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <p class="text-sm">No runs yet</p>
+            <p class="text-xs text-text-dim/75">Runs will appear here when triggered by a push or PR event.</p>
+          {:else}
+            <p>Select a workspace to view details.</p>
+          {/if}
         </div>
       {/if}
     </main>

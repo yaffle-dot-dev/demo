@@ -22,6 +22,7 @@ export interface Preview {
 export interface Run {
   id: string
   previewId: string
+  runGroupId: string | null
   runType: string
   status: string
   checkRunId: number | null
@@ -33,6 +34,20 @@ export interface Run {
   completedAt: string | null
   createdAt: string
   durationMs?: number | null
+}
+
+export interface RunGroup {
+  id: string
+  repo: string
+  prNumber: number | null
+  branch: string
+  headSha: string
+  trigger: string
+  status: string
+  runType: string
+  createdAt: string
+  startedAt: string | null
+  completedAt: string | null
 }
 
 export interface ListResponse<T> {
@@ -102,6 +117,7 @@ export interface PrPreviewGroup {
   headSha: string
   authorLogin: string | null
   workspaces: WorkspaceWithRuns[]
+  runGroups: RunGroup[]
 }
 
 export interface EnvPreviewGroup {
@@ -110,6 +126,7 @@ export interface EnvPreviewGroup {
   branch: string
   headSha: string
   workspaces: WorkspaceWithRuns[]
+  runGroups: RunGroup[]
 }
 
 async function fetchJson<T>(path: string): Promise<T> {

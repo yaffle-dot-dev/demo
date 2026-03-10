@@ -41,10 +41,11 @@
     headSha={stream.pinnedHeadSha ?? displayData.headSha}
     authorLogin={displayData.authorLogin}
     workspaces={displayData.workspaces}
+    runGroups={displayData.runGroups}
     {githubUrl}
     streaming={stream.isStreaming}
-    viewedRunId={stream.viewedRunId}
-    hasNewerRun={stream.hasNewerRun}
+    viewedRunGroupId={stream.viewedRunGroupId}
+    hasNewerRunGroup={stream.hasNewerRunGroup}
     latestHeadSha={displayData.headSha}
     onSwitchToLatest={stream.switchToLatest}
   />

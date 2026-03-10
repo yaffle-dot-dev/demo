@@ -101,7 +101,7 @@
 
   {#if workspaces.length === 0}
     <div class="px-3 py-4 text-text-dim text-xs text-center">
-      No workspaces found.
+      No runs yet
     </div>
   {/if}
 </div>

@@ -229,10 +229,15 @@
               <div class="flex items-start justify-between">
                 <div>
                   <div class="flex items-center gap-2">
-                    <span class="font-medium text-text">{env.repo}</span>
-                    <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
+                    <a href="{base}/{org}/{env.repo}/env/{env.branch}" class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
+                    <a 
+                      href="https://github.com/{org}/{env.repo}/tree/{env.branch}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded hover:text-yaffle-400 transition-colors"
+                    >
                       {env.branch}
-                    </span>
+                    </a>
                     {#if showStatus}
                       <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
                         <span class="font-mono">{cfg.icon}</span>
@@ -241,7 +246,14 @@
                     {/if}
                   </div>
                   <div class="flex flex-wrap gap-4 text-xs text-text-dim mt-2">
-                    <span class="font-mono">{shortSha(env.headSha)}</span>
+                    <a 
+                      href="https://github.com/{org}/{env.repo}/commit/{env.headSha}"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      class="font-mono hover:text-yaffle-400 transition-colors"
+                    >
+                      {shortSha(env.headSha)}
+                    </a>
                     <span>{formatRelativeTime(env.updatedAt)}</span>
                   </div>
                 </div>

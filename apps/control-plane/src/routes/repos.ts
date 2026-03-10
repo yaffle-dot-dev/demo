@@ -7,6 +7,7 @@ import {
   findPreviewsByEnv,
 } from "../db/queries/previews.ts"
 import { listRunsForPreview, findLatestRun } from "../db/queries/tf-runs.ts"
+import { listRunGroupsForPr, listRunGroupsForBranch, type RunGroup } from "../db/queries/run-groups.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 import { events, type PreviewUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
 import {
@@ -70,6 +71,9 @@ reposRoute.get(
       }),
     )
 
+    // Fetch run groups for this PR
+    const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
+
     // Get metadata from first preview
     const first = previews[0]
 
@@ -83,6 +87,7 @@ reposRoute.get(
         authorGithubId: first.authorGithubId,
         authorLogin: first.authorLogin,
         workspaces: previewsWithRuns,
+        runGroups: runGroupsData.map(serializeRunGroup),
       },
     })
   },
@@ -151,6 +156,9 @@ reposRoute.get(
             }),
           )
 
+          // Fetch run groups for this PR
+          const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
+
           const queryDuration = performance.now() - startTime
           getSseSnapshotDurationHistogram().record(queryDuration, {
             type: "pr",
@@ -168,6 +176,7 @@ reposRoute.get(
               authorGithubId: first.authorGithubId,
               authorLogin: first.authorLogin,
               workspaces: previewsWithRuns,
+              runGroups: runGroupsData.map(serializeRunGroup),
             },
           })
 
@@ -289,6 +298,9 @@ reposRoute.get(
       }),
     )
 
+    // Fetch run groups for this branch
+    const runGroupsData = await listRunGroupsForBranch(auth.orgId, repo, branch)
+
     const first = previews[0]
 
     return c.json({
@@ -298,6 +310,7 @@ reposRoute.get(
         branch,
         headSha: first.headSha,
         workspaces: previewsWithRuns,
+        runGroups: runGroupsData.map(serializeRunGroup),
       },
     })
   },
@@ -357,6 +370,9 @@ reposRoute.get(
             }),
           )
 
+          // Fetch run groups for this branch
+          const runGroupsData = await listRunGroupsForBranch(auth.orgId, repo, branch)
+
           const queryDuration = performance.now() - startTime
           getSseSnapshotDurationHistogram().record(queryDuration, {
             type: "env",
@@ -371,6 +387,7 @@ reposRoute.get(
               branch,
               headSha: first.headSha,
               workspaces: previewsWithRuns,
+              runGroups: runGroupsData.map(serializeRunGroup),
             },
           })
 
@@ -481,6 +498,7 @@ function serializePreview(p: {
 interface SerializedRun {
   id: string
   previewId: string
+  runGroupId: string | null
   runType: string
   status: string
   checkRunId: number | null
@@ -496,6 +514,7 @@ interface SerializedRun {
 function serializeRun(r: {
   id: string
   previewId: string
+  runGroupId: string | null
   runType: string
   status: string
   checkRunId: number | null
@@ -510,6 +529,7 @@ function serializeRun(r: {
   return {
     id: r.id,
     previewId: r.previewId,
+    runGroupId: r.runGroupId,
     runType: r.runType,
     status: r.status,
     checkRunId: r.checkRunId,
@@ -520,5 +540,35 @@ function serializeRun(r: {
     startedAt: r.startedAt?.toISOString() ?? null,
     completedAt: r.completedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
+  }
+}
+
+interface SerializedRunGroup {
+  id: string
+  repo: string
+  prNumber: number | null
+  branch: string
+  headSha: string
+  trigger: string
+  status: string
+  runType: string
+  createdAt: string
+  startedAt: string | null
+  completedAt: string | null
+}
+
+function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
+  return {
+    id: rg.id,
+    repo: rg.repo,
+    prNumber: rg.prNumber,
+    branch: rg.branch,
+    headSha: rg.headSha,
+    trigger: rg.trigger,
+    status: rg.status,
+    runType: rg.runType,
+    createdAt: rg.createdAt.toISOString(),
+    startedAt: rg.startedAt?.toISOString() ?? null,
+    completedAt: rg.completedAt?.toISOString() ?? null,
   }
 }
