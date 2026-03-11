@@ -31,6 +31,7 @@ terraform {
   cloud {
     hostname     = "${config.hostname}"
     organization = "${config.organization}"
+    token        = "${config.token}"
 
     workspaces {
       name = "${config.workspaceName}"
