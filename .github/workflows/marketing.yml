@@ -98,21 +98,12 @@ jobs:
         uses: DeterminateSystems/flakehub-cache-action@v3
 
       - name: Install dependencies
-        run: |
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun install --frozen-lockfile
+        run: nix develop --command bun install --frozen-lockfile
 
       - name: Build marketing site
         env:
-          # Pass the site URL from Yaffle so Astro can configure correctly
           SITE_URL: ${{ steps.frontend.outputs.site_url }}
-        run: |
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun run build
+        run: nix develop --command bun run build
         working-directory: apps/marketing
 
       # -----------------------------------------------------------------------

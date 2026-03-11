@@ -1,6 +1,7 @@
 # Continuous Integration workflow
 #
 # Runs tests, type checking, and linting on every push and PR.
+# Nix packages are built separately by nix.yml using Determinate CI.
 #
 # Jobs:
 # - check: Type checking and linting (fast, no external deps)
@@ -14,9 +15,12 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 # Shared environment variables
 env:
-  # AWS region for integration tests
   AWS_REGION: us-east-1
 
 jobs:
@@ -38,25 +42,13 @@ jobs:
         uses: DeterminateSystems/flakehub-cache-action@v3
 
       - name: Install dependencies
-        run: |
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun install --frozen-lockfile
+        run: nix develop --command bun install --frozen-lockfile
 
       - name: Type check
-        run: |
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun run typecheck
+        run: nix develop --command bun run typecheck
 
       - name: Lint
-        run: |
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun run lint
+        run: nix develop --command bun run lint
 
   test:
     name: Unit tests
@@ -91,21 +83,14 @@ jobs:
         uses: DeterminateSystems/flakehub-cache-action@v3
 
       - name: Install dependencies
-        run: |
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun install --frozen-lockfile
+        run: nix develop --command bun install --frozen-lockfile
 
       - name: Run unit tests
         env:
           DATABASE_URL: postgresql://yaffle@localhost:5432/yaffle_test
         run: |
           # Run tests excluding TFC integration tests (those need AWS)
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun test --testNamePattern "^(?!.*TFC|.*State Versions|.*Module Registry)"
+          nix develop --command bun test --testNamePattern "^(?!.*TFC|.*State Versions|.*Module Registry)"
 
   integration-test:
     name: Integration tests
@@ -149,33 +134,18 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install dependencies
-        run: |
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun install --frozen-lockfile
+        run: nix develop --command bun install --frozen-lockfile
 
       - name: Run database migrations
         env:
           DATABASE_URL: postgresql://yaffle@localhost:5432/yaffle_test
-        run: |
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun run db:migrate
+        run: nix develop --command bun run db:migrate
         working-directory: apps/control-plane
 
       - name: Run TFC integration tests
         env:
           DATABASE_URL: postgresql://yaffle@localhost:5432/yaffle_test
-          # Use outputs from Yaffle, or fall back to secrets for bootstrap
-          YAFFLE_STATE_BUCKET: ${{ steps.infra.outputs.state_bucket_name || secrets.YAFFLE_STATE_BUCKET }}
+          YAFFLE_STATE_BUCKET: ${{ secrets.YAFFLE_STATE_BUCKET }}
           YAFFLE_TFC_API_HOST: localhost:6969
-          # Generate a test secret for Better Auth
           BETTER_AUTH_SECRET: ${{ secrets.BETTER_AUTH_SECRET || 'test-ci-secret-at-least-32-characters-long' }}
-        run: |
-          # Run only TFC integration tests
-          nix run github:cachix/devenv/v2.0.2 -- shell \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -- bun test apps/control-plane/src/routes/tfc/tfc.integration.test.ts
+        run: nix develop --command bun test apps/control-plane/src/routes/tfc/tfc.integration.test.ts
