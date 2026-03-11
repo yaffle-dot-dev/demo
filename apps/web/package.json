@@ -15,6 +15,7 @@
     "@yaffle/design": "workspace:*",
     "@yaffle/shared": "workspace:*",
     "better-auth": "^1.5.4",
+    "d3-dag": "^1.1.0",
     "xterm": "^5.3.0"
   },
   "devDependencies": {

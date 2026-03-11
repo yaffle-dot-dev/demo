@@ -22,7 +22,7 @@ env:
 jobs:
   check:
     name: Type check & lint
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     permissions:
       id-token: write
       contents: read
@@ -60,7 +60,7 @@ jobs:
 
   test:
     name: Unit tests
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     permissions:
       id-token: write
       contents: read
@@ -109,7 +109,7 @@ jobs:
 
   integration-test:
     name: Integration tests
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     # Only run on main branch or when explicitly requested
     # Integration tests use real AWS resources and cost money
     if: github.ref == 'refs/heads/main' || contains(github.event.pull_request.labels.*.name, 'run-integration-tests')

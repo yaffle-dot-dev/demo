@@ -36,6 +36,15 @@ export interface Run {
   durationMs?: number | null
 }
 
+/**
+ * Dependency graph for workspace execution order.
+ * Edges are [source, target] tuples where source depends on target.
+ */
+export interface DependencyGraph {
+  workspaces: string[]
+  edges: [string, string][]
+}
+
 export interface RunGroup {
   id: string
   repo: string
@@ -44,6 +53,8 @@ export interface RunGroup {
   headSha: string
   trigger: string
   status: string
+  /** Inferred dependency graph for this run group */
+  dependencyGraph: DependencyGraph | null
   createdAt: string
   startedAt: string | null
   completedAt: string | null

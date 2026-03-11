@@ -131,6 +131,9 @@ export const runGroups = pgTable("run_groups", {
   headSha: text("head_sha").notNull(),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
   status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
+  // Inferred dependency graph for this run group
+  // Structure: { workspaces: string[], edges: [string, string][] }
+  dependencyGraph: jsonb("dependency_graph"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   startedAt: timestamp("started_at"),
   completedAt: timestamp("completed_at"),

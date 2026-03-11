@@ -18,6 +18,9 @@ bun.lock
 # Build output
 dist/
 
+# Exception: GitHub Actions must have dist/ committed
+!actions/*/dist/
+
 # Drizzle
 apps/control-plane/drizzle/
 

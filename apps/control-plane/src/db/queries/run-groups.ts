@@ -5,6 +5,7 @@ import type { RunStatus } from "@yaffle/shared"
 import { db } from "../../lib/db.ts"
 import { runGroups, tfRuns } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
+import type { SerializableDependencyGraph } from "../../lib/dependency-graph.ts"
 
 export type RunGroup = typeof runGroups.$inferSelect
 export type NewRunGroup = typeof runGroups.$inferInsert
@@ -153,6 +154,21 @@ export async function getLatestRunGroupForBranch(
       .orderBy(desc(runGroups.createdAt))
       .limit(1)
     return rows[0]
+  })
+}
+
+/**
+ * Update the dependency graph for a run group.
+ */
+export async function updateRunGroupDependencyGraph(
+  runGroupId: string,
+  dependencyGraph: SerializableDependencyGraph,
+): Promise<void> {
+  return withDbSpan("update", "run_groups", async () => {
+    await db
+      .update(runGroups)
+      .set({ dependencyGraph })
+      .where(eq(runGroups.id, runGroupId))
   })
 }
 

@@ -543,6 +543,11 @@ function serializeRun(r: {
   }
 }
 
+interface SerializedDependencyGraph {
+  workspaces: string[]
+  edges: [string, string][]
+}
+
 interface SerializedRunGroup {
   id: string
   repo: string
@@ -551,6 +556,7 @@ interface SerializedRunGroup {
   headSha: string
   trigger: string
   status: string
+  dependencyGraph: SerializedDependencyGraph | null
   createdAt: string
   startedAt: string | null
   completedAt: string | null
@@ -565,6 +571,7 @@ function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
     headSha: rg.headSha,
     trigger: rg.trigger,
     status: rg.status,
+    dependencyGraph: rg.dependencyGraph as SerializedDependencyGraph | null,
     createdAt: rg.createdAt.toISOString(),
     startedAt: rg.startedAt?.toISOString() ?? null,
     completedAt: rg.completedAt?.toISOString() ?? null,

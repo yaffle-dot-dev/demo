@@ -80,6 +80,33 @@ export class DependencyGraph {
   }
 
   /**
+   * Add an isolated node (workspace with no dependencies).
+   * Used to ensure all workspaces appear in topological order.
+   */
+  addIsolatedNode(path: string): void {
+    if (!this.dependencies.has(path)) {
+      this.dependencies.set(path, new Set())
+    }
+  }
+
+  /**
+   * Get all nodes in the graph.
+   */
+  getAllNodes(): string[] {
+    const nodes = new Set<string>()
+    for (const [source, targets] of Array.from(this.dependencies)) {
+      nodes.add(source)
+      for (const target of Array.from(targets)) {
+        nodes.add(target)
+      }
+    }
+    for (const [target] of Array.from(this.dependents)) {
+      nodes.add(target)
+    }
+    return Array.from(nodes)
+  }
+
+  /**
    * Get direct dependencies of a workspace.
    */
   getDependencies(path: string): string[] {
@@ -329,6 +356,30 @@ export class DependencyGraph {
   }
 
   /**
+   * Export to minimal serializable format for UI/storage.
+   * This is the format stored in run_groups.dependency_graph.
+   */
+  toSerializable(): SerializableDependencyGraph {
+    const workspaces = this.getAllNodes()
+    const edges: [string, string][] = []
+
+    for (const [source, targets] of Array.from(this.dependencies)) {
+      for (const target of Array.from(targets)) {
+        edges.push([source, target])
+      }
+    }
+
+    return { workspaces, edges }
+  }
+
+  /**
+   * Create a graph from the minimal serializable format.
+   */
+  static fromSerializable(data: SerializableDependencyGraph): DependencyGraph {
+    return buildGraphFromInferred(data.workspaces, data.edges)
+  }
+
+  /**
    * Create a graph from serialized data.
    */
   static fromJSON(data: {
@@ -351,6 +402,53 @@ export class DependencyGraph {
 
     return graph
   }
+}
+
+/**
+ * Serializable dependency graph for API responses and storage.
+ * This is the minimal representation needed for UI rendering.
+ */
+export interface SerializableDependencyGraph {
+  /** All workspace paths in the graph */
+  workspaces: string[]
+  /** Edges as [source, target] tuples (source depends on target) */
+  edges: [string, string][]
+}
+
+/**
+ * Build a DependencyGraph from inferred dependencies.
+ *
+ * This is used by the module dependency scanner to create a graph
+ * from Terraform module source analysis.
+ *
+ * @param workspaces - All workspace paths
+ * @param edges - Dependency edges as [source, target] tuples
+ * @returns A populated DependencyGraph
+ */
+export function buildGraphFromInferred(
+  workspaces: string[],
+  edges: [string, string][],
+): DependencyGraph {
+  const graph = new DependencyGraph()
+
+  for (const [source, target] of edges) {
+    graph.addDependency({
+      source,
+      target,
+      preview: "auto", // Default for inferred dependencies
+    })
+  }
+
+  // Ensure all workspaces are represented in the graph
+  // (even those with no dependencies)
+  for (const ws of workspaces) {
+    if (!graph.getDependencies(ws).length && !graph.getDependents(ws).length) {
+      // Add as isolated node by adding empty dependency set
+      graph.addIsolatedNode(ws)
+    }
+  }
+
+  return graph
 }
 
 /**

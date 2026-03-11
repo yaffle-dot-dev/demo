@@ -20,7 +20,7 @@ import { executeApplyCallbacks } from "./apply-callbacks.ts"
 import { ensureOrg, findGithubInstallationsForOrg } from "../db/queries/organizations.ts"
 import { findPreview, findPreviewById, markRemovedWorkspacesDestroyed, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
 import { appendRunLog, createTfRun, findLatestRun, updateRunStatus } from "../db/queries/tf-runs.ts"
-import { createRunGroup, type RunGroupTrigger } from "../db/queries/run-groups.ts"
+import { createRunGroup, updateRunGroupDependencyGraph, type RunGroupTrigger } from "../db/queries/run-groups.ts"
 import { events } from "./events.ts"
 import {
   createCheckRun,
@@ -61,6 +61,9 @@ import {
   logger,
   withSpan,
 } from "./telemetry.ts"
+import { scanAllWorkspaceDependencies } from "./module-dependency-scanner.ts"
+import { buildGraphFromInferred, type SerializableDependencyGraph } from "./dependency-graph.ts"
+import { prepareWorkspace, cleanupWorkspace } from "./workspace.ts"
 
 const CHECK_NAME = "Yaffle / terraform"
 
@@ -106,6 +109,99 @@ function contextAttrs(ctx: WebhookContext): Record<string, string | number> {
  * In tests, we inject a fake loader.
  */
 type ConfigLoader = (ctx: WebhookContext, token?: string) => Promise<YaffleConfig>
+
+/**
+ * Result of scanning workspace dependencies and computing execution order.
+ */
+interface DependencyScanResult {
+  /** Serializable graph for storage/UI */
+  graph: SerializableDependencyGraph
+  /** Workspace paths in topological execution order */
+  executionOrder: string[]
+}
+
+/**
+ * Scan repository for workspace dependencies and compute execution order.
+ *
+ * Clones the repo, scans all workspace directories for Yaffle module references,
+ * builds a dependency graph, and returns the topological execution order.
+ *
+ * @param ctx - Webhook context with repo info
+ * @param workspacePaths - List of workspace paths from config
+ * @param installationToken - GitHub token for cloning
+ * @returns Dependency graph and execution order
+ */
+async function scanDependencies(
+  ctx: WebhookContext,
+  workspacePaths: string[],
+  installationToken?: string,
+): Promise<DependencyScanResult> {
+  return withSpan("scan_dependencies", async (span) => {
+    span.setAttributes({
+      "yaffle.workspace_count": workspacePaths.length,
+    })
+
+    // Clone repo to scan for dependencies
+    let repoDir: string | undefined
+    try {
+      repoDir = await prepareWorkspace({
+        owner: ctx.owner,
+        repo: ctx.repo,
+        headSha: ctx.headSha,
+        installationToken,
+      })
+
+      // Scan all workspaces for module dependencies
+      const inferredGraph = await scanAllWorkspaceDependencies(repoDir, workspacePaths)
+
+      // Build the graph and check for cycles
+      const graph = buildGraphFromInferred(inferredGraph.workspaces, inferredGraph.edges)
+      const cycleCheck = graph.detectCycle()
+
+      if (cycleCheck.hasCycle) {
+        const cyclePath = cycleCheck.cyclePath?.join(" → ") ?? "unknown"
+        throw new ConfigError(`Circular dependency detected: ${cyclePath}`)
+      }
+
+      // Get topological order
+      const executionOrder = graph.getTopologicalOrder()
+      if (!executionOrder) {
+        throw new ConfigError("Failed to compute execution order (possible cycle)")
+      }
+
+      // Filter to only include workspaces that are in the config
+      // (the graph might include external dependencies)
+      const configPaths = new Set(workspacePaths)
+      const filteredOrder = executionOrder.filter((path) => configPaths.has(path))
+
+      // Add any workspaces from config that weren't in the graph (no dependencies)
+      for (const path of workspacePaths) {
+        if (!filteredOrder.includes(path)) {
+          filteredOrder.push(path)
+        }
+      }
+
+      logger.info("Dependency scan complete", {
+        "yaffle.execution_order": filteredOrder,
+        "yaffle.edge_count": inferredGraph.edges.length,
+      })
+
+      span.setAttributes({
+        "yaffle.execution_order": filteredOrder.join(", "),
+        "yaffle.edge_count": inferredGraph.edges.length,
+      })
+
+      return {
+        graph: graph.toSerializable(),
+        executionOrder: filteredOrder,
+      }
+    } finally {
+      if (repoDir) {
+        await cleanupWorkspace(repoDir)
+      }
+    }
+  })
+}
 
 /**
  * Create a handler with an injected runner and optional overrides.
@@ -729,6 +825,34 @@ async function handlePrOpenedOrUpdated(
     status: "pending",
   })
 
+  // Scan dependencies and compute execution order
+  const workspacePaths = config.workspaces.map((ws) => ws.path)
+  let executionOrder: string[]
+  let dependencyGraph: SerializableDependencyGraph
+
+  try {
+    const scanResult = await scanDependencies(ctx, workspacePaths, installationToken)
+    executionOrder = scanResult.executionOrder
+    dependencyGraph = scanResult.graph
+
+    // Store the dependency graph in the run group for UI
+    await updateRunGroupDependencyGraph(runGroup.id, dependencyGraph)
+
+    logger.info("Execution order determined", {
+      ...attrs,
+      "yaffle.execution_order": executionOrder,
+    })
+  } catch (err) {
+    // If dependency scan fails, fall back to config order
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.warn(`Dependency scan failed, using config order: ${msg}`, attrs)
+    executionOrder = workspacePaths
+    dependencyGraph = { workspaces: workspacePaths, edges: [] }
+  }
+
+  // Create a map for quick workspace lookup by path
+  const workspaceByPath = new Map(config.workspaces.map((ws) => [ws.path, ws]))
+
   // First pass: upsert all previews and create pending runs upfront
   // This ensures all workspaces appear in the UI immediately
   const workspaceData: Array<{
@@ -739,7 +863,10 @@ async function handlePrOpenedOrUpdated(
     wsTag: string
   }> = []
 
-  for (const ws of config.workspaces) {
+  // Iterate in execution order (topological)
+  for (const wsPath of executionOrder) {
+    const ws = workspaceByPath.get(wsPath)
+    if (!ws) continue // Skip if not in config (shouldn't happen)
     const stateKey = buildStateKey(statePrefix, ws.path)
     const wsTag = `${tag}:${ws.path}`
 
@@ -779,22 +906,40 @@ async function handlePrOpenedOrUpdated(
     events.emitRunUpdate(first.pendingRunId, first.preview.id)
   }
 
-  // Track which workspaces need apply after planning
-  const workspacesForApply: Array<{
-    ws: typeof config.workspaces[0]
-    preview: { id: string }
-    planResult: RunResult
-    tfcWorkspaceId?: string
-    tfcWorkspaceName?: string
-    tfcOrganization?: string
-    tfcToken?: string
-    variables: Record<string, string>
-    stateKey: string
-    wsTag: string
-  }> = []
+  // Track which workspaces have failed (to skip downstream dependents)
+  const failedWorkspaces = new Set<string>()
 
-  // Second pass: execute plans sequentially
+  // Build a set of dependencies for each workspace for quick lookup
+  const workspaceDeps = new Map<string, Set<string>>()
+  for (const [source, target] of dependencyGraph.edges) {
+    if (!workspaceDeps.has(source)) {
+      workspaceDeps.set(source, new Set())
+    }
+    workspaceDeps.get(source)!.add(target)
+  }
+
+  // Execute plan + apply for each workspace in topological order
+  // This ensures upstream workspaces complete before downstream ones start
   for (const { ws, preview, pendingRunId, stateKey, wsTag } of workspaceData) {
+    // Check if any upstream dependency failed - if so, skip this workspace
+    const deps = workspaceDeps.get(ws.path) ?? new Set()
+    const failedDeps = [...deps].filter((dep) => failedWorkspaces.has(dep))
+
+    if (failedDeps.length > 0) {
+      logger.warn("Skipping workspace due to failed upstream dependency", {
+        workspace: ws.path,
+        failedDependencies: failedDeps,
+      })
+
+      // Mark plan as skipped
+      await updateRunStatus(pendingRunId, preview.id, "skipped", {
+        errorMessage: `Skipped: upstream dependency failed (${failedDeps.join(", ")})`,
+      })
+      await updatePreviewStatus(preview.id, "failed")
+      failedWorkspaces.add(ws.path)
+      continue
+    }
+
     await withSpan("workspace.preview", async (wsSpan) => {
       const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
       wsSpan.setAttributes(wsAttrs)
@@ -860,27 +1005,15 @@ async function handlePrOpenedOrUpdated(
           errorMessage: planResult.errorMessage,
           planCheckRun,
         })
+        failedWorkspaces.add(ws.path)
         return
       }
 
-      // Queue workspace for apply if auto_apply is enabled AND there are changes
+      // Check if apply is needed
       const hasChanges = planResult.planSummary !== "no changes"
-      if (ws.auto_apply && hasChanges) {
-        workspacesForApply.push({
-          ws,
-          preview,
-          planResult,
-          tfcWorkspaceId,
-          tfcWorkspaceName,
-          tfcOrganization,
-          tfcToken,
-          variables,
-          stateKey,
-          wsTag,
-        })
-      } else {
+
+      if (!ws.auto_apply || !hasChanges) {
         // No apply needed - either auto_apply disabled or no changes
-        // Both cases result in "ready" state (infrastructure matches desired state)
         await updatePreviewStatus(preview.id, "ready")
 
         // Create a skipped apply run if no changes (so UI shows A:- instead of A:~)
@@ -899,17 +1032,10 @@ async function handlePrOpenedOrUpdated(
           planSummary: planResult.planSummary,
           planCheckRun,
         })
+        return
       }
-    })
-  }
 
-  // Apply phase: process all workspaces that need apply (same run group)
-  if (workspacesForApply.length > 0) {
-    for (const item of workspacesForApply) {
-      const { ws, preview, planResult, tfcWorkspaceId, tfcWorkspaceName, tfcOrganization, tfcToken, variables, stateKey, wsTag } = item
-      const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
-      const planCheckRun = makeCheckRunRef(ctx, planResult.checkRunId)
-
+      // Apply immediately after plan (DAG execution model)
       logger.info("auto-applying preview", wsAttrs)
       await updatePreviewStatus(preview.id, "applying")
       await comment.update(ws.path, {
@@ -968,8 +1094,9 @@ async function handlePrOpenedOrUpdated(
           planCheckRun,
           applyCheckRun,
         })
+        failedWorkspaces.add(ws.path)
       }
-    }
+    })
   }
 }
 
@@ -1182,6 +1309,34 @@ async function handlePushEvent(
     status: "pending",
   })
 
+  // Scan dependencies and compute execution order
+  const activeWorkspacePaths = activeWorkspaces.map((ws) => ws.path)
+  let executionOrder: string[]
+  let dependencyGraph: SerializableDependencyGraph
+
+  try {
+    const scanResult = await scanDependencies(ctx, activeWorkspacePaths, installationToken)
+    executionOrder = scanResult.executionOrder
+    dependencyGraph = scanResult.graph
+
+    // Store the dependency graph in the run group for UI
+    await updateRunGroupDependencyGraph(runGroup.id, dependencyGraph)
+
+    logger.info("Execution order determined", {
+      ...attrs,
+      "yaffle.execution_order": executionOrder,
+    })
+  } catch (err) {
+    // If dependency scan fails, fall back to config order
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.warn(`Dependency scan failed, using config order: ${msg}`, attrs)
+    executionOrder = activeWorkspacePaths
+    dependencyGraph = { workspaces: activeWorkspacePaths, edges: [] }
+  }
+
+  // Create a map for quick workspace lookup by path
+  const workspaceByPath = new Map(activeWorkspaces.map((ws) => [ws.path, ws]))
+
   // First pass: upsert all previews and create pending runs upfront
   const workspaceData: Array<{
     ws: typeof config.workspaces[0]
@@ -1192,7 +1347,10 @@ async function handlePushEvent(
     variables: Record<string, string>
   }> = []
 
-  for (const ws of activeWorkspaces) {
+  // Iterate in execution order (topological)
+  for (const wsPath of executionOrder) {
+    const ws = workspaceByPath.get(wsPath)
+    if (!ws) continue // Skip if not in config
     const stateKey = buildStateKey(statePrefix, ws.path)
     const wsTag = `${tag}:${ws.path}`
     const variables = interpolateVariables(ws.variables, varCtx)
@@ -1231,22 +1389,40 @@ async function handlePushEvent(
     events.emitRunUpdate(first.pendingRunId, first.preview.id)
   }
 
-  // Track workspaces for apply
-  const workspacesForApply: Array<{
-    ws: typeof config.workspaces[0]
-    preview: { id: string }
-    planResult: RunResult
-    tfcWorkspaceId?: string
-    tfcWorkspaceName?: string
-    tfcOrganization?: string
-    tfcToken?: string
-    variables: Record<string, string>
-    stateKey: string
-    wsTag: string
-  }> = []
+  // Track which workspaces have failed (to skip downstream dependents)
+  const failedWorkspaces = new Set<string>()
 
-  // Second pass: execute plans sequentially
+  // Build a set of dependencies for each workspace for quick lookup
+  const workspaceDeps = new Map<string, Set<string>>()
+  for (const [source, target] of dependencyGraph.edges) {
+    if (!workspaceDeps.has(source)) {
+      workspaceDeps.set(source, new Set())
+    }
+    workspaceDeps.get(source)!.add(target)
+  }
+
+  // Execute plan + apply for each workspace in topological order
+  // This ensures upstream workspaces complete before downstream ones start
   for (const { ws, preview, pendingRunId, stateKey, wsTag, variables } of workspaceData) {
+    // Check if any upstream dependency failed - if so, skip this workspace
+    const deps = workspaceDeps.get(ws.path) ?? new Set()
+    const failedDeps = [...deps].filter((dep) => failedWorkspaces.has(dep))
+
+    if (failedDeps.length > 0) {
+      logger.warn("Skipping workspace due to failed upstream dependency", {
+        workspace: ws.path,
+        failedDependencies: failedDeps,
+      })
+
+      // Mark plan as skipped
+      await updateRunStatus(pendingRunId, preview.id, "skipped", {
+        errorMessage: `Skipped: upstream dependency failed (${failedDeps.join(", ")})`,
+      })
+      await updatePreviewStatus(preview.id, "failed")
+      failedWorkspaces.add(ws.path)
+      continue
+    }
+
     await withSpan("workspace.production", async (wsSpan) => {
       const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
       wsSpan.setAttributes(wsAttrs)
@@ -1300,7 +1476,10 @@ async function handlePushEvent(
         tfcToken,
       })
 
-      if (!planResult.success) return
+      if (!planResult.success) {
+        failedWorkspaces.add(ws.path)
+        return
+      }
 
       // Check if there are changes to apply
       const hasChanges = planResult.planSummary !== "no changes"
@@ -1339,31 +1518,12 @@ async function handlePushEvent(
             summary: "Approval required before production apply.",
           })
         }
+        // Note: require_approval workspaces don't block downstream
+        // because approval/apply happens asynchronously
         return
       }
 
-      // Queue for apply phase
-      workspacesForApply.push({
-        ws,
-        preview,
-        planResult,
-        tfcWorkspaceId,
-        tfcWorkspaceName,
-        tfcOrganization,
-        tfcToken,
-        variables,
-        stateKey,
-        wsTag,
-      })
-    })
-  }
-
-  // Apply phase: process workspaces that don't require approval (same run group)
-  if (workspacesForApply.length > 0) {
-    for (const item of workspacesForApply) {
-      const { ws, preview, planResult, tfcWorkspaceId, tfcWorkspaceName, tfcOrganization, tfcToken, variables, stateKey, wsTag } = item
-      const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
-
+      // Apply immediately after plan (DAG execution model)
       logger.info("applying production", wsAttrs)
       await updatePreviewStatus(preview.id, "applying")
 
@@ -1415,12 +1575,13 @@ async function handlePushEvent(
         }
       } else {
         await updatePreviewStatus(preview.id, "failed")
+        failedWorkspaces.add(ws.path)
       }
-    }
+    })
   }
 
   // Mark workspaces that are no longer in the config as destroyed
-  const activeWorkspacePaths = config.workspaces
+  const configWorkspacePaths = config.workspaces
     .filter((ws) => ws.auto_apply_on_merge || ws.require_approval)
     .map((ws) => ws.path)
 
@@ -1429,7 +1590,7 @@ async function handlePushEvent(
     ctx.repo,
     ctx.branch,
     ctx.headSha,
-    activeWorkspacePaths,
+    configWorkspacePaths,
   )
 
   if (destroyedCount > 0) {
