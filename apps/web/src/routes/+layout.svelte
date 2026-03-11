@@ -11,6 +11,7 @@
   let { children } = $props()
   let orgs = $state<OrgInfo[]>([])
   let showOrgMenu = $state(false)
+  let showUserMenu = $state(false)
   let hasFetchedOrgs = false
 
   // GitHub App name for installation URL
@@ -27,6 +28,10 @@
 
   // Get current org from URL if on an org page, otherwise use last visited org
   const currentOrg = $derived(page.params.org ?? getLastOrg() ?? "")
+  
+  // Get current org's role (admin check for settings)
+  const currentOrgRole = $derived(orgs.find(o => o.slug === currentOrg)?.role ?? "")
+  const isOrgAdmin = $derived(currentOrgRole === "admin")
 
   async function fetchOrgs(): Promise<void> {
     if (hasFetchedOrgs) return
@@ -64,7 +69,7 @@
   }
 </script>
 
-<svelte:window onclick={() => showOrgMenu = false} />
+<svelte:window onclick={() => { showOrgMenu = false; showUserMenu = false }} />
 
 <div class="min-h-screen bg-surface">
   <nav class="border-b border-border bg-surface-raised">
@@ -117,10 +122,44 @@
       </div>
       <div class="flex gap-4 text-sm text-text-muted items-center">
         {#if isLoggedIn}
-          <span class="text-xs text-text-dim">@{userLogin}</span>
-          <button class="text-xs text-text-muted hover:text-text transition-colors" onclick={signOut}>
-            Sign out
-          </button>
+          <div class="relative">
+            <button
+              class="flex items-center gap-1.5 px-2 py-1 rounded text-sm text-text-dim hover:bg-surface-overlay hover:text-text transition-colors"
+              onclick={(e) => { e.stopPropagation(); showUserMenu = !showUserMenu }}
+            >
+              @{userLogin}
+              <svg class="w-3 h-3 text-text-dim" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+              </svg>
+            </button>
+            {#if showUserMenu}
+              <div class="absolute top-full right-0 mt-1 py-1 bg-surface-raised border border-border rounded-lg shadow-lg z-50 min-w-[160px]">
+                <a
+                  href="{base}/settings"
+                  class="block w-full text-left px-3 py-1.5 text-sm text-text-muted hover:bg-surface-overlay hover:text-text transition-colors"
+                  onclick={() => showUserMenu = false}
+                >
+                  User settings
+                </a>
+                {#if currentOrg && isOrgAdmin}
+                  <a
+                    href="{base}/{currentOrg}/settings"
+                    class="block w-full text-left px-3 py-1.5 text-sm text-text-muted hover:bg-surface-overlay hover:text-text transition-colors"
+                    onclick={() => showUserMenu = false}
+                  >
+                    Org settings
+                  </a>
+                {/if}
+                <hr class="my-1 border-border" />
+                <button
+                  class="block w-full text-left px-3 py-1.5 text-sm text-text-muted hover:bg-surface-overlay hover:text-text transition-colors"
+                  onclick={signOut}
+                >
+                  Sign out
+                </button>
+              </div>
+            {/if}
+          </div>
         {:else}
           <button class="text-xs text-text-muted hover:text-text transition-colors" onclick={startGithubLogin}>
             Sign in with GitHub

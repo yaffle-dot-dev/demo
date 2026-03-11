@@ -1,20 +1,16 @@
 # Marketing Site Deployment
 #
 # Builds the Astro marketing site and deploys to S3/CloudFront.
-# Uses Yaffle for infrastructure provisioning:
-# - PRs get preview environments
-# - Push to main deploys to production (yaffle.dev)
+# Uses the same deploy script as local deploys (scripts/deploy-marketing.ts).
 #
 # Flow:
-# 1. Wait for Yaffle to provision S3 bucket (apps/marketing/infra)
-# 2. Wait for Yaffle to provision CloudFront (apps/infra)
-# 3. Build Astro site with correct domain
-# 4. Assume marketing deploy role, sync to S3
-# 5. Assume invalidation role, invalidate CloudFront cache
+# 1. Wait for Yaffle to provision infrastructure
+# 2. Build Astro site with correct domain
+# 3. Sync to S3, invalidate CloudFront
 #
-# IAM Roles:
-# - apps/marketing/infra outputs deploy_role_arn (S3 access)
-# - apps/infra outputs invalidation_role_arn (CloudFront access)
+# Local equivalent:
+#   nix run .#deploy-marketing -- --pr 123
+#   nix run .#deploy-marketing -- --production
 
 name: Marketing
 
@@ -24,6 +20,7 @@ on:
     paths:
       - "apps/marketing/**"
       - "packages/design/**"
+      - "scripts/deploy-marketing.ts"
       - ".github/workflows/marketing.yml"
   pull_request:
     paths:
@@ -31,7 +28,12 @@ on:
       - "apps/marketing/infra/**"
       - "apps/infra/**"
       - "packages/design/**"
+      - "scripts/deploy-marketing.ts"
       - ".github/workflows/marketing.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   AWS_REGION: us-east-1
@@ -49,48 +51,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------------------------
-      # Wait for Yaffle Infrastructure
-      # -----------------------------------------------------------------------
-      # We need outputs from two workspaces:
-      # - apps/marketing/infra: S3 bucket name, deploy role ARN
-      # - apps/infra: CloudFront distribution ID, site URL, invalidation role ARN
-
-      - name: Get marketing infra from Yaffle
-        id: marketing
-        uses: ./actions/outputs-action
-        with:
-          workspace: apps/marketing/infra
-          wait: true
-          wait-timeout: 600
-
-      - name: Get frontend infra from Yaffle
-        id: frontend
-        uses: ./actions/outputs-action
-        with:
-          workspace: apps/infra
-          wait: true
-          wait-timeout: 600
-
-      - name: Show infrastructure status
-        run: |
-          echo "## Infrastructure Status" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Marketing Bucket" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ steps.marketing.outputs.preview-status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Bucket**: ${{ steps.marketing.outputs.primary_bucket_name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Deploy Role**: ${{ steps.marketing.outputs.deploy_role_arn }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### Frontend (CloudFront)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ steps.frontend.outputs.preview-status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Site URL**: ${{ steps.frontend.outputs.site_url }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **CloudFront**: ${{ steps.frontend.outputs.cloudfront_distribution_id }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Invalidation Role**: ${{ steps.frontend.outputs.invalidation_role_arn }}" >> $GITHUB_STEP_SUMMARY
-
-      # -----------------------------------------------------------------------
-      # Build Astro Site
-      # -----------------------------------------------------------------------
-
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
 
@@ -100,88 +60,60 @@ jobs:
       - name: Install dependencies
         run: nix develop --command bun install --frozen-lockfile
 
-      - name: Build marketing site
+      - name: Deploy (PR preview)
+        if: github.event_name == 'pull_request'
         env:
-          SITE_URL: ${{ steps.frontend.outputs.site_url }}
-        run: nix develop --command bun run build
-        working-directory: apps/marketing
-
-      # -----------------------------------------------------------------------
-      # Deploy to S3
-      # -----------------------------------------------------------------------
-      # Assumes the marketing-specific deploy role with S3 permissions
-
-      - name: Configure AWS credentials for S3 deploy
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ steps.marketing.outputs.deploy_role_arn }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Sync to S3
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
-          # Sync immutable assets with long cache
-          aws s3 sync apps/marketing/dist/ s3://${{ steps.marketing.outputs.primary_bucket_name }}/ \
-            --delete \
-            --cache-control "public, max-age=31536000, immutable" \
-            --exclude "*" \
-            --include "_astro/*"
+          nix develop --command bun run scripts/deploy-marketing.ts \
+            --pr ${{ github.event.pull_request.number }}
 
-          # Sync everything else with short cache
-          aws s3 sync apps/marketing/dist/ s3://${{ steps.marketing.outputs.primary_bucket_name }}/ \
-            --delete \
-            --cache-control "public, max-age=0, must-revalidate" \
-            --exclude "_astro/*"
-
-      # -----------------------------------------------------------------------
-      # Invalidate CloudFront Cache
-      # -----------------------------------------------------------------------
-      # Assumes the invalidation role with CloudFront permissions
-
-      - name: Configure AWS credentials for CloudFront invalidation
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ steps.frontend.outputs.invalidation_role_arn }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Invalidate CloudFront cache
+      - name: Deploy (main)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
-          aws cloudfront create-invalidation \
-            --distribution-id ${{ steps.frontend.outputs.cloudfront_distribution_id }} \
-            --paths "/*" "/_astro/*"
+          nix develop --command bun run scripts/deploy-marketing.ts --env main
 
-      # -----------------------------------------------------------------------
-      # Summary
-      # -----------------------------------------------------------------------
-
-      - name: Deployment summary
-        run: |
-          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Site deployed to: **${{ steps.frontend.outputs.site_url }}**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "CloudFront invalidation initiated. Changes will propagate within a few minutes." >> $GITHUB_STEP_SUMMARY
-
-      # Post preview URL as PR comment (only on PRs)
+      # Post preview URL as PR comment
       - name: Comment preview URL on PR
         if: github.event_name == 'pull_request'
         uses: actions/github-script@v7
         with:
           script: |
-            const siteUrl = '${{ steps.frontend.outputs.site_url }}';
+            // Get the site URL from Yaffle outputs
+            const { execSync } = require('child_process');
+            const result = JSON.parse(execSync(
+              `nix develop --command bun run packages/cli/src/outputs.ts --pr ${{ github.event.pull_request.number }} --workspace apps/infra --format json`,
+              { encoding: 'utf8', env: { ...process.env, GITHUB_TOKEN: '${{ secrets.GITHUB_TOKEN }}' } }
+            ));
+            const siteUrl = result.outputs?.site_url?.value || 'unknown';
+
             const body = `## Marketing Site Preview
 
             Your changes have been deployed to: **${siteUrl}**
 
-            The site will be available once CloudFront propagates the changes (usually 1-2 minutes).`;
+            The site will be available once CloudFront propagates the changes (usually 1-2 minutes).
 
-            // Find existing comment to update
+            <details>
+            <summary>Deploy locally</summary>
+
+            \`\`\`bash
+            nix run .#deploy-marketing -- --pr ${{ github.event.pull_request.number }}
+            \`\`\`
+            </details>`;
+
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
             });
 
-            const botComment = comments.find(c => 
+            const botComment = comments.find(c =>
               c.user.type === 'Bot' && c.body.includes('Marketing Site Preview')
             );
 

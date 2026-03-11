@@ -33,6 +33,13 @@
             src = ./.;
           };
 
+          # CLI tools (yaffle-outputs)
+          yaffle-cli = pkgs.callPackage ./nix/yaffle-cli.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+            src = ./.;
+          };
+
           # OCI container image for control-plane
           control-plane-image = n2c.buildImage {
             name = "ghcr.io/yaffle-dot-dev/yaffle/control-plane";
@@ -58,9 +65,49 @@
             };
           };
         in {
-          inherit control-plane;
+          inherit control-plane yaffle-cli;
           control-plane-image = control-plane-image;
           default = control-plane;
+          # Alias for nix run .#yaffle-outputs
+          yaffle-outputs = yaffle-cli;
+        }
+      );
+
+      # Apps for nix run
+      apps = forEachSystem (system:
+        let
+          pkgs = nixpkgs.legacyPackages.${system};
+          yaffle-cli = self.packages.${system}.yaffle-cli;
+        in {
+          yaffle-outputs = {
+            type = "app";
+            program = "${yaffle-cli}/bin/yaffle-outputs";
+          };
+
+          # Yaffle CLI
+          yaffle = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "yaffle" ''
+              if [ ! -f "packages/cli/src/main.ts" ]; then
+                echo "Error: Must run from yaffle repo root" >&2
+                exit 1
+              fi
+              exec ${pkgs.bun}/bin/bun run packages/cli/src/main.ts "$@"
+            '');
+          };
+
+          # Deploy scripts - same script used by CI and local
+          # Uses PWD so it works from the repo checkout
+          deploy-marketing = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-marketing" ''
+              if [ ! -f "scripts/deploy-marketing.ts" ]; then
+                echo "Error: Must run from yaffle repo root" >&2
+                exit 1
+              fi
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-marketing.ts "$@"
+            '');
+          };
         }
       );
 
@@ -98,6 +145,9 @@
             ];
 
             shellHook = ''
+              # Trust Caddy's local CA for HTTPS in development
+              export NODE_EXTRA_CA_CERTS="$HOME/Library/Application Support/Caddy/pki/authorities/local/root.crt"
+
               echo ""
               echo "yaffle dev environment"
               echo "  devenv      $(devenv version 2>&1 | head -1)"
@@ -120,10 +170,11 @@
             SMEE_URL = "https://smee.io/AMHdVEIzSjKsXVkb";
             SECRETSPEC_PROFILE = "development";
             SECRETSPEC_PROVIDER = "onepassword://yaffle.dev";
+            YAFFLE_HOST = "https://yaffle.local:6969";
             YAFFLE_AUTH_MODE = "required";
-            YAFFLE_AUTH_ISSUER = "http://localhost:3000";
+            YAFFLE_AUTH_ISSUER = "http://yaffle.local:3000";
             YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
-            VITE_YAFFLE_AUTH_ISSUER = "http://localhost:3000";
+            VITE_YAFFLE_AUTH_ISSUER = "http://yaffle.local:3000";
             VITE_YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
             YAFFLE_ENV = "development";
           };

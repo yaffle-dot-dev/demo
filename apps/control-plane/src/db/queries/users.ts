@@ -6,7 +6,7 @@ import { orgMemberships, organizations, user, account } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 
 export type OrgMembership = typeof orgMemberships.$inferSelect
-export type MembershipSource = "github_self_join" | "invite" | "scim" | "admin_bootstrap"
+export type MembershipSource = "github_self_join" | "invite" | "scim" | "admin_bootstrap" | "manual"
 export type User = typeof user.$inferSelect
 
 /**

@@ -159,7 +159,6 @@ export async function getStateDownloadUrl(
     Key: s3Key,
   })
 
-  // @ts-expect-error - S3Client types are slightly incompatible between versions
   const url = await getSignedUrl(client, command, { expiresIn: expiresInSeconds })
   return url
 }

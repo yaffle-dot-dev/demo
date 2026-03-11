@@ -54,7 +54,6 @@ orgsRoute.get("/", async (c) => {
  * SSE stream for user's org list. Pushes updates when orgs change.
  */
 orgsRoute.get("/stream", async (c) => {
-  const env = getEnv()
   const token = c.req.query("token")
 
   let auth

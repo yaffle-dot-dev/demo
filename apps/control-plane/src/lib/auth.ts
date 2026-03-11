@@ -1,5 +1,8 @@
 import { getEnv } from "./env.ts"
 import { auth, type Session } from "./better-auth.ts"
+import { db } from "./db.ts"
+import { user } from "../db/auth-schema.ts"
+import { eq } from "drizzle-orm"
 import {
   logger,
   withSpan,
@@ -64,14 +67,89 @@ async function getSession(headers: Headers): Promise<Session | null> {
   })
 }
 
+/**
+ * Verify API key and return user info.
+ */
+async function verifyApiKey(apiKey: string): Promise<AuthContext | null> {
+  const start = Date.now()
+
+  return withSpan("auth.verifyApiKey", async (span) => {
+    try {
+      const result = await auth.api.verifyApiKey({
+        body: { key: apiKey },
+      })
+
+      if (!result.valid || !result.key) {
+        span.setAttributes({ "auth.apikey_valid": false })
+        getAuthCounter().add(1, { operation: "verify_apikey", result: "invalid" })
+        getAuthDurationHistogram().record(Date.now() - start, { operation: "verify_apikey", result: "invalid" })
+        return null
+      }
+
+      // Get user from referenceId (which is the userId)
+      const [foundUser] = await db
+        .select()
+        .from(user)
+        .where(eq(user.id, result.key.referenceId))
+        .limit(1)
+
+      if (!foundUser) {
+        span.setAttributes({ "auth.apikey_valid": true, "auth.user_found": false })
+        getAuthCounter().add(1, { operation: "verify_apikey", result: "user_not_found" })
+        getAuthDurationHistogram().record(Date.now() - start, { operation: "verify_apikey", result: "user_not_found" })
+        return null
+      }
+
+      span.setAttributes({
+        "auth.apikey_valid": true,
+        "auth.user_id": foundUser.id,
+        "auth.user_email": foundUser.email,
+      })
+
+      getAuthCounter().add(1, { operation: "verify_apikey", result: "success" })
+      getAuthDurationHistogram().record(Date.now() - start, { operation: "verify_apikey", result: "success" })
+
+      return {
+        userId: foundUser.id,
+        email: foundUser.email,
+        name: foundUser.name,
+        image: foundUser.image ?? null,
+        orgId: "",
+        role: "",
+      }
+    } catch (err) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
+      logger.error("API key verification error", { error: String(err) })
+      getAuthCounter().add(1, { operation: "verify_apikey", result: "error" })
+      getAuthDurationHistogram().record(Date.now() - start, { operation: "verify_apikey", result: "error" })
+      return null
+    }
+  })
+}
+
 interface RequireAuthOptions {
   /** Token passed via query param (for SSE endpoints that can't use headers) */
   token?: string
 }
 
 /**
+ * Extract Bearer token from Authorization header
+ */
+function extractBearerToken(headers: Headers): string | null {
+  const authHeader = headers.get("authorization")
+  if (!authHeader) return null
+  
+  const match = authHeader.match(/^Bearer\s+(.+)$/i)
+  return match ? match[1] : null
+}
+
+/**
  * Require authentication for protected routes.
- * Uses BetterAuth session from cookies, or dev mode headers.
+ * Supports:
+ * - Session cookies (web app)
+ * - Bearer token with API key (CLI/API)
+ * - Query param token (SSE endpoints)
+ * - Dev mode headers (testing)
  */
 export async function requireAuth(
   headers: Headers,
@@ -82,11 +160,55 @@ export async function requireAuth(
   return withSpan("auth.requireAuth", async (span) => {
     const env = getEnv()
 
-    // For SSE endpoints, token might be passed as query param
-    // We need to construct a fake cookie header for BetterAuth
+    // 1. Try Bearer token (API key) from Authorization header
+    const bearerToken = extractBearerToken(headers)
+    if (bearerToken) {
+      span.setAttributes({ "auth.method": "bearer" })
+      
+      // Check if it looks like an API key (has prefix)
+      if (bearerToken.startsWith("yfl_")) {
+        const authContext = await verifyApiKey(bearerToken)
+        if (authContext) {
+          getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "apikey" })
+          getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "apikey" })
+          return authContext
+        }
+      }
+      
+      // Try as session token
+      const cookieHeaders = new Headers(headers)
+      cookieHeaders.set("cookie", `better-auth.session_token=${bearerToken}`)
+      
+      const session = await getSession(cookieHeaders)
+      if (session) {
+        getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "bearer_session" })
+        getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "bearer_session" })
+        return {
+          userId: session.user.id,
+          email: session.user.email,
+          name: session.user.name,
+          image: session.user.image ?? null,
+          orgId: "",
+          role: "",
+        }
+      }
+    }
+
+    // 2. For SSE endpoints, token might be passed as query param
     if (options.token) {
       span.setAttributes({ "auth.method": "query_param" })
-      // Create headers with the session token as a cookie
+      
+      // Check if it's an API key
+      if (options.token.startsWith("yfl_")) {
+        const authContext = await verifyApiKey(options.token)
+        if (authContext) {
+          getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "query_apikey" })
+          getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "query_apikey" })
+          return authContext
+        }
+      }
+      
+      // Try as session token
       const cookieHeaders = new Headers(headers)
       cookieHeaders.set("cookie", `better-auth.session_token=${options.token}`)
       
@@ -105,7 +227,7 @@ export async function requireAuth(
       }
     }
 
-    // Try session from cookies
+    // 3. Try session from cookies
     const session = await getSession(headers)
     if (session) {
       span.setAttributes({
@@ -127,7 +249,7 @@ export async function requireAuth(
       }
     }
 
-    // Dev mode: accept special headers for testing
+    // 4. Dev mode: accept special headers for testing
     if (env.authMode === "dev") {
       span.setAttributes({ "auth.method": "dev_headers" })
       const userId = headers.get("x-yaffle-user-id") ?? ""

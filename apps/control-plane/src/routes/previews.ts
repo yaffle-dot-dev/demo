@@ -178,8 +178,9 @@ previewsRoute.get(
 )
 
 // Helper to get preview orgId for resource-based auth
-async function getPreviewOrgId(c: { req: { param: (key: string) => string } }): Promise<string | null> {
+async function getPreviewOrgId(c: { req: { param: (key: string) => string | undefined } }): Promise<string | null> {
   const id = c.req.param("id")
+  if (!id) return null
   const preview = await findPreviewById(id)
   return preview?.orgId ?? null
 }
@@ -191,11 +192,11 @@ previewsRoute.get(
   "/:id/approvals",
   requireResourceAccess({ getOrgId: getPreviewOrgId }),
   async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
       return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
     }
+    const id = parseResult.data
 
     const preview = await findPreviewById(id)
     if (!preview) {
@@ -223,11 +224,11 @@ previewsRoute.post(
   "/:id/approve",
   requireResourceAccess({ minRole: "approver", getOrgId: getPreviewOrgId }),
   async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
       return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
     }
+    const id = parseResult.data
 
     const auth = getAuth(c)
     const body = approveSchema.safeParse(await c.req.json().catch(() => ({})))
@@ -310,11 +311,11 @@ previewsRoute.post(
   "/:id/rerun",
   requireResourceAccess({ getOrgId: getPreviewOrgId }),
   async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
       return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
     }
+    const id = parseResult.data
 
     const auth = getAuth(c)
     const preview = await findPreviewById(id)

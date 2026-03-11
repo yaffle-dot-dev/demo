@@ -12,8 +12,9 @@ const uuidParam = z.string().uuid()
 export const runsRoute = new Hono()
 
 // Helper to get run's orgId for resource-based auth
-async function getRunOrgId(c: { req: { param: (key: string) => string } }): Promise<string | null> {
+async function getRunOrgId(c: { req: { param: (key: string) => string | undefined } }): Promise<string | null> {
   const id = c.req.param("id")
+  if (!id) return null
   const run = await findRunById(id)
   if (!run) return null
   const preview = await findPreviewById(run.previewId)
@@ -30,14 +31,14 @@ runsRoute.post(
   "/:id/cancel",
   requireResourceAccess({ getOrgId: getRunOrgId }),
   async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
       return c.json(
         { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
         400,
       )
     }
+    const id = parseResult.data
 
     const run = await findRunById(id)
     if (!run) {
@@ -101,14 +102,14 @@ runsRoute.get(
   "/:id",
   requireResourceAccess({ getOrgId: getRunOrgId }),
   async (c) => {
-    const id = c.req.param("id")
-    const parseResult = uuidParam.safeParse(id)
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
       return c.json(
         { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
         400,
       )
     }
+    const id = parseResult.data
 
     const run = await findRunById(id)
     if (!run) {

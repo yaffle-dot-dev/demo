@@ -1344,7 +1344,7 @@ async function handlePushEvent(
     pendingRunId: string
     stateKey: string
     wsTag: string
-    variables: Record<string, string>
+    variables: Record<string, string | boolean>
   }> = []
 
   // Iterate in execution order (topological)
@@ -1616,7 +1616,7 @@ async function executeRun(opts: {
   command: "plan" | "apply" | "destroy"
   stateKey: string
   workspacePath: string
-  variables: Record<string, string>
+  variables: Record<string, string | boolean>
   installationToken?: string
   wsTag: string
   createCheckRun?: boolean

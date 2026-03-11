@@ -27,7 +27,7 @@ let ctx: TestContext
 /**
  * Make an authenticated request.
  */
-function req(
+async function req(
   path: string,
   options: { headers?: Headers; method?: string; body?: unknown } = {},
 ): Promise<Response> {
@@ -50,7 +50,7 @@ function req(
 /**
  * Make an unauthenticated request (for testing 401s).
  */
-function unauthReq(path: string): Promise<Response> {
+async function unauthReq(path: string): Promise<Response> {
   return app.request(path)
 }
 

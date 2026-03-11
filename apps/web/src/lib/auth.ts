@@ -1,4 +1,5 @@
 import { createAuthClient } from "better-auth/svelte"
+import { apiKeyClient } from "@better-auth/api-key/client"
 
 // Storage key for last org (kept for UX convenience)
 const LAST_ORG_KEY = "yaffle.lastOrg"
@@ -19,6 +20,7 @@ function getApiUrl(): string {
 // This automatically handles session management via cookies
 export const authClient = createAuthClient({
   baseURL: getApiUrl(),
+  plugins: [apiKeyClient()],
 })
 
 // Re-export commonly used methods for convenience

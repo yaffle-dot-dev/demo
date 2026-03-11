@@ -57,17 +57,17 @@ in
     SMEE_URL = "https://smee.io/AMHdVEIzSjKsXVkb";
 
     # Auth defaults (OpenAuth - mounted at root, not /auth)
-    YAFFLE_AUTH_ISSUER = "https://localhost:6969";
+    YAFFLE_AUTH_ISSUER = "https://yaffle.local:6969";
     YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
-    VITE_YAFFLE_AUTH_ISSUER = "https://localhost:6969";
+    VITE_YAFFLE_AUTH_ISSUER = "https://yaffle.local:6969";
     VITE_YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
 
     # TFC backend (use local Caddy HTTPS endpoint)
-    YAFFLE_TFC_API_HOST = "localhost:6969";
+    YAFFLE_TFC_API_HOST = "yaffle.local:6969";
 
     # BetterAuth config for Caddy proxy
     BETTER_AUTH_URL = "https://yaffle.local:6969";
-    TRUSTED_ORIGINS = "https://localhost:6969,https://yaffle.local:6969,http://localhost:5173,http://localhost:3000";
+    TRUSTED_ORIGINS = "https://yaffle.local:6969,https://yaffle.local:6969,http://yaffle.local:5173,http://yaffle.local:3000";
 
     # Telemetry defaults for local dev (disabled, no endpoint)
     YAFFLE_ENV = "development";
@@ -115,7 +115,7 @@ in
   '';
 
   processes = {
-    # Caddy reverse proxy - provides HTTPS on localhost:6969
+    # Caddy reverse proxy - provides HTTPS on yaffle.local:6969
     # First run: `caddy trust` to install the local CA
     caddy = {
       exec = "caddy run --config Caddyfile 2>&1 | tee -a .devenv/logs/caddy.log";
@@ -171,7 +171,7 @@ in
     };
 
     smee = {
-      exec = "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github 2>&1 | tee -a .devenv/logs/smee.log";
+      exec = "npx smee-client --url $SMEE_URL --target http://yaffle.local:6969/api/webhooks/github 2>&1 | tee -a .devenv/logs/smee.log";
       ready = {
         exec = "pgrep -f smee-client";
         period = 10;
@@ -230,7 +230,7 @@ in
     echo "commands:"
     echo "  devenv up              - start caddy, postgres, control-plane, web, and smee"
     echo "                           (secrets auto-injected to control-plane only)"
-    echo "  tofu login localhost:6969 - authenticate with Yaffle TFC backend"
+    echo "  tofu login yaffle.local:6969 - authenticate with Yaffle TFC backend"
     echo "  bun install            - install dependencies"
     echo "  bun test               - run tests"
     echo "  tofu plan              - run opentofu plan (from infra/)"
@@ -245,10 +245,10 @@ in
     echo "  tail -f .devenv/logs/postgres.log"
     echo ""
     echo "endpoints (after devenv up):"
-    echo "  https://localhost:6969       - marketing site"
-    echo "  https://localhost:6969/app   - web app"
-    echo "  https://localhost:6969/api   - control plane API"
-    echo "  https://localhost:6969/tfc   - TFC-compatible state backend"
+    echo "  https://yaffle.local:6969       - marketing site"
+    echo "  https://yaffle.local:6969/app   - web app"
+    echo "  https://yaffle.local:6969/api   - control plane API"
+    echo "  https://yaffle.local:6969/tfc   - TFC-compatible state backend"
     echo ""
   '';
 }

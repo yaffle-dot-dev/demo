@@ -61,67 +61,67 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Determinate Nix
-        uses: DeterminateSystems/determinate-nix-action@v3
+      # - name: Install Determinate Nix
+      #   uses: DeterminateSystems/determinate-nix-action@v3
 
-      - name: Set up FlakeHub Cache
-        uses: DeterminateSystems/flakehub-cache-action@v3
+      # - name: Set up FlakeHub Cache
+      #   uses: DeterminateSystems/flakehub-cache-action@v3
 
-      - name: Build container image
-        run: |
-          # Build the container for x86_64-linux (native on GHA runner)
-          # Use nix run to invoke devenv 2.x directly (cached by FlakeHub)
-          # Disable sandbox to allow bun install to fetch packages
-          # (bun.lock ensures reproducibility at the package level)
-          # Use CI profile with dotenv - secrets are injected at runtime, not build time
-          nix run github:cachix/devenv/v2.0.2 -- container build control-plane \
-            --nix-option sandbox false \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci
+      # - name: Build container image
+      #   run: |
+      #     # Build the container for x86_64-linux (native on GHA runner)
+      #     # Use nix run to invoke devenv 2.x directly (cached by FlakeHub)
+      #     # Disable sandbox to allow bun install to fetch packages
+      #     # (bun.lock ensures reproducibility at the package level)
+      #     # Use CI profile with dotenv - secrets are injected at runtime, not build time
+      #     nix run github:cachix/devenv/v2.0.2 -- container build control-plane \
+      #       --nix-option sandbox false \
+      #       --secretspec-provider dotenv \
+      #       --secretspec-profile ci
 
-      - name: Log in to GitHub Container Registry
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push)
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      # - name: Log in to GitHub Container Registry
+      #   if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push)
+      #   uses: docker/login-action@v3
+      #   with:
+      #     registry: ${{ env.REGISTRY }}
+      #     username: ${{ github.actor }}
+      #     password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push container image
-        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push)
-        run: |
-          # Registry base URL (devenv appends container name:version)
-          REGISTRY_BASE="docker://${{ env.REGISTRY }}/${{ github.repository }}/"
+      # - name: Push container image
+      #   if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.push)
+      #   run: |
+      #     # Registry base URL (devenv appends container name:version)
+      #     REGISTRY_BASE="docker://${{ env.REGISTRY }}/${{ github.repository }}/"
 
-          # Copy to registry with SHA tag
-          nix run github:cachix/devenv/v2.0.2 -- container copy control-plane \
-            --nix-option sandbox false \
-            --secretspec-provider dotenv \
-            --secretspec-profile ci \
-            -O containers.control-plane.version:string "${{ github.sha }}" \
-            --registry "${REGISTRY_BASE}"
+      #     # Copy to registry with SHA tag
+      #     nix run github:cachix/devenv/v2.0.2 -- container copy control-plane \
+      #       --nix-option sandbox false \
+      #       --secretspec-provider dotenv \
+      #       --secretspec-profile ci \
+      #       -O containers.control-plane.version:string "${{ github.sha }}" \
+      #       --registry "${REGISTRY_BASE}"
 
-          # Also tag as latest on main branch
-          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
-            nix run github:cachix/devenv/v2.0.2 -- container copy control-plane \
-              --nix-option sandbox false \
-              --secretspec-provider dotenv \
-              --secretspec-profile ci \
-              -O containers.control-plane.version:string "latest" \
-              --registry "${REGISTRY_BASE}"
-          fi
+      #     # Also tag as latest on main branch
+      #     if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+      #       nix run github:cachix/devenv/v2.0.2 -- container copy control-plane \
+      #         --nix-option sandbox false \
+      #         --secretspec-provider dotenv \
+      #         --secretspec-profile ci \
+      #         -O containers.control-plane.version:string "latest" \
+      #         --registry "${REGISTRY_BASE}"
+      #     fi
 
-          echo "Pushed: ${{ env.REGISTRY }}/${{ github.repository }}/control-plane:${{ github.sha }}"
-          echo "image_sha=${{ env.REGISTRY }}/${{ github.repository }}/control-plane:${{ github.sha }}" >> $GITHUB_OUTPUT
+      #     echo "Pushed: ${{ env.REGISTRY }}/${{ github.repository }}/control-plane:${{ github.sha }}"
+      #     echo "image_sha=${{ env.REGISTRY }}/${{ github.repository }}/control-plane:${{ github.sha }}" >> $GITHUB_OUTPUT
 
-      - name: Summary
-        run: |
-          echo "## Container Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: \`${{ env.REGISTRY }}/${{ github.repository }}/control-plane\`" >> $GITHUB_STEP_SUMMARY
-          echo "- **SHA Tag**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.push }}" = "true" ]; then
-            echo "- **Status**: Pushed to registry" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "- **Status**: Build only (not pushed)" >> $GITHUB_STEP_SUMMARY
-          fi
+      # - name: Summary
+      #   run: |
+      #     echo "## Container Build Summary" >> $GITHUB_STEP_SUMMARY
+      #     echo "" >> $GITHUB_STEP_SUMMARY
+      #     echo "- **Image**: \`${{ env.REGISTRY }}/${{ github.repository }}/control-plane\`" >> $GITHUB_STEP_SUMMARY
+      #     echo "- **SHA Tag**: \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
+      #     if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event.inputs.push }}" = "true" ]; then
+      #       echo "- **Status**: Pushed to registry" >> $GITHUB_STEP_SUMMARY
+      #     else
+      #       echo "- **Status**: Build only (not pushed)" >> $GITHUB_STEP_SUMMARY
+      #     fi

@@ -15,7 +15,7 @@
 
 import { db } from "../lib/db.ts"
 import { user, organizations, orgMemberships } from "../db/schema.ts"
-import { eq, and } from "drizzle-orm"
+import { eq, and, sql } from "drizzle-orm"
 
 // Set auth mode to dev for tests (must be done before importing routes)
 process.env.YAFFLE_AUTH_MODE = "dev"
@@ -201,7 +201,7 @@ export async function cleanupTestData(): Promise<void> {
   }
 
   // Use raw SQL for TRUNCATE CASCADE since Drizzle doesn't support it directly
-  await db.execute({ sql: "TRUNCATE TABLE org_memberships CASCADE", args: [] })
-  await db.execute({ sql: "TRUNCATE TABLE organizations CASCADE", args: [] })
+  await db.execute(sql`TRUNCATE TABLE org_memberships CASCADE`)
+  await db.execute(sql`TRUNCATE TABLE organizations CASCADE`)
   // Don't truncate users - they might be referenced by other tables
 }

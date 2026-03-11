@@ -37,9 +37,11 @@ reposRoute.get(
   async (c) => {
     const auth = getAuth(c)
     const repo = c.req.param("repo")
-    const prNumberRaw = c.req.param("prNumber")
+    if (!repo) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo is required" } }, 400)
+    }
 
-    const prParsed = prNumberParam.safeParse(prNumberRaw)
+    const prParsed = prNumberParam.safeParse(c.req.param("prNumber"))
     if (!prParsed.success) {
       return c.json(
         { error: { code: "VALIDATION_ERROR", message: "prNumber must be a positive integer" } },
@@ -104,9 +106,11 @@ reposRoute.get(
   async (c) => {
     const auth = getAuth(c)
     const repo = c.req.param("repo")
-    const prNumberRaw = c.req.param("prNumber")
+    if (!repo) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo is required" } }, 400)
+    }
 
-    const prParsed = prNumberParam.safeParse(prNumberRaw)
+    const prParsed = prNumberParam.safeParse(c.req.param("prNumber"))
     if (!prParsed.success) {
       return c.json(
         { error: { code: "VALIDATION_ERROR", message: "prNumber must be a positive integer" } },
@@ -274,6 +278,9 @@ reposRoute.get(
     const auth = getAuth(c)
     const repo = c.req.param("repo")
     const branch = c.req.param("branch")
+    if (!repo || !branch) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and branch are required" } }, 400)
+    }
 
     const previews = await findPreviewsByEnv(auth.orgId, repo, branch)
 
@@ -328,6 +335,9 @@ reposRoute.get(
     const auth = getAuth(c)
     const repo = c.req.param("repo")
     const branch = c.req.param("branch")
+    if (!repo || !branch) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and branch are required" } }, 400)
+    }
 
     return streamSSE(c, async (stream) => {
       getSseConnectionsActiveCounter().add(1, { type: "env" })

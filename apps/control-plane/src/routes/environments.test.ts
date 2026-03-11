@@ -25,14 +25,14 @@ let ctx: TestContext
 /**
  * Make an authenticated request.
  */
-function req(path: string): Promise<Response> {
+async function req(path: string): Promise<Response> {
   return app.request(path, { headers: ctx.headers })
 }
 
 /**
  * Make an unauthenticated request (for testing 401s).
  */
-function unauthReq(path: string): Promise<Response> {
+async function unauthReq(path: string): Promise<Response> {
   return app.request(path)
 }
 
