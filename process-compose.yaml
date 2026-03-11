@@ -1,0 +1,80 @@
+version: "0.5"
+
+log_location: .dev/logs/process-compose.log
+
+processes:
+  postgres:
+    command: |
+      if [ ! -d "$PGDATA" ]; then
+        echo "Run ./scripts/dev-init.sh first to initialize postgres"
+        exit 1
+      fi
+      # Run postgres in foreground (not as daemon)
+      postgres -D "$PGDATA" -k /tmp -p 5432
+    log_location: .dev/logs/postgres.log
+    readiness_probe:
+      exec:
+        command: "pg_isready -h /tmp -p 5432 -d yaffle_dev"
+      initial_delay_seconds: 2
+      period_seconds: 5
+      failure_threshold: 3
+
+  caddy:
+    command: "caddy run --config Caddyfile"
+    log_location: .dev/logs/caddy.log
+    depends_on:
+      control-plane:
+        condition: process_healthy
+    readiness_probe:
+      exec:
+        command: "curl -sf --max-time 5 --resolve yaffle.local:6969:127.0.0.1 https://yaffle.local:6969/api/health > /dev/null"
+      initial_delay_seconds: 5
+      period_seconds: 10
+      failure_threshold: 5
+
+  control-plane:
+    command: "op signin 2>/dev/null || true && secretspec run -- bun run dev:control-plane"
+    log_location: .dev/logs/control-plane.log
+    depends_on:
+      postgres:
+        condition: process_healthy
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 3000
+        path: "/api/health"
+      initial_delay_seconds: 5
+      period_seconds: 10
+      failure_threshold: 3
+
+  web:
+    command: "bun run dev:web"
+    log_location: .dev/logs/web.log
+    readiness_probe:
+      exec:
+        command: "curl -sf http://localhost:5173/ > /dev/null"
+      initial_delay_seconds: 5
+      period_seconds: 10
+      failure_threshold: 3
+
+  marketing:
+    command: "bun run --filter=@yaffle/marketing dev"
+    log_location: .dev/logs/marketing.log
+    readiness_probe:
+      exec:
+        command: "curl -sf http://localhost:4000/ > /dev/null"
+      initial_delay_seconds: 5
+      period_seconds: 10
+      failure_threshold: 3
+
+  smee:
+    command: "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github"
+    log_location: .dev/logs/smee.log
+    depends_on:
+      caddy:
+        condition: process_healthy
+    readiness_probe:
+      exec:
+        command: "pgrep -f smee-client"
+      period_seconds: 10
+      failure_threshold: 3

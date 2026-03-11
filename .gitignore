@@ -1,9 +1,8 @@
 **/.env
 **/.env.*
 
-# Devenv
-.devenv/
-.devenv.flake.nix
+# Dev state (process-compose, postgres data)
+.dev/
 
 # direnv
 .direnv/

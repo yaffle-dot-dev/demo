@@ -80,6 +80,10 @@ async function execTf(
       ...(process.env.TF_LOG ? { TF_LOG: process.env.TF_LOG } : {}),
     }
 
+    // Debug: log TF_TOKEN env vars
+    const tokenVars = Object.keys(tfEnv).filter(k => k.startsWith("TF_TOKEN_"))
+    logger.info("TF token env vars being passed", { tokenVars, tokenValues: tokenVars.map(k => `${k}=${tfEnv[k]?.slice(0, 20)}...`) })
+
     const proc = Bun.spawn([binary, ...args], {
       cwd,
       stdout: "pipe",

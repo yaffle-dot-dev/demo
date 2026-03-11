@@ -76,12 +76,19 @@ yaffle/
 Package manager is **Bun**. All commands run from the repo root unless noted.
 
 ```bash
+# First-time setup
+./scripts/dev-init.sh         # Initialize postgres databases
+
+# Development (process-compose manages all services)
+process-compose up            # Start all services (postgres, caddy, apps)
+process-compose up -t=false   # Start without TUI
+process-compose down          # Stop all services
+
+bun run dev:control-plane     # Run control plane only
+bun run dev:web               # Run SvelteKit frontend only
+
 # Install dependencies
 bun install
-
-# Development
-bun run dev:control-plane     # Run control plane locally
-bun run dev:web               # Run SvelteKit frontend
 
 # Build
 bun run build                 # Build all packages
