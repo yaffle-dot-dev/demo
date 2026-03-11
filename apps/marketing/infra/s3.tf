@@ -1,5 +1,5 @@
 # =============================================================================
-# S3 Buckets for Web Application
+# S3 Buckets for Marketing Site
 # =============================================================================
 # Primary bucket in us-east-1, replica bucket in us-west-2.
 # Cross-region replication provides failover capability via CloudFront origin group.
@@ -13,11 +13,11 @@
 # -----------------------------------------------------------------------------
 
 resource "aws_s3_bucket" "primary" {
-  bucket        = "yaffle-web-${local.name_suffix}"
+  bucket        = "yaffle-marketing-${local.name_suffix}"
   force_destroy = var.is_preview
 
   tags = {
-    Name = "yaffle-web-${local.name_suffix}"
+    Name = "yaffle-marketing-${local.name_suffix}"
   }
 }
 
@@ -74,11 +74,11 @@ resource "aws_s3_bucket_lifecycle_configuration" "primary" {
 
 resource "aws_s3_bucket" "replica" {
   provider      = aws.replica
-  bucket        = "yaffle-web-${local.replica_name_suffix}"
+  bucket        = "yaffle-marketing-${local.replica_name_suffix}"
   force_destroy = var.is_preview
 
   tags = {
-    Name = "yaffle-web-${local.replica_name_suffix}"
+    Name = "yaffle-marketing-${local.replica_name_suffix}"
   }
 }
 
@@ -138,7 +138,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "replica" {
 # -----------------------------------------------------------------------------
 
 resource "aws_iam_role" "replication" {
-  name = "yaffle-web-replication-${local.name_suffix}"
+  name = "yaffle-marketing-replication-${local.name_suffix}"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -155,7 +155,7 @@ resource "aws_iam_role" "replication" {
 }
 
 resource "aws_iam_role_policy" "replication" {
-  name = "yaffle-web-replication-${local.name_suffix}"
+  name = "yaffle-marketing-replication-${local.name_suffix}"
   role = aws_iam_role.replication.id
 
   policy = jsonencode({

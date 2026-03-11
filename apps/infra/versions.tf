@@ -1,8 +1,12 @@
 # =============================================================================
-# Web Application S3 Bucket
+# Unified Frontend Infrastructure
 # =============================================================================
-# S3 bucket for the SvelteKit web application static assets.
-# CloudFront distribution is managed in apps/infra/ for unified routing.
+# CloudFront distribution that routes:
+# - /           -> Marketing site (Astro static)
+# - /app/*      -> Web application (SvelteKit)
+# - /api/*      -> Control plane ALB (future)
+#
+# Each app owns its S3 buckets; this module owns CloudFront + DNS + routing.
 # =============================================================================
 
 terraform {
@@ -26,14 +30,14 @@ provider "aws" {
     tags = {
       project     = "yaffle"
       layer       = "app"
-      app         = "web"
+      app         = "frontend"
       environment = var.environment
       managed_by  = "yaffle"
     }
   }
 }
 
-# Replica provider for cross-region S3 bucket replication
+# Replica provider for cross-region bucket policies
 provider "aws" {
   alias  = "replica"
   region = var.replica_region
@@ -42,7 +46,7 @@ provider "aws" {
     tags = {
       project     = "yaffle"
       layer       = "app"
-      app         = "web"
+      app         = "frontend"
       environment = var.environment
       managed_by  = "yaffle"
     }

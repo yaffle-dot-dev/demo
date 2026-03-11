@@ -15,27 +15,27 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "domain" {
+  type        = string
+  description = "Base domain for the application (e.g., 'yaffle.dev')"
+  default     = "yaffle.dev"
+}
+
 variable "replica_region" {
   type        = string
-  description = "AWS region for S3 bucket replication"
+  description = "AWS region for replica bucket policies"
   default     = "us-west-2"
 }
 
 module "naming" {
-  source      = "../../../infra_modules/public/naming"
+  source      = "../../infra_modules/public/naming"
   environment = var.environment
   aws_region  = var.aws_region
 }
 
-module "naming_replica" {
-  source      = "../../../infra_modules/public/naming"
-  environment = var.environment
-  aws_region  = var.replica_region
-}
-
 locals {
-  # Naming: yaffle-{resource}-{suffix}
-  # suffix = {environment}-{region_short} (e.g., "main-use1", "prvw-42-use1")
-  name_suffix         = module.naming.suffix
-  replica_name_suffix = module.naming_replica.suffix
+  name_suffix = module.naming.suffix
+
+  # Domain: yaffle.dev for production, {env}.preview.yaffle.dev for previews
+  site_domain = var.is_preview ? "${var.environment}.preview.${var.domain}" : var.domain
 }

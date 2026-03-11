@@ -1,7 +1,7 @@
 # =============================================================================
 # Outputs
 # =============================================================================
-# Web application S3 bucket outputs.
+# Marketing site S3 bucket outputs.
 # These are consumed by apps/infra/ for CloudFront configuration.
 # =============================================================================
 
@@ -54,5 +54,5 @@ output "replica_bucket_regional_domain_name" {
 
 output "deploy_role_arn" {
   value       = aws_iam_role.deploy.arn
-  description = "IAM role ARN for GitHub Actions to deploy web app"
+  description = "IAM role ARN for GitHub Actions to deploy marketing site"
 }

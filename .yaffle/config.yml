@@ -39,7 +39,31 @@ workspaces:
       aws_region: "us-east-1"
       secrets_arn_prefix: "arn:aws:secretsmanager:us-east-1:870923192739:secret:yaffle"
 
+  # ---------------------------------------------------------------------------
+  # App S3 Buckets (owned by individual apps)
+  # ---------------------------------------------------------------------------
+  # These create the S3 buckets for each app. They must be applied before
+  # apps/infra which references their outputs for CloudFront configuration.
+
+  - path: apps/marketing/infra
+    auto_apply: true
+    auto_apply_on_merge: true
+    variables:
+      aws_region: "us-east-1"
+
   - path: apps/web/infra
+    auto_apply: true
+    auto_apply_on_merge: true
+    variables:
+      aws_region: "us-east-1"
+
+  # ---------------------------------------------------------------------------
+  # Unified Frontend (CloudFront + routing)
+  # ---------------------------------------------------------------------------
+  # This creates the CloudFront distribution that routes to all app buckets.
+  # Depends on apps/marketing/infra and apps/web/infra outputs.
+
+  - path: apps/infra
     auto_apply: true
     auto_apply_on_merge: true
     variables:

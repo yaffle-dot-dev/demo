@@ -73,7 +73,19 @@ resource "aws_iam_role" "github_actions_ci" {
 }
 
 # Policy for S3 state bucket access (needed for TFC integration tests)
-# Grants access to ALL yaffle state buckets (main and previews)
+#
+# TODO: Create a dedicated test state bucket (yaffle-state-ci-test) and restrict
+# this policy to only that bucket. Currently the integration tests use a real
+# state bucket which is not ideal.
+#
+# For now, we grant:
+# - Read access to state buckets (for testing state download)
+# - Write access ONLY to a ci-test prefix (for testing state upload)
+#
+# This is a temporary compromise. The integration tests need:
+# 1. A dedicated test bucket created in nonprod
+# 2. This policy updated to only access that bucket
+# 3. The tests updated to use YAFFLE_STATE_BUCKET=yaffle-state-ci-test-...
 resource "aws_iam_role_policy" "github_actions_ci_s3" {
   name = "s3-state-access"
   role = aws_iam_role.github_actions_ci.id
@@ -82,17 +94,35 @@ resource "aws_iam_role_policy" "github_actions_ci_s3" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid    = "StateBucketAccess"
+        Sid    = "ListStateBuckets"
         Effect = "Allow"
         Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
           "s3:ListBucket"
         ]
         Resource = [
-          "arn:aws:s3:::yaffle-state-*",
+          "arn:aws:s3:::yaffle-state-*"
+        ]
+      },
+      {
+        Sid    = "ReadStateObjects"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject"
+        ]
+        Resource = [
           "arn:aws:s3:::yaffle-state-*/*"
+        ]
+      },
+      {
+        Sid    = "WriteTestStateOnly"
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ]
+        Resource = [
+          # Only allow writes to ci-test prefixed paths
+          "arn:aws:s3:::yaffle-state-*/ci-test/*"
         ]
       }
     ]

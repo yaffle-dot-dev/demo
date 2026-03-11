@@ -1,7 +1,7 @@
 # =============================================================================
-# Web Application S3 Bucket
+# Marketing Site S3 Bucket
 # =============================================================================
-# S3 bucket for the SvelteKit web application static assets.
+# S3 bucket for the Astro marketing site static assets.
 # CloudFront distribution is managed in apps/infra/ for unified routing.
 # =============================================================================
 
@@ -26,7 +26,7 @@ provider "aws" {
     tags = {
       project     = "yaffle"
       layer       = "app"
-      app         = "web"
+      app         = "marketing"
       environment = var.environment
       managed_by  = "yaffle"
     }
@@ -42,7 +42,7 @@ provider "aws" {
     tags = {
       project     = "yaffle"
       layer       = "app"
-      app         = "web"
+      app         = "marketing"
       environment = var.environment
       managed_by  = "yaffle"
     }

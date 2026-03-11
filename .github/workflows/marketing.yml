@@ -1,0 +1,211 @@
+# Marketing Site Deployment
+#
+# Builds the Astro marketing site and deploys to S3/CloudFront.
+# Uses Yaffle for infrastructure provisioning:
+# - PRs get preview environments
+# - Push to main deploys to production (yaffle.dev)
+#
+# Flow:
+# 1. Wait for Yaffle to provision S3 bucket (apps/marketing/infra)
+# 2. Wait for Yaffle to provision CloudFront (apps/infra)
+# 3. Build Astro site with correct domain
+# 4. Assume marketing deploy role, sync to S3
+# 5. Assume invalidation role, invalidate CloudFront cache
+#
+# IAM Roles:
+# - apps/marketing/infra outputs deploy_role_arn (S3 access)
+# - apps/infra outputs invalidation_role_arn (CloudFront access)
+
+name: Marketing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/marketing/**"
+      - "packages/design/**"
+      - ".github/workflows/marketing.yml"
+  pull_request:
+    paths:
+      - "apps/marketing/**"
+      - "apps/marketing/infra/**"
+      - "apps/infra/**"
+      - "packages/design/**"
+      - ".github/workflows/marketing.yml"
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # Wait for Yaffle Infrastructure
+      # -----------------------------------------------------------------------
+      # We need outputs from two workspaces:
+      # - apps/marketing/infra: S3 bucket name, deploy role ARN
+      # - apps/infra: CloudFront distribution ID, site URL, invalidation role ARN
+
+      - name: Get marketing infra from Yaffle
+        id: marketing
+        uses: ./actions/outputs-action
+        with:
+          workspace: apps/marketing/infra
+          wait: true
+          wait-timeout: 600
+
+      - name: Get frontend infra from Yaffle
+        id: frontend
+        uses: ./actions/outputs-action
+        with:
+          workspace: apps/infra
+          wait: true
+          wait-timeout: 600
+
+      - name: Show infrastructure status
+        run: |
+          echo "## Infrastructure Status" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Marketing Bucket" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ steps.marketing.outputs.preview-status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Bucket**: ${{ steps.marketing.outputs.primary_bucket_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Deploy Role**: ${{ steps.marketing.outputs.deploy_role_arn }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Frontend (CloudFront)" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status**: ${{ steps.frontend.outputs.preview-status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Site URL**: ${{ steps.frontend.outputs.site_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **CloudFront**: ${{ steps.frontend.outputs.cloudfront_distribution_id }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Invalidation Role**: ${{ steps.frontend.outputs.invalidation_role_arn }}" >> $GITHUB_STEP_SUMMARY
+
+      # -----------------------------------------------------------------------
+      # Build Astro Site
+      # -----------------------------------------------------------------------
+
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Set up FlakeHub Cache
+        uses: DeterminateSystems/flakehub-cache-action@v3
+
+      - name: Install dependencies
+        run: |
+          nix run github:cachix/devenv/v2.0.2 -- shell \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci \
+            -- bun install --frozen-lockfile
+
+      - name: Build marketing site
+        env:
+          # Pass the site URL from Yaffle so Astro can configure correctly
+          SITE_URL: ${{ steps.frontend.outputs.site_url }}
+        run: |
+          nix run github:cachix/devenv/v2.0.2 -- shell \
+            --secretspec-provider dotenv \
+            --secretspec-profile ci \
+            -- bun run build
+        working-directory: apps/marketing
+
+      # -----------------------------------------------------------------------
+      # Deploy to S3
+      # -----------------------------------------------------------------------
+      # Assumes the marketing-specific deploy role with S3 permissions
+
+      - name: Configure AWS credentials for S3 deploy
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.marketing.outputs.deploy_role_arn }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Sync to S3
+        run: |
+          # Sync immutable assets with long cache
+          aws s3 sync apps/marketing/dist/ s3://${{ steps.marketing.outputs.primary_bucket_name }}/ \
+            --delete \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "*" \
+            --include "_astro/*"
+
+          # Sync everything else with short cache
+          aws s3 sync apps/marketing/dist/ s3://${{ steps.marketing.outputs.primary_bucket_name }}/ \
+            --delete \
+            --cache-control "public, max-age=0, must-revalidate" \
+            --exclude "_astro/*"
+
+      # -----------------------------------------------------------------------
+      # Invalidate CloudFront Cache
+      # -----------------------------------------------------------------------
+      # Assumes the invalidation role with CloudFront permissions
+
+      - name: Configure AWS credentials for CloudFront invalidation
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.frontend.outputs.invalidation_role_arn }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Invalidate CloudFront cache
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ steps.frontend.outputs.cloudfront_distribution_id }} \
+            --paths "/*" "/_astro/*"
+
+      # -----------------------------------------------------------------------
+      # Summary
+      # -----------------------------------------------------------------------
+
+      - name: Deployment summary
+        run: |
+          echo "## Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Site deployed to: **${{ steps.frontend.outputs.site_url }}**" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "CloudFront invalidation initiated. Changes will propagate within a few minutes." >> $GITHUB_STEP_SUMMARY
+
+      # Post preview URL as PR comment (only on PRs)
+      - name: Comment preview URL on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const siteUrl = '${{ steps.frontend.outputs.site_url }}';
+            const body = `## Marketing Site Preview
+
+            Your changes have been deployed to: **${siteUrl}**
+
+            The site will be available once CloudFront propagates the changes (usually 1-2 minutes).`;
+
+            // Find existing comment to update
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(c => 
+              c.user.type === 'Bot' && c.body.includes('Marketing Site Preview')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
