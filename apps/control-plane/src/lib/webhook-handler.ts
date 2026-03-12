@@ -9,6 +9,7 @@ import type {
 
 import {
   type YaffleConfig,
+  type IaCVariables,
   ConfigError,
   interpolateVariables,
   parseYaml,
@@ -232,34 +233,59 @@ export async function handleWebhookEvent(ctx: WebhookContext): Promise<void> {
 }
 
 /**
- * Approve a production preview and apply.
+ * Trigger apply for a preview that has a successful plan.
+ * Used by the UI when:
+ * - Auto-apply countdown completes (PR or non-requireApproval env)
+ * - User clicks "Approve" button (requireApproval env)
+ *
+ * If requireApproval is true and approver info is provided, records the approval.
  */
-export async function approvePreviewApply(opts: {
+export async function triggerApply(opts: {
   previewId: string
+  /** User ID from auth context */
+  userId?: string | null
+  /** Display name for audit trail */
   approverLogin?: string | null
-}): Promise<void> {
-  return previewMutex.run(`approve:${opts.previewId}`, async () => {
+}): Promise<{ applyStarted: boolean; runId: string }> {
+  return previewMutex.run(`apply:${opts.previewId}`, async () => {
     const preview = await findPreviewById(opts.previewId)
     if (!preview) {
       throw new Error("preview not found")
-    }
-    if (!preview.requireApproval) {
-      throw new Error("approval not required")
-    }
-    if (preview.status !== "awaiting_approval") {
-      throw new Error("preview is not awaiting approval")
     }
     if (!preview.installationId) {
       throw new Error("missing installation id")
     }
 
-    const approvers = Array.isArray(preview.approvers) ? preview.approvers : []
-    if (
-      approvers.length > 0 &&
-      opts.approverLogin &&
-      !approvers.map((a) => a.toLowerCase()).includes(opts.approverLogin.toLowerCase())
-    ) {
-      throw new Error("approver not authorized")
+    // Check that plan succeeded
+    const latestPlan = await findLatestRun(preview.id, "plan")
+    if (!latestPlan || latestPlan.status !== "success") {
+      throw new Error("no successful plan to apply")
+    }
+
+    // Check that apply isn't already running/completed for this plan
+    const latestApply = await findLatestRun(preview.id, "apply")
+    if (latestApply && latestApply.createdAt >= latestPlan.createdAt) {
+      if (latestApply.status === "running" || latestApply.status === "pending") {
+        throw new Error("apply already in progress")
+      }
+      if (latestApply.status === "success") {
+        throw new Error("apply already completed")
+      }
+    }
+
+    // If requireApproval and we have approver info, record it
+    if (preview.requireApproval && opts.userId) {
+      const { createApproval } = await import("../db/queries/approvals.ts")
+      await createApproval({
+        previewId: preview.id,
+        userId: opts.userId,
+        approverLogin: opts.approverLogin ?? null,
+      })
+      logger.info("Approval recorded", {
+        previewId: preview.id,
+        userId: opts.userId,
+        approverLogin: opts.approverLogin ?? "unknown",
+      })
     }
 
     // Get the GitHub org info from the installation
@@ -269,20 +295,44 @@ export async function approvePreviewApply(opts: {
       throw new Error("github installation not found for this preview")
     }
 
-    const ctx: PushContext = {
-      kind: "push",
-      installationId: preview.installationId,
-      ownerGithubId: installation.githubOrgId,
-      owner: installation.githubOrgLogin,
-      repo: preview.repo,
-      headSha: preview.headSha,
-      branch: preview.branch,
-      // Synthetic context for destroy - no pusher info available
-      pusherGithubId: null,
-      pusherLogin: null,
-      defaultBranch: preview.branch,
+    const { findOrgById } = await import("../db/queries/organizations.ts")
+    const org = await findOrgById(preview.orgId)
+    if (!org) {
+      throw new Error("organization not found")
     }
 
+    // Build context
+    const isPr = preview.prNumber !== 0
+    const ctx: PullRequestContext | PushContext = isPr
+      ? {
+          kind: "pull_request",
+          installationId: preview.installationId,
+          ownerGithubId: installation.githubOrgId,
+          owner: installation.githubOrgLogin,
+          repo: preview.repo,
+          prNumber: preview.prNumber,
+          action: "synchronize",
+          branch: preview.branch,
+          headSha: preview.headSha,
+          authorGithubId: preview.authorGithubId ?? 0,
+          authorLogin: preview.authorLogin ?? "unknown",
+          merged: false,
+          defaultBranch: preview.branch,
+        }
+      : {
+          kind: "push",
+          installationId: preview.installationId,
+          ownerGithubId: installation.githubOrgId,
+          owner: installation.githubOrgLogin,
+          repo: preview.repo,
+          headSha: preview.headSha,
+          branch: preview.branch,
+          pusherGithubId: null,
+          pusherLogin: opts.approverLogin ?? null,
+          defaultBranch: preview.branch,
+        }
+
+    // Fetch config
     const raw = await fetchFileContent(
       preview.installationId,
       ctx.owner,
@@ -299,28 +349,48 @@ export async function approvePreviewApply(opts: {
       throw new Error("workspace not found in config")
     }
 
-    const variables = interpolateVariables(
-      workspace.variables,
-      pushVariableContext({
-        branch: preview.branch,
-        sha: preview.headSha,
-        owner: ctx.owner,
-        repo: ctx.repo,
-      }),
-    )
+    const variables = isPr
+      ? interpolateVariables(
+          workspace.variables,
+          prVariableContext({
+            branch: preview.branch,
+            sha: preview.headSha,
+            owner: ctx.owner,
+            repo: ctx.repo,
+            prNumber: preview.prNumber,
+          }),
+        )
+      : interpolateVariables(
+          workspace.variables,
+          pushVariableContext({
+            branch: preview.branch,
+            sha: preview.headSha,
+            owner: ctx.owner,
+            repo: ctx.repo,
+          }),
+        )
 
     const installationToken = await getInstallationToken(preview.installationId)
 
-    // TFC backend: get or create production workspace and generate run token
+    // TFC backend setup
     let tfcWorkspaceId: string | undefined
     let tfcWorkspaceName: string | undefined
     let tfcOrganization: string | undefined
     let tfcToken: string | undefined
 
     if (useTfcBackend()) {
-      const { findOrgById } = await import("../db/queries/organizations.ts")
-      const org = await findOrgById(preview.orgId)
-      if (org) {
+      if (isPr) {
+        const tfcWorkspace = await ensurePreviewWorkspace({
+          orgId: org.id,
+          orgSlug: org.slug,
+          repo: preview.repo,
+          prNumber: preview.prNumber,
+          workspacePath: preview.workspacePath,
+          branch: preview.branch,
+        })
+        tfcWorkspaceId = tfcWorkspace.id
+        tfcWorkspaceName = tfcWorkspace.name
+      } else {
         const tfcWorkspace = await ensureProductionWorkspace({
           orgId: org.id,
           orgSlug: org.slug,
@@ -330,67 +400,131 @@ export async function approvePreviewApply(opts: {
         })
         tfcWorkspaceId = tfcWorkspace.id
         tfcWorkspaceName = tfcWorkspace.name
-        tfcOrganization = org.slug
-        tfcToken = await generateRunToken(preview.id, tfcWorkspace.id, org.id)
       }
+      tfcOrganization = org.slug
+      tfcToken = await generateRunToken(preview.id, tfcWorkspaceId, org.id)
     }
 
-    const planRun = await findLatestRun(preview.id, "plan")
-    if (planRun?.checkRunId) {
-      await updateCheckRun(preview.installationId, ctx.owner, ctx.repo, planRun.checkRunId, {
-        status: "in_progress",
-        title: "Applying after approval",
-        summary: opts.approverLogin ? `Approved by @${opts.approverLogin}` : "Approved",
-      })
-    }
+    // Create apply run
+    const applyRun = await createTfRun({
+      previewId: preview.id,
+      runGroupId: latestPlan.runGroupId,
+      runType: "apply",
+      status: "pending",
+    })
+    events.emitRunUpdate(applyRun.id, preview.id)
 
     await updatePreviewStatus(preview.id, "applying")
 
-    const applyResult = await executeRun({
+    // Execute apply asynchronously
+    const stateKey = preview.stateKey
+    const wsTag = `${ctx.owner}/${ctx.repo}@${ctx.branch}:${preview.workspacePath}`
+
+    executeApplyAsync({
       ctx,
       preview,
-      runner: defaultRunner,
-      command: "apply",
-      stateKey: preview.stateKey,
-      workspacePath: preview.workspacePath,
+      workspace,
+      applyRunId: applyRun.id,
+      stateKey,
       variables,
       installationToken,
-      wsTag: `${ctx.owner}/${ctx.repo}@${ctx.branch}:${preview.workspacePath}`,
+      wsTag,
       tfcWorkspaceId,
       tfcWorkspaceName,
       tfcOrganization,
       tfcToken,
+    }).catch((err) => {
+      logger.error("triggerApply execution failed", {
+        previewId: opts.previewId,
+        runId: applyRun.id,
+        error: err instanceof Error ? err.message : String(err),
+      })
     })
 
-    if (applyResult.success) {
-      await updatePreviewStatus(preview.id, "ready")
-
-      // Execute apply callbacks (webhooks, github_dispatch)
-      if (workspace.on_apply && applyResult.outputs) {
-        await executeApplyCallbacks(workspace.on_apply, {
-          owner: ctx.owner,
-          repo: ctx.repo,
-          prNumber: 0, // Production
-          branch: ctx.branch,
-          headSha: ctx.headSha,
-          workspacePath: preview.workspacePath,
-          previewId: preview.id,
-          outputs: applyResult.outputs,
-        }, ctx.installationId)
-      }
-    }
-
-    if (planRun?.checkRunId) {
-      await updateCheckRun(preview.installationId, ctx.owner, ctx.repo, planRun.checkRunId, {
-        status: "completed",
-        conclusion: applyResult.success ? "success" : "failure",
-        title: applyResult.success ? "Applied" : "Apply failed",
-        summary: applyResult.success
-          ? "Production apply completed."
-          : applyResult.errorMessage ?? "Apply failed.",
-      })
-    }
+    return { applyStarted: true, runId: applyRun.id }
   })
+}
+
+/**
+ * Execute apply asynchronously (background task).
+ */
+async function executeApplyAsync(opts: {
+  ctx: PullRequestContext | PushContext
+  preview: NonNullable<Awaited<ReturnType<typeof findPreviewById>>>
+  workspace: YaffleConfig["workspaces"][0]
+  applyRunId: string
+  stateKey: string
+  variables: Record<string, string | boolean>
+  installationToken: string
+  wsTag: string
+  tfcWorkspaceId?: string
+  tfcWorkspaceName?: string
+  tfcOrganization?: string
+  tfcToken?: string
+}): Promise<void> {
+  const {
+    ctx,
+    preview,
+    workspace,
+    applyRunId,
+    stateKey,
+    variables,
+    installationToken,
+    wsTag,
+    tfcWorkspaceId,
+    tfcWorkspaceName,
+    tfcOrganization,
+    tfcToken,
+  } = opts
+
+  const isPr = ctx.kind === "pull_request"
+
+  const applyResult = await executeRun({
+    ctx,
+    preview,
+    runner: defaultRunner,
+    command: "apply",
+    stateKey,
+    workspacePath: preview.workspacePath,
+    variables,
+    installationToken,
+    wsTag,
+    tfcWorkspaceId,
+    tfcWorkspaceName,
+    tfcOrganization,
+    tfcToken,
+    existingRunId: applyRunId,
+    runGroupId: undefined, // Already set when run was created
+  })
+
+  await updatePreviewStatus(preview.id, applyResult.success ? "ready" : "failed")
+
+  // Execute apply callbacks
+  if (applyResult.success && workspace.on_apply && applyResult.outputs) {
+    await executeApplyCallbacks(workspace.on_apply, {
+      owner: ctx.owner,
+      repo: ctx.repo,
+      prNumber: isPr ? (ctx as PullRequestContext).prNumber : 0,
+      branch: ctx.branch,
+      headSha: ctx.headSha,
+      workspacePath: preview.workspacePath,
+      previewId: preview.id,
+      outputs: applyResult.outputs,
+    }, ctx.installationId)
+  }
+
+  // Update check run if exists
+  const planRun = await findLatestRun(preview.id, "plan")
+  if (planRun?.checkRunId && preview.installationId) {
+    await updateCheckRun(preview.installationId, ctx.owner, ctx.repo, planRun.checkRunId, {
+      status: "completed",
+      conclusion: applyResult.success ? "success" : "failure",
+      title: applyResult.success ? "Applied" : "Apply failed",
+      summary: applyResult.success
+        ? "Apply completed successfully."
+        : applyResult.errorMessage ?? "Apply failed.",
+    })
+  }
 }
 
 /**
@@ -625,71 +759,26 @@ async function executeManualRun(opts: {
     return
   }
 
-  // Check if we should auto-apply
+  // Check if plan has changes
   const hasChanges = planResult.planSummary !== "no changes"
-  const shouldApply = isPr // PR previews auto-apply, production requires approval
 
   if (!hasChanges) {
     // No changes - create skipped apply and mark as ready
-    await createTfRun({
+    const skippedApply = await createTfRun({
       previewId: preview.id,
       runGroupId: runGroup.id,
       runType: "apply",
       status: "skipped",
     })
+    events.emitRunUpdate(skippedApply.id, preview.id)
     await updatePreviewStatus(preview.id, "ready")
     return
   }
 
-  if (shouldApply) {
-    // Create apply run and execute
-    const applyRun = await createTfRun({
-      previewId: preview.id,
-      runGroupId: runGroup.id,
-      runType: "apply",
-      status: "pending",
-    })
-    events.emitRunUpdate(applyRun.id, preview.id)
-
-    await updatePreviewStatus(preview.id, "applying")
-
-    const applyResult = await executeRun({
-      ctx,
-      preview,
-      runner: defaultRunner,
-      command: "apply",
-      stateKey,
-      workspacePath: preview.workspacePath,
-      variables,
-      installationToken,
-      wsTag,
-      tfcWorkspaceId,
-      tfcWorkspaceName,
-      tfcOrganization,
-      tfcToken,
-      existingRunId: applyRun.id,
-      runGroupId: runGroup.id,
-    })
-
-    await updatePreviewStatus(preview.id, applyResult.success ? "ready" : "failed")
-
-    // Execute apply callbacks
-    if (applyResult.success && workspace.on_apply && applyResult.outputs) {
-      await executeApplyCallbacks(workspace.on_apply, {
-        owner: ctx.owner,
-        repo: ctx.repo,
-        prNumber: isPr ? (ctx as PullRequestContext).prNumber : 0,
-        branch: ctx.branch,
-        headSha: ctx.headSha,
-        workspacePath: preview.workspacePath,
-        previewId: preview.id,
-        outputs: applyResult.outputs,
-      }, ctx.installationId)
-    }
-  } else {
-    // Production preview - requires approval
-    await updatePreviewStatus(preview.id, "awaiting_approval")
-  }
+  // Plan has changes - wait for explicit approval via UI
+  // The UI shows a countdown timer (auto_apply) or Approve button (require_approval)
+  // Apply is triggered via POST /api/previews/:id/apply
+  await updatePreviewStatus(preview.id, "awaiting_apply")
 }
 
 /**
@@ -1012,20 +1101,17 @@ async function handlePrOpenedOrUpdated(
       // Check if apply is needed
       const hasChanges = planResult.planSummary !== "no changes"
 
-      if (!ws.auto_apply || !hasChanges) {
-        // No apply needed - either auto_apply disabled or no changes
+      if (!hasChanges) {
+        // No changes - mark as ready and create skipped apply run
         await updatePreviewStatus(preview.id, "ready")
 
-        // Create a skipped apply run if no changes (so UI shows A:- instead of A:~)
-        if (!hasChanges) {
-          const skippedApply = await createTfRun({
-            previewId: preview.id,
-            runGroupId: runGroup.id,
-            runType: "apply",
-            status: "skipped",
-          })
-          events.emitRunUpdate(skippedApply.id, preview.id)
-        }
+        const skippedApply = await createTfRun({
+          previewId: preview.id,
+          runGroupId: runGroup.id,
+          runType: "apply",
+          status: "skipped",
+        })
+        events.emitRunUpdate(skippedApply.id, preview.id)
 
         await comment.update(ws.path, {
           phase: "plan_success",
@@ -1035,67 +1121,16 @@ async function handlePrOpenedOrUpdated(
         return
       }
 
-      // Apply immediately after plan (DAG execution model)
-      logger.info("auto-applying preview", wsAttrs)
-      await updatePreviewStatus(preview.id, "applying")
+      // Plan has changes - wait for explicit approval via UI
+      // The UI shows a countdown timer (auto_apply) or Approve button (require_approval)
+      // Apply is triggered via POST /api/previews/:id/apply
+      logger.info("plan complete, awaiting apply approval", wsAttrs)
+      await updatePreviewStatus(preview.id, "awaiting_apply")
       await comment.update(ws.path, {
-        phase: "applying",
+        phase: "plan_success",
         planSummary: planResult.planSummary,
         planCheckRun,
       })
-
-      const applyResult = await executeRun({
-        ctx,
-        preview,
-        runner,
-        command: "apply",
-        stateKey,
-        workspacePath: ws.path,
-        variables,
-        installationToken,
-        wsTag,
-        runGroupId: runGroup.id,
-        tfcWorkspaceId,
-        tfcWorkspaceName,
-        tfcOrganization,
-        tfcToken,
-      })
-
-      const applyCheckRun = makeCheckRunRef(ctx, applyResult.checkRunId)
-
-      if (applyResult.success) {
-        await updatePreviewStatus(preview.id, "ready")
-        await comment.update(ws.path, {
-          phase: "ready",
-          planSummary: planResult.planSummary,
-          outputs: applyResult.outputs,
-          planCheckRun,
-          applyCheckRun,
-        })
-
-        // Execute apply callbacks (webhooks, github_dispatch)
-        if (ws.on_apply && applyResult.outputs) {
-          await executeApplyCallbacks(ws.on_apply, {
-            owner: ctx.owner,
-            repo: ctx.repo,
-            prNumber: ctx.prNumber,
-            branch: ctx.branch,
-            headSha: ctx.headSha,
-            workspacePath: ws.path,
-            previewId: preview.id,
-            outputs: applyResult.outputs,
-          }, ctx.installationId)
-        }
-      } else {
-        await comment.update(ws.path, {
-          phase: "apply_failed",
-          planSummary: planResult.planSummary,
-          errorMessage: applyResult.errorMessage,
-          planCheckRun,
-          applyCheckRun,
-        })
-        failedWorkspaces.add(ws.path)
-      }
     })
   }
 }
@@ -1344,7 +1379,7 @@ async function handlePushEvent(
     pendingRunId: string
     stateKey: string
     wsTag: string
-    variables: Record<string, string | boolean>
+  variables: IaCVariables
   }> = []
 
   // Iterate in execution order (topological)
@@ -1508,74 +1543,24 @@ async function handlePushEvent(
         return
       }
 
-      if (ws.require_approval) {
-        await updatePreviewStatus(preview.id, "awaiting_approval")
-        if (planResult.checkRunId && ctx.installationId) {
-          await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, planResult.checkRunId, {
-            status: "completed",
-            conclusion: "action_required",
-            title: "Awaiting approval",
-            summary: "Approval required before production apply.",
-          })
-        }
-        // Note: require_approval workspaces don't block downstream
-        // because approval/apply happens asynchronously
-        return
-      }
+      // Plan has changes - wait for explicit approval via UI
+      // require_approval: true  -> UI shows Approve button only (no timer)
+      // require_approval: false -> UI shows countdown timer, auto-applies when timer expires
+      // Either way, apply is triggered via POST /api/previews/:id/apply
+      logger.info("plan complete, awaiting apply approval", wsAttrs)
+      await updatePreviewStatus(preview.id, "awaiting_apply")
 
-      // Apply immediately after plan (DAG execution model)
-      logger.info("applying production", wsAttrs)
-      await updatePreviewStatus(preview.id, "applying")
-
-      // Update the plan's check run to show apply is starting
       if (planResult.checkRunId && ctx.installationId) {
+        const title = ws.require_approval ? "Awaiting approval" : "Awaiting apply"
+        const summary = ws.require_approval
+          ? "Explicit approval required before production apply."
+          : `Plan: ${planResult.planSummary ?? "complete"}\n\nWaiting for apply (auto-apply timer or manual approval).`
         await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, planResult.checkRunId, {
-          status: "in_progress",
-          title: "Applying changes",
-          summary: `Plan: ${planResult.planSummary ?? "complete"}\n\nApplying...`,
-        }).catch((err) => logger.warn("failed to update check run for apply", {
-          ...wsAttrs,
-          error: err instanceof Error ? err.message : String(err),
-        }))
-      }
-
-      const applyResult = await executeRun({
-        ctx,
-        preview,
-        runner,
-        command: "apply",
-        stateKey,
-        workspacePath: ws.path,
-        variables,
-        installationToken,
-        wsTag,
-        checkRunId: planResult.checkRunId, // Reuse plan's check run
-        runGroupId: runGroup.id,
-        tfcWorkspaceId,
-        tfcWorkspaceName,
-        tfcOrganization,
-        tfcToken,
-      })
-
-      if (applyResult.success) {
-        await updatePreviewStatus(preview.id, "ready")
-
-        // Execute apply callbacks (webhooks, github_dispatch)
-        if (ws.on_apply && applyResult.outputs) {
-          await executeApplyCallbacks(ws.on_apply, {
-            owner: ctx.owner,
-            repo: ctx.repo,
-            prNumber: 0, // Production
-            branch: ctx.branch,
-            headSha: ctx.headSha,
-            workspacePath: ws.path,
-            previewId: preview.id,
-            outputs: applyResult.outputs,
-          }, ctx.installationId)
-        }
-      } else {
-        await updatePreviewStatus(preview.id, "failed")
-        failedWorkspaces.add(ws.path)
+          status: "completed",
+          conclusion: "action_required",
+          title,
+          summary,
+        })
       }
     })
   }

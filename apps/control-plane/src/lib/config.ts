@@ -86,6 +86,22 @@ export async function loadConfig(workDir: string): Promise<YaffleConfig> {
 }
 
 /**
+ * Name of an IaC variable (e.g., "environment", "is_preview").
+ */
+export type IaCVariableName = string
+
+/**
+ * A value that can be serialized for IaC variable injection (tfvars.json, etc).
+ * Supports strings and booleans (e.g., `is_preview = true`).
+ */
+export type SerializableIaCVariableValue = string | boolean
+
+/**
+ * A map of IaC variable names to their serializable values.
+ */
+export type IaCVariables = Record<IaCVariableName, SerializableIaCVariableValue>
+
+/**
  * Interpolate variable templates in a workspace's variables.
  * Replaces {{ name }} placeholders with values from the context.
  * Unknown placeholders are left as-is.
@@ -96,10 +112,10 @@ export async function loadConfig(workDir: string): Promise<YaffleConfig> {
 export function interpolateVariables(
   variables: Record<string, string> | undefined,
   ctx: VariableContext,
-): Record<string, string | boolean> {
+): IaCVariables {
   // Always inject environment and is_preview - required for all workspaces
   // is_preview is a boolean so Terraform interprets it correctly in tfvars.json
-  const result: Record<string, string | boolean> = {
+  const result: IaCVariables = {
     environment: ctx.env,
     is_preview: ctx.is_preview === "true",
   }

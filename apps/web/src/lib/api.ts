@@ -297,6 +297,15 @@ export async function rerunPreview(previewId: string): Promise<{ rerunStarted: b
 }
 
 /**
+ * Trigger apply for a preview that has a successful plan.
+ * Used for both auto-apply (timer completed) and manual approval.
+ */
+export async function triggerApply(previewId: string): Promise<{ applyStarted: boolean; runId: string }> {
+  const res = await postJson<{ data: { applyStarted: boolean; runId: string } }>(`/previews/${previewId}/apply`)
+  return res.data
+}
+
+/**
  * Get all previews (workspaces) for a PR.
  */
 export async function getPreviewsByPr(

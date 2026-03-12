@@ -3,14 +3,14 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
 import { findPreviewById, listPreviews } from "../db/queries/previews.ts"
-import { createApproval, listApprovals } from "../db/queries/approvals.ts"
+import { listApprovals } from "../db/queries/approvals.ts"
 import { logger } from "../lib/telemetry.ts"
 import {
   requireOrgAccess,
   requireResourceAccess,
   getAuth,
 } from "../middleware/org-auth.ts"
-import { approvePreviewApply, rerunPreview } from "../lib/webhook-handler.ts"
+import { rerunPreview, triggerApply } from "../lib/webhook-handler.ts"
 import { events, type PreviewUpdateEvent } from "../lib/events.ts"
 
 const listQuerySchema = z.object({
@@ -35,10 +35,6 @@ const listQuerySchema = z.object({
 })
 
 const uuidParam = z.string().uuid()
-const approveSchema = z.object({
-  approverLogin: z.string().min(1).optional(),
-  githubUserId: z.coerce.number().int().positive().optional(),
-})
 
 export const previewsRoute = new Hono()
 
@@ -219,6 +215,9 @@ previewsRoute.get(
 
 /**
  * POST /api/previews/:id/approve
+ *
+ * @deprecated Use POST /api/previews/:id/apply instead.
+ * This route is kept for backwards compatibility but just redirects to triggerApply.
  */
 previewsRoute.post(
   "/:id/approve",
@@ -231,43 +230,10 @@ previewsRoute.post(
     const id = parseResult.data
 
     const auth = getAuth(c)
-    const body = approveSchema.safeParse(await c.req.json().catch(() => ({})))
 
     const preview = await findPreviewById(id)
     if (!preview) {
       return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
-    }
-
-    if (preview.prNumber !== 0) {
-      return c.json(
-        { error: { code: "INVALID_APPROVAL", message: "only production previews require approval" } },
-        400,
-      )
-    }
-
-    if (!preview.requireApproval) {
-      return c.json(
-        { error: { code: "INVALID_APPROVAL", message: "approval not required for this preview" } },
-        400,
-      )
-    }
-
-    if (preview.status !== "awaiting_approval") {
-      return c.json(
-        { error: { code: "INVALID_STATUS", message: "preview is not awaiting approval" } },
-        409,
-      )
-    }
-
-    // Use auth context for approver identity
-    const approverLogin = auth.name || body.data?.approverLogin
-    const userId = auth.userId
-
-    if (!userId) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: "approver identity required" } },
-        400,
-      )
     }
 
     // Check if user is in the allowed approvers list (if configured)
@@ -277,8 +243,8 @@ previewsRoute.post(
 
     if (
       approvers.length > 0 &&
-      approverLogin &&
-      !approvers.map((a) => a.toLowerCase()).includes(approverLogin.toLowerCase())
+      auth.name &&
+      !approvers.map((a) => a.toLowerCase()).includes(auth.name.toLowerCase())
     ) {
       return c.json(
         { error: { code: "FORBIDDEN", message: "approver is not authorized" } },
@@ -286,18 +252,37 @@ previewsRoute.post(
       )
     }
 
-    await createApproval({
-      previewId: preview.id,
-      userId,
-      approverLogin: approverLogin ?? null,
-    })
+    // Use the single triggerApply path
+    try {
+      const result = await triggerApply({
+        previewId: id,
+        userId: auth.userId,
+        approverLogin: auth.name,
+      })
 
-    await approvePreviewApply({
-      previewId: preview.id,
-      approverLogin,
-    })
+      return c.json({
+        data: {
+          approved: true,
+          applyStarted: result.applyStarted,
+          runId: result.runId,
+        },
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to trigger apply"
+      logger.warn("Approve/apply failed", { previewId: id, error: message })
 
-    return c.json({ data: { approved: true } })
+      if (message === "no successful plan to apply") {
+        return c.json({ error: { code: "NO_PLAN", message } }, 400)
+      }
+      if (message === "apply already in progress") {
+        return c.json({ error: { code: "APPLY_IN_PROGRESS", message } }, 409)
+      }
+      if (message === "apply already completed") {
+        return c.json({ error: { code: "ALREADY_APPLIED", message } }, 409)
+      }
+
+      return c.json({ error: { code: "APPLY_FAILED", message } }, 500)
+    }
   },
 )
 
@@ -357,6 +342,75 @@ previewsRoute.post(
       }
 
       return c.json({ error: { code: "RERUN_FAILED", message } }, 500)
+    }
+  },
+)
+
+/**
+ * POST /api/previews/:id/apply
+ *
+ * Trigger apply for a preview that has a successful plan.
+ * Used by the UI for both auto-apply (countdown completed) and manual approval.
+ * If the preview requires approval, records who approved it.
+ */
+previewsRoute.post(
+  "/:id/apply",
+  requireResourceAccess({ getOrgId: getPreviewOrgId }),
+  async (c) => {
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
+    if (!parseResult.success) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+    }
+    const id = parseResult.data
+
+    const auth = getAuth(c)
+    const preview = await findPreviewById(id)
+    if (!preview) {
+      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+    }
+
+    logger.info("Apply triggered", {
+      previewId: id,
+      userId: auth.userId,
+      userName: auth.name,
+      requireApproval: preview.requireApproval,
+    })
+
+    try {
+      const result = await triggerApply({
+        previewId: id,
+        userId: auth.userId,
+        approverLogin: auth.name,
+      })
+
+      return c.json({
+        data: {
+          applyStarted: result.applyStarted,
+          runId: result.runId,
+        },
+      })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to trigger apply"
+      logger.warn("Apply trigger failed", {
+        previewId: id,
+        error: message,
+      })
+
+      // Map known errors to appropriate status codes
+      if (message === "preview not found") {
+        return c.json({ error: { code: "PREVIEW_NOT_FOUND", message } }, 404)
+      }
+      if (message === "no successful plan to apply") {
+        return c.json({ error: { code: "NO_PLAN", message } }, 400)
+      }
+      if (message === "apply already in progress") {
+        return c.json({ error: { code: "APPLY_IN_PROGRESS", message } }, 409)
+      }
+      if (message === "apply already completed") {
+        return c.json({ error: { code: "APPLY_COMPLETED", message } }, 409)
+      }
+
+      return c.json({ error: { code: "APPLY_FAILED", message } }, 500)
     }
   },
 )

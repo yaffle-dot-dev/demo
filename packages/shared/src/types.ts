@@ -1,6 +1,7 @@
 export type PreviewStatus =
   | "pending"
   | "planning"
+  | "awaiting_apply"
   | "applying"
   | "awaiting_approval"
   | "ready"

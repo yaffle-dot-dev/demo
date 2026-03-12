@@ -190,35 +190,30 @@ describe("webhook-handler", () => {
   })
 
   // -----------------------------------------------------------------------
-  // PR opened -- plan + apply (auto_apply: true)
+  // PR opened -- plan only (apply requires explicit trigger via UI)
   // -----------------------------------------------------------------------
 
-  test("PR opened: plans and applies with auto_apply", async () => {
+  test("PR opened: plans and waits for apply approval", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
-    expect(pvs[0].status).toBe("ready")
+    expect(pvs[0].status).toBe("awaiting_apply") // Waits for UI approval
     expect(pvs[0].stateKey).toBe("preview-pr-42/infra/terraform.tfstate")
 
     const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(2) // plan + apply
+    expect(runs).toHaveLength(1) // plan only - apply waits for explicit trigger
     const planRuns = runs.filter((r) => r.runType === "plan")
-    const applyRuns = runs.filter((r) => r.runType === "apply")
     expect(planRuns).toHaveLength(1)
     expect(planRuns[0].status).toBe("success")
-    expect(applyRuns).toHaveLength(1)
-    expect(applyRuns[0].status).toBe("success")
 
-    expect(runner.calls).toHaveLength(2)
+    expect(runner.calls).toHaveLength(1)
     expect(runner.calls[0].command).toBe("plan")
     expect(runner.calls[0].workspacePath).toBe("infra")
-    expect(runner.calls[1].command).toBe("apply")
-    expect(runner.calls[1].workspacePath).toBe("infra")
   })
 
   // -----------------------------------------------------------------------
-  // PR opened -- plan only (auto_apply: false)
+  // PR opened -- plan only (auto_apply: false config, same behavior as auto_apply: true now)
   // -----------------------------------------------------------------------
 
   test("PR opened: plan only when auto_apply is false", async () => {
@@ -232,7 +227,8 @@ describe("webhook-handler", () => {
     expect(runs[0].status).toBe("success")
 
     const pvs = await db.select().from(previews)
-    expect(pvs[0].status).toBe("ready")
+    // With auto_apply: false, still waits for approval (same as auto_apply: true now)
+    expect(pvs[0].status).toBe("awaiting_apply")
 
     expect(runner.calls).toHaveLength(1)
     expect(runner.calls[0].command).toBe("plan")
@@ -242,19 +238,22 @@ describe("webhook-handler", () => {
   // PR synchronize
   // -----------------------------------------------------------------------
 
-  test("PR synchronize: re-plans and re-applies", async () => {
+  test("PR synchronize: re-plans (apply requires explicit trigger)", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened", headSha: "sha-1" }))
     await handler.handleWebhookEvent(makePrContext({ action: "synchronize", headSha: "sha-2" }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].headSha).toBe("sha-2")
+    expect(pvs[0].status).toBe("awaiting_apply")
 
-    // 2 plans + 2 applies
+    // 2 plans only - applies require explicit trigger
     const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(4)
+    expect(runs).toHaveLength(2)
 
-    expect(runner.calls).toHaveLength(4)
+    expect(runner.calls).toHaveLength(2)
+    expect(runner.calls[0].command).toBe("plan")
+    expect(runner.calls[1].command).toBe("plan")
   })
 
   // -----------------------------------------------------------------------
@@ -364,19 +363,17 @@ describe("webhook-handler", () => {
   // Multi-workspace
   // -----------------------------------------------------------------------
 
-  test("multi-workspace: plans and applies each workspace", async () => {
+  test("multi-workspace: plans each workspace (apply requires explicit trigger)", async () => {
     handler = createHandler(runner, {
       configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG),
     })
 
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
-    // Two workspaces, each gets plan + apply = 4 runner calls
-    expect(runner.calls).toHaveLength(4)
+    // Two workspaces, each gets plan only = 2 runner calls (applies require explicit trigger)
+    expect(runner.calls).toHaveLength(2)
     expect(runner.calls[0]).toMatchObject({ command: "plan", workspacePath: "infra" })
-    expect(runner.calls[1]).toMatchObject({ command: "apply", workspacePath: "infra" })
-    expect(runner.calls[2]).toMatchObject({ command: "plan", workspacePath: "infra/monitoring" })
-    expect(runner.calls[3]).toMatchObject({ command: "apply", workspacePath: "infra/monitoring" })
+    expect(runner.calls[1]).toMatchObject({ command: "plan", workspacePath: "infra/monitoring" })
   })
 
   // -----------------------------------------------------------------------
@@ -432,23 +429,24 @@ describe("webhook-handler", () => {
   })
 
   // -----------------------------------------------------------------------
-  // Push to default branch -- production apply
+  // Push to default branch -- production plan (apply requires UI approval)
   // -----------------------------------------------------------------------
 
-  test("push to default branch: plans and applies production", async () => {
+  test("push to default branch: plans and waits for apply approval", async () => {
     await handler.handleWebhookEvent(makePushContext())
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].prNumber).toBe(0) // sentinel for production
     expect(pvs[0].stateKey).toBe("main/infra/terraform.tfstate")
-    expect(pvs[0].status).toBe("ready")
+    expect(pvs[0].status).toBe("awaiting_apply") // Waits for UI timer/approval
 
     const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(2) // plan + apply
+    expect(runs).toHaveLength(1) // plan only - apply waits for explicit trigger
     expect(runs[0].runType).toBe("plan")
-    expect(runs[1].runType).toBe("apply")
 
+    expect(runner.calls).toHaveLength(1)
+    expect(runner.calls[0].command).toBe("plan")
     expect(runner.calls[0].stateKey).toBe("main/infra/terraform.tfstate")
   })
 
@@ -463,7 +461,8 @@ describe("webhook-handler", () => {
 
     const previewRows = await db.select().from(previews)
     expect(previewRows).toHaveLength(1)
-    expect(previewRows[0].status).toBe("awaiting_approval")
+    // Both require_approval: true and false now wait - difference is UI shows timer vs button
+    expect(previewRows[0].status).toBe("awaiting_apply")
     expect(previewRows[0].requireApproval).toBe(true)
   })
 
