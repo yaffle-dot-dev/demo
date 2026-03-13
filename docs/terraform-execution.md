@@ -164,22 +164,36 @@ CREATE INDEX idx_previews_eligible ON previews(run_group_id, status)
 Jobs are discrete units of work dispatched to workers.
 
 ```sql
-CREATE TABLE jobs (
+CREATE TABLE iac_jobs (
   id UUID PRIMARY KEY,
   preview_id UUID NOT NULL REFERENCES previews(id),
   job_type TEXT NOT NULL,         -- 'plan', 'apply', 'destroy'
-  status TEXT NOT NULL,           -- 'queued', 'running', 'completed', 'failed'
+  status TEXT NOT NULL,           -- 'queued', 'dispatched', 'running', 
+                                  -- 'completed', 'failed', 'cancelled'
   worker_id TEXT,                 -- Claimed by which worker
+  last_heartbeat TIMESTAMPTZ,     -- For stale job detection
   queued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  dispatched_at TIMESTAMPTZ,
   started_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
-  result JSONB                    -- Output, errors, etc.
+  result JSONB,                   -- Output, errors, etc.
+  error_message TEXT,
+  attempts INTEGER DEFAULT 0,
+  max_attempts INTEGER DEFAULT 3
 );
 
 -- Index for claiming work
-CREATE INDEX idx_jobs_queued ON jobs(job_type, queued_at) 
+CREATE INDEX idx_jobs_queued ON iac_jobs(queued_at) 
   WHERE status = 'queued';
 ```
+
+**Job Status Lifecycle**:
+- `queued`: Waiting for scheduler to claim
+- `dispatched`: Claimed by scheduler, engine starting
+- `running`: Engine executing terraform
+- `completed`: Finished successfully
+- `failed`: Finished with error
+- `cancelled`: Cancelled (e.g., PR closed while job pending)
 
 ---
 
@@ -226,6 +240,22 @@ User approves via UI (clicks Approve or timer expires):
 5. Queue apply job
 6. Update preview status to `applying` when job starts
 
+### Manual Rerun
+
+User clicks "Run Again" in UI to retry a failed or stale workspace:
+
+1. API validates no pending jobs exist for this preview
+2. Create new run group with `trigger: 'manual'`
+3. Update preview's `run_group_id` to the new group
+4. Reset preview status to `pending`
+5. Clear approval state (`approved_at`, `approved_by`)
+6. Queue a plan job
+7. Scheduler picks up job respecting concurrency limits
+
+**Important**: Manual rerun only reruns the single workspace, not its
+dependencies. If upstream failures caused the original failure, the user
+should rerun the upstream workspace first.
+
 ### Phase 5: Apply Execution
 
 1. Worker claims queued apply job
@@ -246,7 +276,37 @@ and IaC Engine instances. It does NOT execute Terraform itself.
 1. **Poll for queued jobs** - periodically check DB for `status = 'queued'`
 2. **Spawn IaC Engine instances** - start an engine instance for each job
 3. **Monitor job health** - detect stuck/timed-out jobs
-4. **Enforce concurrency limits** - per org, per repo, global
+4. **Enforce concurrency limits** - global and per-run-group
+5. **Fair scheduling** - round-robin across run groups
+
+### Concurrency Control
+
+The scheduler enforces two levels of concurrency limits:
+
+| Limit | Default (Dev) | Default (Prod) | Environment Variable |
+|-------|---------------|----------------|---------------------|
+| Global max concurrent | 5 | 50 | `YAFFLE_MAX_CONCURRENT_JOBS` |
+| Per-run-group max | 3 | 3 | `YAFFLE_MAX_JOBS_PER_RUN_GROUP` |
+
+**Why per-run-group limits?** Prevents one large DAG from starving others.
+Multiple PRs or environments can make progress concurrently.
+
+**Round-robin fairness**: When claiming jobs, the scheduler rotates through
+run groups, taking one job from each before returning to the first. This
+ensures no single run group monopolizes available slots.
+
+### Job Priority
+
+Within each run group, jobs are claimed in priority order:
+
+1. **`apply`** - User-approved changes, highest priority
+2. **`destroy`** - Cleanup operations
+3. **`plan`** - Informational, lowest priority
+
+This ensures that when a user approves an apply, it doesn't wait behind
+queued plans for other workspaces in the same run group. Priority is enforced
+at the database level using `ORDER BY` in the claim query, so it works
+correctly with `FOR UPDATE SKIP LOCKED`.
 
 ### Job Dispatch Flow
 
@@ -254,12 +314,17 @@ and IaC Engine instances. It does NOT execute Terraform itself.
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                               Scheduler                                      │
 │                                                                              │
-│   1. Poll DB: SELECT * FROM jobs WHERE status = 'queued'                    │
-│   2. For each queued job:                                                   │
-│      a. Check concurrency limits                                            │
-│      b. Mark job as 'dispatched'                                            │
-│      c. Spawn IaC Engine instance with job_id                               │
-│   3. Sleep, repeat                                                          │
+│   1. Count active jobs globally - return early if at global limit           │
+│   2. Get list of run_group_ids with queued work                             │
+│   3. Count active jobs per run group                                        │
+│   4. For each group with available capacity:                                │
+│      - Query top N jobs ordered by (job_type priority, queued_at)          │
+│      - Uses FOR UPDATE SKIP LOCKED (priority ordering in PostgreSQL!)      │
+│   5. Round-robin interleave jobs from all groups                            │
+│   6. Mark selected jobs as 'dispatched'                                     │
+│   7. Spawn IaC Engine instance for each job (in parallel)                   │
+│   8. Emit metrics (claimed, blocked, skip_locked_misses)                    │
+│   9. Sleep, repeat                                                          │
 │                                                                              │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
@@ -279,6 +344,13 @@ and IaC Engine instances. It does NOT execute Terraform itself.
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+**Why per-group queries?** This approach fixes a subtle bug with priority
+ordering. If we query all jobs globally with `ORDER BY queued_at`, then sort
+by priority in application code, `FOR UPDATE SKIP LOCKED` may skip
+high-priority jobs locked by another scheduler and return lower-priority ones.
+By ordering by priority *in PostgreSQL*, `SKIP LOCKED` skips lower-priority
+jobs when high-priority ones are locked.
+
 ### Stale Job Recovery
 
 If an IaC Engine instance dies without completing:
@@ -287,12 +359,51 @@ If an IaC Engine instance dies without completing:
 2. Scheduler detects no heartbeat for N minutes
 3. Scheduler re-queues job (if retries remain) or marks as `failed`
 
+### Telemetry
+
+The scheduler emits the following metrics:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `yaffle.scheduler.jobs.claimed` | Counter | Jobs claimed for dispatch |
+| `yaffle.scheduler.jobs.blocked` | Counter | Jobs blocked (by `reason`: `global_limit` or `group_limit`) |
+| `yaffle.scheduler.jobs.active` | Gauge | Current active jobs count |
+| `yaffle.scheduler.jobs.queued` | Gauge | Current queued jobs count |
+| `yaffle.scheduler.groups.queued` | Gauge | Run groups with queued work |
+| `yaffle.scheduler.poll.duration` | Histogram | Poll cycle duration in ms |
+| `yaffle.scheduler.poll.groups_queried` | Histogram | Group queries per poll cycle |
+| `yaffle.scheduler.poll.jobs_fetched` | Histogram | Jobs fetched per poll cycle |
+| `yaffle.scheduler.claim.skip_locked_misses` | Counter | Jobs skipped due to lock contention |
+
+### Scaling Characteristics
+
+The current scheduler implementation is designed for:
+- Up to ~100 concurrent run groups with queued work
+- Up to ~1000 queued jobs total
+- 1-3 scheduler instances
+
+**Metrics to watch for scaling issues:**
+
+| Metric | Warning Threshold | Indicates |
+|--------|-------------------|-----------|
+| `poll.duration` p99 | > 200ms | Query performance degrading |
+| `groups.queued` | > 50 consistently | May need query batching |
+| `poll.groups_queried` | > 20 consistently | Consider LATERAL join optimization |
+| `skip_locked_misses` / `jobs_fetched` | > 0.3 | High contention between schedulers |
+
+**If scaling issues arise, consider:**
+1. Increase poll interval (reduces DB load, increases latency)
+2. Implement LATERAL join optimization (single query for all groups)
+3. Add a dedicated `job_queue` table with materialized priority
+
 ### Key Properties
 
 - **No idle compute**: Engine instances are ephemeral, spawn on demand
 - **Scheduler is stateless**: All state in DB, scheduler can restart safely
 - **Approvals are push-based**: Scheduler does not poll for approvals; 
   the approval API queues the job directly
+- **Concurrency controlled**: Global and per-group limits prevent overload
+- **Fair**: Round-robin prevents starvation across run groups
 
 ---
 

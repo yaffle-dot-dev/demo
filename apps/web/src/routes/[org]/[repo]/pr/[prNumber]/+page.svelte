@@ -2,6 +2,7 @@
   import { page } from "$app/stores"
   import { usePreviewStream } from "$lib/sse/index.svelte"
   import { getLatestRunGroup } from "$lib/sse/types"
+  import { githubPullUrl } from "$lib/github"
   import type { PrPreviewGroup } from "$lib/api"
   import PreviewGroupPage from "$lib/components/PreviewGroupPage.svelte"
 
@@ -23,9 +24,7 @@
 
   // GitHub URL for PR
   const githubUrl = $derived(
-    displayData
-      ? `https://github.com/${displayData.repo}/pull/${displayData.prNumber}`
-      : `https://github.com/${repo}/pull/${prNumber}`,
+    githubPullUrl({ org, repo: displayData?.repo ?? repo }, displayData?.prNumber ?? prNumber),
   )
 </script>
 

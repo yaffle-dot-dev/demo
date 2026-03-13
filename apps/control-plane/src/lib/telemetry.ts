@@ -135,6 +135,16 @@ function resetMeter(): void {
   _sseMessagesDeduped = null
   _sseConnectionsActive = null
   _sseEventsEmitted = null
+  // Scheduler metrics
+  _schedulerJobsClaimedCounter = null
+  _schedulerJobsBlockedCounter = null
+  _schedulerActiveJobsGauge = null
+  _schedulerQueuedJobsGauge = null
+  _schedulerPollDuration = null
+  _schedulerGroupsQueuedGauge = null
+  _schedulerPollGroupsQueried = null
+  _schedulerPollJobsFetched = null
+  _schedulerSkipLockedMisses = null
 }
 
 let _webhookReceivedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
@@ -333,6 +343,142 @@ export function getSseEventsEmittedCounter(): typeof _sseEventsEmitted & {} {
     })
   }
   return _sseEventsEmitted
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler metrics
+// ---------------------------------------------------------------------------
+
+let _schedulerJobsClaimedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: jobs claimed by the scheduler for dispatch. */
+export function getSchedulerJobsClaimedCounter(): typeof _schedulerJobsClaimedCounter & {} {
+  if (!_schedulerJobsClaimedCounter) {
+    _schedulerJobsClaimedCounter = getMeter().createCounter("yaffle.scheduler.jobs.claimed", {
+      description: "Jobs claimed by scheduler for dispatch",
+    })
+  }
+  return _schedulerJobsClaimedCounter
+}
+
+let _schedulerJobsBlockedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: jobs blocked due to concurrency limits, by reason (global_limit, group_limit). */
+export function getSchedulerJobsBlockedCounter(): typeof _schedulerJobsBlockedCounter & {} {
+  if (!_schedulerJobsBlockedCounter) {
+    _schedulerJobsBlockedCounter = getMeter().createCounter("yaffle.scheduler.jobs.blocked", {
+      description: "Jobs blocked due to concurrency limits",
+    })
+  }
+  return _schedulerJobsBlockedCounter
+}
+
+let _schedulerActiveJobsGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _schedulerActiveJobsValue = 0
+/** Observable gauge: current number of active (dispatched + running) jobs. */
+export function getSchedulerActiveJobsGauge(): typeof _schedulerActiveJobsGauge & {} {
+  if (!_schedulerActiveJobsGauge) {
+    _schedulerActiveJobsGauge = getMeter().createObservableGauge("yaffle.scheduler.jobs.active", {
+      description: "Current number of active jobs (dispatched + running)",
+    })
+    _schedulerActiveJobsGauge.addCallback((result) => {
+      result.observe(_schedulerActiveJobsValue)
+    })
+  }
+  return _schedulerActiveJobsGauge
+}
+
+/** Update the active jobs gauge value. */
+export function setSchedulerActiveJobsValue(count: number): void {
+  _schedulerActiveJobsValue = count
+  // Ensure gauge is initialized
+  getSchedulerActiveJobsGauge()
+}
+
+let _schedulerQueuedJobsGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _schedulerQueuedJobsValue = 0
+/** Observable gauge: current number of queued jobs waiting for dispatch. */
+export function getSchedulerQueuedJobsGauge(): typeof _schedulerQueuedJobsGauge & {} {
+  if (!_schedulerQueuedJobsGauge) {
+    _schedulerQueuedJobsGauge = getMeter().createObservableGauge("yaffle.scheduler.jobs.queued", {
+      description: "Current number of jobs waiting in queue",
+    })
+    _schedulerQueuedJobsGauge.addCallback((result) => {
+      result.observe(_schedulerQueuedJobsValue)
+    })
+  }
+  return _schedulerQueuedJobsGauge
+}
+
+/** Update the queued jobs gauge value. */
+export function setSchedulerQueuedJobsValue(count: number): void {
+  _schedulerQueuedJobsValue = count
+  // Ensure gauge is initialized
+  getSchedulerQueuedJobsGauge()
+}
+
+let _schedulerPollDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: scheduler poll cycle duration in ms. */
+export function getSchedulerPollDurationHistogram(): typeof _schedulerPollDuration & {} {
+  if (!_schedulerPollDuration) {
+    _schedulerPollDuration = getMeter().createHistogram("yaffle.scheduler.poll.duration", {
+      description: "Scheduler poll cycle duration in ms",
+      unit: "ms",
+    })
+  }
+  return _schedulerPollDuration
+}
+
+let _schedulerGroupsQueuedGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _schedulerGroupsQueuedValue = 0
+/** Observable gauge: number of run groups with queued work. */
+export function getSchedulerGroupsQueuedGauge(): typeof _schedulerGroupsQueuedGauge & {} {
+  if (!_schedulerGroupsQueuedGauge) {
+    _schedulerGroupsQueuedGauge = getMeter().createObservableGauge("yaffle.scheduler.groups.queued", {
+      description: "Number of run groups with queued work",
+    })
+    _schedulerGroupsQueuedGauge.addCallback((result) => {
+      result.observe(_schedulerGroupsQueuedValue)
+    })
+  }
+  return _schedulerGroupsQueuedGauge
+}
+
+/** Update the groups queued gauge value. */
+export function setSchedulerGroupsQueuedValue(count: number): void {
+  _schedulerGroupsQueuedValue = count
+  getSchedulerGroupsQueuedGauge()
+}
+
+let _schedulerPollGroupsQueried: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: number of group queries per poll cycle. */
+export function getSchedulerPollGroupsQueriedHistogram(): typeof _schedulerPollGroupsQueried & {} {
+  if (!_schedulerPollGroupsQueried) {
+    _schedulerPollGroupsQueried = getMeter().createHistogram("yaffle.scheduler.poll.groups_queried", {
+      description: "Number of run group queries per scheduler poll cycle",
+    })
+  }
+  return _schedulerPollGroupsQueried
+}
+
+let _schedulerPollJobsFetched: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: total jobs fetched across all group queries per poll. */
+export function getSchedulerPollJobsFetchedHistogram(): typeof _schedulerPollJobsFetched & {} {
+  if (!_schedulerPollJobsFetched) {
+    _schedulerPollJobsFetched = getMeter().createHistogram("yaffle.scheduler.poll.jobs_fetched", {
+      description: "Total jobs fetched across all group queries per poll cycle",
+    })
+  }
+  return _schedulerPollJobsFetched
+}
+
+let _schedulerSkipLockedMisses: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: jobs we couldn't lock due to SKIP LOCKED (indicates contention). */
+export function getSchedulerSkipLockedMissesCounter(): typeof _schedulerSkipLockedMisses & {} {
+  if (!_schedulerSkipLockedMisses) {
+    _schedulerSkipLockedMisses = getMeter().createCounter("yaffle.scheduler.claim.skip_locked_misses", {
+      description: "Jobs skipped due to FOR UPDATE SKIP LOCKED (indicates contention)",
+    })
+  }
+  return _schedulerSkipLockedMisses
 }
 
 // ---------------------------------------------------------------------------

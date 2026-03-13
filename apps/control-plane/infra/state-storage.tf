@@ -5,6 +5,22 @@
 # Bootstrapped via modules/bootstrap/, then imported here.
 # =============================================================================
 
+# Import the bootstrapped state bucket (main environment only)
+# The bootstrap module creates the bucket with local state, then we import it
+# here to manage versioning, encryption, and lifecycle rules.
+# Preview environments create their buckets fresh (no import needed).
+import {
+  for_each = var.environment == "main" ? { state = "yaffle-state-${local.name_suffix}" } : {}
+  to       = aws_s3_bucket.state
+  id       = each.value
+}
+
+import {
+  for_each = var.environment == "main" ? { state = "yaffle-state-${local.name_suffix}" } : {}
+  to       = aws_s3_bucket_public_access_block.state
+  id       = each.value
+}
+
 resource "aws_s3_bucket" "state" {
   bucket        = "yaffle-state-${local.name_suffix}"
   force_destroy = var.is_preview # Allow cleanup of preview buckets

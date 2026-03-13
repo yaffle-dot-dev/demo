@@ -264,7 +264,7 @@ previewsRoute.post(
         data: {
           approved: true,
           applyStarted: result.applyStarted,
-          runId: result.runId,
+          jobId: result.jobId,
         },
       })
     } catch (err) {
@@ -289,8 +289,9 @@ previewsRoute.post(
 /**
  * POST /api/previews/:id/rerun
  *
- * Manually re-run a preview (plan + apply) without pushing new commits.
+ * Manually re-run a preview (queues a plan job).
  * Useful for retrying failed runs or forcing a fresh plan.
+ * The job is picked up by the scheduler and executed respecting concurrency limits.
  */
 previewsRoute.post(
   "/:id/rerun",
@@ -322,12 +323,13 @@ previewsRoute.post(
 
       return c.json({
         data: {
-          rerunStarted: true,
+          rerunQueued: true,
           runGroupId: result.runGroupId,
+          jobId: result.jobId,
         },
       })
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to start re-run"
+      const message = err instanceof Error ? err.message : "Failed to queue re-run"
       logger.warn("Re-run failed", {
         previewId: id,
         error: message,
@@ -337,8 +339,11 @@ previewsRoute.post(
       if (message === "preview not found") {
         return c.json({ error: { code: "PREVIEW_NOT_FOUND", message } }, 404)
       }
-      if (message === "a run is already in progress") {
-        return c.json({ error: { code: "RUN_IN_PROGRESS", message } }, 409)
+      if (message === "preview has no run group") {
+        return c.json({ error: { code: "NO_RUN_GROUP", message } }, 400)
+      }
+      if (message === "a job is already queued or running for this preview") {
+        return c.json({ error: { code: "JOB_IN_PROGRESS", message } }, 409)
       }
 
       return c.json({ error: { code: "RERUN_FAILED", message } }, 500)
@@ -386,7 +391,7 @@ previewsRoute.post(
       return c.json({
         data: {
           applyStarted: result.applyStarted,
-          runId: result.runId,
+          jobId: result.jobId,
         },
       })
     } catch (err) {

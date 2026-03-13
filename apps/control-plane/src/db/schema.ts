@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -94,6 +95,8 @@ export const previews = pgTable(
     orgId: uuid("org_id")
       .references(() => organizations.id)
       .notNull(),
+    runGroupId: uuid("run_group_id")
+      .references(() => runGroups.id, { onDelete: "cascade" }),
     installationId: bigint("installation_id", { mode: "number" }),
     repo: text("repo").notNull(),
     prNumber: integer("pr_number").notNull(),
@@ -109,7 +112,15 @@ export const previews = pgTable(
     mode: text("mode").notNull(),
     requireApproval: boolean("require_approval").default(false).notNull(),
     approvers: jsonb("approvers"),
+    // DAG coordination fields
+    upstreamIds: text("upstream_ids").array().default([]).notNull(),
+    completedUpstreams: text("completed_upstreams").array().default([]).notNull(),
+    // Approval tracking
+    approvedAt: timestamp("approved_at"),
+    approvedBy: text("approved_by"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
   },
   (t) => [
     unique("previews_org_repo_pr_workspace").on(t.orgId, t.repo, t.prNumber, t.workspacePath),
@@ -181,7 +192,7 @@ export const approvals = pgTable("approvals", {
 })
 
 // =============================================================================
-// Jobs (background job queue)
+// Jobs (generic background job queue)
 // =============================================================================
 
 export const jobs = pgTable("jobs", {
@@ -197,6 +208,42 @@ export const jobs = pgTable("jobs", {
   attempts: integer("attempts").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 })
+
+// =============================================================================
+// IaC Jobs (terraform plan/apply/destroy execution queue)
+// =============================================================================
+
+export const iacJobs = pgTable(
+  "iac_jobs",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    previewId: uuid("preview_id")
+      .references(() => previews.id, { onDelete: "cascade" })
+      .notNull(),
+    jobType: text("job_type").notNull(), // 'plan' | 'apply' | 'destroy'
+    status: text("status").default("queued").notNull(), // 'queued' | 'dispatched' | 'running' | 'completed' | 'failed' | 'cancelled'
+    // Worker tracking
+    workerId: text("worker_id"),
+    lastHeartbeat: timestamp("last_heartbeat"),
+    // Timing
+    queuedAt: timestamp("queued_at").defaultNow().notNull(),
+    dispatchedAt: timestamp("dispatched_at"),
+    startedAt: timestamp("started_at"),
+    completedAt: timestamp("completed_at"),
+    // Result
+    result: jsonb("result"), // Output, plan summary, errors, etc.
+    errorMessage: text("error_message"),
+    // Retry tracking
+    attempts: integer("attempts").default(0).notNull(),
+    maxAttempts: integer("max_attempts").default(3).notNull(),
+  },
+  (t) => [
+    // Index for efficient job queue claiming:
+    // - Filters on status='queued'
+    // - Orders by job_type (priority) then queued_at
+    index("iac_jobs_queue_priority_idx").on(t.status, t.jobType, t.queuedAt),
+  ],
+)
 
 // =============================================================================
 // Repositories

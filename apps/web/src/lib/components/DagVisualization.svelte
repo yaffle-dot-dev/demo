@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { WorkspaceWithRuns, DependencyGraph, Run } from "$lib/api"
+  import type { WorkspaceWithRuns, DependencyGraph, Run, WorkspacePreview } from "$lib/api"
   import { triggerApply } from "$lib/api"
 
   interface Props {
@@ -11,10 +11,47 @@
 
   let props: Props = $props()
 
-  const workspaces = $derived(props.workspaces)
+  const workspacesWithRuns = $derived(props.workspaces)
   const dependencyGraph = $derived(props.dependencyGraph)
   const selectedPath = $derived(props.selectedPath)
   const onSelect = $derived(props.onSelect)
+
+  // Build the complete list of workspaces from the dependency graph.
+  // For workspaces without runs yet, create placeholder entries showing "Queued" status.
+  const workspaces = $derived.by((): WorkspaceWithRuns[] => {
+    // If no dependency graph, fall back to workspaces with runs
+    if (!dependencyGraph || dependencyGraph.workspaces.length === 0) {
+      return workspacesWithRuns
+    }
+
+    // Build lookup for workspaces that have runs
+    const wsWithRunsByPath = new Map(
+      workspacesWithRuns.map((ws) => [ws.preview.workspacePath, ws])
+    )
+
+    // Build complete list from dependency graph
+    return dependencyGraph.workspaces.map((path): WorkspaceWithRuns => {
+      // If we have run data for this workspace, use it
+      const existing = wsWithRunsByPath.get(path)
+      if (existing) return existing
+
+      // Otherwise, create a placeholder for workspaces without runs yet
+      const placeholder: WorkspacePreview = {
+        id: `placeholder-${path}`,
+        workspacePath: path,
+        status: "pending",
+        stateKey: "",
+        mode: "preview",
+        requireApproval: false,
+        createdAt: new Date().toISOString(),
+      }
+      return {
+        preview: placeholder,
+        runs: [],
+        outputs: null,
+      }
+    })
+  })
 
   // ============================================================================
   // Countdown timer state for auto-apply
@@ -547,6 +584,8 @@
             {@const isBlocked = hasFailedUpstream(wsPath)}
             {@const readyForApply = isReadyForApply(workspace)}
             {@const requiresApproval = getRequiresApproval(workspace)}
+            {@const isQueued = workspace.runs.length === 0}
+            {@const isSubmitting = applyingWorkspaces.has(wsPath)}
             {@const x = getNodeX(colIdx)}
             {@const y = getNodeY(rowIdx)}
             {@const width = columnWidths[colIdx]}
@@ -572,6 +611,7 @@
                 class="node-bg transition-all"
                 class:selected={isSelected}
                 class:blocked={isBlocked}
+                class:queued={isQueued}
                 class:has-changes={hasChanges(planSummary)}
                 class:waiting={readyForApply && !requiresApproval}
               />
@@ -629,7 +669,7 @@
                       <text x="44" y="13" text-anchor="middle" class="timer-btn-text">Pause</text>
                     </g>
                   {/if}
-                {:else if readyForApply && requiresApproval}
+                {:else if readyForApply && requiresApproval && !isSubmitting}
                   <g 
                     class="approval-btn"
                     role="button"
@@ -640,6 +680,11 @@
                     <title>Click to approve and start apply</title>
                     <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="approval-btn-bg" />
                     <text x={btnWidth / 2} y="13" text-anchor="middle" class="approval-btn-text">Approve</text>
+                  </g>
+                {:else if isSubmitting}
+                  <g class="submitting-btn">
+                    <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="submitting-btn-bg" />
+                    <text x={btnWidth / 2} y="13" text-anchor="middle" class="submitting-btn-text">...</text>
                   </g>
                 {/if}
                 
@@ -670,7 +715,8 @@
                 {:else if planStatus === "success"}
                   <text y="28" class="node-status text-status-ready">{statusIcon("success")} No changes</text>
                 {:else}
-                  <text y="28" class="node-status text-text-dim">—</text>
+                  <!-- No runs yet - show "Queued" for workspaces waiting to be dispatched -->
+                  <text y="28" class="node-status text-text-dim">{statusIcon("pending")} Queued</text>
                 {/if}
               </g>
             </g>
@@ -724,6 +770,12 @@
     fill: color-mix(in srgb, var(--color-surface-overlay) 50%, transparent);
     stroke-opacity: 0.5;
     opacity: 0.6;
+  }
+
+  .node-bg.queued {
+    fill: color-mix(in srgb, var(--color-surface-overlay) 70%, transparent);
+    stroke-dasharray: 3 3;
+    stroke-opacity: 0.6;
   }
   
   .node-bg.has-changes {
@@ -831,6 +883,20 @@
     font-family: var(--font-mono, monospace);
     font-size: 9px;
     fill: var(--color-status-pending);
+  }
+
+  /* Submitting state (after clicking Approve, before apply starts) */
+  .submitting-btn-bg {
+    fill: var(--color-text-dim);
+    fill-opacity: 0.1;
+    stroke: var(--color-text-dim);
+    stroke-width: 1;
+  }
+  
+  .submitting-btn-text {
+    font-family: var(--font-mono, monospace);
+    font-size: 9px;
+    fill: var(--color-text-dim);
   }
 
   /* Status colors applied via class */

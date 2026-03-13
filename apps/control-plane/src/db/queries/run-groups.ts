@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm"
+import { and, desc, eq, isNull, or } from "drizzle-orm"
 
 import type { RunStatus } from "@yaffle/shared"
 
@@ -97,7 +97,8 @@ export async function listRunGroupsForBranch(
         and(
           eq(runGroups.orgId, orgId),
           eq(runGroups.repo, repo),
-          isNull(runGroups.prNumber),
+          // Match both NULL (push triggers) and 0 (manual reruns) for branch/env run groups
+          or(isNull(runGroups.prNumber), eq(runGroups.prNumber, 0)),
           eq(runGroups.branch, branch),
         ),
       )

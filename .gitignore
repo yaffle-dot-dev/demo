@@ -34,3 +34,5 @@ crash.*.log
 # Svelte
 **/.svelte-kit
 **/build/**
+
+tmp/**

@@ -4,7 +4,11 @@ import type { TerraformResult } from "@yaffle/shared"
 
 import type { RunOpts, Runner } from "./runner.ts"
 import { configureProviderOverride, configureVariablesOverride } from "./state.ts"
-import { configureTfcBackend, buildTfcEnvVars } from "./tfc-backend.ts"
+import {
+  configureTfcBackend,
+  buildTfcEnvVars,
+  writeEphemeralCredentials,
+} from "./tfc-backend.ts"
 import { getTfcApiHost } from "./run-token.ts"
 import { forceUnlockWorkspace } from "../db/queries/workspaces.ts"
 import { logger, withSpan } from "./telemetry.ts"
@@ -79,7 +83,11 @@ export class LocalRunner implements Runner {
           workspaceName: opts.tfcWorkspaceName,
           token: opts.tfcToken,
         })
-        const extraEnv = buildTfcEnvVars(opts.tfcToken)
+
+        // Write ephemeral credentials for module registry auth
+        // TF_TOKEN_* env vars only work for cloud backend, not module registry
+        const credentialsPath = await writeEphemeralCredentials(tfDir, opts.tfcToken)
+        const extraEnv = buildTfcEnvVars(opts.tfcToken, credentialsPath)
 
         logger.info("TFC backend configured", {
           hostname: tfcHost,
@@ -87,6 +95,7 @@ export class LocalRunner implements Runner {
           workspaceName: opts.tfcWorkspaceName,
           tokenEnvVar: `TF_TOKEN_${tfcHost.replace(/[.:]/g, "_")}`,
           tokenPrefix: opts.tfcToken.slice(0, 20) + "...",
+          credentialsPath,
         })
 
         // Inject Yaffle tags into AWS provider default_tags

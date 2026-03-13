@@ -14,6 +14,11 @@ export interface PreviewUpdateEvent {
   prNumber: number
 }
 
+export interface JobUpdateEvent {
+  jobId: string
+  previewId: string
+}
+
 class YaffleEvents extends EventEmitter {
   constructor() {
     super()
@@ -51,6 +56,20 @@ class YaffleEvents extends EventEmitter {
   offPreviewUpdate(handler: (event: PreviewUpdateEvent) => void): void {
     this.off("preview:update", handler)
     console.log(`[events] offPreviewUpdate: now have ${this.listenerCount("preview:update")} listeners`)
+  }
+
+  emitJobUpdate(jobId: string, previewId: string): void {
+    console.log(`[events] emitJobUpdate: jobId=${jobId} previewId=${previewId} listeners=${this.listenerCount("job:update")}`)
+    getSseEventsEmittedCounter().add(1, { type: "job_update" })
+    this.emit("job:update", { jobId, previewId })
+  }
+
+  onJobUpdate(handler: (event: JobUpdateEvent) => void): void {
+    this.on("job:update", handler)
+  }
+
+  offJobUpdate(handler: (event: JobUpdateEvent) => void): void {
+    this.off("job:update", handler)
   }
 }
 

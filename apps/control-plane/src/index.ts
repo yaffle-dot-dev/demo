@@ -2,7 +2,6 @@ import { initTelemetry, logger as log, shutdownTelemetry } from "./lib/telemetry
 
 import { Hono } from "hono"
 import { logger } from "hono/logger"
-import { cors } from "hono/cors"
 
 import { httpTelemetry } from "./middleware/http-telemetry.ts"
 import { webhooksRoute } from "./routes/webhooks.ts"
@@ -17,24 +16,16 @@ import { healthRoute } from "./routes/health.ts"
 import { wellKnownRoute } from "./routes/well-known.ts"
 import { tfcRoute, stateUploadRoute } from "./routes/tfc/index.ts"
 import { auth } from "./lib/better-auth.ts"
+import { startScheduler, stopScheduler } from "./lib/scheduler.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
 await initTelemetry()
 
-const app = new Hono()
+// Start the IaC job scheduler
+startScheduler()
+log.info("IaC job scheduler started")
 
-// CORS for auth endpoints (needed for cross-origin requests from web app)
-app.use(
-  "/api/auth/*",
-  cors({
-    origin: (origin) => origin, // Allow all origins for now, tighten in production
-    allowHeaders: ["Content-Type", "Authorization"],
-    allowMethods: ["POST", "GET", "OPTIONS"],
-    exposeHeaders: ["Content-Length"],
-    maxAge: 600,
-    credentials: true,
-  }),
-)
+const app = new Hono()
 
 // Telemetry middleware - creates root span and records metrics for all requests
 app.use("*", httpTelemetry)
@@ -97,12 +88,14 @@ log.info(`yaffle api listening on :${port}`, { port })
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   log.info("shutting down")
+  stopScheduler()
   await shutdownTelemetry()
   process.exit(0)
 })
 
 process.on("SIGINT", async () => {
   log.info("shutting down")
+  stopScheduler()
   await shutdownTelemetry()
   process.exit(0)
 })

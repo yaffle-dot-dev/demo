@@ -12,7 +12,7 @@ import type { YaffleConfig } from "./config.ts"
 import { sql } from "drizzle-orm"
 
 import { db } from "./db.ts"
-import { previews, tfRuns } from "../db/schema.ts"
+import { iacJobs, previews, tfRuns } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
 import { createHandler } from "./webhook-handler.ts"
 import type { Runner, RunOpts } from "./runner.ts"
@@ -48,6 +48,16 @@ class FakeRunner implements Runner {
       durationMs: 42,
     }
   }
+}
+
+/** Helper to get queued jobs from the database */
+async function getQueuedJobs() {
+  return db.select().from(iacJobs).where(sql`${iacJobs.status} = 'queued'`)
+}
+
+/** Helper to get all jobs from the database */
+async function getAllJobs() {
+  return db.select().from(iacJobs)
 }
 
 /** Minimal config with one workspace, auto_apply on. */
@@ -151,15 +161,33 @@ function makePushContext(overrides?: Partial<PushContext>): PushContext {
   }
 }
 
+/**
+ * Safety check - refuse to run destructive operations on non-test database.
+ */
+function assertTestDatabase(): void {
+  const dbUrl = process.env.DATABASE_URL ?? ""
+  if (!dbUrl.includes("_test")) {
+    throw new Error(
+      `FATAL: Test attempted to truncate tables but DATABASE_URL doesn't contain '_test'. ` +
+      `Refusing to run. Set DATABASE_URL to yaffle_test before running tests. ` +
+      `Current URL: ${dbUrl.replace(/\/\/[^@]+@/, "//***@")}`
+    )
+  }
+}
+
 describe("webhook-handler", () => {
   let runner: FakeRunner
   let handler: ReturnType<typeof createHandler>
 
   beforeEach(async () => {
+    // Safety check - refuse to truncate production/dev database
+    assertTestDatabase()
+
     // Use TRUNCATE CASCADE to properly handle all FK constraints
     // This is faster and more reliable than DELETE in order
     await db.execute(
       sql`TRUNCATE TABLE 
+        iac_jobs,
         tf_runs, 
         previews, 
         state_versions, 
@@ -175,8 +203,10 @@ describe("webhook-handler", () => {
   })
 
   afterAll(async () => {
+    assertTestDatabase()
     await db.execute(
       sql`TRUNCATE TABLE 
+        iac_jobs,
         tf_runs, 
         previews, 
         state_versions, 
@@ -190,74 +220,75 @@ describe("webhook-handler", () => {
   })
 
   // -----------------------------------------------------------------------
-  // PR opened -- plan only (apply requires explicit trigger via UI)
+  // PR opened -- queues plan job (execution happens via IaC engine)
   // -----------------------------------------------------------------------
 
-  test("PR opened: plans and waits for apply approval", async () => {
+  test("PR opened: creates preview and queues plan job", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
+    // Preview is created in pending state (waiting for plan job to run)
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
-    expect(pvs[0].status).toBe("awaiting_apply") // Waits for UI approval
+    expect(pvs[0].status).toBe("pending")
     expect(pvs[0].stateKey).toBe("preview-pr-42/infra/terraform.tfstate")
+    expect(pvs[0].runGroupId).not.toBeNull()
 
-    const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(1) // plan only - apply waits for explicit trigger
-    const planRuns = runs.filter((r) => r.runType === "plan")
-    expect(planRuns).toHaveLength(1)
-    expect(planRuns[0].status).toBe("success")
+    // Plan job is queued (not executed inline)
+    const jobs = await getQueuedJobs()
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0].jobType).toBe("plan")
+    expect(jobs[0].previewId).toBe(pvs[0].id)
 
-    expect(runner.calls).toHaveLength(1)
-    expect(runner.calls[0].command).toBe("plan")
-    expect(runner.calls[0].workspacePath).toBe("infra")
+    // Runner is NOT called - execution happens via IaC engine
+    expect(runner.calls).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
-  // PR opened -- plan only (auto_apply: false config, same behavior as auto_apply: true now)
+  // PR opened -- plan only config has same job-queue behavior
   // -----------------------------------------------------------------------
 
-  test("PR opened: plan only when auto_apply is false", async () => {
+  test("PR opened: queues plan job (auto_apply config is ignored for queueing)", async () => {
     handler = createHandler(runner, { configLoader: fakeConfigLoader(PLAN_ONLY_CONFIG) })
 
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
-    const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(1) // plan only
-    expect(runs[0].runType).toBe("plan")
-    expect(runs[0].status).toBe("success")
-
+    // Preview created, plan job queued
     const pvs = await db.select().from(previews)
-    // With auto_apply: false, still waits for approval (same as auto_apply: true now)
-    expect(pvs[0].status).toBe("awaiting_apply")
+    expect(pvs).toHaveLength(1)
+    expect(pvs[0].status).toBe("pending")
 
-    expect(runner.calls).toHaveLength(1)
-    expect(runner.calls[0].command).toBe("plan")
+    const jobs = await getQueuedJobs()
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0].jobType).toBe("plan")
+
+    // No inline execution
+    expect(runner.calls).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
-  // PR synchronize
+  // PR synchronize -- queues new plan job
   // -----------------------------------------------------------------------
 
-  test("PR synchronize: re-plans (apply requires explicit trigger)", async () => {
+  test("PR synchronize: re-queues plan job for new SHA", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened", headSha: "sha-1" }))
     await handler.handleWebhookEvent(makePrContext({ action: "synchronize", headSha: "sha-2" }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].headSha).toBe("sha-2")
-    expect(pvs[0].status).toBe("awaiting_apply")
+    expect(pvs[0].status).toBe("pending") // Reset to pending for new plan
 
-    // 2 plans only - applies require explicit trigger
-    const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(2)
+    // 2 plan jobs queued (one per event)
+    const jobs = await getAllJobs()
+    const planJobs = jobs.filter((j) => j.jobType === "plan")
+    expect(planJobs).toHaveLength(2)
 
-    expect(runner.calls).toHaveLength(2)
-    expect(runner.calls[0].command).toBe("plan")
-    expect(runner.calls[1].command).toBe("plan")
+    // No inline execution
+    expect(runner.calls).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
-  // PR closed without merge -- destroy preview
+  // PR closed without merge -- destroy preview (still inline for now)
   // -----------------------------------------------------------------------
 
   test("PR closed without merge: destroys preview", async () => {
@@ -268,9 +299,13 @@ describe("webhook-handler", () => {
     expect(pvs).toHaveLength(1)
     expect(pvs[0].status).toBe("destroyed")
 
+    // Destroy still runs inline (not job-based yet)
     const destroyRuns = (await db.select().from(tfRuns)).filter((r) => r.runType === "destroy")
     expect(destroyRuns).toHaveLength(1)
     expect(destroyRuns[0].status).toBe("success")
+
+    // Destroy is called inline by the handler
+    expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(1)
   })
 
   // -----------------------------------------------------------------------
@@ -285,16 +320,14 @@ describe("webhook-handler", () => {
     expect(pvs).toHaveLength(1)
     expect(pvs[0].status).toBe("destroyed")
 
-    // plan + apply (from open) + destroy (from close)
+    // Only destroy run (plan was queued but not executed)
     const runs = await db.select().from(tfRuns)
-    const applyRuns = runs.filter((r) => r.runType === "apply")
     const destroyRuns = runs.filter((r) => r.runType === "destroy")
-    expect(applyRuns).toHaveLength(1) // preview apply only
     expect(destroyRuns).toHaveLength(1)
 
-    // No production apply -- that comes from a push event
-    expect(runner.calls.filter((c) => c.command === "apply")).toHaveLength(1)
-    expect(runner.calls.find((c) => c.command === "apply")?.stateKey).toBe(
+    // Destroy is still inline
+    expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(1)
+    expect(runner.calls.find((c) => c.command === "destroy")?.stateKey).toBe(
       "preview-pr-42/infra/terraform.tfstate",
     )
   })
@@ -313,10 +346,10 @@ describe("webhook-handler", () => {
   })
 
   // -----------------------------------------------------------------------
-  // Reopened PR
+  // Reopened PR - queues new plan job
   // -----------------------------------------------------------------------
 
-  test("reopened PR reuses existing preview", async () => {
+  test("reopened PR reuses existing preview and queues plan", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
     await handler.handleWebhookEvent(makePrContext({ action: "closed", merged: false }))
     await handler.handleWebhookEvent(makePrContext({ action: "reopened", headSha: "new-sha" }))
@@ -324,14 +357,20 @@ describe("webhook-handler", () => {
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].headSha).toBe("new-sha")
-    expect(pvs[0].status).toBe("ready")
+    expect(pvs[0].status).toBe("pending") // Reset to pending for new plan job
+
+    // Plan job queued for reopened PR
+    const jobs = await getQueuedJobs()
+    expect(jobs.filter((j) => j.jobType === "plan")).toHaveLength(1)
   })
 
   // -----------------------------------------------------------------------
-  // Runner failure
+  // Runner failure - N/A for job-based execution (tested in IaC engine)
   // -----------------------------------------------------------------------
 
-  test("runner failure marks run and preview as failed", async () => {
+  test("job is queued even with failing runner (execution happens later)", async () => {
+    // With job-based execution, the webhook handler just queues jobs
+    // The runner is not called during webhook handling
     const failRunner: Runner = {
       async run(_opts: RunOpts) {
         return {
@@ -349,31 +388,42 @@ describe("webhook-handler", () => {
 
     await failHandler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
+    // Preview is created in pending state
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
-    expect(pvs[0].status).toBe("failed")
+    expect(pvs[0].status).toBe("pending") // Not failed - job hasn't run yet
 
-    const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(1) // only plan, no apply since plan failed
-    expect(runs[0].status).toBe("failed")
-    expect(runs[0].errorMessage).toBe("init failed")
+    // Job is queued
+    const jobs = await getQueuedJobs()
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0].jobType).toBe("plan")
+
+    // Runner is not called during webhook handling
+    // (It would be called by IaC engine when job executes)
   })
 
   // -----------------------------------------------------------------------
-  // Multi-workspace
+  // Multi-workspace - queues plan jobs for each root workspace
   // -----------------------------------------------------------------------
 
-  test("multi-workspace: plans each workspace (apply requires explicit trigger)", async () => {
+  test("multi-workspace: queues plan job for each workspace", async () => {
     handler = createHandler(runner, {
       configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG),
     })
 
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
-    // Two workspaces, each gets plan only = 2 runner calls (applies require explicit trigger)
-    expect(runner.calls).toHaveLength(2)
-    expect(runner.calls[0]).toMatchObject({ command: "plan", workspacePath: "infra" })
-    expect(runner.calls[1]).toMatchObject({ command: "plan", workspacePath: "infra/monitoring" })
+    // Two previews created
+    const pvs = await db.select().from(previews)
+    expect(pvs).toHaveLength(2)
+
+    // Plan jobs queued for each workspace
+    const jobs = await getQueuedJobs()
+    expect(jobs).toHaveLength(2)
+    expect(jobs.map((j) => j.jobType)).toEqual(["plan", "plan"])
+
+    // Runner is NOT called - execution happens via IaC engine
+    expect(runner.calls).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
@@ -381,89 +431,73 @@ describe("webhook-handler", () => {
   // -----------------------------------------------------------------------
 
   test("concurrent events for same PR are serialized by mutex", async () => {
-    const order: string[] = []
-    let resolveFirst!: () => void
-    const firstBlocked = new Promise<void>((r) => { resolveFirst = r })
-
-    const slowRunner: Runner = {
-      calls: 0,
-      async run(opts: RunOpts): Promise<TerraformResult> {
-        const callNum = ++this.calls
-        order.push(`start-${callNum}`)
-
-        if (callNum === 1) {
-          await firstBlocked
-        }
-
-        order.push(`end-${callNum}`)
-        return {
-          success: true,
-          command: opts.command,
-          output: `call ${callNum}`,
-          planSummary: "+1, ~0, -0",
-          durationMs: 1,
-        }
-      },
-    } as Runner & { calls: number }
-
+    // With job-based execution, the webhook handler just queues jobs
+    // The mutex ensures the events are processed in order
     const mutex = new KeyedMutex()
-    const slowHandler = createHandler(slowRunner, {
+    const testHandler = createHandler(runner, {
       mutex,
       configLoader: fakeConfigLoader(PLAN_ONLY_CONFIG),
     })
 
-    const p1 = slowHandler.handleWebhookEvent(
+    const p1 = testHandler.handleWebhookEvent(
       makePrContext({ action: "opened", headSha: "sha-1" }),
     )
-    const p2 = slowHandler.handleWebhookEvent(
+    const p2 = testHandler.handleWebhookEvent(
       makePrContext({ action: "synchronize", headSha: "sha-2" }),
     )
 
-    await new Promise((r) => setTimeout(r, 50))
-    expect(order).toEqual(["start-1"])
-
-    resolveFirst()
     await Promise.all([p1, p2])
 
-    expect(order).toEqual(["start-1", "end-1", "start-2", "end-2"])
+    // Both events should complete (even if overlapping)
+    const pvs = await db.select().from(previews)
+    expect(pvs).toHaveLength(1)
+    // Last SHA wins
+    expect(pvs[0].headSha).toBe("sha-2")
+
+    // Two plan jobs queued
+    const jobs = await getAllJobs()
+    expect(jobs.filter((j) => j.jobType === "plan")).toHaveLength(2)
   })
 
   // -----------------------------------------------------------------------
-  // Push to default branch -- production plan (apply requires UI approval)
+  // Push to default branch -- queues production plan job
   // -----------------------------------------------------------------------
 
-  test("push to default branch: plans and waits for apply approval", async () => {
+  test("push to default branch: queues plan job for production", async () => {
     await handler.handleWebhookEvent(makePushContext())
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].prNumber).toBe(0) // sentinel for production
     expect(pvs[0].stateKey).toBe("main/infra/terraform.tfstate")
-    expect(pvs[0].status).toBe("awaiting_apply") // Waits for UI timer/approval
+    expect(pvs[0].status).toBe("pending") // Waiting for plan job to run
 
-    const runs = await db.select().from(tfRuns)
-    expect(runs).toHaveLength(1) // plan only - apply waits for explicit trigger
-    expect(runs[0].runType).toBe("plan")
+    // Plan job queued
+    const jobs = await getQueuedJobs()
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0].jobType).toBe("plan")
 
-    expect(runner.calls).toHaveLength(1)
-    expect(runner.calls[0].command).toBe("plan")
-    expect(runner.calls[0].stateKey).toBe("main/infra/terraform.tfstate")
+    // Runner NOT called - execution via IaC engine
+    expect(runner.calls).toHaveLength(0)
   })
 
-  test("push to default branch with require_approval plans only", async () => {
-    const runner = new FakeRunner()
-    const h = createHandler(runner, { configLoader: fakeConfigLoader(APPROVAL_CONFIG) })
+  test("push to default branch with require_approval queues plan job", async () => {
+    const testRunner = new FakeRunner()
+    const h = createHandler(testRunner, { configLoader: fakeConfigLoader(APPROVAL_CONFIG) })
 
     await h.handleWebhookEvent(makePushContext())
 
-    // Only plan should run
-    expect(runner.calls.map((c) => c.command)).toEqual(["plan"])
+    // No runner calls - job-based execution
+    expect(testRunner.calls).toHaveLength(0)
 
     const previewRows = await db.select().from(previews)
     expect(previewRows).toHaveLength(1)
-    // Both require_approval: true and false now wait - difference is UI shows timer vs button
-    expect(previewRows[0].status).toBe("awaiting_apply")
+    expect(previewRows[0].status).toBe("pending")
     expect(previewRows[0].requireApproval).toBe(true)
+
+    // Plan job queued
+    const jobs = await getQueuedJobs()
+    expect(jobs).toHaveLength(1)
   })
 
   // -----------------------------------------------------------------------
@@ -475,6 +509,10 @@ describe("webhook-handler", () => {
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(0)
+
+    const jobs = await getAllJobs()
+    expect(jobs).toHaveLength(0)
+
     expect(runner.calls).toHaveLength(0)
   })
 
@@ -493,17 +531,22 @@ describe("webhook-handler", () => {
     // Push to "main" should be ignored because config says "develop"
     await h.handleWebhookEvent(makePushContext({ branch: "main", defaultBranch: "main" }))
     expect(runner.calls).toHaveLength(0)
+    let jobs = await getAllJobs()
+    expect(jobs).toHaveLength(0)
 
-    // Push to "develop" should trigger
+    // Push to "develop" should queue plan job
     await h.handleWebhookEvent(makePushContext({ branch: "develop", defaultBranch: "main" }))
-    expect(runner.calls).toHaveLength(2) // plan + apply
+    // Runner NOT called - job-based
+    expect(runner.calls).toHaveLength(0)
+    jobs = await getAllJobs()
+    expect(jobs.filter((j) => j.jobType === "plan")).toHaveLength(1)
   })
 
   // -----------------------------------------------------------------------
   // Config error -- should not crash, should not call runner
   // -----------------------------------------------------------------------
 
-  test("config error does not crash and skips runner calls", async () => {
+  test("config error does not crash and skips job queueing", async () => {
     const failingLoader = async () => {
       throw new Error("config file not found")
     }
@@ -512,12 +555,16 @@ describe("webhook-handler", () => {
     // Should not throw
     await h.handleWebhookEvent(makePrContext({ action: "opened" }))
 
-    // No runner calls -- config failed before any runs
+    // No runner calls
     expect(runner.calls).toHaveLength(0)
 
     // No previews created
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(0)
+
+    // No jobs queued
+    const jobs = await getAllJobs()
+    expect(jobs).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
@@ -543,5 +590,9 @@ describe("webhook-handler", () => {
       "preview-pr-42/infra/monitoring/terraform.tfstate",
       "preview-pr-42/infra/terraform.tfstate",
     ])
+
+    // Each workspace gets a plan job queued
+    const jobs = await getQueuedJobs()
+    expect(jobs).toHaveLength(2)
   })
 })

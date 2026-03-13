@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, notInArray, type SQL } from "drizzle-orm"
+import { and, arrayContains, desc, eq, gt, notInArray, sql, type SQL } from "drizzle-orm"
 
 import type { PreviewStatus } from "@yaffle/shared"
 
@@ -119,6 +119,7 @@ export async function upsertPreview(values: NewPreview): Promise<Preview> {
           authorLogin: values.authorLogin,
           requireApproval: values.requireApproval,
           approvers: values.approvers,
+          runGroupId: values.runGroupId,
           status: "pending",
         },
       })
@@ -261,5 +262,206 @@ export async function markRemovedWorkspacesDestroyed(
       )
       .returning({ id: previews.id })
     return result.length
+  })
+}
+
+// =============================================================================
+// DAG Coordination
+// =============================================================================
+
+/**
+ * Set the upstream dependencies for a preview.
+ * Called when creating/updating previews during webhook processing.
+ */
+export async function setPreviewUpstreams(
+  previewId: string,
+  upstreamIds: string[],
+): Promise<void> {
+  return withDbSpan("update", "previews", async () => {
+    await db
+      .update(previews)
+      .set({ upstreamIds })
+      .where(eq(previews.id, previewId))
+  })
+}
+
+/**
+ * Add a completed upstream to a preview's completed_upstreams set.
+ * Returns the updated preview so we can check if it's now ready.
+ */
+export async function addCompletedUpstream(
+  previewId: string,
+  completedUpstreamId: string,
+): Promise<Preview | undefined> {
+  return withDbSpan("update", "previews", async () => {
+    // Use array_append to add the ID if not already present
+    const rows = await db
+      .update(previews)
+      .set({
+        completedUpstreams: sql`
+          CASE
+            WHEN ${completedUpstreamId} = ANY(${previews.completedUpstreams})
+            THEN ${previews.completedUpstreams}
+            ELSE array_append(${previews.completedUpstreams}, ${completedUpstreamId})
+          END
+        `,
+      })
+      .where(eq(previews.id, previewId))
+      .returning()
+
+    const preview = rows[0]
+    if (preview) {
+      events.emitPreviewUpdate(preview.id, preview.orgId, preview.repo, preview.prNumber)
+    }
+    return preview
+  })
+}
+
+/**
+ * Check if a preview is ready to execute (all upstreams completed).
+ */
+export function isPreviewReady(preview: Preview): boolean {
+  const upstreams = new Set(preview.upstreamIds)
+  const completed = new Set(preview.completedUpstreams)
+
+  // All upstream IDs must be in the completed set
+  for (const upstreamId of upstreams) {
+    if (!completed.has(upstreamId)) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * Find all downstream previews that depend on a given preview.
+ * These are previews where upstream_ids contains the given preview's ID.
+ */
+export async function findDownstreamPreviews(
+  previewId: string,
+): Promise<Preview[]> {
+  return withDbSpan("select", "previews", async () => {
+    return db
+      .select()
+      .from(previews)
+      .where(arrayContains(previews.upstreamIds, [previewId]))
+  })
+}
+
+/**
+ * Find all previews in a run group.
+ */
+export async function findPreviewsByRunGroup(
+  runGroupId: string,
+): Promise<Preview[]> {
+  return withDbSpan("select", "previews", async () => {
+    return db
+      .select()
+      .from(previews)
+      .where(eq(previews.runGroupId, runGroupId))
+      .orderBy(previews.workspacePath)
+  })
+}
+
+/**
+ * Mark a preview as skipped (due to upstream failure).
+ */
+export async function markPreviewSkipped(
+  previewId: string,
+  _reason: string, // Kept for logging/debugging purposes
+): Promise<void> {
+  return withDbSpan("update", "previews", async () => {
+    const updated = await db
+      .update(previews)
+      .set({
+        status: "failed" as PreviewStatus, // "skipped" maps to "failed" status with reason
+        completedAt: new Date(),
+      })
+      .where(eq(previews.id, previewId))
+      .returning({ orgId: previews.orgId, repo: previews.repo, prNumber: previews.prNumber })
+
+    if (updated.length > 0) {
+      const { orgId, repo, prNumber } = updated[0]
+      events.emitPreviewUpdate(previewId, orgId, repo, prNumber)
+    }
+  })
+}
+
+/**
+ * Record approval on a preview.
+ */
+export async function recordPreviewApproval(
+  previewId: string,
+  approvedBy: string,
+): Promise<void> {
+  return withDbSpan("update", "previews", async () => {
+    const updated = await db
+      .update(previews)
+      .set({
+        approvedAt: new Date(),
+        approvedBy,
+      })
+      .where(eq(previews.id, previewId))
+      .returning({ orgId: previews.orgId, repo: previews.repo, prNumber: previews.prNumber })
+
+    if (updated.length > 0) {
+      const { orgId, repo, prNumber } = updated[0]
+      events.emitPreviewUpdate(previewId, orgId, repo, prNumber)
+    }
+  })
+}
+
+/**
+ * Update a preview's run group and reset status to pending.
+ * Used when manually re-running a preview.
+ */
+export async function updatePreviewRunGroup(
+  previewId: string,
+  runGroupId: string,
+): Promise<Preview | undefined> {
+  return withDbSpan("update", "previews", async () => {
+    const updated = await db
+      .update(previews)
+      .set({
+        runGroupId,
+        status: "pending" as PreviewStatus,
+        // Clear approval state for fresh run
+        approvedAt: null,
+        approvedBy: null,
+      })
+      .where(eq(previews.id, previewId))
+      .returning()
+
+    if (updated.length > 0) {
+      const preview = updated[0]
+      events.emitPreviewUpdate(previewId, preview.orgId, preview.repo, preview.prNumber)
+      return preview
+    }
+    return undefined
+  })
+}
+
+/**
+ * Find previews that are pending and have all upstreams completed (ready to plan).
+ * Used by the scheduler to find work.
+ */
+export async function findReadyToExecutePreviews(
+  runGroupId: string,
+  status: PreviewStatus,
+): Promise<Preview[]> {
+  return withDbSpan("select", "previews", async () => {
+    // Get all previews in the run group with the specified status
+    const allPreviews = await db
+      .select()
+      .from(previews)
+      .where(
+        and(
+          eq(previews.runGroupId, runGroupId),
+          eq(previews.status, status),
+        ),
+      )
+
+    // Filter to only those where completed_upstreams contains all upstream_ids
+    return allPreviews.filter(isPreviewReady)
   })
 }

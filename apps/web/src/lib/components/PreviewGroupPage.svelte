@@ -2,8 +2,9 @@
   import { page } from "$app/stores"
   import { goto } from "$app/navigation"
   import { untrack } from "svelte"
-  import type { WorkspaceWithRuns, Run, RunGroup } from "$lib/api"
+  import type { WorkspaceWithRuns, WorkspacePreview, Run, RunGroup } from "$lib/api"
   import { cancelRun, rerunPreview } from "$lib/api"
+  import { githubRepoUrl, githubTreeUrl, githubCommitUrl } from "$lib/github"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
   import {
     getWorkspacesInRunGroup,
@@ -65,15 +66,54 @@
     return current ?? runGroups[0] ?? null
   })
 
-  // Workspaces filtered to the viewed run group
-  // Only show workspaces that have runs in the viewed run group
-  const filteredWorkspaces = $derived.by((): WorkspaceWithRuns[] => {
+  // Workspaces with runs filtered to the viewed run group
+  const workspacesWithRuns = $derived.by((): WorkspaceWithRuns[] => {
     if (!viewedRunGroup) {
-      // No run groups yet, show no workspaces
       return []
     }
-    // Only show workspaces that have runs in this run group
     return getWorkspacesInRunGroup(workspaces, viewedRunGroup.id)
+  })
+
+  // Build the complete list of workspaces from the dependency graph.
+  // For workspaces without runs yet, create placeholder entries showing "Queued" status.
+  const filteredWorkspaces = $derived.by((): WorkspaceWithRuns[] => {
+    if (!viewedRunGroup) {
+      return []
+    }
+
+    const graph = viewedRunGroup.dependencyGraph
+    if (!graph || graph.workspaces.length === 0) {
+      // No dependency graph, fall back to workspaces with runs
+      return workspacesWithRuns
+    }
+
+    // Build lookup for workspaces that have runs
+    const wsWithRunsByPath = new Map(
+      workspacesWithRuns.map((ws) => [ws.preview.workspacePath, ws])
+    )
+
+    // Build complete list from dependency graph
+    return graph.workspaces.map((path): WorkspaceWithRuns => {
+      // If we have run data for this workspace, use it
+      const existing = wsWithRunsByPath.get(path)
+      if (existing) return existing
+
+      // Otherwise, create a placeholder for workspaces without runs yet
+      const placeholder: WorkspacePreview = {
+        id: `placeholder-${path}`,
+        workspacePath: path,
+        status: "pending",
+        stateKey: "",
+        mode: "preview",
+        requireApproval: false,
+        createdAt: new Date().toISOString(),
+      }
+      return {
+        preview: placeholder,
+        runs: [],
+        outputs: null,
+      }
+    })
   })
 
   // Helper: check if a workspace has an actively running run (not just pending)
@@ -338,6 +378,11 @@
   // Check if a rerun is possible (no run in progress)
   const canRerun = $derived(!runningRun && selectedWorkspace && !rerunning)
 
+  // Check if the selected workspace is queued (no runs yet)
+  const isQueuedWorkspace = $derived(
+    selectedWorkspace && selectedWorkspace.runs.length === 0
+  )
+
   // Build workspace name matching server-side logic
   function buildWorkspaceName(environment: string, identifier: string, workspacePath: string): string {
     const pathSlug = workspacePath.replace(/\//g, "-").replace(/[^a-z0-9-]/gi, "")
@@ -397,12 +442,12 @@ terraform {
         <div class="flex items-center gap-3 mb-1">
           <h1 class="text-lg font-semibold">
             <a 
-              href="https://github.com/{repo}" 
+              href={githubRepoUrl({ org, repo })}
               target="_blank" 
               rel="noopener noreferrer"
               class="hover:text-yaffle-400 transition-colors"
             >
-              <span class="text-text-muted">{org}/</span>{repo.split("/").pop()}
+              <span class="text-text-muted">{org}/</span>{repo}
             </a>
           </h1>
           {#if type === "pr"}
@@ -416,7 +461,7 @@ terraform {
             </a>
           {:else}
             <a
-              href="https://github.com/{repo}/tree/{branch}"
+              href={githubTreeUrl({ org, repo }, branch)}
               target="_blank"
               rel="noopener noreferrer"
               class="px-2 py-0.5 bg-surface-overlay rounded text-xs text-text-muted hover:text-yaffle-400 transition-colors"
@@ -427,7 +472,7 @@ terraform {
         </div>
         <div class="flex items-center gap-3 text-sm text-text-muted">
           <a
-            href="https://github.com/{repo}/tree/{branch}"
+            href={githubTreeUrl({ org, repo }, branch)}
             target="_blank"
             rel="noopener noreferrer"
             class="font-mono text-xs hover:text-yaffle-400 transition-colors"
@@ -436,7 +481,7 @@ terraform {
           </a>
           <span class="text-text-dim">@</span>
           <a
-            href="https://github.com/{repo}/commit/{viewedRunGroup?.headSha ?? headSha}"
+            href={githubCommitUrl({ org, repo }, viewedRunGroup?.headSha ?? headSha)}
             target="_blank"
             rel="noopener noreferrer"
             class="font-mono text-xs text-text-dim hover:text-yaffle-400 transition-colors"
@@ -456,6 +501,24 @@ terraform {
           {/if}
         </div>
       </div>
+      {#if hasNewerRunGroup && onSwitchToLatest}
+        <!-- New run available - show button to switch to it -->
+        <button
+          onclick={onSwitchToLatest}
+          class="flex items-center gap-2 px-3 py-1.5 bg-status-planning/15 hover:bg-status-planning/25 border border-status-planning/30 rounded text-status-planning transition-colors"
+        >
+          <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
+            <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          <div class="text-left">
+            <div class="text-xs font-medium leading-tight">new run</div>
+            {#if latestHeadSha}
+              <div class="font-mono text-[10px] leading-tight opacity-75">{shortSha(latestHeadSha)}</div>
+            {/if}
+          </div>
+        </button>
+      {/if}
     </div>
   </header>
 
@@ -557,23 +620,6 @@ terraform {
                   {/if}
                   <span>{cancellingRunId === runningRun.id ? "cancelling" : "cancel"}</span>
                 </button>
-              {:else if hasNewerRunGroup && onSwitchToLatest}
-                <!-- New run available - show button to switch to it -->
-                <button
-                  onclick={onSwitchToLatest}
-                  class="flex items-center gap-2 px-3 py-1.5 bg-status-planning/15 hover:bg-status-planning/25 border border-status-planning/30 rounded text-status-planning transition-colors"
-                >
-                  <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                    <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
-                    <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
-                  </svg>
-                  <div class="text-left">
-                    <div class="text-xs font-medium leading-tight">new run</div>
-                    {#if latestHeadSha}
-                      <div class="font-mono text-[10px] leading-tight opacity-75">{shortSha(latestHeadSha)}</div>
-                    {/if}
-                  </div>
-                </button>
               {:else if canRerun}
                 <!-- Run again button for completed runs -->
                 <button
@@ -635,7 +681,19 @@ terraform {
 
         <!-- Tab content -->
         <div class="flex-1 overflow-auto p-6">
-          {#if activeTab === "outputs" && hasOutputs}
+          {#if isQueuedWorkspace}
+            <!-- Queued workspace - no runs dispatched yet -->
+            <div class="flex flex-col items-center justify-center h-64 text-center">
+              <svg class="w-10 h-10 text-text-dim/50 mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <circle cx="12" cy="12" r="10" stroke-dasharray="4 4"/>
+                <path d="M12 6v6l4 2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <p class="text-sm text-text-muted mb-1">Queued</p>
+              <p class="text-xs text-text-dim/75 max-w-sm">
+                This workspace is waiting to be dispatched. It will start once its upstream dependencies complete.
+              </p>
+            </div>
+          {:else if activeTab === "outputs" && hasOutputs}
             <OutputsView outputs={displayOutputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
           {:else if activeTab === "plan" && latestPlan}
             <!-- Show terminal with plan output -->

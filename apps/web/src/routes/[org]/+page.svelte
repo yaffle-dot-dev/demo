@@ -10,6 +10,7 @@
     type EnvironmentGroup,
     type Preview,
   } from "$lib/api"
+  import { githubTreeUrl, githubCommitUrl } from "$lib/github"
   import { usePreviewListStream } from "$lib/sse/index.svelte"
   import { statusConfig, formatRelativeTime, shortSha } from "$lib/status"
   import { useSession, setLastOrg } from "$lib/auth"
@@ -231,7 +232,7 @@
                   <div class="flex items-center gap-2">
                     <a href="{base}/{org}/{env.repo}/env/{env.branch}" class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
                     <a 
-                      href="https://github.com/{org}/{env.repo}/tree/{env.branch}"
+                      href={githubTreeUrl({ org, repo: env.repo }, env.branch)}
                       target="_blank"
                       rel="noopener noreferrer"
                       class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded hover:text-yaffle-400 transition-colors"
@@ -247,7 +248,7 @@
                   </div>
                   <div class="flex flex-wrap gap-4 text-xs text-text-dim mt-2">
                     <a 
-                      href="https://github.com/{org}/{env.repo}/commit/{env.headSha}"
+                      href={githubCommitUrl({ org, repo: env.repo }, env.headSha)}
                       target="_blank"
                       rel="noopener noreferrer"
                       class="font-mono hover:text-yaffle-400 transition-colors"

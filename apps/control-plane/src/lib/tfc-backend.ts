@@ -1,8 +1,20 @@
-import { writeFile } from "node:fs/promises"
+import { writeFile, mkdir } from "node:fs/promises"
 import { join } from "node:path"
 
 import { logger } from "./telemetry.ts"
 import { getTfcApiHost, buildTfTokenEnvName } from "./run-token.ts"
+
+/**
+ * Terraform CLI credentials file structure.
+ * @see https://developer.hashicorp.com/terraform/cli/config/config-file#credentials
+ */
+interface TerraformCredentials {
+  credentials: {
+    [hostname: string]: {
+      token: string
+    }
+  }
+}
 
 /**
  * Configuration for the TFC cloud backend.
@@ -54,17 +66,72 @@ terraform {
  * Build environment variables for Terraform to authenticate with Yaffle's TFC API.
  *
  * @param token - The run JWT token
+ * @param credentialsPath - Optional path to credentials file (sets TF_CLI_CONFIG_FILE)
  * @returns Environment variables object to merge with process.env
  */
-export function buildTfcEnvVars(token: string): Record<string, string> {
+export function buildTfcEnvVars(
+  token: string,
+  credentialsPath?: string,
+): Record<string, string> {
   const hostname = getTfcApiHost()
   const tokenEnvName = buildTfTokenEnvName(hostname)
 
-  return {
+  const envVars: Record<string, string> = {
     [tokenEnvName]: token,
     // Also set YAFFLE_TFC_API_HOST so it's available in the cloud block
     YAFFLE_TFC_API_HOST: hostname,
   }
+
+  // Set TF_CLI_CONFIG_FILE to point to our ephemeral credentials
+  // This enables module registry auth (TF_TOKEN_* only works for cloud backend)
+  if (credentialsPath) {
+    envVars.TF_CLI_CONFIG_FILE = credentialsPath
+  }
+
+  return envVars
+}
+
+/**
+ * Write ephemeral Terraform credentials file for module registry authentication.
+ *
+ * The TF_TOKEN_* environment variable only works for Terraform Cloud backend
+ * operations (state, workspaces). For module registry auth, Terraform requires
+ * credentials in a config file pointed to by TF_CLI_CONFIG_FILE.
+ *
+ * This function writes a minimal credentials file with the run token, enabling
+ * authenticated module downloads from Yaffle's private registry.
+ *
+ * @param workDir - Working directory to write credentials file
+ * @param token - The run JWT token
+ * @returns Path to the credentials file
+ */
+export async function writeEphemeralCredentials(
+  workDir: string,
+  token: string,
+): Promise<string> {
+  const hostname = getTfcApiHost()
+
+  // Write to a subdirectory to avoid polluting the terraform workspace
+  const configDir = join(workDir, ".yaffle")
+  await mkdir(configDir, { recursive: true })
+
+  const credentialsPath = join(configDir, "credentials.tfrc.json")
+  const credentials: TerraformCredentials = {
+    credentials: {
+      [hostname]: {
+        token,
+      },
+    },
+  }
+
+  await writeFile(credentialsPath, JSON.stringify(credentials, null, 2))
+
+  logger.info("Ephemeral credentials written for module registry auth", {
+    "credentials.path": credentialsPath,
+    "credentials.hostname": hostname,
+  })
+
+  return credentialsPath
 }
 
 /**

@@ -2,6 +2,7 @@
   import { page } from "$app/stores"
   import { usePreviewStream } from "$lib/sse/index.svelte"
   import { getLatestRunGroup } from "$lib/sse/types"
+  import { githubRepoUrl } from "$lib/github"
   import type { EnvPreviewGroup } from "$lib/api"
   import PreviewGroupPage from "$lib/components/PreviewGroupPage.svelte"
 
@@ -23,9 +24,7 @@
 
   // GitHub URL for repo
   const githubUrl = $derived(
-    displayData
-      ? `https://github.com/${displayData.repo}`
-      : `https://github.com/${repo}`,
+    githubRepoUrl({ org, repo: displayData?.repo ?? repo }),
   )
 </script>
 
