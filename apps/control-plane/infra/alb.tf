@@ -16,7 +16,7 @@ resource "aws_lb" "main" {
   security_groups    = [aws_security_group.alb.id]
   subnets            = local.public_subnet_ids
 
-  enable_deletion_protection = !var.is_preview
+  enable_deletion_protection = !local.is_preview
 
   tags = {
     Name = "yaffle-alb-${local.name_suffix}"

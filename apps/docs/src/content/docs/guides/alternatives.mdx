@@ -1,0 +1,103 @@
+---
+title: Yaffle vs Alternatives
+description: How Yaffle compares to Terraform Cloud, Spacelift, env0, and Atlantis
+---
+
+import { Aside } from "@astrojs/starlight/components"
+
+## Quick comparison
+
+| Feature | Yaffle | TFC/TFE | Spacelift | env0 | Atlantis |
+|---------|--------|---------|-----------|------|----------|
+| **Preview environments** | First-class | Plan only | Possible (complex) | Possible (extra cost) | No |
+| **OpenTofu native** | Yes | No (Terraform only) | Yes | Yes | Either |
+| **Pricing model** | Per workspace | Per resource/month | Per run/concurrency | Per environment | Free (self-hosted) |
+| **Self-hosted option** | Yes | Enterprise only | Yes | No | Yes (only option) |
+| **Operational overhead** | None | None | None | None | High |
+| **Setup time** | ~5 minutes | ~30 minutes | ~30 minutes | ~30 minutes | Hours/days |
+
+## vs Terraform Cloud / Enterprise
+
+**What they do well:** Market leader, deep HashiCorp ecosystem integration, extensive documentation.
+
+**Where Yaffle wins:**
+
+- **Preview environments** — TFC shows a plan; Yaffle creates real infrastructure you can test
+- **OpenTofu** — TFC is Terraform-only under BSL; Yaffle runs OpenTofu (MPL 2.0)
+- **Predictable pricing** — TFC's resource-under-management (RUM) pricing leads to surprise bills; Yaffle charges per workspace
+- **No IBM lock-in** — TFC is now IBM HCP Terraform; Yaffle is independent
+
+<Aside type="note">
+TFC's "speculative plans" show what would change but don't create infrastructure. Yaffle actually applies to isolated preview environments.
+</Aside>
+
+**When TFC might be better:** If you're deeply invested in the HashiCorp ecosystem (Vault, Consul, Nomad) and need tight integration.
+
+## vs Spacelift
+
+**What they do well:** Multi-IaC support (Terraform, OpenTofu, Pulumi, CloudFormation, Ansible), strong policy engine.
+
+**Where Yaffle wins:**
+
+- **Purpose-built previews** — Spacelift can do preview-like workflows, but requires custom orchestration with push policies, the Spacelift Terraform provider, and stack dependencies. Yaffle has previews built-in.
+- **Simpler setup** — Spacelift's power comes with complexity; Yaffle is `yaffle.toml` and done
+- **Lower price point** — Spacelift starts at $399/mo; Yaffle Team is $299/mo
+
+**When Spacelift might be better:** If you need multi-IaC support across Terraform, CloudFormation, and Ansible in the same platform.
+
+## vs env0
+
+**What they do well:** General-purpose IaC platform with FinOps features, cost visibility.
+
+**Where Yaffle wins:**
+
+- **Preview-first** — env0 has "Creation per Pull Request" but it's one feature among many; previews are Yaffle's core product
+- **Pricing alignment** — env0 charges per active environment, so more previews = higher cost; Yaffle's model doesn't penalize preview usage
+- **Focus** — env0 spreads across FinOps, cost management, and multi-IaC; Yaffle does one thing well
+
+**When env0 might be better:** If you need integrated FinOps and cost management alongside IaC.
+
+## vs Atlantis
+
+**What they do well:** Open source, simple, pioneered the Terraform PR workflow.
+
+**Where Yaffle wins:**
+
+- **Zero ops** — Atlantis is self-hosted; you manage servers, updates, and scaling
+- **Preview environments** — Atlantis only shows plans; no preview infrastructure
+- **RBAC** — Atlantis has no access control beyond "can you push?"
+- **Parallel runs** — Atlantis is single-threaded; Yaffle runs workspaces in parallel
+- **Drift detection** — Atlantis has none; Yaffle detects when infrastructure drifts
+
+**When Atlantis might be better:** If you want fully self-hosted, open-source, and can accept the operational overhead.
+
+<Aside type="tip">
+Most teams outgrow Atlantis within 1-2 years. See [Migrating from Atlantis](/docs/guides/atlantis/) for the upgrade path.
+</Aside>
+
+## vs DIY (GitHub Actions)
+
+Many teams cobble together Terraform automation with GitHub Actions scripts.
+
+**Where Yaffle wins:**
+
+- **500+ lines of YAML → 20 lines of TOML** — Replace custom CI scripts with a config file
+- **State management** — No more configuring S3 backends and DynamoDB tables
+- **Secret handling** — Integrated Secrets Manager, no environment variable juggling
+- **Preview cleanup** — Automatic destroy on PR close; no manual resource cleanup
+- **Workspace dependencies** — Automatic detection and ordering; no manual DAG construction
+
+**When DIY might be better:** If you have unique requirements that no platform can satisfy, and you have the engineering capacity to maintain custom infrastructure.
+
+## The Yaffle difference: purpose-built previews
+
+Every competitor above can run Terraform. Most can post plans to PRs. Some can be configured to create preview-like environments.
+
+Yaffle is the only platform where **preview environments are the core product**, not a feature bolted onto something else.
+
+```
+Other tools:  Plan → Merge → Apply → Hope it works
+Yaffle:       Plan → Apply preview → Test it → Merge → Apply production
+```
+
+You see your infrastructure running before it hits production. That's the difference.

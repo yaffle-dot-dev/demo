@@ -2,8 +2,9 @@ import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
-import { findPreviewById, listPreviews } from "../db/queries/previews.ts"
+import { findDeploymentById, listDeployments } from "../db/queries/workspace-deployments.ts"
 import { listApprovals } from "../db/queries/approvals.ts"
+import { getLatestDependencyGraphsForOrg } from "../db/queries/run-groups.ts"
 import { logger } from "../lib/telemetry.ts"
 import {
   requireOrgAccess,
@@ -11,7 +12,8 @@ import {
   getAuth,
 } from "../middleware/org-auth.ts"
 import { rerunPreview, triggerApply } from "../lib/webhook-handler.ts"
-import { events, type PreviewUpdateEvent } from "../lib/events.ts"
+import { events, type DeploymentUpdateEvent } from "../lib/events.ts"
+import { isUserAuthorizedApprover } from "../lib/approver.ts"
 
 const listQuerySchema = z.object({
   repo: z.string().optional(),
@@ -59,7 +61,7 @@ previewsRoute.get(
     const { repo, status, pr_number, limit, cursor } = parsed.data
     const auth = getAuth(c)
 
-    const result = await listPreviews(auth.orgId, {
+    const result = await listDeployments(auth.orgId, {
       repo,
       status,
       prNumber: pr_number,
@@ -114,16 +116,27 @@ previewsRoute.get(
         inFlight = true
         pendingUpdate = false
         try {
-          const result = await listPreviews(auth.orgId, {
-            repo,
-            status,
-            prNumber: pr_number,
-            limit,
-            cursor,
-          })
+          // Fetch deployments and dependency graphs in parallel
+          const [result, dependencyGraphs] = await Promise.all([
+            listDeployments(auth.orgId, {
+              repo,
+              status,
+              prNumber: pr_number,
+              limit,
+              cursor,
+            }),
+            getLatestDependencyGraphsForOrg(auth.orgId, repo),
+          ])
+
+          // Convert dependency graph map to object for JSON serialization
+          const graphsObject: Record<string, { workspaces: string[]; edges: [string, string][] }> = {}
+          for (const [key, graph] of dependencyGraphs) {
+            graphsObject[key] = graph
+          }
 
           const payload = JSON.stringify({
             data: result.items.map(serializePreview),
+            dependencyGraphs: graphsObject,
             nextCursor: result.nextCursor,
           })
 
@@ -142,17 +155,17 @@ previewsRoute.get(
       // Send initial snapshot
       await sendSnapshot()
 
-      // Listen for preview updates matching this org (and optionally repo)
-      const handlePreviewUpdate = (event: PreviewUpdateEvent): void => {
+      // Listen for deployment updates matching this org (and optionally repo)
+      const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
         if (event.orgId === auth.orgId) {
           // If filtering by repo, only refresh when that repo changes
           if (!repo || event.repo === repo) {
-            sendSnapshot().catch((err) => console.error(`[sse:previews] error in handlePreviewUpdate:`, err))
+            sendSnapshot().catch((err) => console.error(`[sse:previews] error in handleDeploymentUpdate:`, err))
           }
         }
       }
 
-      events.onPreviewUpdate(handlePreviewUpdate)
+      events.onDeploymentUpdate(handleDeploymentUpdate)
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
@@ -165,7 +178,7 @@ previewsRoute.get(
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
           clearInterval(heartbeat)
-          events.offPreviewUpdate(handlePreviewUpdate)
+          events.offDeploymentUpdate(handleDeploymentUpdate)
           resolve()
         })
       })
@@ -177,7 +190,7 @@ previewsRoute.get(
 async function getPreviewOrgId(c: { req: { param: (key: string) => string | undefined } }): Promise<string | null> {
   const id = c.req.param("id")
   if (!id) return null
-  const preview = await findPreviewById(id)
+  const preview = await findDeploymentById(id)
   return preview?.orgId ?? null
 }
 
@@ -194,7 +207,7 @@ previewsRoute.get(
     }
     const id = parseResult.data
 
-    const preview = await findPreviewById(id)
+    const preview = await findDeploymentById(id)
     if (!preview) {
       return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
     }
@@ -204,7 +217,7 @@ previewsRoute.get(
     return c.json({
       data: approvals.map((a) => ({
         id: a.id,
-        previewId: a.previewId,
+        deploymentId: a.deploymentId,
         userId: a.userId,
         approverLogin: a.approverLogin ?? null,
         approvedAt: a.approvedAt.toISOString(),
@@ -231,25 +244,37 @@ previewsRoute.post(
 
     const auth = getAuth(c)
 
-    const preview = await findPreviewById(id)
+    const preview = await findDeploymentById(id)
     if (!preview) {
       return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
     }
 
-    // Check if user is in the allowed approvers list (if configured)
-    const approvers = Array.isArray(preview.approvers)
+    // Check if user is authorized to approve
+    const approverStrings = Array.isArray(preview.approvers)
       ? preview.approvers.filter((a): a is string => typeof a === "string")
       : []
 
-    if (
-      approvers.length > 0 &&
-      auth.name &&
-      !approvers.map((a) => a.toLowerCase()).includes(auth.name.toLowerCase())
-    ) {
-      return c.json(
-        { error: { code: "FORBIDDEN", message: "approver is not authorized" } },
-        403,
-      )
+    if (approverStrings.length > 0 && auth.name) {
+      // installationId is required for team membership checks
+      if (preview.installationId == null) {
+        logger.warn("Cannot check team approvers without installationId", { previewId: id })
+        return c.json(
+          { error: { code: "FORBIDDEN", message: "approver is not authorized" } },
+          403,
+        )
+      }
+
+      const isAuthorized = await isUserAuthorizedApprover(approverStrings, {
+        githubUsername: auth.name,
+        installationId: preview.installationId,
+      })
+
+      if (!isAuthorized) {
+        return c.json(
+          { error: { code: "FORBIDDEN", message: "approver is not authorized" } },
+          403,
+        )
+      }
     }
 
     // Use the single triggerApply path
@@ -304,7 +329,7 @@ previewsRoute.post(
     const id = parseResult.data
 
     const auth = getAuth(c)
-    const preview = await findPreviewById(id)
+    const preview = await findDeploymentById(id)
     if (!preview) {
       return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
     }
@@ -369,7 +394,7 @@ previewsRoute.post(
     const id = parseResult.data
 
     const auth = getAuth(c)
-    const preview = await findPreviewById(id)
+    const preview = await findDeploymentById(id)
     if (!preview) {
       return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
     }
@@ -427,7 +452,9 @@ previewsRoute.post(
 interface SerializedPreview {
   id: string
   repo: string
-  prNumber: number
+  prNumber: number | null
+  environmentKind: string
+  environmentName: string
   workspacePath: string
   branch: string
   headSha: string
@@ -444,7 +471,9 @@ interface SerializedPreview {
 function serializePreview(p: {
   id: string
   repo: string
-  prNumber: number
+  prNumber: number | null
+  environmentKind: string
+  environmentName: string
   workspacePath: string
   branch: string
   headSha: string
@@ -464,6 +493,8 @@ function serializePreview(p: {
     id: p.id,
     repo: p.repo,
     prNumber: p.prNumber,
+    environmentKind: p.environmentKind,
+    environmentName: p.environmentName,
     workspacePath: p.workspacePath,
     branch: p.branch,
     headSha: p.headSha,

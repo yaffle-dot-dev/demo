@@ -4,9 +4,9 @@
 # Usage: caddy run (started automatically by devenv up)
 # First run: caddy trust (to install Caddy's local CA)
 {
-	# Use Caddy's internal CA for localhost HTTPS
+	# Use Caddy's internal CA for localhost HTTPS (not needed for *.ts.net domains)
 	local_certs
-	
+
 	# Increase HTTP keep-alive timeout for Terraform client connections
 	# Terraform's go-tfe client can have gaps between requests during apply
 	servers {
@@ -19,7 +19,107 @@
 	}
 }
 
-https://localhost:6969, https://yaffle.local:6969, https://0.0.0.0:6969 {
+# Tailscale MagicDNS domain - Caddy automatically fetches HTTPS certs from Tailscale
+# Access from any device on your tailnet at https://yaffle.tail66f312.ts.net
+yaffle.tail66f312.ts.net {
+	# Log all requests for debugging
+	log {
+		output stdout
+		format console
+		level DEBUG
+	}
+
+	# TFC-compatible API (terraform login, state backend)
+	handle /.well-known/* {
+		reverse_proxy localhost:3000 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	handle /tfc/* {
+		reverse_proxy localhost:3000 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	# Control plane API
+	handle /api/* {
+		reverse_proxy localhost:3000 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	# SvelteKit web app at /app (base path configured in svelte.config.js)
+	handle /app/* {
+		reverse_proxy localhost:5173 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	handle /app {
+		reverse_proxy localhost:5173 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	# Public documentation at /docs (Astro Starlight static build)
+	handle /docs/* {
+		uri strip_prefix /docs
+		root * apps/docs/dist
+		file_server
+	}
+
+	handle /docs {
+		redir /docs/ permanent
+	}
+
+	# Vite/SvelteKit dev server paths (default to SvelteKit for /app)
+	handle /@fs/* {
+		reverse_proxy localhost:5173 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	handle /@vite/* {
+		reverse_proxy localhost:5173 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	handle /@id/* {
+		reverse_proxy localhost:5173 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	handle /node_modules/* {
+		reverse_proxy localhost:5173 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	handle /src/* {
+		reverse_proxy localhost:5173 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	handle /.svelte-kit/* {
+		reverse_proxy localhost:5173 {
+			header_up Host yaffle.local:6969
+		}
+	}
+
+	# Marketing site at root
+	handle {
+		reverse_proxy localhost:4000 {
+			header_up Host yaffle.local:6969
+		}
+	}
+}
+
+# Local development (localhost, yaffle.local)
+https://localhost:6969, https://yaffle.local:6969 {
 	# Log all requests for debugging
 	log {
 		output stdout
@@ -51,7 +151,18 @@ https://localhost:6969, https://yaffle.local:6969, https://0.0.0.0:6969 {
 		reverse_proxy localhost:5173
 	}
 
-	# Vite/SvelteKit dev server paths
+	# Public documentation at /docs (Astro Starlight static build)
+	handle /docs/* {
+		uri strip_prefix /docs
+		root * apps/docs/dist
+		file_server
+	}
+
+	handle /docs {
+		redir /docs/ permanent
+	}
+
+	# Vite/SvelteKit dev server paths (default to SvelteKit for /app)
 	handle /@fs/* {
 		reverse_proxy localhost:5173
 	}
@@ -65,6 +176,10 @@ https://localhost:6969, https://yaffle.local:6969, https://0.0.0.0:6969 {
 	}
 
 	handle /node_modules/* {
+		reverse_proxy localhost:5173
+	}
+
+	handle /src/* {
 		reverse_proxy localhost:5173
 	}
 

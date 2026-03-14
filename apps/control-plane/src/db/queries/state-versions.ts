@@ -192,10 +192,12 @@ export async function discardPendingStateVersions(workspaceId: string): Promise<
 
 /**
  * Build an S3 key for a state version.
- * Format: {workspace_id}/v{serial}.tfstate
+ * Format: org-{org_id}/{workspace_id}/v{serial}.tfstate
+ *
+ * The org prefix enables per-org IAM isolation in the shared S3 bucket.
  */
-export function buildS3Key(workspaceId: string, serial: number): string {
-  return `${workspaceId}/v${serial}.tfstate`
+export function buildS3Key(orgId: string, workspaceId: string, serial: number): string {
+  return `org-${orgId}/${workspaceId}/v${serial}.tfstate`
 }
 
 /**

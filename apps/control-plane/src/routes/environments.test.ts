@@ -36,20 +36,30 @@ async function unauthReq(path: string): Promise<Response> {
   return app.request(path)
 }
 
+let seedCounter = 0
+
 async function seedProductionPreview(
   overrides: Partial<typeof previews.$inferInsert> = {},
 ): Promise<typeof previews.$inferSelect> {
+  // Generate unique suffix for constraint-bound fields to avoid conflicts in parallel tests
+  // The unique constraint is on (org_id, repo, environment_name, workspace_path)
+  const counter = ++seedCounter
+  const workspacePath = overrides.workspacePath ?? "infra"
+  const environmentName = overrides.environmentName ?? `main-${counter}`
+  
   const rows = await db
     .insert(previews)
     .values({
       orgId: ctx.org.id,
-      repo: "test-repo",
-      prNumber: 0,
-      workspacePath: "infra",
+      repo: overrides.repo ?? "test-repo",
+      environmentKind: "named",
+      environmentName,
+      prNumber: null,
+      workspacePath,
       branch: "main",
       headSha: "abc123",
       status: "ready",
-      stateKey: "main/infra/terraform.tfstate",
+      stateKey: `main/${workspacePath}/terraform.tfstate`,
       mode: "terraform",
       ...overrides,
     })
@@ -58,13 +68,13 @@ async function seedProductionPreview(
 }
 
 async function seedRun(
-  previewId: string,
+  deploymentId: string,
   overrides: Partial<typeof tfRuns.$inferInsert> = {},
 ): Promise<typeof tfRuns.$inferSelect> {
   const rows = await db
     .insert(tfRuns)
     .values({
-      previewId,
+      deploymentId,
       runType: "apply",
       status: "success",
       planSummary: "+1, ~0, -0",

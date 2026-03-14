@@ -1,0 +1,94 @@
+---
+title: How it works
+description: Architecture and execution model
+---
+
+## Overview
+
+Yaffle is an OpenTofu execution platform. It receives events from GitHub, runs OpenTofu in isolated containers, manages state, and reports results back.
+
+```
+GitHub event → Control plane → Runner container → Results to GitHub
+                    ↓
+         State storage (S3 + DynamoDB)
+```
+
+## Components
+
+| Component | What it does |
+|-----------|--------------|
+| **Control plane** | API server that receives webhooks and orchestrates runs |
+| **Runner** | Executes OpenTofu in isolated ECS Fargate containers |
+| **State storage** | S3 bucket with per-environment isolation |
+| **Locking** | DynamoDB prevents concurrent modifications |
+| **Secrets** | AWS Secrets Manager for credentials and sensitive variables |
+
+## Environments
+
+Environments are named targets for your infrastructure: `production`, `staging`, `dev`. Each environment has its own state file and can have its own variables and secrets.
+
+```toml
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+```
+
+## Triggers
+
+Triggers connect Git events to environments:
+
+```toml
+# Push to main applies to production
+[[triggers.github.push]]
+branch = "main"
+environment = "production"
+
+# PRs create preview environments
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+```
+
+## Run execution
+
+When a trigger fires:
+
+1. **Webhook received** — GitHub notifies Yaffle
+2. **Workspace identified** — Which paths to run, which environment
+3. **Container launched** — Fresh ECS Fargate task
+4. **Backend configured** — S3 backend with the right state path
+5. **Secrets injected** — From Secrets Manager, never logged
+6. **OpenTofu executes** — `init`, `plan`, then `apply` (if configured)
+7. **Results posted** — Status checks and outputs to GitHub
+
+## State isolation
+
+Every environment and preview gets a unique state path:
+
+```
+s3://yaffle-state-{account}/
+├── environments/
+│   ├── production/
+│   │   └── infra/terraform.tfstate
+│   └── staging/
+│       └── infra/terraform.tfstate
+└── previews/
+    ├── pr-42/
+    │   └── infra/terraform.tfstate
+    └── pr-99/
+        └── infra/terraform.tfstate
+```
+
+This means:
+- PRs can't conflict with each other
+- Previews can't affect production
+- Multiple workspaces stay isolated
+
+## Security model
+
+- **Isolated execution** — Each run gets a fresh container
+- **No local credentials** — All secrets from Secrets Manager
+- **Encrypted state** — S3 server-side encryption
+- **Locked state** — DynamoDB prevents concurrent writes
+- **Audit trail** — Every run logged with user, commit, and plan

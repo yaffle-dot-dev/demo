@@ -1,0 +1,62 @@
+---
+title: GitHub
+description: GitHub App setup and webhooks
+---
+
+## Installation
+
+1. Go to [yaffle.dev/app](https://yaffle.dev/app)
+2. Click **Install GitHub App**
+3. Select your organization
+4. Choose repositories (all or specific)
+
+## Permissions
+
+| Permission | Access | Why |
+|------------|--------|-----|
+| Contents | Read | Clone repos, read OpenTofu files |
+| Pull requests | Write | Post comments |
+| Checks | Write | Post plan results |
+
+Yaffle never pushes code.
+
+## Webhooks
+
+| Event | Yaffle action |
+|-------|---------------|
+| `pull_request.opened` | Plan + apply preview |
+| `pull_request.synchronize` | Plan + apply preview |
+| `pull_request.closed` | Destroy preview |
+| `pull_request.closed` (merged) | Apply production + destroy preview |
+| `push` | Apply to matching environment |
+
+## Check runs
+
+Yaffle posts results as GitHub checks:
+
+```
+Checks:
+├── CI / tests
+└── Yaffle / infra
+     Plan: +3 ~1 -0
+     [Details]
+```
+
+Click **Details** to see the full plan.
+
+## Branch protection
+
+Require the Yaffle check before merge:
+
+```yaml
+branches:
+  main:
+    protection:
+      required_status_checks:
+        contexts:
+          - "Yaffle / infra"
+```
+
+## Private repos
+
+Fully supported. Yaffle clones via the GitHub App installation token—no SSH keys or PATs needed.

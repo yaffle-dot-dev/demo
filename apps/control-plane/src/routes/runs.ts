@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import { z } from "zod"
 
 import { findRunById, updateRunStatus } from "../db/queries/tf-runs.ts"
-import { findPreviewById } from "../db/queries/previews.ts"
+import { findDeploymentById } from "../db/queries/workspace-deployments.ts"
 import { processRegistry } from "../lib/process-registry.ts"
 import { logger } from "../lib/telemetry.ts"
 import { requireResourceAccess, getAuth } from "../middleware/org-auth.ts"
@@ -17,8 +17,8 @@ async function getRunOrgId(c: { req: { param: (key: string) => string | undefine
   if (!id) return null
   const run = await findRunById(id)
   if (!run) return null
-  const preview = await findPreviewById(run.previewId)
-  return preview?.orgId ?? null
+  const deployment = await findDeploymentById(run.deploymentId)
+  return deployment?.orgId ?? null
 }
 
 /**
@@ -59,7 +59,7 @@ runsRoute.post(
     const auth = getAuth(c)
     logger.info("Cancelling run", {
       runId: id,
-      previewId: run.previewId,
+      deploymentId: run.deploymentId,
       runType: run.runType,
       userId: auth.userId,
     })
@@ -69,7 +69,7 @@ runsRoute.post(
 
     if (cancelled) {
       // Update run status to cancelled
-      await updateRunStatus(id, run.previewId, "cancelled", {
+      await updateRunStatus(id, run.deploymentId, "cancelled", {
         completedAt: new Date(),
         errorMessage: `Cancelled by ${auth.name || auth.userId}`,
       })
@@ -122,7 +122,7 @@ runsRoute.get(
     return c.json({
       data: {
         id: run.id,
-        previewId: run.previewId,
+        deploymentId: run.deploymentId,
         runType: run.runType,
         status: run.status,
         planSummary: run.planSummary,

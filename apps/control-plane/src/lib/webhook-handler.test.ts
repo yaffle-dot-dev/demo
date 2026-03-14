@@ -8,7 +8,7 @@ import type {
   WebhookContext,
 } from "@yaffle/shared"
 
-import type { YaffleConfig } from "./config.ts"
+import type { YaffleTomlConfig } from "./config-toml.ts"
 import { sql } from "drizzle-orm"
 
 import { db } from "./db.ts"
@@ -60,70 +60,78 @@ async function getAllJobs() {
   return db.select().from(iacJobs)
 }
 
-/** Minimal config with one workspace, auto_apply on. */
-const DEFAULT_CONFIG: YaffleConfig = {
+/** Minimal config with one workspace for both PR and push. */
+const DEFAULT_CONFIG: YaffleTomlConfig = {
   version: 1,
+  environments: [{ name: "main" }],
   workspaces: [
     {
       path: "infra",
-      auto_apply: true,
-      auto_apply_on_merge: true,
-      require_approval: false,
+      environments: "*", // Matches all environments (both named and transient)
     },
   ],
-}
-
-/** Config with auto_apply disabled (plan only). */
-const PLAN_ONLY_CONFIG: YaffleConfig = {
-  version: 1,
-  workspaces: [
-    {
-      path: "infra",
-      auto_apply: false,
-      auto_apply_on_merge: true,
-      require_approval: false,
+  triggers: {
+    github: {
+      push: [{ branch: "main", environment: "main" }],
+      pull_request: [{ branch_pattern: "*" }],
     },
-  ],
+  },
+  approvals: [],
 }
 
 /** Config with two workspaces. */
-const MULTI_WORKSPACE_CONFIG: YaffleConfig = {
+const MULTI_WORKSPACE_CONFIG: YaffleTomlConfig = {
   version: 1,
+  environments: [{ name: "main" }],
   workspaces: [
     {
       path: "infra",
-      auto_apply: true,
-      auto_apply_on_merge: true,
-      require_approval: false,
-      variables: { environment: "{{ env }}" },
+      environments: "*",
+      variables: { region: "us-east-1" },
     },
     {
       path: "infra/monitoring",
-      auto_apply: true,
-      auto_apply_on_merge: true,
-      require_approval: false,
-      variables: { environment: "{{ env }}" },
+      environments: "*",
+      variables: { region: "us-east-1" },
     },
   ],
+  triggers: {
+    github: {
+      push: [{ branch: "main", environment: "main" }],
+      pull_request: [{ branch_pattern: "*" }],
+    },
+  },
+  approvals: [],
 }
 
-/** Config with approval required on merge. */
-const APPROVAL_CONFIG: YaffleConfig = {
+/** Config with approval required for main environment. */
+const APPROVAL_CONFIG: YaffleTomlConfig = {
   version: 1,
+  environments: [{ name: "main" }],
   workspaces: [
     {
       path: "infra",
-      auto_apply: true,
-      auto_apply_on_merge: true,
-      require_approval: true,
-      approvers: ["lamalex"],
+      environments: "*",
+    },
+  ],
+  triggers: {
+    github: {
+      push: [{ branch: "main", environment: "main" }],
+      pull_request: [{ branch_pattern: "*" }],
+    },
+  },
+  approvals: [
+    {
+      workspaces: ["infra"],
+      environments: ["main"],
+      approvers: ["github:user:lamalex"],
     },
   ],
 }
 
 /** Fake config loader that returns a fixed config. */
-function fakeConfigLoader(config: YaffleConfig) {
-  return async (_ctx: WebhookContext, _token?: string): Promise<YaffleConfig> => config
+function fakeConfigLoader(config: YaffleTomlConfig) {
+  return async (_ctx: WebhookContext, _token?: string): Promise<YaffleTomlConfig> => config
 }
 
 function makePrContext(overrides?: Partial<PullRequestContext>): PullRequestContext {
@@ -189,7 +197,7 @@ describe("webhook-handler", () => {
       sql`TRUNCATE TABLE 
         iac_jobs,
         tf_runs, 
-        previews, 
+        workspace_deployments, 
         state_versions, 
         workspaces, 
         connections, 
@@ -208,7 +216,7 @@ describe("webhook-handler", () => {
       sql`TRUNCATE TABLE 
         iac_jobs,
         tf_runs, 
-        previews, 
+        workspace_deployments, 
         state_versions, 
         workspaces, 
         connections, 
@@ -237,29 +245,30 @@ describe("webhook-handler", () => {
     const jobs = await getQueuedJobs()
     expect(jobs).toHaveLength(1)
     expect(jobs[0].jobType).toBe("plan")
-    expect(jobs[0].previewId).toBe(pvs[0].id)
+    expect(jobs[0].deploymentId).toBe(pvs[0].id)
 
     // Runner is NOT called - execution happens via IaC engine
     expect(runner.calls).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
-  // PR opened -- plan only config has same job-queue behavior
+  // PR opened -- with multi-workspace config
   // -----------------------------------------------------------------------
 
-  test("PR opened: queues plan job (auto_apply config is ignored for queueing)", async () => {
-    handler = createHandler(runner, { configLoader: fakeConfigLoader(PLAN_ONLY_CONFIG) })
+  test("PR opened: queues plan jobs for all matching workspaces", async () => {
+    handler = createHandler(runner, { configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG) })
 
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
-    // Preview created, plan job queued
+    // Preview created for each workspace
     const pvs = await db.select().from(previews)
-    expect(pvs).toHaveLength(1)
-    expect(pvs[0].status).toBe("pending")
+    expect(pvs).toHaveLength(2)
+    expect(pvs.every((p) => p.status === "pending")).toBe(true)
 
+    // Plan job is queued for each workspace
     const jobs = await getQueuedJobs()
-    expect(jobs).toHaveLength(1)
-    expect(jobs[0].jobType).toBe("plan")
+    expect(jobs).toHaveLength(2)
+    expect(jobs.every((j) => j.jobType === "plan")).toBe(true)
 
     // No inline execution
     expect(runner.calls).toHaveLength(0)
@@ -288,48 +297,49 @@ describe("webhook-handler", () => {
   })
 
   // -----------------------------------------------------------------------
-  // PR closed without merge -- destroy preview (still inline for now)
+  // PR closed without merge -- queues destroy job
   // -----------------------------------------------------------------------
 
-  test("PR closed without merge: destroys preview", async () => {
+  test("PR closed without merge: queues destroy job", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
     await handler.handleWebhookEvent(makePrContext({ action: "closed", merged: false }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
-    expect(pvs[0].status).toBe("destroyed")
+    // Status is "pending" because destroy job is queued, not executed
+    expect(pvs[0].status).toBe("pending")
 
-    // Destroy still runs inline (not job-based yet)
-    const destroyRuns = (await db.select().from(tfRuns)).filter((r) => r.runType === "destroy")
-    expect(destroyRuns).toHaveLength(1)
-    expect(destroyRuns[0].status).toBe("success")
+    // Destroy job is queued (not executed inline)
+    const jobs = await getAllJobs()
+    const destroyJobs = jobs.filter((j) => j.jobType === "destroy")
+    expect(destroyJobs).toHaveLength(1)
+    expect(destroyJobs[0].status).toBe("queued")
 
-    // Destroy is called inline by the handler
-    expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(1)
+    // No inline execution - runner is not called
+    expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
-  // PR merged -- destroy preview (production apply is via push event)
+  // PR merged -- queues destroy job (production apply is via push event)
   // -----------------------------------------------------------------------
 
-  test("PR merged: destroys preview only (no production apply)", async () => {
+  test("PR merged: queues destroy job only (no production apply)", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
     await handler.handleWebhookEvent(makePrContext({ action: "closed", merged: true }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
-    expect(pvs[0].status).toBe("destroyed")
+    // Status is "pending" because destroy job is queued, not executed
+    expect(pvs[0].status).toBe("pending")
 
-    // Only destroy run (plan was queued but not executed)
-    const runs = await db.select().from(tfRuns)
-    const destroyRuns = runs.filter((r) => r.runType === "destroy")
-    expect(destroyRuns).toHaveLength(1)
+    // Destroy job is queued (execution happens via IaC engine)
+    const jobs = await getAllJobs()
+    const destroyJobs = jobs.filter((j) => j.jobType === "destroy")
+    expect(destroyJobs).toHaveLength(1)
+    expect(destroyJobs[0].status).toBe("queued")
 
-    // Destroy is still inline
-    expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(1)
-    expect(runner.calls.find((c) => c.command === "destroy")?.stateKey).toBe(
-      "preview-pr-42/infra/terraform.tfstate",
-    )
+    // No inline execution - runner is not called
+    expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
@@ -346,7 +356,7 @@ describe("webhook-handler", () => {
   })
 
   // -----------------------------------------------------------------------
-  // Reopened PR - queues new plan job
+  // Reopened PR - cancels destroy job and queues new plan job
   // -----------------------------------------------------------------------
 
   test("reopened PR reuses existing preview and queues plan", async () => {
@@ -359,9 +369,22 @@ describe("webhook-handler", () => {
     expect(pvs[0].headSha).toBe("new-sha")
     expect(pvs[0].status).toBe("pending") // Reset to pending for new plan job
 
-    // Plan job queued for reopened PR
-    const jobs = await getQueuedJobs()
-    expect(jobs.filter((j) => j.jobType === "plan")).toHaveLength(1)
+    // Check job history:
+    // 1. Open: creates plan job (queued)
+    // 2. Close: cancels plan job, creates destroy job (queued)
+    // 3. Reopen: cancels destroy job, creates new plan job (queued)
+    const jobs = await getAllJobs()
+    const planJobs = jobs.filter((j) => j.jobType === "plan")
+    const destroyJobs = jobs.filter((j) => j.jobType === "destroy")
+
+    // 2 plan jobs total: one cancelled (from open), one queued (from reopen)
+    expect(planJobs).toHaveLength(2)
+    expect(planJobs.filter((j) => j.status === "cancelled")).toHaveLength(1)
+    expect(planJobs.filter((j) => j.status === "queued")).toHaveLength(1)
+
+    // 1 destroy job: cancelled by reopen
+    expect(destroyJobs).toHaveLength(1)
+    expect(destroyJobs[0].status).toBe("cancelled")
   })
 
   // -----------------------------------------------------------------------
@@ -436,7 +459,7 @@ describe("webhook-handler", () => {
     const mutex = new KeyedMutex()
     const testHandler = createHandler(runner, {
       mutex,
-      configLoader: fakeConfigLoader(PLAN_ONLY_CONFIG),
+      configLoader: fakeConfigLoader(DEFAULT_CONFIG),
     })
 
     const p1 = testHandler.handleWebhookEvent(
@@ -468,7 +491,9 @@ describe("webhook-handler", () => {
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
-    expect(pvs[0].prNumber).toBe(0) // sentinel for production
+    expect(pvs[0].prNumber).toBeNull() // null for named environments (production)
+    expect(pvs[0].environmentKind).toBe("named")
+    expect(pvs[0].environmentName).toBe("main")
     expect(pvs[0].stateKey).toBe("main/infra/terraform.tfstate")
     expect(pvs[0].status).toBe("pending") // Waiting for plan job to run
 
@@ -517,18 +542,25 @@ describe("webhook-handler", () => {
   })
 
   // -----------------------------------------------------------------------
-  // Config default_branch override
+  // Push trigger environment matching
   // -----------------------------------------------------------------------
 
-  test("push respects config default_branch override", async () => {
-    const config: YaffleConfig = {
+  test("push respects trigger branch configuration", async () => {
+    const config: YaffleTomlConfig = {
       version: 1,
-      default_branch: "develop",
-      workspaces: [{ path: "infra", auto_apply: true, auto_apply_on_merge: true, require_approval: false }],
+      environments: [{ name: "develop" }],
+      workspaces: [{ path: "infra", environments: ["develop"] }],
+      triggers: {
+        github: {
+          push: [{ branch: "develop", environment: "develop" }],
+          pull_request: [{ branch_pattern: "*" }],
+        },
+      },
+      approvals: [],
     }
     const h = createHandler(runner, { configLoader: fakeConfigLoader(config) })
 
-    // Push to "main" should be ignored because config says "develop"
+    // Push to "main" should be ignored because no trigger matches
     await h.handleWebhookEvent(makePushContext({ branch: "main", defaultBranch: "main" }))
     expect(runner.calls).toHaveLength(0)
     let jobs = await getAllJobs()

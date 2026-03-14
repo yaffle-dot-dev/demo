@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
-import { listPreviews } from "../db/queries/previews.ts"
+import { listDeployments } from "../db/queries/workspace-deployments.ts"
 import { findLatestRun } from "../db/queries/tf-runs.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 
@@ -29,6 +29,7 @@ interface EnvironmentWorkspace {
 interface EnvironmentGroup {
   repo: string
   branch: string
+  environmentName: string
   headSha: string
   status: string
   updatedAt: string
@@ -123,9 +124,9 @@ async function fetchEnvironments(
   orgId: string,
   repo?: string,
 ): Promise<EnvironmentGroup[]> {
-  const result = await listPreviews(orgId, {
+  const result = await listDeployments(orgId, {
     repo,
-    prNumber: 0,
+    environmentKind: "named",
     limit: 250,
   })
 
@@ -135,7 +136,7 @@ async function fetchEnvironments(
   const activePreviews = result.items.filter((p) => p.status !== "destroyed")
 
   for (const preview of activePreviews) {
-    const key = `${preview.repo}:${preview.branch}`
+    const key = `${preview.repo}:${preview.environmentName}`
 
     const latestApply = await findLatestRun(preview.id, "apply")
     const latestRun = latestApply ?? (await findLatestRun(preview.id))
@@ -157,6 +158,7 @@ async function fetchEnvironments(
       groups.set(key, {
         repo: preview.repo,
         branch: preview.branch,
+        environmentName: preview.environmentName,
         headSha: preview.headSha,
         status: preview.status,
         updatedAt: latestRun?.completedAt?.toISOString() ?? preview.createdAt.toISOString(),

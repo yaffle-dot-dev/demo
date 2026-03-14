@@ -88,6 +88,7 @@ export interface EnvironmentWorkspace {
 export interface EnvironmentGroup {
   repo: string
   branch: string
+  environmentName: string
   headSha: string
   status: string
   updatedAt: string
@@ -135,6 +136,24 @@ export interface EnvPreviewGroup {
   repo: string
   branch: string
   headSha: string
+  workspaces: WorkspaceWithRuns[]
+  runGroups: RunGroup[]
+}
+
+/**
+ * Unified environment preview group (replaces both PrPreviewGroup and EnvPreviewGroup).
+ * Used with the new /environment/:name endpoint.
+ */
+export interface EnvironmentPreviewGroup {
+  org: string
+  repo: string
+  environmentKind: "named" | "transient"
+  environmentName: string
+  branch: string
+  headSha: string
+  prNumber: number | null
+  authorGithubId: number | null
+  authorLogin: string | null
   workspaces: WorkspaceWithRuns[]
   runGroups: RunGroup[]
 }
@@ -318,6 +337,7 @@ export async function getPreviewsByPr(
 
 /**
  * Get all previews (workspaces) for a long-lived environment.
+ * @deprecated Use getEnvironment instead
  */
 export async function getPreviewsByEnv(
   org: string,
@@ -325,4 +345,16 @@ export async function getPreviewsByEnv(
   branch: string,
 ): Promise<DetailResponse<EnvPreviewGroup>> {
   return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(branch)}`)
+}
+
+/**
+ * Get all deployments for an environment (unified endpoint).
+ * Works for both PR environments (e.g., "pr-123") and named environments (e.g., "main").
+ */
+export async function getEnvironment(
+  org: string,
+  repo: string,
+  environmentName: string,
+): Promise<DetailResponse<EnvironmentPreviewGroup>> {
+  return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environmentName)}`)
 }

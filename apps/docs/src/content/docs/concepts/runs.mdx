@@ -1,0 +1,61 @@
+---
+title: Runs
+description: Plan, apply, destroy
+---
+
+## Run types
+
+| Type | Command | When |
+|------|---------|------|
+| `plan` | `tofu plan` | Always runs first |
+| `apply` | `tofu apply` | After successful plan |
+| `destroy` | `tofu destroy` | PR closed/merged |
+
+## Execution
+
+Runs execute in isolated ECS Fargate containers:
+
+1. Workspace downloaded from S3
+2. Backend configured for this workspace
+3. Variables and secrets injected
+4. OpenTofu command executed
+5. Results uploaded to S3
+6. Status posted to GitHub
+
+## Status
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Queued |
+| `running` | Executing |
+| `success` | Completed |
+| `failed` | Error |
+
+## Logs
+
+**GitHub check** — click "Details" to see the plan
+
+**Dashboard** — full streaming logs
+
+**API:**
+```bash
+curl https://api.yaffle.dev/runs/{id}/logs
+```
+
+## Concurrency
+
+- One run per workspace at a time (DynamoDB locking)
+- Multiple workspaces can run in parallel
+- Runs queue if runners are busy
+
+## Secrets
+
+Secrets are fetched from AWS Secrets Manager at runtime:
+
+```toml
+[[workspaces]]
+path = "infra"
+secrets.db_password = "arn:aws:secretsmanager:us-east-1:123:secret:db-password"
+```
+
+Available as `var.db_password` in OpenTofu. Never logged.

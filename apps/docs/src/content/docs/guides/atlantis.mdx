@@ -1,0 +1,197 @@
+---
+title: Migrating from Atlantis
+description: Move from self-hosted Atlantis to Yaffle
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components"
+
+Atlantis pioneered Terraform PR automation. But after 1-2 years, most teams outgrow it. If you're hitting Atlantis's limits, Yaffle is the natural next step.
+
+## Why teams leave Atlantis
+
+| Pain point | Atlantis | Yaffle |
+|------------|----------|--------|
+| **Operational overhead** | You run it: servers, updates, monitoring | Managed service, zero ops |
+| **Single-threaded** | One run at a time, bottleneck on busy repos | Parallel runs across workspaces |
+| **No RBAC** | Anyone with repo access can `atlantis apply` | Granular approval policies |
+| **No drift detection** | Manual checks or external tooling | Built-in (planned) |
+| **Plan-only previews** | Shows what would change, can't test it | Real infrastructure you can hit |
+| **State management** | You configure backends | Fully managed |
+| **Secrets** | Environment variables or external tools | AWS Secrets Manager integration |
+
+## What you'll gain
+
+### Preview environments
+
+Atlantis shows you a plan. Yaffle creates real infrastructure.
+
+```
+Atlantis:  PR → terraform plan → read diff → merge → hope it works
+Yaffle:    PR → plan → apply preview → test it → merge → apply production
+```
+
+Your QA team can test against `pr-42.staging.example.com` before merge.
+
+### No more server management
+
+Stop patching Atlantis servers, debugging webhook issues, and scaling infrastructure. Yaffle runs in our infrastructure—you just connect your repo.
+
+### Proper access control
+
+Atlantis's access model is "if you can push, you can apply." Yaffle supports:
+
+```toml
+[[approvals]]
+workspaces = ["infra/production/*"]
+environments = ["production"]
+approvers = [
+  "github:team:acme/platform-engineering",
+  "github:user:alice",
+]
+```
+
+### OpenTofu native
+
+Yaffle runs [OpenTofu](https://opentofu.org), the open-source fork under MPL 2.0. No BSL licensing concerns as your infrastructure scales.
+
+## Migration path
+
+<Steps>
+1. ### Install Yaffle
+
+   [Install the GitHub App](https://yaffle.dev/app) on your repository. This doesn't affect Atlantis—both can run simultaneously.
+
+2. ### Add `yaffle.toml`
+
+   Create a config matching your Atlantis setup:
+
+   ```toml
+   version = 1
+
+   [[environments]]
+   name = "production"
+
+   [[environments]]
+   name = "staging"
+
+   [[triggers.github.push]]
+   branch = "main"
+   environment = "production"
+
+   [[triggers.github.pull_request]]
+   branch_pattern = "*"
+
+   [[workspaces]]
+   path = "infra"
+   environments = ["*"]
+   ```
+
+3. ### Connect your AWS account
+
+   Deploy the [bootstrap module](/docs/guides/aws/) to create the IAM role Yaffle assumes.
+
+4. ### Test on a PR
+
+   Open a test PR. Both Atlantis and Yaffle will run. Compare results.
+
+5. ### Disable Atlantis
+
+   Once confident, remove the Atlantis webhook or uninstall the Atlantis GitHub App.
+</Steps>
+
+## Configuration mapping
+
+### atlantis.yaml → yaffle.toml
+
+**Atlantis:**
+```yaml
+version: 3
+projects:
+  - name: network
+    dir: infra/network
+    workspace: default
+    autoplan:
+      when_modified: ["*.tf"]
+      enabled: true
+  - name: compute
+    dir: infra/compute
+    workspace: default
+```
+
+**Yaffle:**
+```toml
+version = 1
+
+[[workspaces]]
+path = "infra/network"
+environments = ["*"]
+
+[[workspaces]]
+path = "infra/compute"
+environments = ["*"]
+```
+
+### Workflow commands
+
+| Atlantis command | Yaffle equivalent |
+|------------------|-------------------|
+| `atlantis plan` | Automatic on PR push |
+| `atlantis apply` | Automatic after plan (previews) or on merge (production) |
+| `atlantis plan -d infra/network` | Plans all affected workspaces automatically |
+| `atlantis unlock` | Not needed—Yaffle manages locking |
+
+### Environment variables
+
+**Atlantis:** Set in server environment or `atlantis.yaml`
+
+**Yaffle:** Use the `variables` field or Secrets Manager:
+
+```toml
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+variables.region = "us-east-1"
+secrets.db_password = "arn:aws:secretsmanager:us-east-1:123:secret:db-pass"
+```
+
+## Running both during migration
+
+You can run Atlantis and Yaffle simultaneously:
+
+1. Both will post checks to PRs
+2. Both will plan on push
+3. Only one should apply—disable Atlantis autoplan for production
+
+```yaml
+# atlantis.yaml - disable autoplan during migration
+version: 3
+projects:
+  - name: infra
+    dir: infra
+    autoplan:
+      enabled: false  # Manual only during migration
+```
+
+Once you're confident in Yaffle, remove Atlantis entirely.
+
+## FAQ
+
+**Can I migrate incrementally?**
+
+Yes. Add specific workspaces to Yaffle while Atlantis handles others. Yaffle only manages workspaces defined in `yaffle.toml`.
+
+**What about existing state?**
+
+Yaffle manages its own state. Your existing Terraform state stays where it is. For new workspaces, Yaffle starts fresh. For existing resources, use `tofu import`.
+
+**Do I need to change my Terraform code?**
+
+No. Yaffle runs standard OpenTofu, which is compatible with Terraform configurations. Your `.tf` files work as-is.
+
+**What if something goes wrong?**
+
+Yaffle provides full run logs in the dashboard and GitHub checks. If a preview fails, it doesn't affect production. If you need to rollback, revert your PR and Yaffle applies the previous state.
+
+<Aside type="tip">
+**Still have questions?** [Open an issue](https://github.com/yaffle-dev/yaffle/issues) or reach out at hello@yaffle.dev.
+</Aside>

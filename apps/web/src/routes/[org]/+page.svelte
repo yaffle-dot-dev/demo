@@ -9,11 +9,14 @@
     getMe,
     type EnvironmentGroup,
     type Preview,
+    type DependencyGraph,
   } from "$lib/api"
   import { githubTreeUrl, githubCommitUrl } from "$lib/github"
-  import { usePreviewListStream } from "$lib/sse/index.svelte"
+  import { usePreviewListStream, useOrgStatusStream } from "$lib/sse/index.svelte"
   import { statusConfig, formatRelativeTime, shortSha } from "$lib/status"
   import { useSession, setLastOrg } from "$lib/auth"
+  import WorkspaceDag from "$lib/components/WorkspaceDag.svelte"
+  import ProvisioningStatus from "$lib/components/ProvisioningStatus.svelte"
 
   // Org comes from URL param - always defined since this is a [org] route
   const org = $derived(page.params.org ?? "")
@@ -23,7 +26,7 @@
   let loading = $state(true)
   let error = $state("")
   
-  // Current user's GitHub ID for matching "your" previews
+  // Current user's GitHub ID for matching "your" PR environments
   let myGithubId = $state<number | null>(null)
 
   // BetterAuth session store
@@ -31,9 +34,15 @@
 
   // SSE hook replaces inline EventSource management
   const stream = usePreviewListStream(() => org)
+  
+  // SSE hook for org provisioning status
+  const orgStatus = useOrgStatusStream(() => org)
+  
+  // Derived: is org ready to use?
+  const isOrgReady = $derived(orgStatus.status === "active" || orgStatus.status === null)
 
-  // Use SSE data for previews (filtered to exclude env previews)
-  const previews = $derived(stream.previews.filter((p) => p.prNumber !== 0))
+  // Use SSE data for previews (filtered to only include PR/transient previews)
+  const previews = $derived(stream.previews.filter((p) => p.prNumber != null && p.prNumber > 0))
 
   const ACTIVE_STATUSES = new Set([
     "pending",
@@ -171,6 +180,12 @@
       : activeGroups,
   )
 
+  // Helper to get dependency graph for a PR group
+  function getDependencyGraph(repo: string, environmentName: string): DependencyGraph | null {
+    const key = `${repo}:${environmentName}`
+    return stream.dependencyGraphs[key] ?? null
+  }
+
   let hasLoaded = false
 
   onMount(() => {
@@ -204,15 +219,19 @@
   })
 </script>
 
+<!-- Show provisioning status if org is not ready -->
+{#if !isOrgReady}
+  <ProvisioningStatus
+    status={orgStatus.status}
+    error={orgStatus.error}
+  />
+{:else}
 <div class="space-y-6">
   <section class="grid grid-cols-1 gap-4">
     <div class="rounded-xl border border-border bg-gradient-to-br from-surface-raised via-surface to-surface px-5 py-4">
       <div class="flex items-center justify-between">
         <div>
-          <h1 class="text-xl font-semibold">Primary environments</h1>
-          <p class="text-sm text-text-muted mt-1">
-            Latest apply status for long-lived branches.
-          </p>
+          <h1 class="text-xl font-semibold">Named environments</h1>
         </div>
         <div class="text-right text-sm text-text-dim">
           <div class="font-mono text-xs">{environments.length} environments</div>
@@ -223,21 +242,21 @@
         <div class="text-text-dim text-sm py-6">No environments yet.</div>
       {:else}
         <div class="mt-4 grid grid-cols-1 gap-3">
-          {#each environments as env (env.repo + env.branch)}
+          {#each environments as env (env.repo + env.environmentName)}
             {@const cfg = statusConfig(env.status)}
             {@const showStatus = env.status !== "ready"}
             <div class="rounded-lg border border-border bg-surface p-3 hover:border-yaffle-500/40 transition-colors">
               <div class="flex items-start justify-between">
                 <div>
                   <div class="flex items-center gap-2">
-                    <a href="{base}/{org}/{env.repo}/env/{env.branch}" class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
+                    <a href="{base}/{org}/{env.repo}/env/{env.environmentName}" class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
                     <a 
                       href={githubTreeUrl({ org, repo: env.repo }, env.branch)}
                       target="_blank"
                       rel="noopener noreferrer"
                       class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded hover:text-yaffle-400 transition-colors"
                     >
-                      {env.branch}
+                      {env.environmentName}
                     </a>
                     {#if showStatus}
                       <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
@@ -259,20 +278,14 @@
                   </div>
                 </div>
               </div>
-              <div class="mt-3 flex flex-wrap gap-2">
-                {#each env.workspaces as ws (ws.previewId)}
-                  {@const wsCfg = statusConfig(ws.status)}
-                  {@const wsShowStatus = ws.status !== "ready"}
-                  <a
-                    href="{base}/{org}/{env.repo}/env/{env.branch}?ws={encodeURIComponent(ws.workspacePath)}"
-                    class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface-raised text-xs text-text-muted hover:text-text hover:border-yaffle-500/40 transition-colors"
-                  >
-                    {#if wsShowStatus}
-                      <span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>
-                    {/if}
-                    <span class="font-mono">{ws.workspacePath}</span>
-                  </a>
-                {/each}
+              <div class="mt-3">
+                <WorkspaceDag
+                  {org}
+                  repo={env.repo}
+                  environmentName={env.environmentName}
+                  workspaces={env.workspaces}
+                  dependencyGraph={getDependencyGraph(env.repo, env.environmentName)}
+                />
               </div>
             </div>
           {/each}
@@ -283,10 +296,7 @@
     <div class="rounded-xl border border-border bg-gradient-to-br from-surface-raised via-surface to-surface px-5 py-4">
       <div class="flex items-center justify-between">
         <div>
-          <h2 class="text-xl font-semibold">Preview groups</h2>
-          <p class="text-sm text-text-muted mt-1">
-            Active previews grouped by PR. Destroyed previews are hidden by default.
-          </p>
+          <h2 class="text-xl font-semibold">Transient environments</h2>
         </div>
         <div class="text-right text-sm text-text-dim">
           <div class="font-mono text-xs">{activeGroups.length} groups</div>
@@ -316,17 +326,17 @@
     <div class="text-text-muted text-sm">Loading...</div>
   {:else if activeGroups.length === 0}
     <div class="text-text-dim text-sm py-10 text-center">
-      Waiting for your first preview or deployment.
+      No active PR environments.
     </div>
   {:else}
     {#if myGithubId}
       <section class="space-y-3">
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-medium text-text-muted">Your active previews</h2>
+          <h2 class="text-sm font-medium text-text-muted">Your PRs</h2>
           <span class="text-xs text-text-dim">{yourGroups.length} groups</span>
         </div>
         {#if yourGroups.length === 0}
-          <div class="text-text-dim text-sm py-6 text-center">No active previews.</div>
+          <div class="text-text-dim text-sm py-6 text-center">No active PR environments.</div>
         {:else}
           <div class="grid grid-cols-1 gap-4">
             {#each yourGroups as group (group.key)}
@@ -335,7 +345,7 @@
                 <div class="flex items-start justify-between">
                   <div>
                     <div class="flex items-center gap-3">
-                      <a href="{base}/{org}/{group.repo}/pr/{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                      <a href="{base}/{org}/{group.repo}/env/pr-{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                         {group.repo}
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
@@ -359,14 +369,14 @@
                   </div>
                 </div>
 
-                <div class="mt-4 flex flex-wrap gap-2">
-                  {#each group.workspaces as ws (ws.id)}
-                    {@const wsCfg = statusConfig(ws.status)}
-                    <a href="{base}/{org}/{group.repo}/pr/{group.prNumber}?ws={encodeURIComponent(ws.workspacePath)}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
-                      {#if ws.status !== "ready"}<span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>{/if}
-                      <span class="font-mono">{ws.workspacePath}</span>
-                    </a>
-                  {/each}
+                <div class="mt-3">
+                  <WorkspaceDag
+                    {org}
+                    repo={group.repo}
+                    environmentName="pr-{group.prNumber}"
+                    workspaces={group.workspaces}
+                    dependencyGraph={getDependencyGraph(group.repo, `pr-${group.prNumber}`)}
+                  />
                 </div>
               </div>
             {/each}
@@ -376,11 +386,11 @@
 
       <section class="space-y-3">
         <div class="flex items-center justify-between">
-          <h2 class="text-sm font-medium text-text-muted">Other active previews</h2>
+          <h2 class="text-sm font-medium text-text-muted">Other PRs</h2>
           <span class="text-xs text-text-dim">{otherGroups.length} groups</span>
         </div>
         {#if otherGroups.length === 0}
-          <div class="text-text-dim text-sm py-6 text-center">No other active previews.</div>
+          <div class="text-text-dim text-sm py-6 text-center">No other active PR environments.</div>
         {:else}
           <div class="grid grid-cols-1 gap-4">
             {#each otherGroups as group (group.key)}
@@ -389,7 +399,7 @@
                 <div class="flex items-start justify-between">
                   <div>
                     <div class="flex items-center gap-3">
-                      <a href="{base}/{org}/{group.repo}/pr/{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                      <a href="{base}/{org}/{group.repo}/env/pr-{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                         {group.repo}
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
@@ -416,16 +426,14 @@
                   </div>
                 </div>
 
-                <div class="mt-4 flex flex-wrap gap-2">
-                  {#each group.workspaces as ws (ws.id)}
-                    {@const wsCfg = statusConfig(ws.status)}
-                    <a href="{base}/{org}/{group.repo}/pr/{group.prNumber}?ws={encodeURIComponent(ws.workspacePath)}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
-                      {#if ws.status !== "ready"}
-                        <span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>
-                      {/if}
-                      <span class="font-mono">{ws.workspacePath}</span>
-                    </a>
-                  {/each}
+                <div class="mt-3">
+                  <WorkspaceDag
+                    {org}
+                    repo={group.repo}
+                    environmentName="pr-{group.prNumber}"
+                    workspaces={group.workspaces}
+                    dependencyGraph={getDependencyGraph(group.repo, `pr-${group.prNumber}`)}
+                  />
                 </div>
               </div>
             {/each}
@@ -433,7 +441,7 @@
         {/if}
       </section>
     {:else}
-      <!-- No user handle - show all previews without yours/others split -->
+      <!-- No user handle - show all PR environments without yours/others split -->
       <div class="grid grid-cols-1 gap-4">
         {#each activeGroups as group (group.key)}
           {@const cfg = statusConfig(group.status)}
@@ -441,7 +449,7 @@
             <div class="flex items-start justify-between">
               <div>
                 <div class="flex items-center gap-3">
-                  <a href="{base}/{org}/{group.repo}/pr/{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                  <a href="{base}/{org}/{group.repo}/env/pr-{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                     {group.repo}
                   </a>
                   <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
@@ -468,16 +476,14 @@
               </div>
             </div>
 
-            <div class="mt-4 flex flex-wrap gap-2">
-              {#each group.workspaces as ws (ws.id)}
-                {@const wsCfg = statusConfig(ws.status)}
-                <a href="{base}/{org}/{group.repo}/pr/{group.prNumber}?ws={encodeURIComponent(ws.workspacePath)}" class="inline-flex items-center gap-2 px-2 py-1 rounded border border-border-subtle bg-surface text-xs text-text-muted hover:text-text transition-colors">
-                  {#if ws.status !== "ready"}
-                    <span class="font-mono text-[10px] {wsCfg.color}">{wsCfg.icon}</span>
-                  {/if}
-                  <span class="font-mono">{ws.workspacePath}</span>
-                </a>
-              {/each}
+            <div class="mt-3">
+              <WorkspaceDag
+                {org}
+                repo={group.repo}
+                environmentName="pr-{group.prNumber}"
+                workspaces={group.workspaces}
+                dependencyGraph={getDependencyGraph(group.repo, `pr-${group.prNumber}`)}
+              />
             </div>
           </div>
         {/each}
@@ -485,3 +491,4 @@
     {/if}
   {/if}
 </div>
+{/if}

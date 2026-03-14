@@ -233,8 +233,8 @@ stateVersionsRoute.post(
       }
     }
 
-    // Build S3 key
-    const s3Key = buildS3Key(wsId, attrs.serial)
+    // Build S3 key with org prefix for isolation
+    const s3Key = buildS3Key(ws.orgId, wsId, attrs.serial)
 
     // Create state version record
     const sv = await createStateVersion({
@@ -580,13 +580,28 @@ stateUploadRoute.put(
       )
     }
 
+    // Get workspace and org for KMS key
+    const ws = await findWorkspaceById(sv.workspaceId)
+    if (!ws) {
+      log.error("State upload failed: workspace not found", {
+        stateVersionId: svId,
+        workspaceId: sv.workspaceId,
+      })
+      return c.json({ errors: [{ status: "500", title: "Workspace not found" }] }, 500)
+    }
+
+    // Get org's KMS key for encryption
+    const { findOrgById } = await import("../../db/queries/organizations.ts")
+    const org = await findOrgById(ws.orgId)
+    const kmsKeyArn = org?.kmsKeyArn ?? undefined
+
     // Read body as bytes
     const body = await c.req.arrayBuffer()
     const content = new Uint8Array(body)
 
-    // Upload to S3, validating MD5
+    // Upload to S3, validating MD5 and using org's KMS key
     try {
-      const { size, md5 } = await uploadState(sv.s3Key, content, sv.md5)
+      const { size, md5 } = await uploadState(sv.s3Key, content, sv.md5, kmsKeyArn)
 
       // Verify MD5 matches what was declared at creation
       if (md5 !== sv.md5) {

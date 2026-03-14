@@ -1,21 +1,32 @@
 import { EventEmitter } from "node:events"
 
 import { getSseEventsEmittedCounter } from "./telemetry.ts"
+import type { EnvironmentKind } from "./config-toml.ts"
 
 export interface RunUpdateEvent {
   runId: string
+  deploymentId: string
+  /** @deprecated Use deploymentId */
   previewId: string
 }
 
-export interface PreviewUpdateEvent {
-  previewId: string
+/**
+ * Event type with environment-based identification.
+ */
+export interface DeploymentUpdateEvent {
+  deploymentId: string
   orgId: string
   repo: string
-  prNumber: number
+  environmentKind: EnvironmentKind
+  environmentName: string
+  /** @deprecated For backward compatibility with old listeners */
+  previewId: string
 }
 
 export interface JobUpdateEvent {
   jobId: string
+  deploymentId: string
+  /** @deprecated Use deploymentId */
   previewId: string
 }
 
@@ -27,16 +38,35 @@ class YaffleEvents extends EventEmitter {
     this.setMaxListeners(100)
   }
 
-  emitRunUpdate(runId: string, previewId: string): void {
-    console.log(`[events] emitRunUpdate: runId=${runId} previewId=${previewId} listeners=${this.listenerCount("run:update")}`)
+  emitRunUpdate(runId: string, deploymentId: string): void {
+    console.log(`[events] emitRunUpdate: runId=${runId} deploymentId=${deploymentId} listeners=${this.listenerCount("run:update")}`)
     getSseEventsEmittedCounter().add(1, { type: "run_update" })
-    this.emit("run:update", { runId, previewId })
+    this.emit("run:update", { runId, deploymentId, previewId: deploymentId })
   }
 
-  emitPreviewUpdate(previewId: string, orgId: string, repo: string, prNumber: number): void {
-    console.log(`[events] emitPreviewUpdate: previewId=${previewId} prNumber=${prNumber} listeners=${this.listenerCount("preview:update")}`)
-    getSseEventsEmittedCounter().add(1, { type: "preview_update" })
-    this.emit("preview:update", { previewId, orgId, repo, prNumber })
+  /**
+   * Emit deployment update event with environment-based identification.
+   */
+  emitDeploymentUpdate(
+    deploymentId: string,
+    orgId: string,
+    repo: string,
+    environmentKind: EnvironmentKind,
+    environmentName: string,
+  ): void {
+    console.log(`[events] emitDeploymentUpdate: deploymentId=${deploymentId} env=${environmentName} listeners=${this.listenerCount("deployment:update")}`)
+    getSseEventsEmittedCounter().add(1, { type: "deployment_update" })
+
+    // Emit new event
+    this.emit("deployment:update", {
+      deploymentId,
+      orgId,
+      repo,
+      environmentKind,
+      environmentName,
+      previewId: deploymentId, // backward compat
+    } satisfies DeploymentUpdateEvent)
+
   }
 
   onRunUpdate(handler: (event: RunUpdateEvent) => void): void {
@@ -49,19 +79,20 @@ class YaffleEvents extends EventEmitter {
     console.log(`[events] offRunUpdate: now have ${this.listenerCount("run:update")} listeners`)
   }
 
-  onPreviewUpdate(handler: (event: PreviewUpdateEvent) => void): void {
-    this.on("preview:update", handler)
+  onDeploymentUpdate(handler: (event: DeploymentUpdateEvent) => void): void {
+    this.on("deployment:update", handler)
+    console.log(`[events] onDeploymentUpdate: now have ${this.listenerCount("deployment:update")} listeners`)
   }
 
-  offPreviewUpdate(handler: (event: PreviewUpdateEvent) => void): void {
-    this.off("preview:update", handler)
-    console.log(`[events] offPreviewUpdate: now have ${this.listenerCount("preview:update")} listeners`)
+  offDeploymentUpdate(handler: (event: DeploymentUpdateEvent) => void): void {
+    this.off("deployment:update", handler)
+    console.log(`[events] offDeploymentUpdate: now have ${this.listenerCount("deployment:update")} listeners`)
   }
 
-  emitJobUpdate(jobId: string, previewId: string): void {
-    console.log(`[events] emitJobUpdate: jobId=${jobId} previewId=${previewId} listeners=${this.listenerCount("job:update")}`)
+  emitJobUpdate(jobId: string, deploymentId: string): void {
+    console.log(`[events] emitJobUpdate: jobId=${jobId} deploymentId=${deploymentId} listeners=${this.listenerCount("job:update")}`)
     getSseEventsEmittedCounter().add(1, { type: "job_update" })
-    this.emit("job:update", { jobId, previewId })
+    this.emit("job:update", { jobId, deploymentId, previewId: deploymentId })
   }
 
   onJobUpdate(handler: (event: JobUpdateEvent) => void): void {

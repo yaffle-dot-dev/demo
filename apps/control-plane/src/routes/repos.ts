@@ -3,13 +3,17 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
 import {
-  findPreviewsByPr,
-  findPreviewsByEnv,
-} from "../db/queries/previews.ts"
+  findDeploymentsByEnvironment,
+} from "../db/queries/workspace-deployments.ts"
 import { listRunsForPreview, findLatestRun } from "../db/queries/tf-runs.ts"
-import { listRunGroupsForPr, listRunGroupsForBranch, type RunGroup } from "../db/queries/run-groups.ts"
+import {
+  listRunGroupsForPr,
+  listRunGroupsForBranch,
+  listRunGroupsForEnvironment,
+  type RunGroup,
+} from "../db/queries/run-groups.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
-import { events, type PreviewUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
+import { events, type DeploymentUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
 import {
   getSseSnapshotDurationHistogram,
   getSsePayloadBytesHistogram,
@@ -50,23 +54,24 @@ reposRoute.get(
     }
     const prNumber = prParsed.data
 
-    const previews = await findPreviewsByPr(auth.orgId, repo, prNumber)
+    const environmentName = `pr-${prNumber}`
+    const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
 
-    if (previews.length === 0) {
+    if (deployments.length === 0) {
       return c.json(
         { error: { code: "NOT_FOUND", message: `no previews found for PR #${prNumber}` } },
         404,
       )
     }
 
-    // Fetch runs for each preview
-    const previewsWithRuns = await Promise.all(
-      previews.map(async (preview) => {
-        const runs = await listRunsForPreview(preview.id)
-        const latestApply = await findLatestRun(preview.id, "apply")
+    // Fetch runs for each deployment
+    const deploymentsWithRuns = await Promise.all(
+      deployments.map(async (deployment) => {
+        const runs = await listRunsForPreview(deployment.id)
+        const latestApply = await findLatestRun(deployment.id, "apply")
         const outputs = latestApply?.status === "success" ? latestApply.outputs : null
         return {
-          preview: serializePreview(preview),
+          preview: serializePreview(deployment),
           runs: runs.map(serializeRun),
           outputs,
         }
@@ -76,8 +81,8 @@ reposRoute.get(
     // Fetch run groups for this PR
     const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
 
-    // Get metadata from first preview
-    const first = previews[0]
+    // Get metadata from first deployment
+    const first = deployments[0]
 
     return c.json({
       data: {
@@ -88,7 +93,7 @@ reposRoute.get(
         headSha: first.headSha,
         authorGithubId: first.authorGithubId,
         authorLogin: first.authorLogin,
-        workspaces: previewsWithRuns,
+        workspaces: deploymentsWithRuns,
         runGroups: runGroupsData.map(serializeRunGroup),
       },
     })
@@ -119,6 +124,8 @@ reposRoute.get(
     }
     const prNumber = prParsed.data
 
+    const environmentName = `pr-${prNumber}`
+
     return streamSSE(c, async (stream) => {
       getSseConnectionsActiveCounter().add(1, { type: "pr" })
       let lastPayload = ""
@@ -136,9 +143,9 @@ reposRoute.get(
 
         try {
           const startTime = performance.now()
-          const previews = await findPreviewsByPr(auth.orgId, repo, prNumber)
+          const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
 
-          if (previews.length === 0) {
+          if (deployments.length === 0) {
             const emptyPayload = JSON.stringify({ data: null })
             if (emptyPayload !== lastPayload) {
               lastPayload = emptyPayload
@@ -147,13 +154,13 @@ reposRoute.get(
             return
           }
 
-          const previewsWithRuns = await Promise.all(
-            previews.map(async (preview) => {
-              const runs = await listRunsForPreview(preview.id)
-              const latestApply = await findLatestRun(preview.id, "apply")
+          const deploymentsWithRuns = await Promise.all(
+            deployments.map(async (deployment) => {
+              const runs = await listRunsForPreview(deployment.id)
+              const latestApply = await findLatestRun(deployment.id, "apply")
               const outputs = latestApply?.status === "success" ? latestApply.outputs : null
               return {
-                preview: serializePreview(preview),
+                preview: serializePreview(deployment),
                 runs: runs.map(serializeRun),
                 outputs,
               }
@@ -166,10 +173,10 @@ reposRoute.get(
           const queryDuration = performance.now() - startTime
           getSseSnapshotDurationHistogram().record(queryDuration, {
             type: "pr",
-            workspace_count: String(previewsWithRuns.length),
+            workspace_count: String(deploymentsWithRuns.length),
           })
 
-          const first = previews[0]
+          const first = deployments[0]
           const payload = JSON.stringify({
             data: {
               org: c.req.param("org"),
@@ -179,7 +186,7 @@ reposRoute.get(
               headSha: first.headSha,
               authorGithubId: first.authorGithubId,
               authorLogin: first.authorLogin,
-              workspaces: previewsWithRuns,
+              workspaces: deploymentsWithRuns,
               runGroups: runGroupsData.map(serializeRunGroup),
             },
           })
@@ -188,7 +195,7 @@ reposRoute.get(
             lastPayload = payload
             getSsePayloadBytesHistogram().record(payload.length, { type: "pr" })
             getSseMessagesSentCounter().add(1, { type: "snapshot" })
-            console.log(`[sse:pr] sending update: workspaces=${previewsWithRuns.length} payloadLen=${payload.length}`)
+            console.log(`[sse:pr] sending update: workspaces=${deploymentsWithRuns.length} payloadLen=${payload.length}`)
             await stream.writeSSE({ event: "update", data: payload })
           } else {
             getSseMessagesDedupedCounter().add(1, { type: "pr" })
@@ -208,34 +215,34 @@ reposRoute.get(
       console.log(`[sse:pr] sending initial snapshot for PR #${prNumber}`)
       await sendSnapshot()
 
-      // Track preview IDs for this PR to filter events
-      let previewIds = new Set<string>()
-      const updatePreviewIds = async (): Promise<void> => {
-        const previews = await findPreviewsByPr(auth.orgId, repo, prNumber)
-        previewIds = new Set(previews.map((p) => p.id))
-        console.log(`[sse:pr] updatePreviewIds: found ${previewIds.size} previews`)
+      // Track deployment IDs for this PR to filter events
+      let deploymentIds = new Set<string>()
+      const updateDeploymentIds = async (): Promise<void> => {
+        const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+        deploymentIds = new Set(deployments.map((d) => d.id))
+        console.log(`[sse:pr] updateDeploymentIds: found ${deploymentIds.size} deployments`)
       }
-      await updatePreviewIds()
+      await updateDeploymentIds()
 
-      // Listen for preview updates matching this PR
-      const handlePreviewUpdate = (event: PreviewUpdateEvent): void => {
-        console.log(`[sse:pr] handlePreviewUpdate: previewId=${event.previewId} matches=${event.orgId === auth.orgId && event.repo === repo && event.prNumber === prNumber}`)
-        if (event.orgId === auth.orgId && event.repo === repo && event.prNumber === prNumber) {
-          updatePreviewIds()
+      // Listen for deployment updates matching this environment
+      const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
+        console.log(`[sse:pr] handleDeploymentUpdate: deploymentId=${event.deploymentId} matches=${event.orgId === auth.orgId && event.repo === repo && event.environmentName === environmentName}`)
+        if (event.orgId === auth.orgId && event.repo === repo && event.environmentName === environmentName) {
+          updateDeploymentIds()
             .then(() => sendSnapshot())
-            .catch((err) => console.error(`[sse:pr] error in handlePreviewUpdate:`, err))
+            .catch((err) => console.error(`[sse:pr] error in handleDeploymentUpdate:`, err))
         }
       }
 
-      // Listen for run updates for any preview in this PR
+      // Listen for run updates for any deployment in this PR
       const handleRunUpdate = (event: RunUpdateEvent): void => {
-        console.log(`[sse:pr] handleRunUpdate: previewId=${event.previewId} inSet=${previewIds.has(event.previewId)} setSize=${previewIds.size}`)
-        if (previewIds.has(event.previewId)) {
+        console.log(`[sse:pr] handleRunUpdate: deploymentId=${event.deploymentId} inSet=${deploymentIds.has(event.deploymentId)} setSize=${deploymentIds.size}`)
+        if (deploymentIds.has(event.deploymentId)) {
           sendSnapshot().catch((err) => console.error(`[sse:pr] error in handleRunUpdate:`, err))
         }
       }
 
-      events.onPreviewUpdate(handlePreviewUpdate)
+      events.onDeploymentUpdate(handleDeploymentUpdate)
       events.onRunUpdate(handleRunUpdate)
       console.log(`[sse:pr] connected: PR #${prNumber}`)
 
@@ -253,7 +260,7 @@ reposRoute.get(
           console.log(`[sse:pr] onAbort called: PR #${prNumber}`)
           getSseConnectionsActiveCounter().add(-1, { type: "pr" })
           clearInterval(heartbeat)
-          events.offPreviewUpdate(handlePreviewUpdate)
+          events.offDeploymentUpdate(handleDeploymentUpdate)
           events.offRunUpdate(handleRunUpdate)
           resolve()
         })
@@ -282,23 +289,24 @@ reposRoute.get(
       return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and branch are required" } }, 400)
     }
 
-    const previews = await findPreviewsByEnv(auth.orgId, repo, branch)
+    // For legacy env routes, branch name is the environment name
+    const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, branch)
 
-    if (previews.length === 0) {
+    if (deployments.length === 0) {
       return c.json(
         { error: { code: "NOT_FOUND", message: `no previews found for branch ${branch}` } },
         404,
       )
     }
 
-    // Fetch runs for each preview
-    const previewsWithRuns = await Promise.all(
-      previews.map(async (preview) => {
-        const runs = await listRunsForPreview(preview.id)
-        const latestApply = await findLatestRun(preview.id, "apply")
+    // Fetch runs for each deployment
+    const deploymentsWithRuns = await Promise.all(
+      deployments.map(async (deployment) => {
+        const runs = await listRunsForPreview(deployment.id)
+        const latestApply = await findLatestRun(deployment.id, "apply")
         const outputs = latestApply?.status === "success" ? latestApply.outputs : null
         return {
-          preview: serializePreview(preview),
+          preview: serializePreview(deployment),
           runs: runs.map(serializeRun),
           outputs,
         }
@@ -308,7 +316,7 @@ reposRoute.get(
     // Fetch run groups for this branch
     const runGroupsData = await listRunGroupsForBranch(auth.orgId, repo, branch)
 
-    const first = previews[0]
+    const first = deployments[0]
 
     return c.json({
       data: {
@@ -316,7 +324,7 @@ reposRoute.get(
         repo,
         branch,
         headSha: first.headSha,
-        workspaces: previewsWithRuns,
+        workspaces: deploymentsWithRuns,
         runGroups: runGroupsData.map(serializeRunGroup),
       },
     })
@@ -339,6 +347,9 @@ reposRoute.get(
       return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and branch are required" } }, 400)
     }
 
+    // For legacy env routes, branch name is the environment name
+    const environmentName = branch
+
     return streamSSE(c, async (stream) => {
       getSseConnectionsActiveCounter().add(1, { type: "env" })
       let lastPayload = ""
@@ -356,9 +367,9 @@ reposRoute.get(
 
         try {
           const startTime = performance.now()
-          const previews = await findPreviewsByEnv(auth.orgId, repo, branch)
+          const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
 
-          if (previews.length === 0) {
+          if (deployments.length === 0) {
             const emptyPayload = JSON.stringify({ data: null })
             if (emptyPayload !== lastPayload) {
               lastPayload = emptyPayload
@@ -367,13 +378,13 @@ reposRoute.get(
             return
           }
 
-          const previewsWithRuns = await Promise.all(
-            previews.map(async (preview) => {
-              const runs = await listRunsForPreview(preview.id)
-              const latestApply = await findLatestRun(preview.id, "apply")
+          const deploymentsWithRuns = await Promise.all(
+            deployments.map(async (deployment) => {
+              const runs = await listRunsForPreview(deployment.id)
+              const latestApply = await findLatestRun(deployment.id, "apply")
               const outputs = latestApply?.status === "success" ? latestApply.outputs : null
               return {
-                preview: serializePreview(preview),
+                preview: serializePreview(deployment),
                 runs: runs.map(serializeRun),
                 outputs,
               }
@@ -386,17 +397,17 @@ reposRoute.get(
           const queryDuration = performance.now() - startTime
           getSseSnapshotDurationHistogram().record(queryDuration, {
             type: "env",
-            workspace_count: String(previewsWithRuns.length),
+            workspace_count: String(deploymentsWithRuns.length),
           })
 
-          const first = previews[0]
+          const first = deployments[0]
           const payload = JSON.stringify({
             data: {
               org: c.req.param("org"),
               repo,
               branch,
               headSha: first.headSha,
-              workspaces: previewsWithRuns,
+              workspaces: deploymentsWithRuns,
               runGroups: runGroupsData.map(serializeRunGroup),
             },
           })
@@ -421,31 +432,31 @@ reposRoute.get(
       // Send initial snapshot
       await sendSnapshot()
 
-      // Track preview IDs for this env to filter events
-      let previewIds = new Set<string>()
-      const updatePreviewIds = async (): Promise<void> => {
-        const previews = await findPreviewsByEnv(auth.orgId, repo, branch)
-        previewIds = new Set(previews.map((p) => p.id))
+      // Track deployment IDs for this env to filter events
+      let deploymentIds = new Set<string>()
+      const updateDeploymentIds = async (): Promise<void> => {
+        const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+        deploymentIds = new Set(deployments.map((d) => d.id))
       }
-      await updatePreviewIds()
+      await updateDeploymentIds()
 
-      // Listen for preview updates matching this env (prNumber=0 for envs)
-      const handlePreviewUpdate = (event: PreviewUpdateEvent): void => {
-        if (event.orgId === auth.orgId && event.repo === repo && event.prNumber === 0) {
-          updatePreviewIds()
+      // Listen for deployment updates matching this environment
+      const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
+        if (event.orgId === auth.orgId && event.repo === repo && event.environmentName === environmentName) {
+          updateDeploymentIds()
             .then(() => sendSnapshot())
-            .catch((err) => console.error(`[sse:env] error in handlePreviewUpdate:`, err))
+            .catch((err) => console.error(`[sse:env] error in handleDeploymentUpdate:`, err))
         }
       }
 
-      // Listen for run updates for any preview in this env
+      // Listen for run updates for any deployment in this env
       const handleRunUpdate = (event: RunUpdateEvent): void => {
-        if (previewIds.has(event.previewId)) {
+        if (deploymentIds.has(event.deploymentId)) {
           sendSnapshot().catch((err) => console.error(`[sse:env] error in handleRunUpdate:`, err))
         }
       }
 
-      events.onPreviewUpdate(handlePreviewUpdate)
+      events.onDeploymentUpdate(handleDeploymentUpdate)
       events.onRunUpdate(handleRunUpdate)
       console.log(`[sse:env] connected: ${branch}`)
 
@@ -462,7 +473,214 @@ reposRoute.get(
           console.log(`[sse:env] onAbort called: ${branch}`)
           getSseConnectionsActiveCounter().add(-1, { type: "env" })
           clearInterval(heartbeat)
-          events.offPreviewUpdate(handlePreviewUpdate)
+          events.offDeploymentUpdate(handleDeploymentUpdate)
+          events.offRunUpdate(handleRunUpdate)
+          resolve()
+        })
+      })
+    })
+  },
+)
+
+// ---------------------------------------------------------------------------
+// Unified Environment Route (replaces both PR and branch routes)
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/orgs/:org/repos/:repo/environment/:name
+ *
+ * Unified endpoint for all deployments in an environment.
+ * Works for both PR environments (e.g., "pr-123") and named environments (e.g., "main").
+ */
+reposRoute.get(
+  "/:org/repos/:repo/environment/:name",
+  requireOrgAccess({ orgSource: "param", orgKey: "org" }),
+  async (c) => {
+    const auth = getAuth(c)
+    const repo = c.req.param("repo")
+    const environmentName = c.req.param("name")
+    if (!repo || !environmentName) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and environment name are required" } }, 400)
+    }
+
+    const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+
+    if (deployments.length === 0) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `no deployments found for environment ${environmentName}` } },
+        404,
+      )
+    }
+
+    // Fetch runs for each deployment
+    const deploymentsWithRuns = await Promise.all(
+      deployments.map(async (deployment) => {
+        const runs = await listRunsForPreview(deployment.id)
+        const latestApply = await findLatestRun(deployment.id, "apply")
+        const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+        return {
+          preview: serializePreview(deployment),
+          runs: runs.map(serializeRun),
+          outputs,
+        }
+      }),
+    )
+
+    // Fetch run groups for this environment
+    const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
+
+    const first = deployments[0]
+
+    return c.json({
+      data: {
+        org: c.req.param("org"),
+        repo,
+        environmentKind: first.environmentKind,
+        environmentName: first.environmentName,
+        branch: first.branch,
+        headSha: first.headSha,
+        prNumber: first.prNumber,
+        authorGithubId: first.authorGithubId,
+        authorLogin: first.authorLogin,
+        workspaces: deploymentsWithRuns,
+        runGroups: runGroupsData.map(serializeRunGroup),
+      },
+    })
+  },
+)
+
+/**
+ * GET /api/orgs/:org/repos/:repo/environment/:name/stream
+ *
+ * Unified SSE stream for environment updates (all workspaces).
+ */
+reposRoute.get(
+  "/:org/repos/:repo/environment/:name/stream",
+  requireOrgAccess({ orgSource: "param", orgKey: "org", allowQueryToken: true }),
+  async (c) => {
+    const auth = getAuth(c)
+    const repo = c.req.param("repo")
+    const environmentName = c.req.param("name")
+    if (!repo || !environmentName) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and environment name are required" } }, 400)
+    }
+
+    return streamSSE(c, async (stream) => {
+      getSseConnectionsActiveCounter().add(1, { type: "environment" })
+      let lastPayload = ""
+      let inFlight = false
+      let pendingUpdate = false
+
+      const sendSnapshot = async (): Promise<void> => {
+        if (inFlight) {
+          pendingUpdate = true
+          return
+        }
+        inFlight = true
+
+        try {
+          const start = Date.now()
+          const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+          const deploymentsWithRuns = await Promise.all(
+            deployments.map(async (deployment) => {
+              const runs = await listRunsForPreview(deployment.id)
+              const latestApply = await findLatestRun(deployment.id, "apply")
+              const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+              return {
+                preview: serializePreview(deployment),
+                runs: runs.map(serializeRun),
+                outputs,
+              }
+            }),
+          )
+
+          const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
+
+          const elapsed = Date.now() - start
+          getSseSnapshotDurationHistogram().record(elapsed, { type: "environment" })
+
+          const first = deployments[0]
+          const payload = JSON.stringify({
+            data: {
+              org: c.req.param("org"),
+              repo,
+              environmentKind: first?.environmentKind ?? "named",
+              environmentName,
+              branch: first?.branch ?? environmentName,
+              headSha: first?.headSha ?? "",
+              prNumber: first?.prNumber ?? null,
+              authorGithubId: first?.authorGithubId ?? null,
+              authorLogin: first?.authorLogin ?? null,
+              workspaces: deploymentsWithRuns,
+              runGroups: runGroupsData.map(serializeRunGroup),
+            },
+          })
+
+          if (payload !== lastPayload) {
+            lastPayload = payload
+            getSsePayloadBytesHistogram().record(payload.length, { type: "environment" })
+            getSseMessagesSentCounter().add(1, { type: "snapshot" })
+            await stream.writeSSE({ event: "update", data: payload })
+          } else {
+            getSseMessagesDedupedCounter().add(1, { type: "environment" })
+          }
+        } finally {
+          inFlight = false
+          if (pendingUpdate) {
+            pendingUpdate = false
+            await sendSnapshot()
+          }
+        }
+      }
+
+      // Send initial snapshot
+      await sendSnapshot()
+
+      // Track deployment IDs for this environment to filter events
+      let deploymentIds = new Set<string>()
+      const updateDeploymentIds = async (): Promise<void> => {
+        const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+        deploymentIds = new Set(deployments.map((d) => d.id))
+      }
+      await updateDeploymentIds()
+
+      // Listen for deployment updates matching this environment
+      const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
+        if (
+          event.orgId === auth.orgId &&
+          event.repo === repo &&
+          event.environmentName === environmentName
+        ) {
+          updateDeploymentIds()
+            .then(() => sendSnapshot())
+            .catch((err) => console.error(`[sse:environment] error in handleDeploymentUpdate:`, err))
+        }
+      }
+
+      // Listen for run updates for any deployment in this environment
+      const handleRunUpdate = (event: RunUpdateEvent): void => {
+        if (deploymentIds.has(event.previewId)) {
+          sendSnapshot().catch((err) => console.error(`[sse:environment] error in handleRunUpdate:`, err))
+        }
+      }
+
+      events.onDeploymentUpdate(handleDeploymentUpdate)
+      events.onRunUpdate(handleRunUpdate)
+      console.log(`[sse:environment] connected: ${environmentName}`)
+
+      // Heartbeat to keep connection alive
+      const heartbeat = setInterval(() => {
+        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+          .catch(() => { /* connection likely closed */ })
+      }, 30_000)
+
+      // Block until client disconnects
+      await new Promise<void>((resolve) => {
+        stream.onAbort(() => {
+          console.log(`[sse:environment] onAbort called: ${environmentName}`)
+          getSseConnectionsActiveCounter().add(-1, { type: "environment" })
+          clearInterval(heartbeat)
+          events.offDeploymentUpdate(handleDeploymentUpdate)
           events.offRunUpdate(handleRunUpdate)
           resolve()
         })
@@ -507,7 +725,7 @@ function serializePreview(p: {
 
 interface SerializedRun {
   id: string
-  previewId: string
+  deploymentId: string
   runGroupId: string | null
   runType: string
   status: string
@@ -523,7 +741,7 @@ interface SerializedRun {
 
 function serializeRun(r: {
   id: string
-  previewId: string
+  deploymentId: string
   runGroupId: string | null
   runType: string
   status: string
@@ -538,7 +756,7 @@ function serializeRun(r: {
 }): SerializedRun {
   return {
     id: r.id,
-    previewId: r.previewId,
+    deploymentId: r.deploymentId,
     runGroupId: r.runGroupId,
     runType: r.runType,
     status: r.status,

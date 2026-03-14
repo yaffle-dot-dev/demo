@@ -15,7 +15,6 @@ variable "domain" {
 variable "environment" {
   type        = string
   description = "Environment name (unused in shared, but passed by Yaffle)"
-  default     = "shared"
 }
 
 variable "cloudflare_zone_id" {

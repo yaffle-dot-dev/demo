@@ -1,0 +1,171 @@
+---
+title: AWS Setup
+description: Connect your AWS account to Yaffle
+---
+
+import { Aside, Steps, Code } from '@astrojs/starlight/components';
+
+Yaffle uses IAM role assumption to access your AWS account. No long-lived credentials are stored. You deploy a small bootstrap module that creates the necessary IAM role, then Yaffle assumes that role to run OpenTofu.
+
+## Quick start
+
+<Steps>
+1. **Deploy the bootstrap module** in your AWS account:
+
+   ```hcl title="yaffle-bootstrap.tf"
+   module "yaffle" {
+     source  = "yaffle.dev/yaffle-bootstrap/aws"
+     version = "~> 1.0"
+
+     # Your Yaffle organization ID (from Settings)
+     organization_id = "org_abc123"
+   }
+
+   output "role_arn" {
+     value = module.yaffle.role_arn
+   }
+   ```
+
+2. **Apply the module**:
+
+   ```bash
+   tofu init
+   tofu apply
+   ```
+
+3. **Add the connection** in Yaffle: **Settings > Connections > Add AWS**
+
+   Paste the `role_arn` output from step 2.
+</Steps>
+
+That's it. Yaffle can now run OpenTofu in your account.
+
+## What the bootstrap module creates
+
+The module creates a single IAM role with a trust policy allowing Yaffle to assume it:
+
+```hcl
+# Created by yaffle-bootstrap module
+resource "aws_iam_role" "yaffle" {
+  name = "YaffleRunner"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        AWS = "arn:aws:iam::${var.yaffle_account_id}:root"
+      }
+      Action = "sts:AssumeRole"
+      Condition = {
+        StringEquals = {
+          "sts:ExternalId" = var.organization_id
+        }
+      }
+    }]
+  })
+}
+```
+
+By default, the role has `AdministratorAccess`. You can scope this down.
+
+## Scoping permissions
+
+For production, restrict what Yaffle can do:
+
+```hcl title="yaffle-bootstrap.tf"
+module "yaffle" {
+  source  = "yaffle.dev/yaffle-bootstrap/aws"
+  version = "~> 1.0"
+
+  organization_id = "org_abc123"
+
+  # Use a custom policy instead of AdministratorAccess
+  attach_admin_policy = false
+  policy_arns = [
+    aws_iam_policy.yaffle_custom.arn
+  ]
+}
+
+resource "aws_iam_policy" "yaffle_custom" {
+  name = "YaffleCustomPolicy"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ManageS3"
+        Effect = "Allow"
+        Action = ["s3:*"]
+        Resource = [
+          "arn:aws:s3:::myapp-*",
+          "arn:aws:s3:::myapp-*/*"
+        ]
+      },
+      {
+        Sid    = "ManageRDS"
+        Effect = "Allow"
+        Action = ["rds:*"]
+        Resource = "arn:aws:rds:*:*:db:myapp-*"
+      }
+    ]
+  })
+}
+```
+
+<Aside type="tip">
+Start with broad permissions, then use IAM Access Analyzer to scope down based on actual usage.
+</Aside>
+
+## Separate accounts for preview vs production
+
+Use different AWS accounts for isolation:
+
+```toml title="yaffle.toml"
+[[workspaces]]
+path = "infra"
+environments = ["production"]
+connection = "aws-production"
+
+[[workspaces]]
+path = "infra"
+environments = ["staging", "preview"]
+connection = "aws-nonprod"
+```
+
+Deploy the bootstrap module in each account, then add both connections in Yaffle.
+
+Benefits:
+- **Complete isolation** - preview resources can't affect production
+- **Separate billing** - track preview costs independently
+- **Easy cleanup** - nuke the entire preview account if needed
+
+## Multiple regions
+
+The bootstrap module creates a role, not region-specific resources. Your OpenTofu configures which regions to use:
+
+```hcl
+provider "aws" {
+  region = var.aws_region
+}
+```
+
+Yaffle passes the assumed role credentials to your OpenTofu, which works in any region.
+
+## Troubleshooting
+
+**"Access Denied" when assuming role**
+
+- Verify the `organization_id` matches your Yaffle org
+- Check the role ARN is correct in Yaffle connection settings
+- Ensure the bootstrap module was applied successfully
+
+**"Role does not exist"**
+
+- Run `terraform apply` on the bootstrap module
+- Check the AWS account ID matches where you deployed
+
+**Permission errors during plan/apply**
+
+- The role exists but lacks permissions for what your OpenTofu creates
+- Add the necessary IAM permissions to the role (see "Scoping permissions")

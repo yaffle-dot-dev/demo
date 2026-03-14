@@ -75,14 +75,14 @@ export async function appendRunLog(
 }
 
 /**
- * Find the latest run for a preview, optionally filtered by type.
+ * Find the latest run for a deployment, optionally filtered by type.
  */
 export async function findLatestRun(
-  previewId: string,
+  deploymentId: string,
   runType?: RunType,
 ): Promise<TfRun | undefined> {
   return withDbSpan("select", "tf_runs", async () => {
-    const conditions = [eq(tfRuns.previewId, previewId)]
+    const conditions = [eq(tfRuns.deploymentId, deploymentId)]
     if (runType) {
       conditions.push(eq(tfRuns.runType, runType))
     }
@@ -99,17 +99,20 @@ export async function findLatestRun(
 }
 
 /**
- * List all runs for a preview.
+ * List all runs for a deployment.
  */
-export async function listRunsForPreview(previewId: string): Promise<TfRun[]> {
+export async function listRunsForDeployment(deploymentId: string): Promise<TfRun[]> {
   return withDbSpan("select", "tf_runs", async () => {
     return db
       .select()
       .from(tfRuns)
-      .where(eq(tfRuns.previewId, previewId))
+      .where(eq(tfRuns.deploymentId, deploymentId))
       .orderBy(desc(tfRuns.createdAt))
   })
 }
+
+// Alias for backward compatibility
+export const listRunsForPreview = listRunsForDeployment
 
 /**
  * Find a single run by its UUID.

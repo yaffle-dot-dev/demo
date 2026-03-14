@@ -313,7 +313,7 @@ export class Scheduler {
         workerId: this.workerId,
         jobId: job.id,
         jobType: job.jobType,
-        previewId: job.previewId,
+        deploymentId: job.deploymentId,
       })
 
       await this.spawner.spawn(job.id)

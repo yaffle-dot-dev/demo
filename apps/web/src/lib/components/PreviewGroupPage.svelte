@@ -127,8 +127,10 @@
   }
 
   // Follow mode: auto-follow the running workspace unless user manually selected one
-  // Starts true, becomes false when user clicks a workspace
-  let followMode = $state(true)
+  // Starts false if there's a ws param in URL (user navigated to specific workspace)
+  // Otherwise starts true to follow running workspaces
+  const initialWsParam = $page.url.searchParams.get("ws")
+  let followMode = $state(!initialWsParam)
 
   // Track the last run group ID to detect run group changes
   let lastSeenRunGroupId: string | null = null
@@ -184,12 +186,17 @@
   })
 
   // Re-enable follow mode when switching to a new run group
+  // But not if user navigated with a specific workspace in the URL
   $effect(() => {
     const currentRunGroupId = viewedRunGroup?.id ?? null
+    const hasWsParam = $page.url.searchParams.has("ws")
     if (currentRunGroupId && currentRunGroupId !== lastSeenRunGroupId) {
       lastSeenRunGroupId = currentRunGroupId
       // Re-enable follow mode and clear last followed path on run group change
-      followMode = true
+      // But respect the URL param if the user navigated to a specific workspace
+      if (!hasWsParam) {
+        followMode = true
+      }
       lastFollowedPath = null
     }
   })
@@ -235,14 +242,15 @@
   const latestApply = $derived(
     visibleRuns.find((r: Run) => r.runType === "apply") ?? undefined,
   )
-  // Show outputs tab if apply succeeded or was skipped
-  const hasOutputs = $derived(
-    latestApply?.status === "success" || latestApply?.status === "skipped"
-  )
-
-  // Get the outputs to display - prefer current apply's outputs, fall back to workspace outputs
+  // Show outputs tab if we have outputs to display
+  // - From current apply (success or skipped)
+  // - Or from workspace's stored outputs (from a previous successful apply)
   const displayOutputs = $derived(
     latestApply?.outputs ?? selectedWorkspace?.outputs
+  )
+  const hasOutputs = $derived(
+    (latestApply?.status === "success" || latestApply?.status === "skipped") ||
+    (displayOutputs != null && Object.keys(displayOutputs as object).length > 0)
   )
 
   // Available tabs based on what data exists

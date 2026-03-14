@@ -1,0 +1,78 @@
+---
+title: Yaffle Docs
+description: The OpenTofu platform that runs your infrastructure from PR to production
+---
+
+import { Card, CardGrid, LinkCard } from "@astrojs/starlight/components"
+
+Run OpenTofu from PR to production. Previews included.
+
+## One platform, full lifecycle
+
+```
+PR opened → Plan → Apply preview → Test it → Merge → Apply production
+```
+
+Yaffle manages your OpenTofu from development to production. State management, remote execution, PR workflows, and preview environments—all in one platform.
+
+Built on [OpenTofu](https://opentofu.org), the open-source fork of Terraform under MPL 2.0. No BSL licensing concerns—run infrastructure automation without vendor lock-in.
+
+<CardGrid>
+  <Card title="Remote execution" icon="rocket">
+    Run plans and applies in secure, isolated containers. No local credentials needed.
+  </Card>
+  <Card title="State management" icon="seti:folder">
+    Encrypted state storage with locking. Per-environment isolation out of the box.
+  </Card>
+  <Card title="PR workflows" icon="github">
+    Plans on every commit. Approvals, checks, and applies tied to your Git workflow.
+  </Card>
+  <Card title="Preview environments" icon="approve-check">
+    Every PR gets real infrastructure. Test before you merge, not after.
+  </Card>
+</CardGrid>
+
+## Simple configuration
+
+```toml
+# yaffle.toml
+version = 1
+
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+
+[[triggers.github.push]]
+branch = "main"
+environment = "production"
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+```
+
+Push to `main` → applies to production.  
+Push to `staging` → applies to staging.  
+Open a PR → creates a preview you can actually use.
+
+## Why Yaffle
+
+- **OpenTofu native** — Built on MPL 2.0 licensed OpenTofu, compatible with existing Terraform configs
+- **Replaces Terraform Cloud/Enterprise** — Remote runs, state management, team workflows
+- **Plus preview environments** — Real infrastructure for every PR, not just plans
+- **Works with any provider** — AWS, GCP, Azure, Grafana, Snowflake—if it has a provider, Yaffle runs it
+- **Outgrown Atlantis?** — All the PR automation, none of the operational overhead
+
+## Get started
+
+<CardGrid>
+  <LinkCard title="Quick Start" href="/docs/getting-started/quickstart/" description="Set up Yaffle in 5 minutes" />
+  <LinkCard title="Introduction" href="/docs/getting-started/introduction/" description="What Yaffle is and why it exists" />
+  <LinkCard title="Configuration" href="/docs/reference/configuration/" description="Full yaffle.toml reference" />
+  <LinkCard title="Migrating from Atlantis" href="/docs/guides/atlantis/" description="Upgrade from self-hosted Atlantis" />
+</CardGrid>

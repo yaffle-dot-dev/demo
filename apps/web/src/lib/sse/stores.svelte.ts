@@ -4,6 +4,8 @@ import type {
   PreviewGroup,
   PreviewStreamPayload,
   PreviewListPayload,
+  OrgStatusPayload,
+  OrgProvisioningStatus,
 } from "./types"
 import { hasActiveRun, getLatestRunGroup, getCurrentRunGroup } from "./types"
 
@@ -86,11 +88,14 @@ export class PreviewStreamStore {
 // PreviewListStore - state for org dashboard page
 // ---------------------------------------------------------------------------
 
+import type { DependencyGraph } from "$lib/api"
+
 /**
  * Reactive state store for the preview list (org dashboard).
  */
 export class PreviewListStore {
   previews = $state<Preview[]>([])
+  dependencyGraphs = $state<Record<string, DependencyGraph>>({})
   connectionState = $state<ConnectionState>("disconnected")
 
   /** Handle an SSE "update" message */
@@ -99,11 +104,47 @@ export class PreviewListStore {
     if (Array.isArray(typed.data)) {
       this.previews = typed.data
     }
+    if (typed.dependencyGraphs && typeof typed.dependencyGraphs === "object") {
+      this.dependencyGraphs = typed.dependencyGraphs
+    }
   }
 
   /** Reset all state */
   reset(): void {
     this.previews = []
+    this.dependencyGraphs = {}
+    this.connectionState = "disconnected"
+  }
+}
+
+// ---------------------------------------------------------------------------
+// OrgStatusStore - state for org provisioning status
+// ---------------------------------------------------------------------------
+
+/**
+ * Reactive state store for org provisioning status.
+ */
+export class OrgStatusStore {
+  status = $state<OrgProvisioningStatus | null>(null)
+  error = $state<string | null>(null)
+  attempts = $state<number>(0)
+  connectionState = $state<ConnectionState>("disconnected")
+
+  /** Handle an SSE "update" message */
+  handleMessage(payload: unknown): void {
+    const typed = payload as OrgStatusPayload
+    if (typed.data) {
+      this.status = typed.data.provisioningStatus
+      this.error = typed.data.provisioningError
+      this.attempts = typed.data.provisioningAttempts
+    }
+  }
+
+  /** Reset all state */
+  reset(): void {
+    this.status = null
+    this.error = null
+    this.attempts = 0
     this.connectionState = "disconnected"
   }
 }

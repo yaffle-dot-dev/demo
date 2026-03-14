@@ -17,6 +17,7 @@ import { wellKnownRoute } from "./routes/well-known.ts"
 import { tfcRoute, stateUploadRoute } from "./routes/tfc/index.ts"
 import { auth } from "./lib/better-auth.ts"
 import { startScheduler, stopScheduler } from "./lib/scheduler.ts"
+import { startJobWorker, stopJobWorker } from "./lib/job-worker.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
 await initTelemetry()
@@ -24,6 +25,10 @@ await initTelemetry()
 // Start the IaC job scheduler
 startScheduler()
 log.info("IaC job scheduler started")
+
+// Start the generic job worker (for org provisioning, etc.)
+startJobWorker()
+log.info("Job worker started")
 
 const app = new Hono()
 
@@ -89,6 +94,7 @@ log.info(`yaffle api listening on :${port}`, { port })
 process.on("SIGTERM", async () => {
   log.info("shutting down")
   stopScheduler()
+  stopJobWorker()
   await shutdownTelemetry()
   process.exit(0)
 })
@@ -96,6 +102,7 @@ process.on("SIGTERM", async () => {
 process.on("SIGINT", async () => {
   log.info("shutting down")
   stopScheduler()
+  stopJobWorker()
   await shutdownTelemetry()
   process.exit(0)
 })

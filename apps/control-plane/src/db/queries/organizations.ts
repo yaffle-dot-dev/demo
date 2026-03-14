@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm"
 import { db } from "../../lib/db.ts"
 import { organizations, githubInstallations, orgMemberships } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
+import { createJob } from "./jobs.ts"
 
 export type Organization = typeof organizations.$inferSelect
 export type NewOrganization = typeof organizations.$inferInsert
@@ -65,7 +66,18 @@ export async function createOrg(data: {
  */
 export async function updateOrg(
   id: string,
-  data: Partial<Pick<Organization, "name" | "stateBucket" | "membershipMode" | "runnerMode">>,
+  data: Partial<Pick<Organization,
+    | "name"
+    | "stateBucket"
+    | "membershipMode"
+    | "runnerMode"
+    | "kmsKeyArn"
+    | "kmsKeyAlias"
+    | "iamRoleArn"
+    | "provisioningStatus"
+    | "provisioningError"
+    | "provisioningAttempts"
+  >>,
 ): Promise<Organization | undefined> {
   return withDbSpan("update", "organizations", async () => {
     const rows = await db
@@ -240,6 +252,7 @@ export async function ensureOrgAndInstallation(data: {
         name: data.githubOrgLogin,
         slug,
         membershipMode: "github_self_join",
+        provisioningStatus: "pending",
       })
       .returning()
 
@@ -253,6 +266,16 @@ export async function ensureOrgAndInstallation(data: {
         installedAt: new Date(),
       })
       .returning()
+
+    // Queue async provisioning of AWS resources (KMS key, IAM role)
+    await createJob({
+      orgId: newOrg[0].id,
+      jobType: "org_provision",
+      payload: {
+        orgId: newOrg[0].id,
+        orgSlug: slug,
+      },
+    })
 
     return { org: newOrg[0], installation: newInstallation[0], isNew: true }
   })

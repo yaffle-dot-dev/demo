@@ -222,31 +222,37 @@ export async function updateWorkspaceCurrentState(
 
 /**
  * Build a workspace name from components.
- * Format: {environment}-{identifier}-{workspace_path_slug}
+ * Format: {repo}-{environment}-{branch}-{workspace_path}
+ *
+ * All components are slugified (special chars replaced with `-`, lowercased).
+ *
+ * The repo is included to prevent collisions between workspaces with the same
+ * path in different repositories within the same organization.
  */
 export function buildWorkspaceName(
-  environment: WorkspaceEnvironment,
-  identifier: string,
+  repo: string,
+  environment: string,
+  branch: string,
   workspacePath: string,
 ): string {
-  const pathSlug = workspacePath.replace(/\//g, "-").replace(/[^a-z0-9-]/gi, "")
-  return `${environment}-${identifier}-${pathSlug}`
+  const slugify = (s: string): string =>
+    s.toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
+
+  // Extract repo name from "owner/repo" format, or use as-is
+  const repoName = repo.includes("/") ? repo.split("/")[1] : repo
+
+  return [
+    slugify(repoName),
+    slugify(environment),
+    slugify(branch),
+    slugify(workspacePath),
+  ].join("-")
 }
 
-/**
- * Build a preview workspace name.
- */
-export function buildPreviewWorkspaceName(prNumber: number, workspacePath: string): string {
-  return buildWorkspaceName("preview", `pr-${prNumber}`, workspacePath)
-}
 
-/**
- * Build a branch workspace name (non-preview).
- * Uses the branch name as both the environment and identifier.
- */
-export function buildBranchWorkspaceName(branch: string, workspacePath: string): string {
-  return buildWorkspaceName(branch, branch, workspacePath)
-}
 
 /**
  * Find all workspaces for a PR.

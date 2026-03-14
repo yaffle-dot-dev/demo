@@ -70,7 +70,7 @@ export class LocalRunner implements Runner {
             output: "",
             errorMessage:
               `Workspace path "${opts.workspacePath}" not found in ${opts.owner}/${opts.repo} at ${shortSha}. ` +
-              "Check that the path in .yaffle/config.yml matches a directory in your repository.",
+              "Check that the path in yaffle.toml matches a directory in your repository.",
             durationMs: 0,
           }
         }
@@ -104,7 +104,7 @@ export class LocalRunner implements Runner {
           prNumber: opts.prNumber,
         })
 
-        // Inject Yaffle variables (environment, is_preview) if not declared
+        // Inject Yaffle variables (environment, environment_kind) if not declared
         await configureVariablesOverride(tfDir)
 
         return await runTerraform({

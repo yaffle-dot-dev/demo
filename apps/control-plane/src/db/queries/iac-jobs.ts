@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
-import { iacJobs, previews } from "../schema.ts"
+import { iacJobs, workspaceDeployments } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 import { events } from "../../lib/events.ts"
 
@@ -14,21 +14,28 @@ export type IacJobStatus = "queued" | "dispatched" | "running" | "completed" | "
  * Create a new IaC job in the queue.
  */
 export async function createIacJob(values: {
-  previewId: string
+  /** @deprecated Use deploymentId */
+  previewId?: string
+  deploymentId?: string
   jobType: IacJobType
 }): Promise<IacJob> {
+  const deploymentId = values.deploymentId ?? values.previewId
+  if (!deploymentId) {
+    throw new Error("Either deploymentId or previewId is required")
+  }
+
   return withDbSpan("insert", "iac_jobs", async () => {
     const rows = await db
       .insert(iacJobs)
       .values({
-        previewId: values.previewId,
+        deploymentId,
         jobType: values.jobType,
         status: "queued",
       })
       .returning()
 
     const job = rows[0]
-    events.emitJobUpdate(job.id, job.previewId)
+    events.emitJobUpdate(job.id, job.deploymentId)
     return job
   })
 }
@@ -48,17 +55,17 @@ export async function findIacJobById(id: string): Promise<IacJob | undefined> {
 }
 
 /**
- * Find the latest job for a preview by type.
+ * Find the latest job for a deployment by type.
  */
 export async function findLatestIacJob(
-  previewId: string,
+  deploymentId: string,
   jobType: IacJobType,
 ): Promise<IacJob | undefined> {
   return withDbSpan("select", "iac_jobs", async () => {
     const rows = await db
       .select()
       .from(iacJobs)
-      .where(and(eq(iacJobs.previewId, previewId), eq(iacJobs.jobType, jobType)))
+      .where(and(eq(iacJobs.deploymentId, deploymentId), eq(iacJobs.jobType, jobType)))
       .orderBy(sql`${iacJobs.queuedAt} DESC`)
       .limit(1)
     return rows[0]
@@ -133,7 +140,7 @@ export async function markJobRunning(
 
     const job = rows[0]
     if (job) {
-      events.emitJobUpdate(job.id, job.previewId)
+      events.emitJobUpdate(job.id, job.deploymentId)
     }
     return job
   })
@@ -171,7 +178,7 @@ export async function completeJob(
 
     const job = rows[0]
     if (job) {
-      events.emitJobUpdate(job.id, job.previewId)
+      events.emitJobUpdate(job.id, job.deploymentId)
     }
     return job
   })
@@ -197,7 +204,7 @@ export async function failJob(
 
     const job = rows[0]
     if (job) {
-      events.emitJobUpdate(job.id, job.previewId)
+      events.emitJobUpdate(job.id, job.deploymentId)
     }
     return job
   })
@@ -259,7 +266,7 @@ export async function requeueOrFailStaleJob(
         })
         .where(eq(iacJobs.id, jobId))
 
-      events.emitJobUpdate(job.id, job.previewId)
+      events.emitJobUpdate(job.id, job.deploymentId)
       return { requeued: false, failed: true }
     }
 
@@ -275,21 +282,36 @@ export async function requeueOrFailStaleJob(
       })
       .where(eq(iacJobs.id, jobId))
 
-    events.emitJobUpdate(job.id, job.previewId)
+    events.emitJobUpdate(job.id, job.deploymentId)
     return { requeued: true, failed: false }
   })
 }
 
 /**
- * Get job with preview context (for IaC engine to execute).
+ * Get job with deployment context (for IaC engine to execute).
  */
 export async function getJobWithContext(jobId: string): Promise<
   | (IacJob & {
+      deployment: {
+        id: string
+        orgId: string
+        repo: string
+        environmentKind: string
+        environmentName: string
+        prNumber: number | null
+        workspacePath: string
+        branch: string
+        headSha: string
+        stateKey: string
+        installationId: number | null
+        runGroupId: string | null
+      }
+      /** @deprecated Use deployment */
       preview: {
         id: string
         orgId: string
         repo: string
-        prNumber: number
+        prNumber: number | null
         workspacePath: string
         branch: string
         headSha: string
@@ -304,42 +326,45 @@ export async function getJobWithContext(jobId: string): Promise<
     const rows = await db
       .select({
         job: iacJobs,
-        preview: {
-          id: previews.id,
-          orgId: previews.orgId,
-          repo: previews.repo,
-          prNumber: previews.prNumber,
-          workspacePath: previews.workspacePath,
-          branch: previews.branch,
-          headSha: previews.headSha,
-          stateKey: previews.stateKey,
-          installationId: previews.installationId,
-          runGroupId: previews.runGroupId,
+        deployment: {
+          id: workspaceDeployments.id,
+          orgId: workspaceDeployments.orgId,
+          repo: workspaceDeployments.repo,
+          environmentKind: workspaceDeployments.environmentKind,
+          environmentName: workspaceDeployments.environmentName,
+          prNumber: workspaceDeployments.prNumber,
+          workspacePath: workspaceDeployments.workspacePath,
+          branch: workspaceDeployments.branch,
+          headSha: workspaceDeployments.headSha,
+          stateKey: workspaceDeployments.stateKey,
+          installationId: workspaceDeployments.installationId,
+          runGroupId: workspaceDeployments.runGroupId,
         },
       })
       .from(iacJobs)
-      .innerJoin(previews, eq(iacJobs.previewId, previews.id))
+      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .where(eq(iacJobs.id, jobId))
       .limit(1)
 
     if (rows.length === 0) return undefined
 
-    const { job, preview } = rows[0]
-    return { ...job, preview }
+    const { job, deployment } = rows[0]
+    // Provide backward-compatible preview alias
+    return { ...job, deployment, preview: deployment }
   })
 }
 
 /**
- * Find all pending/queued jobs for a preview.
+ * Find all pending/queued jobs for a deployment.
  * Used to check if work is already queued before creating duplicates.
  */
-export async function findPendingJobsForPreview(
-  previewId: string,
+export async function findPendingJobsForDeployment(
+  deploymentId: string,
   jobType?: IacJobType,
 ): Promise<IacJob[]> {
   return withDbSpan("select", "iac_jobs", async () => {
     const conditions = [
-      eq(iacJobs.previewId, previewId),
+      eq(iacJobs.deploymentId, deploymentId),
       inArray(iacJobs.status, ["queued", "dispatched", "running"]),
     ]
 
@@ -351,13 +376,16 @@ export async function findPendingJobsForPreview(
   })
 }
 
+// Alias for backward compatibility
+export const findPendingJobsForPreview = findPendingJobsForDeployment
+
 /**
- * Cancel all pending jobs for a preview.
+ * Cancel all pending jobs for a deployment.
  * Called when a PR is closed to stop any queued/running work.
  *
  * @returns Number of jobs cancelled
  */
-export async function cancelJobsForPreview(previewId: string): Promise<number> {
+export async function cancelJobsForDeployment(deploymentId: string): Promise<number> {
   return withDbSpan("update", "iac_jobs", async () => {
     const result = await db
       .update(iacJobs)
@@ -367,7 +395,7 @@ export async function cancelJobsForPreview(previewId: string): Promise<number> {
       })
       .where(
         and(
-          eq(iacJobs.previewId, previewId),
+          eq(iacJobs.deploymentId, deploymentId),
           inArray(iacJobs.status, ["queued", "dispatched", "running"]),
         ),
       )
@@ -375,12 +403,15 @@ export async function cancelJobsForPreview(previewId: string): Promise<number> {
 
     // Emit updates for each cancelled job
     for (const job of result) {
-      events.emitJobUpdate(job.id, previewId)
+      events.emitJobUpdate(job.id, deploymentId)
     }
 
     return result.length
   })
 }
+
+// Alias for backward compatibility
+export const cancelJobsForPreview = cancelJobsForDeployment
 
 // =============================================================================
 // Concurrency Control
@@ -409,13 +440,13 @@ export async function countActiveJobsByRunGroup(): Promise<Map<string, number>> 
   return withDbSpan("select", "iac_jobs", async () => {
     const result = await db
       .select({
-        runGroupId: previews.runGroupId,
+        runGroupId: workspaceDeployments.runGroupId,
         count: sql<number>`count(*)::int`,
       })
       .from(iacJobs)
-      .innerJoin(previews, eq(iacJobs.previewId, previews.id))
+      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .where(inArray(iacJobs.status, ["dispatched", "running"]))
-      .groupBy(previews.runGroupId)
+      .groupBy(workspaceDeployments.runGroupId)
 
     const map = new Map<string, number>()
     for (const row of result) {
@@ -436,10 +467,10 @@ export async function getQueuedJobsByRunGroup(): Promise<Map<string, IacJob[]>> 
     const jobs = await db
       .select({
         job: iacJobs,
-        runGroupId: previews.runGroupId,
+        runGroupId: workspaceDeployments.runGroupId,
       })
       .from(iacJobs)
-      .innerJoin(previews, eq(iacJobs.previewId, previews.id))
+      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .where(eq(iacJobs.status, "queued"))
       .orderBy(iacJobs.queuedAt)
 
@@ -548,13 +579,13 @@ export async function claimQueuedJobsWithLimits(
       // 2. Get run groups with queued work and their queue counts
       const groupsWithWork = await tx
         .select({
-          runGroupId: previews.runGroupId,
+          runGroupId: workspaceDeployments.runGroupId,
           queuedCount: sql<number>`count(*)::int`,
         })
         .from(iacJobs)
-        .innerJoin(previews, eq(iacJobs.previewId, previews.id))
+        .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
         .where(eq(iacJobs.status, "queued"))
-        .groupBy(previews.runGroupId)
+        .groupBy(workspaceDeployments.runGroupId)
 
       if (groupsWithWork.length === 0) {
         return {
@@ -575,13 +606,13 @@ export async function claimQueuedJobsWithLimits(
       // 3. Count active jobs per run group
       const activeByGroupResult = await tx
         .select({
-          runGroupId: previews.runGroupId,
+          runGroupId: workspaceDeployments.runGroupId,
           count: sql<number>`count(*)::int`,
         })
         .from(iacJobs)
-        .innerJoin(previews, eq(iacJobs.previewId, previews.id))
+        .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
         .where(inArray(iacJobs.status, ["dispatched", "running"]))
-        .groupBy(previews.runGroupId)
+        .groupBy(workspaceDeployments.runGroupId)
 
       const activeByGroup = new Map<string, number>()
       for (const row of activeByGroupResult) {
@@ -612,13 +643,13 @@ export async function claimQueuedJobsWithLimits(
         const groupJobs = await tx
           .select()
           .from(iacJobs)
-          .innerJoin(previews, eq(iacJobs.previewId, previews.id))
+          .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
           .where(
             and(
               eq(iacJobs.status, "queued"),
               runGroupId
-                ? eq(previews.runGroupId, runGroupId)
-                : sql`${previews.runGroupId} IS NULL`,
+                ? eq(workspaceDeployments.runGroupId, runGroupId)
+                : sql`${workspaceDeployments.runGroupId} IS NULL`,
             ),
           )
           .orderBy(JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)

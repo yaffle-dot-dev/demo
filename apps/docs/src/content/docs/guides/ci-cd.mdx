@@ -1,0 +1,209 @@
+---
+title: CI/CD Integration
+description: Use OpenTofu outputs in your CI/CD pipelines
+---
+
+import { Aside } from "@astrojs/starlight/components"
+
+## The outputs action
+
+Yaffle provides a GitHub Action to fetch OpenTofu outputs from your preview environments. Use it to deploy your application to preview infrastructure.
+
+```yaml
+- uses: yaffle-dot-dev/outputs-action@v1
+  id: infra
+  with:
+    workspace: infra
+    wait: true
+
+- name: Deploy to preview
+  run: |
+    aws ecs update-service \
+      --cluster ${{ steps.infra.outputs.cluster_arn }} \
+      --service my-app \
+      --force-new-deployment
+```
+
+## How it works
+
+1. The action calls the Yaffle API
+2. If `wait: true`, it waits for the workspace to finish applying
+3. Once ready, it fetches the OpenTofu outputs
+4. Outputs are set as step outputs for use in subsequent steps
+
+<Aside type="tip">
+When `wait: true`, the action uses Server-Sent Events (SSE) for efficient real-time updates. No polling, instant response when ready.
+</Aside>
+
+## Inputs
+
+| Input | Description | Default |
+|-------|-------------|---------|
+| `workspace` | Workspace path | `.` |
+| `wait` | Wait for preview to be ready | `false` |
+| `wait-timeout` | Timeout in seconds | `300` |
+| `pr-number` | PR number (auto-detected) | Current PR |
+| `org` | Organization name | Repository owner |
+| `repo` | Repository name | Current repository |
+
+## Outputs
+
+| Output | Description |
+|--------|-------------|
+| `preview-id` | The Yaffle preview ID |
+| `preview-status` | Status: `ready`, `planning`, `applying`, `failed` |
+| `outputs-json` | All outputs as JSON |
+| `<name>` | Each OpenTofu output as a separate output |
+
+## Examples
+
+### Deploy app to preview infrastructure
+
+```yaml
+name: Deploy to Preview
+on:
+  pull_request:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Wait for Yaffle to finish applying infrastructure
+      - uses: yaffle-dot-dev/outputs-action@v1
+        id: infra
+        with:
+          workspace: infra
+          wait: true
+          wait-timeout: 600
+
+      # Deploy using the outputs
+      - name: Deploy application
+        run: |
+          echo "Deploying to cluster: ${{ steps.infra.outputs.cluster_arn }}"
+          echo "Using ALB: ${{ steps.infra.outputs.alb_dns }}"
+          
+          # Your deployment commands here
+          ./deploy.sh \
+            --cluster "${{ steps.infra.outputs.cluster_arn }}" \
+            --image "my-app:${{ github.sha }}"
+```
+
+### Multiple workspaces
+
+```yaml
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: yaffle-dot-dev/outputs-action@v1
+        id: network
+        with:
+          workspace: infra/network
+          wait: true
+
+      - uses: yaffle-dot-dev/outputs-action@v1
+        id: database
+        with:
+          workspace: infra/database
+          wait: true
+
+      - name: Configure app
+        run: |
+          echo "VPC: ${{ steps.network.outputs.vpc_id }}"
+          echo "DB Host: ${{ steps.database.outputs.endpoint }}"
+```
+
+### Run tests against preview
+
+```yaml
+jobs:
+  e2e-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: yaffle-dot-dev/outputs-action@v1
+        id: infra
+        with:
+          workspace: infra
+          wait: true
+
+      - name: Run E2E tests
+        env:
+          API_URL: ${{ steps.infra.outputs.api_url }}
+          DB_HOST: ${{ steps.infra.outputs.db_endpoint }}
+        run: |
+          npm test
+```
+
+### Complex outputs with JSON
+
+For outputs that are objects or lists:
+
+```yaml
+- uses: yaffle-dot-dev/outputs-action@v1
+  id: infra
+
+- name: Parse complex outputs
+  run: |
+    # Get all outputs as JSON
+    echo '${{ steps.infra.outputs.outputs-json }}' | jq '.'
+    
+    # Extract specific nested values
+    SUBNET_IDS=$(echo '${{ steps.infra.outputs.outputs-json }}' | jq -r '.private_subnet_ids.value | join(",")')
+    echo "Subnets: $SUBNET_IDS"
+```
+
+## Full workflow example
+
+Complete workflow that waits for infrastructure, deploys an app, and runs tests:
+
+```yaml
+name: Preview Deploy & Test
+on:
+  pull_request:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    outputs:
+      api_url: ${{ steps.infra.outputs.api_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: yaffle-dot-dev/outputs-action@v1
+        id: infra
+        with:
+          workspace: infra
+          wait: true
+          wait-timeout: 900
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456789:role/deploy
+          aws-region: us-east-1
+
+      - name: Deploy to ECS
+        run: |
+          aws ecs update-service \
+            --cluster ${{ steps.infra.outputs.cluster_arn }} \
+            --service ${{ steps.infra.outputs.service_name }} \
+            --force-new-deployment
+          
+          aws ecs wait services-stable \
+            --cluster ${{ steps.infra.outputs.cluster_arn }} \
+            --services ${{ steps.infra.outputs.service_name }}
+
+  test:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run E2E tests
+        env:
+          API_URL: ${{ needs.deploy.outputs.api_url }}
+        run: npm run test:e2e
+```

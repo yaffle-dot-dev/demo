@@ -1,6 +1,7 @@
 import {
   GetObjectCommand,
   PutObjectCommand,
+  type PutObjectCommandInput,
   S3Client,
 } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
@@ -69,24 +70,28 @@ export function clearInMemoryState(): void {
 
 /**
  * Build the S3 key for a state version.
- * Pattern: {workspace_id}/v{serial}.tfstate
+ * Pattern: org-{org_id}/{workspace_id}/v{serial}.tfstate
+ *
+ * The org prefix enables per-org IAM isolation in the shared S3 bucket.
  */
-export function buildStateS3Key(workspaceId: string, serial: number): string {
-  return `${workspaceId}/v${serial}.tfstate`
+export function buildStateS3Key(orgId: string, workspaceId: string, serial: number): string {
+  return `org-${orgId}/${workspaceId}/v${serial}.tfstate`
 }
 
 /**
  * Upload state content to S3 (or in-memory if S3 not configured).
  *
- * @param s3Key - The S3 key (e.g., "ws-uuid/v42.tfstate")
+ * @param s3Key - The S3 key (e.g., "org-uuid/ws-uuid/v42.tfstate")
  * @param content - The raw state bytes
  * @param expectedMd5 - Expected MD5 hash (hex-encoded) for validation
+ * @param kmsKeyArn - Optional KMS key ARN for per-org encryption
  * @returns The size of the uploaded content in bytes
  */
 export async function uploadState(
   s3Key: string,
   content: Uint8Array,
   expectedMd5?: string,
+  kmsKeyArn?: string,
 ): Promise<{ size: number; md5: string }> {
   // Calculate MD5 of content
   const actualMd5 = createHash("md5").update(content).digest("hex")
@@ -113,22 +118,30 @@ export async function uploadState(
   const config = getTfcS3Config()
   const client = getS3Client(config.region)
 
-  // Upload to S3
-  await client.send(
-    new PutObjectCommand({
-      Bucket: config.bucket,
-      Key: s3Key,
-      Body: content,
-      ContentType: "application/json",
-      ContentMD5: Buffer.from(actualMd5, "hex").toString("base64"),
-    }),
-  )
+  // Upload to S3 with encryption
+  // Use org's KMS key if provided, otherwise bucket default (aws:kms with AWS-managed key)
+  const putParams: PutObjectCommandInput = {
+    Bucket: config.bucket,
+    Key: s3Key,
+    Body: content,
+    ContentType: "application/json",
+    ContentMD5: Buffer.from(actualMd5, "hex").toString("base64"),
+  }
+
+  if (kmsKeyArn) {
+    putParams.ServerSideEncryption = "aws:kms"
+    putParams.SSEKMSKeyId = kmsKeyArn
+  }
+
+  await client.send(new PutObjectCommand(putParams))
 
   logger.info("State uploaded to S3", {
     "state.bucket": config.bucket,
     "state.key": s3Key,
     "state.size": content.length,
     "state.md5": actualMd5,
+    "state.encryption": kmsKeyArn ? "org-cmk" : "bucket-default",
+    "state.kms_key": kmsKeyArn ?? "aws-managed",
   })
 
   return { size: content.length, md5: actualMd5 }

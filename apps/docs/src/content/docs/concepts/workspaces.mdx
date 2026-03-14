@@ -1,0 +1,153 @@
+---
+title: Workspaces
+description: Workspace configuration and dependencies
+---
+
+import { Aside } from "@astrojs/starlight/components"
+
+## What's a workspace?
+
+A workspace is a directory containing OpenTofu (or Terraform) files. Yaffle runs `plan` and `apply` independently for each workspace.
+
+```toml
+[[workspaces]]
+path = "infra/network"
+environments = ["*"]
+
+[[workspaces]]
+path = "infra/compute"
+environments = ["*"]
+```
+
+Each workspace gets its own state file, runs in its own container, and can have its own variables.
+
+## Multiple workspaces
+
+Most projects have multiple workspaces:
+
+```
+repo/
+├── infra/
+│   ├── network/      # VPC, subnets, security groups
+│   ├── database/     # RDS, ElastiCache
+│   └── compute/      # ECS, Lambda
+└── yaffle.toml
+```
+
+```toml
+[[workspaces]]
+path = "infra/network"
+environments = ["*"]
+
+[[workspaces]]
+path = "infra/database"
+environments = ["*"]
+
+[[workspaces]]
+path = "infra/compute"
+environments = ["*"]
+```
+
+## Dependencies
+
+Workspaces often depend on each other. Your compute layer needs outputs from your network layer.
+
+Yaffle automatically detects dependencies by scanning your OpenTofu files for module references to other workspaces. When workspace A depends on workspace B:
+
+1. B runs first
+2. B's outputs become available as a module
+3. A runs and can consume B's outputs
+
+```
+network → database → compute
+```
+
+<Aside type="tip">
+Dependencies are inferred from your OpenTofu code. You don't need to declare them manually.
+</Aside>
+
+## Using outputs from other workspaces
+
+Reference another workspace's outputs using the Yaffle module registry:
+
+```hcl
+# infra/compute/main.tf
+module "network" {
+  source = "yaffle.local:6969/your-org/infra--network/yaffle"
+}
+
+resource "aws_ecs_service" "app" {
+  # Use outputs from the network workspace
+  network_configuration {
+    subnets         = module.network.private_subnet_ids
+    security_groups = [module.network.app_security_group_id]
+  }
+}
+```
+
+The module source follows this pattern:
+```
+yaffle.local:PORT/ORG/WORKSPACE--PATH/yaffle
+```
+
+Where `WORKSPACE--PATH` uses `--` as path separator:
+- `infra/network` → `infra--network`
+- `apps/web/infra` → `apps--web--infra`
+
+## Execution order
+
+Yaffle builds a dependency graph and executes workspaces in the right order:
+
+```
+network (no deps)     ──┐
+                        ├── database ──┐
+                        │              ├── compute
+network-monitoring ────┘              │
+                                      │
+app-config ───────────────────────────┘
+```
+
+Root workspaces (no dependencies) run first, in parallel. Downstream workspaces wait for their dependencies to complete.
+
+## Workspace variables
+
+Set variables per workspace:
+
+```toml
+[[workspaces]]
+path = "infra/compute"
+environments = ["*"]
+variables.instance_type = "t3.medium"
+variables.desired_count = 2
+```
+
+Use template variables for environment-specific values:
+
+```toml
+[[workspaces]]
+path = "infra/compute"
+environments = ["*"]
+variables.environment = "{{ environment }}"
+variables.domain = "{{ environment }}.example.com"
+```
+
+## Environment targeting
+
+Control which environments a workspace runs in:
+
+```toml
+# Runs in all environments (including previews)
+[[workspaces]]
+path = "infra/network"
+environments = ["*"]
+
+# Only production
+[[workspaces]]
+path = "infra/production-only"
+environments = ["production"]
+
+# Only named environments (not previews)
+[[workspaces]]
+path = "infra/staging-and-prod"
+environments = ["staging", "production"]
+```

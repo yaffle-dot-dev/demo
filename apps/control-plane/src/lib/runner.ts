@@ -24,7 +24,7 @@ export interface RunOpts {
   workspacePath: string
   /** State key, e.g. "preview-pr-42/infra/terraform.tfstate" */
   stateKey: string
-  variables?: Record<string, string | boolean>
+  variables?: Record<string, string | boolean | number>
   installationToken?: string
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
 

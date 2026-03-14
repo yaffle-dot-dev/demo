@@ -165,6 +165,51 @@ resource "aws_iam_role_policy" "control_plane_secrets" {
   })
 }
 
+# Org provisioning: create per-org KMS keys and IAM roles
+resource "aws_iam_role_policy" "control_plane_provisioning" {
+  name = "org-provisioning"
+  role = aws_iam_role.control_plane_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "KMSManagement"
+        Effect = "Allow"
+        Action = [
+          "kms:CreateKey",
+          "kms:CreateAlias",
+          "kms:DeleteAlias",
+          "kms:ScheduleKeyDeletion",
+          "kms:TagResource",
+          "kms:PutKeyPolicy",
+          "kms:DescribeKey"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "IAMOrgRoles"
+        Effect = "Allow"
+        Action = [
+          "iam:CreateRole",
+          "iam:DeleteRole",
+          "iam:PutRolePolicy",
+          "iam:DeleteRolePolicy",
+          "iam:TagRole",
+          "iam:GetRole"
+        ]
+        Resource = "arn:aws:iam::*:role/yaffle-runner-org-*"
+      },
+      {
+        Sid      = "AssumeOrgRoles"
+        Effect   = "Allow"
+        Action   = "sts:AssumeRole"
+        Resource = "arn:aws:iam::*:role/yaffle-runner-org-*"
+      }
+    ]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # TF Runner Task Role
 # -----------------------------------------------------------------------------

@@ -141,7 +141,7 @@ export async function tfInit(
  */
 export async function tfPlan(
   workDir: string,
-  variables?: Record<string, string | boolean>,
+  variables?: Record<string, string | boolean | number>,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv?: Record<string, string>,
   runId?: string,
@@ -194,7 +194,7 @@ export async function tfPlan(
  */
 export async function tfApply(
   workDir: string,
-  variables?: Record<string, string | boolean>,
+  variables?: Record<string, string | boolean | number>,
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv?: Record<string, string>,
   runId?: string,
@@ -269,7 +269,7 @@ export async function tfDestroy(
 export async function runTerraform(opts: {
   workDir: string
   command: RunType
-  variables?: Record<string, string | boolean>
+  variables?: Record<string, string | boolean | number>
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
   /** Extra environment variables to pass to terraform (e.g., TFC tokens) */
   extraEnv?: Record<string, string>

@@ -1,13 +1,15 @@
 import { browser } from "$app/environment"
 
 import { SSEConnection } from "./connection"
-import { PreviewStreamStore, PreviewListStore } from "./stores.svelte"
-import type { PreviewStreamState, PreviewListStreamState } from "./types"
+import { PreviewStreamStore, PreviewListStore, OrgStatusStore } from "./stores.svelte"
+import type { PreviewStreamState, PreviewListStreamState, OrgStatusStreamState } from "./types"
 
 // Re-export types consumers may need
 export type {
   PreviewStreamState,
   PreviewListStreamState,
+  OrgStatusStreamState,
+  OrgProvisioningStatus,
   ConnectionState,
   PreviewGroup,
 } from "./types"
@@ -54,7 +56,7 @@ export {
 export function usePreviewStream(
   getOrg: () => string,
   getRepo: () => string,
-  type: "pr" | "env",
+  type: "pr" | "env" | "environment",
   getId: () => string | number,
 ): PreviewStreamState {
   const store = new PreviewStreamStore()
@@ -71,9 +73,16 @@ export function usePreviewStream(
     // Reset state for new connection
     store.reset()
 
-    const path = type === "pr"
-      ? `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${id}/stream`
-      : `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(String(id))}/stream`
+    let path: string
+    if (type === "pr") {
+      path = `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${id}/stream`
+    } else if (type === "environment") {
+      // New unified endpoint
+      path = `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(String(id))}/stream`
+    } else {
+      // Legacy env endpoint
+      path = `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(String(id))}/stream`
+    }
 
     const url = `/api${path}`
 
@@ -152,6 +161,64 @@ export function usePreviewListStream(
 
   return {
     get previews() { return store.previews },
+    get dependencyGraphs() { return store.dependencyGraphs },
+    get connectionState() { return store.connectionState },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// useOrgStatusStream - for org provisioning status
+// ---------------------------------------------------------------------------
+
+/**
+ * Reactive SSE hook for org provisioning status.
+ *
+ * Streams status updates as the org transitions through:
+ * pending -> provisioning -> active/failed
+ *
+ * Must be called during component initialization (in a `<script>` block).
+ *
+ * @example
+ * ```svelte
+ * <script lang="ts">
+ *   const org = $derived($page.params.org)
+ *   const statusStream = useOrgStatusStream(() => org)
+ * </script>
+ * ```
+ */
+export function useOrgStatusStream(
+  getOrg: () => string,
+): OrgStatusStreamState {
+  const store = new OrgStatusStore()
+
+  $effect(() => {
+    const org = getOrg()
+
+    if (!browser || !org) return
+
+    store.reset()
+
+    const url = `/api/orgs/${encodeURIComponent(org)}/status/stream`
+
+    const connection = new SSEConnection({
+      url,
+      withCredentials: true,
+      onMessage: (data) => store.handleMessage(data),
+      onStateChange: (state) => { store.connectionState = state },
+      onError: (err) => console.error("[sse] org status parse error:", err),
+    })
+
+    connection.connect()
+
+    return () => {
+      connection.destroy()
+    }
+  })
+
+  return {
+    get status() { return store.status },
+    get error() { return store.error },
+    get attempts() { return store.attempts },
     get connectionState() { return store.connectionState },
   }
 }

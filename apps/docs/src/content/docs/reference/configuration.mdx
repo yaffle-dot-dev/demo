@@ -1,0 +1,238 @@
+---
+title: Configuration
+description: yaffle.toml reference
+---
+
+import { Aside } from "@astrojs/starlight/components"
+
+Configuration lives in `yaffle.toml` at your repository root.
+
+## Minimal example
+
+```toml
+version = 1
+
+[[environments]]
+name = "production"
+
+[[triggers.github.push]]
+branch = "main"
+environment = "production"
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+```
+
+## Full example
+
+```toml
+version = 1
+
+# Named environments
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+
+# Push to main → production
+[[triggers.github.push]]
+branch = "main"
+environment = "production"
+
+# Push to staging → staging
+[[triggers.github.push]]
+branch = "staging"
+environment = "staging"
+
+# All PRs create transient previews
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+# Shared infra runs in both environments
+[[workspaces]]
+path = "infra/shared"
+environments = ["production", "staging"]
+variables.cloudflare_zone_id = "abc123"
+
+# Production-only workspace
+[[workspaces]]
+path = "infra/production"
+environments = ["production"]
+
+# App infra runs in all environments (including PR previews)
+[[workspaces]]
+path = "apps/api/infra"
+environments = ["*"]
+variables.domain = "{{ environment }}.yaffle.dev"
+
+# Require approval for production changes
+[[approvals]]
+workspaces = ["infra/production", "infra/shared"]
+environments = ["production"]
+approvers = [
+  "github:user:alice",
+  "github:team:acme/platform",
+]
+```
+
+---
+
+## Reference
+
+### `version`
+
+Always `1`.
+
+```toml
+version = 1
+```
+
+### `[[environments]]`
+
+Named environments your workspaces can target.
+
+```toml
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+```
+
+PR previews are *transient* environments—they don't need to be declared.
+
+### `[[triggers.github.push]]`
+
+Run workspaces when a branch is pushed.
+
+| Field | Description |
+|-------|-------------|
+| `branch` | Branch name or glob pattern |
+| `environment` | Which environment to target |
+
+```toml
+[[triggers.github.push]]
+branch = "main"
+environment = "production"
+
+[[triggers.github.push]]
+branch = "staging/*"
+environment = "staging"
+```
+
+### `[[triggers.github.pull_request]]`
+
+Create transient previews for PRs.
+
+| Field | Description |
+|-------|-------------|
+| `branch_pattern` | Glob for head branch (`*` = all PRs) |
+
+```toml
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+```
+
+### `[[workspaces]]`
+
+OpenTofu directories Yaffle manages. (Terraform directories work too—OpenTofu is fully compatible.)
+
+| Field | Description |
+|-------|-------------|
+| `path` | Path to OpenTofu/Terraform directory |
+| `environments` | Which environments run this workspace |
+| `variables` | Variables to inject |
+
+```toml
+[[workspaces]]
+path = "infra/api"
+environments = ["*"]
+variables.environment = "{{ environment }}"
+variables.region = "us-east-1"
+```
+
+#### Environments
+
+- `["production"]` — Only runs in production
+- `["production", "staging"]` — Runs in both
+- `["*"]` — Runs in all environments, including PR previews
+
+#### Variables
+
+Variables are injected as `-var` flags. Use `{{ environment }}` to template the current environment name.
+
+```toml
+variables.environment = "{{ environment }}"
+variables.domain = "{{ environment }}.example.com"
+```
+
+### `[[approvals]]`
+
+Require approval before applying.
+
+| Field | Description |
+|-------|-------------|
+| `workspaces` | Paths or globs |
+| `environments` | Which environments |
+| `approvers` | Who can approve |
+
+```toml
+[[approvals]]
+workspaces = ["infra/*"]
+environments = ["production"]
+approvers = [
+  "github:user:alice",
+  "github:user:bob",
+  "github:team:acme/platform-engineering",
+]
+```
+
+#### Approver syntax
+
+```
+<provider>:<type>:<identifier>
+```
+
+| Example | Meaning |
+|---------|---------|
+| `github:user:alice` | GitHub user alice |
+| `github:team:acme/platform` | GitHub team @acme/platform |
+
+#### Matching
+
+Multiple approval blocks can match. Approvers are combined. Any single approver can approve.
+
+---
+
+## Variable templating
+
+Use `{{ }}` in variable values:
+
+| Template | Value |
+|----------|-------|
+| `{{ environment }}` | Environment name (`production`, `pr-42`, etc.) |
+
+```toml
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+variables.env = "{{ environment }}"
+variables.bucket = "myapp-{{ environment }}"
+```
+
+---
+
+## Glob patterns
+
+Globs work in `branch`, `branch_pattern`, `workspaces`, and `environments`:
+
+| Pattern | Matches |
+|---------|---------|
+| `*` | Anything |
+| `infra/*` | `infra/foo`, `infra/foo/bar` |
+| `feature/*` | `feature/add-cache`, etc. |

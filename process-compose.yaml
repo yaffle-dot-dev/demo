@@ -67,6 +67,20 @@ processes:
       period_seconds: 10
       failure_threshold: 3
 
+  docs:
+    command: |
+      cd apps/docs
+      bun run build
+      echo "Watching for changes..."
+      watchexec -w src -w astro.config.mjs -e mdx,md,astro,css,ts,js -- bun run build
+    log_location: .dev/logs/docs.log
+    readiness_probe:
+      exec:
+        command: "test -f apps/docs/dist/index.html"
+      initial_delay_seconds: 5
+      period_seconds: 10
+      failure_threshold: 3
+
   smee:
     command: "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github"
     log_location: .dev/logs/smee.log
@@ -76,5 +90,17 @@ processes:
     readiness_probe:
       exec:
         command: "pgrep -f smee-client"
+      period_seconds: 10
+      failure_threshold: 3
+
+  opencode:
+    command: "opencode web --port 4096 --hostname 0.0.0.0"
+    log_location: .dev/logs/opencode.log
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        port: 4096
+        path: "/global/health"
+      initial_delay_seconds: 3
       period_seconds: 10
       failure_threshold: 3

@@ -23,9 +23,9 @@ terraform {
   }
 }
 
-variable "is_preview" {
-  type        = bool
-  description = "Is environment a preview (enables force_destroy)"
+variable "environment_kind" {
+  type        = string
+  description = "Kind of environment ('named' or 'transient')"
 }
 
 variable "environment" {
@@ -55,7 +55,7 @@ locals {
 
 resource "aws_s3_bucket" "state" {
   bucket        = local.bucket_name
-  force_destroy = var.is_preview
+  force_destroy = var.environment_kind == "transient"
 
   tags = {
     Name = local.bucket_name

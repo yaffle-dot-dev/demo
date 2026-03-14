@@ -108,6 +108,33 @@ export async function listRunGroupsForBranch(
 }
 
 /**
+ * List run groups by environment name.
+ * This is the unified query that works for both PR environments (e.g., "pr-123")
+ * and named environments (e.g., "main", "staging").
+ */
+export async function listRunGroupsForEnvironment(
+  orgId: string,
+  repo: string,
+  environmentName: string,
+  limit = 20,
+): Promise<RunGroup[]> {
+  return withDbSpan("select", "run_groups", async () => {
+    return db
+      .select()
+      .from(runGroups)
+      .where(
+        and(
+          eq(runGroups.orgId, orgId),
+          eq(runGroups.repo, repo),
+          eq(runGroups.environmentName, environmentName),
+        ),
+      )
+      .orderBy(desc(runGroups.createdAt))
+      .limit(limit)
+  })
+}
+
+/**
  * Get the latest run group for a PR.
  */
 export async function getLatestRunGroupForPr(
@@ -221,5 +248,51 @@ export async function recomputeRunGroupStatus(runGroupId: string): Promise<void>
         ...(completedAt ? { completedAt } : {}),
       })
       .where(eq(runGroups.id, runGroupId))
+  })
+}
+
+/**
+ * Get the latest dependency graph for each unique environment in an org.
+ * Returns a map of environmentKey -> dependencyGraph.
+ * environmentKey is "{repo}:{environmentName}" (e.g., "my-repo:pr-123" or "my-repo:main")
+ */
+export async function getLatestDependencyGraphsForOrg(
+  orgId: string,
+  repo?: string,
+): Promise<Map<string, SerializableDependencyGraph>> {
+  return withDbSpan("select", "run_groups", async () => {
+    // Get latest run group per environment using a subquery
+    // We use raw SQL for the DISTINCT ON functionality
+    const query = db
+      .select({
+        repo: runGroups.repo,
+        environmentName: runGroups.environmentName,
+        dependencyGraph: runGroups.dependencyGraph,
+      })
+      .from(runGroups)
+      .where(
+        repo
+          ? and(eq(runGroups.orgId, orgId), eq(runGroups.repo, repo))
+          : eq(runGroups.orgId, orgId),
+      )
+      .orderBy(desc(runGroups.createdAt))
+
+    const rows = await query
+
+    // Build map, keeping only the first (latest) entry per environment
+    const result = new Map<string, SerializableDependencyGraph>()
+    const seen = new Set<string>()
+
+    for (const row of rows) {
+      if (!row.environmentName) continue
+      const key = `${row.repo}:${row.environmentName}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      if (row.dependencyGraph) {
+        result.set(key, row.dependencyGraph as SerializableDependencyGraph)
+      }
+    }
+
+    return result
   })
 }

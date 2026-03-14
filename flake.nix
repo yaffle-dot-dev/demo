@@ -121,6 +121,7 @@
               opencode
               caddy
               process-compose
+              watchexec
             ];
 
             shellHook = ''
@@ -178,6 +179,7 @@
             VITE_YAFFLE_AUTH_ISSUER = "https://yaffle.local:6969";
             VITE_YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
             YAFFLE_TFC_API_HOST = "yaffle.local:6969";
+            YAFFLE_CONTROL_PLANE_ROLE_ARN = "arn:aws:iam::870923192739:root";
             BETTER_AUTH_URL = "https://yaffle.local:6969";
             TRUSTED_ORIGINS = "https://yaffle.local:6969,http://yaffle.local:5173,http://yaffle.local:3000";
             YAFFLE_ENV = "development";

@@ -237,3 +237,103 @@ async function findCommentByMarker(
 
   return undefined
 }
+
+// =============================================================================
+// Team Membership
+// =============================================================================
+
+/** Retry configuration for team membership checks */
+const TEAM_MEMBERSHIP_RETRY_CONFIG = {
+  maxAttempts: 3,
+  initialDelayMs: 100,
+  maxDelayMs: 2000,
+  backoffMultiplier: 2,
+}
+
+/**
+ * Sleep for a given number of milliseconds.
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Check if a user is a member of a GitHub team.
+ *
+ * Uses the GitHub API endpoint:
+ * GET /orgs/{org}/teams/{team_slug}/memberships/{username}
+ *
+ * Retries on transient failures with exponential backoff.
+ * Fails closed (returns false) after exhausting retries.
+ *
+ * @param installationId - GitHub App installation ID
+ * @param org - Organization name (lowercase)
+ * @param team - Team slug (lowercase)
+ * @param username - GitHub username to check (case-insensitive)
+ * @returns true if user is an active member of the team
+ */
+export async function checkTeamMembership(
+  installationId: number,
+  org: string,
+  team: string,
+  username: string,
+): Promise<boolean> {
+  const { maxAttempts, initialDelayMs, maxDelayMs, backoffMultiplier } = TEAM_MEMBERSHIP_RETRY_CONFIG
+
+  let lastError: unknown
+  let delayMs = initialDelayMs
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const octokit = await getInstallationOctokit(installationId)
+
+      const response = await octokit.request(
+        "GET /orgs/{org}/teams/{team_slug}/memberships/{username}",
+        {
+          org,
+          team_slug: team,
+          username,
+        },
+      )
+
+      // Check if membership is active
+      const state = (response.data as { state?: string }).state
+      return state === "active"
+    } catch (err: unknown) {
+      const status = (err as { status?: number }).status
+
+      // 404 = not a member (expected, don't retry)
+      if (status === 404) {
+        return false
+      }
+
+      // 403 = forbidden (permission issue, don't retry)
+      if (status === 403) {
+        console.warn(
+          `[github] Team membership check forbidden: ${org}/${team} for ${username}. ` +
+          `Ensure the GitHub App has 'members:read' permission on the organization.`,
+        )
+        return false
+      }
+
+      // Transient error - retry
+      lastError = err
+
+      if (attempt < maxAttempts) {
+        console.warn(
+          `[github] Team membership check failed (attempt ${attempt}/${maxAttempts}), ` +
+          `retrying in ${delayMs}ms: ${err instanceof Error ? err.message : String(err)}`,
+        )
+        await sleep(delayMs)
+        delayMs = Math.min(delayMs * backoffMultiplier, maxDelayMs)
+      }
+    }
+  }
+
+  // Exhausted retries - fail closed
+  console.error(
+    `[github] Team membership check failed after ${maxAttempts} attempts for ` +
+    `${org}/${team}/${username}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+  )
+  return false
+}

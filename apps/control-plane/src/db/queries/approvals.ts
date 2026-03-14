@@ -18,14 +18,17 @@ export async function createApproval(values: NewApproval): Promise<Approval> {
 }
 
 /**
- * List approvals for a preview.
+ * List approvals for a deployment.
  */
-export async function listApprovals(previewId: string): Promise<Approval[]> {
+export async function listApprovalsForDeployment(deploymentId: string): Promise<Approval[]> {
   return withDbSpan("select", "approvals", async () => {
     return db
       .select()
       .from(approvals)
-      .where(eq(approvals.previewId, previewId))
+      .where(eq(approvals.deploymentId, deploymentId))
       .orderBy(desc(approvals.approvedAt))
   })
 }
+
+// Alias for backward compatibility
+export const listApprovals = listApprovalsForDeployment

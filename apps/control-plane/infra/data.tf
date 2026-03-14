@@ -24,12 +24,12 @@ module "shared" {
 # Terraform requires static module sources, so we define both and select via count.
 
 module "main" {
-  count  = var.is_preview ? 0 : 1
+  count  = local.is_preview ? 0 : 1
   source = "yaffle.local:6969/yaffle-dot-dev/infra--production/yaffle"
 }
 
 module "nonprod" {
-  count  = var.is_preview ? 1 : 0
+  count  = local.is_preview ? 1 : 0
   source = "yaffle.local:6969/yaffle-dot-dev/infra--nonprod/yaffle"
 }
 
@@ -47,7 +47,7 @@ locals {
   state_bucket_arn  = aws_s3_bucket.state.arn
 
   # Core outputs (environment-specific) - select from whichever module is active
-  _core = var.is_preview ? module.nonprod[0] : module.main[0]
+  _core = local.is_preview ? module.nonprod[0] : module.main[0]
 
   vpc_id             = local._core.vpc_id
   public_subnet_ids  = local._core.public_subnet_ids

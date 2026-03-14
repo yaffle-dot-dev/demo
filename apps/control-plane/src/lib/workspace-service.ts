@@ -117,13 +117,14 @@ export async function ensurePreviewWorkspace(opts: {
   orgId: string
   orgSlug: string
   repo: string
+  environment: string
   prNumber: number
   workspacePath: string
   branch: string
 }): Promise<Workspace> {
-  const { buildPreviewWorkspaceName, createWorkspace } = await import("../db/queries/workspaces.ts")
+  const { buildWorkspaceName, createWorkspace } = await import("../db/queries/workspaces.ts")
 
-  const workspaceName = buildPreviewWorkspaceName(opts.prNumber, opts.workspacePath)
+  const workspaceName = buildWorkspaceName(opts.repo, opts.environment, opts.branch, opts.workspacePath)
 
   // Check if workspace already exists
   let workspace = await findWorkspaceByName(opts.orgId, workspaceName)
@@ -158,19 +159,20 @@ export async function ensurePreviewWorkspace(opts: {
 }
 
 /**
- * Find or create a TFC workspace for a branch (non-preview).
- * The environment is set to the branch name (e.g. "main").
+ * Find or create a TFC workspace for a named environment (non-preview).
+ * Used for branches that trigger named environments (e.g., main → production).
  */
-export async function ensureProductionWorkspace(opts: {
+export async function ensureNamedWorkspace(opts: {
   orgId: string
   orgSlug: string
   repo: string
+  environment: string
   branch: string
   workspacePath: string
 }): Promise<Workspace> {
-  const { buildBranchWorkspaceName, createWorkspace } = await import("../db/queries/workspaces.ts")
+  const { buildWorkspaceName, createWorkspace } = await import("../db/queries/workspaces.ts")
 
-  const workspaceName = buildBranchWorkspaceName(opts.branch, opts.workspacePath)
+  const workspaceName = buildWorkspaceName(opts.repo, opts.environment, opts.branch, opts.workspacePath)
 
   // Check if workspace already exists
   let workspace = await findWorkspaceByName(opts.orgId, workspaceName)
@@ -178,21 +180,22 @@ export async function ensureProductionWorkspace(opts: {
     return workspace
   }
 
-  // Create new workspace - environment is the branch name
+  // Create new workspace - environment is the named environment from yaffle.toml
   workspace = await createWorkspace({
     orgId: opts.orgId,
     name: workspaceName,
     repo: opts.repo,
     workspacePath: opts.workspacePath,
-    environment: opts.branch,
+    environment: opts.environment,
     prNumber: null,
     branch: opts.branch,
     status: "active",
   })
 
-  logger.info("Branch workspace created", {
+  logger.info("Named workspace created", {
     workspaceId: workspace.id,
     workspaceName,
+    environment: opts.environment,
     branch: opts.branch,
   })
 

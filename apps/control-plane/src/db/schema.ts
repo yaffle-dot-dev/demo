@@ -27,6 +27,13 @@ export const organizations = pgTable("organizations", {
   stateBucket: text("state_bucket"), // Nullable until configured
   runnerMode: text("runner_mode").default("saas").notNull(), // 'saas' | 'byoa'
   membershipMode: text("membership_mode").default("github_self_join").notNull(), // 'github_self_join' | 'invite_only' | 'sso_only'
+  // Security isolation fields (per-org KMS key and IAM role)
+  kmsKeyArn: text("kms_key_arn"),
+  kmsKeyAlias: text("kms_key_alias"),
+  iamRoleArn: text("iam_role_arn"),
+  provisioningStatus: text("provisioning_status").default("pending").notNull(), // 'pending' | 'provisioning' | 'active' | 'failed'
+  provisioningError: text("provisioning_error"),
+  provisioningAttempts: integer("provisioning_attempts").default(0).notNull(),
   createdAt: timestamp("created_at").defaultNow().notNull(),
 })
 
@@ -85,11 +92,11 @@ export const connections = pgTable("connections", {
 })
 
 // =============================================================================
-// Previews
+// Workspace Deployments (formerly "previews")
 // =============================================================================
 
-export const previews = pgTable(
-  "previews",
+export const workspaceDeployments = pgTable(
+  "workspace_deployments",
   {
     id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
@@ -99,7 +106,11 @@ export const previews = pgTable(
       .references(() => runGroups.id, { onDelete: "cascade" }),
     installationId: bigint("installation_id", { mode: "number" }),
     repo: text("repo").notNull(),
-    prNumber: integer("pr_number").notNull(),
+    // Environment identification (new canonical discriminator)
+    environmentKind: text("environment_kind").notNull(), // 'named' | 'transient'
+    environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
+    // PR number as metadata (nullable, not a discriminator)
+    prNumber: integer("pr_number"), // NULL for named environments, PR number for transient
     workspacePath: text("workspace_path").notNull(),
     branch: text("branch").notNull(),
     headSha: text("head_sha").notNull(),
@@ -123,9 +134,18 @@ export const previews = pgTable(
     completedAt: timestamp("completed_at"),
   },
   (t) => [
-    unique("previews_org_repo_pr_workspace").on(t.orgId, t.repo, t.prNumber, t.workspacePath),
+    // New unique constraint based on environment_name instead of pr_number
+    unique("workspace_deployments_org_repo_env_workspace").on(
+      t.orgId,
+      t.repo,
+      t.environmentName,
+      t.workspacePath,
+    ),
   ],
 )
+
+// Type alias for backward compatibility during migration
+export const previews = workspaceDeployments
 
 // =============================================================================
 // Run Groups (groups related runs across workspaces)
@@ -137,7 +157,11 @@ export const runGroups = pgTable("run_groups", {
     .references(() => organizations.id, { onDelete: "cascade" })
     .notNull(),
   repo: text("repo").notNull(),
-  prNumber: integer("pr_number"), // NULL for branch/env runs
+  // Environment identification (new canonical discriminator)
+  environmentKind: text("environment_kind").notNull(), // 'named' | 'transient'
+  environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
+  // PR number as metadata (nullable, not a discriminator)
+  prNumber: integer("pr_number"), // NULL for named environments, PR number for transient
   branch: text("branch").notNull(),
   headSha: text("head_sha").notNull(),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
@@ -156,8 +180,10 @@ export const runGroups = pgTable("run_groups", {
 
 export const tfRuns = pgTable("tf_runs", {
   id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  previewId: uuid("preview_id")
-    .references(() => previews.id)
+  // Note: Column still named preview_id in DB for FK compatibility during migration
+  // Will be renamed to deployment_id in a future migration
+  deploymentId: uuid("preview_id")
+    .references(() => workspaceDeployments.id)
     .notNull(),
   runGroupId: uuid("run_group_id")
     .references(() => runGroups.id, { onDelete: "set null" }),
@@ -181,8 +207,9 @@ export const tfRuns = pgTable("tf_runs", {
 
 export const approvals = pgTable("approvals", {
   id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  previewId: uuid("preview_id")
-    .references(() => previews.id)
+  // Note: Column still named preview_id in DB for FK compatibility during migration
+  deploymentId: uuid("preview_id")
+    .references(() => workspaceDeployments.id)
     .notNull(),
   userId: text("user_id")
     .references(() => user.id)
@@ -217,8 +244,9 @@ export const iacJobs = pgTable(
   "iac_jobs",
   {
     id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-    previewId: uuid("preview_id")
-      .references(() => previews.id, { onDelete: "cascade" })
+    // Note: Column still named preview_id in DB for FK compatibility during migration
+    deploymentId: uuid("preview_id")
+      .references(() => workspaceDeployments.id, { onDelete: "cascade" })
       .notNull(),
     jobType: text("job_type").notNull(), // 'plan' | 'apply' | 'destroy'
     status: text("status").default("queued").notNull(), // 'queued' | 'dispatched' | 'running' | 'completed' | 'failed' | 'cancelled'

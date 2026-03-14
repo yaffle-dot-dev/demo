@@ -5,6 +5,7 @@ import type {
   WorkspaceWithRuns,
   Run,
   RunGroup,
+  DependencyGraph,
 } from "$lib/api"
 
 // ---------------------------------------------------------------------------
@@ -25,7 +26,39 @@ export interface PreviewStreamPayload {
 /** Payload shape for org dashboard preview list SSE stream */
 export interface PreviewListPayload {
   data: Preview[]
+  /** Dependency graphs keyed by "{repo}:{environmentName}" */
+  dependencyGraphs: Record<string, DependencyGraph>
   nextCursor: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Org status types
+// ---------------------------------------------------------------------------
+
+export type OrgProvisioningStatus = "pending" | "provisioning" | "active" | "failed"
+
+/** Payload shape for org status SSE stream */
+export interface OrgStatusPayload {
+  data: {
+    id: string
+    slug: string
+    name: string
+    provisioningStatus: OrgProvisioningStatus
+    provisioningError: string | null
+    provisioningAttempts: number
+  }
+}
+
+/** Return type of useOrgStatusStream */
+export interface OrgStatusStreamState {
+  /** Org provisioning status */
+  readonly status: OrgProvisioningStatus | null
+  /** Error message if provisioning failed */
+  readonly error: string | null
+  /** Number of provisioning attempts */
+  readonly attempts: number
+  /** Connection lifecycle state */
+  readonly connectionState: ConnectionState
 }
 
 // ---------------------------------------------------------------------------
@@ -54,6 +87,8 @@ export interface PreviewStreamState {
 export interface PreviewListStreamState {
   /** List of previews from SSE */
   readonly previews: Preview[]
+  /** Dependency graphs keyed by "{repo}:{environmentName}" */
+  readonly dependencyGraphs: Record<string, DependencyGraph>
   /** Connection lifecycle state */
   readonly connectionState: ConnectionState
 }

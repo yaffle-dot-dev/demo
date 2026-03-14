@@ -3,31 +3,37 @@ import { SpanKind } from "@opentelemetry/api"
 import type {
   PullRequestContext,
   PushContext,
-  TerraformResult,
   WebhookContext,
 } from "@yaffle/shared"
 
 import {
-  type YaffleConfig,
+  type YaffleTomlConfig,
+  buildPrEnvironmentName,
   ConfigError,
-  interpolateVariables,
-  parseYaml,
-  prVariableContext,
-  validateConfig,
-} from "./config.ts"
-// Note: executeApplyCallbacks is now called from iac-engine.ts
-// import { executeApplyCallbacks } from "./apply-callbacks.ts"
+  findPushTriggerEnvironment,
+  getWorkspacesForEnvironment,
+  matchesPullRequestTrigger,
+  parseYaffleToml,
+  resolveApprovers,
+} from "./config-toml.ts"
 import { ensureOrg } from "../db/queries/organizations.ts"
-import { findPreview, findPreviewById, markRemovedWorkspacesDestroyed, setPreviewUpstreams, updatePreviewStatus, upsertPreview } from "../db/queries/previews.ts"
-import { cancelJobsForPreview, createIacJob, findPendingJobsForPreview } from "../db/queries/iac-jobs.ts"
-import { appendRunLog, createTfRun, findLatestRun, updateRunStatus } from "../db/queries/tf-runs.ts"
+import {
+  markRemovedWorkspacesDestroyed,
+  findDeploymentById,
+  findDeploymentsByEnvironment,
+  setDeploymentUpstreams,
+  updateDeploymentStatus,
+  upsertDeployment,
+  recordDeploymentApproval,
+} from "../db/queries/workspace-deployments.ts"
+import { createIacJob, cancelJobsForPreview, findPendingJobsForPreview } from "../db/queries/iac-jobs.ts"
+import { findLatestRun } from "../db/queries/tf-runs.ts"
 import { createRunGroup, updateRunGroupDependencyGraph, type RunGroupTrigger } from "../db/queries/run-groups.ts"
 import { events } from "./events.ts"
 import {
   createCheckRun,
   fetchFileContent,
   getInstallationToken,
-  updateCheckRun,
 } from "./github.ts"
 import {
   type CheckRunRef,
@@ -45,18 +51,11 @@ import {
 
 import {
   beginWorkspaceArchive,
-  completeWorkspaceArchive,
-  failWorkspaceArchive,
   getWorkspacesToArchive,
 } from "./workspace-service.ts"
 import { useTfcBackend } from "./tfc-backend.ts"
-import { generateRunToken } from "./run-token.ts"
 import {
-  SpanStatusCode,
   getConfigLoadErrorCounter,
-  getRunDurationHistogram,
-  getRunResultCounter,
-  getRunQueueTimeHistogram,
   logger,
   withSpan,
 } from "./telemetry.ts"
@@ -107,7 +106,7 @@ function contextAttrs(ctx: WebhookContext): Record<string, string | number> {
  * In production, we fetch config via the GitHub API.
  * In tests, we inject a fake loader.
  */
-type ConfigLoader = (ctx: WebhookContext, token?: string) => Promise<YaffleConfig>
+type ConfigLoader = (ctx: WebhookContext, token?: string) => Promise<YaffleTomlConfig>
 
 /**
  * Result of scanning workspace dependencies and computing execution order.
@@ -247,7 +246,7 @@ export async function triggerApply(opts: {
   approverLogin?: string | null
 }): Promise<{ applyStarted: boolean; jobId: string }> {
   return previewMutex.run(`apply:${opts.previewId}`, async () => {
-    const preview = await findPreviewById(opts.previewId)
+    const preview = await findDeploymentById(opts.previewId)
     if (!preview) {
       throw new Error("preview not found")
     }
@@ -282,21 +281,20 @@ export async function triggerApply(opts: {
 
     // Record approval if approver info provided
     if (opts.userId) {
-      const { recordPreviewApproval } = await import("../db/queries/previews.ts")
-      await recordPreviewApproval(preview.id, opts.userId)
+      await recordDeploymentApproval(preview.id, opts.userId)
 
       // Also record in approvals table for audit trail
       if (preview.requireApproval) {
         const { createApproval } = await import("../db/queries/approvals.ts")
         await createApproval({
-          previewId: preview.id,
+          deploymentId: preview.id,
           userId: opts.userId,
           approverLogin: opts.approverLogin ?? null,
         })
       }
 
       logger.info("Approval recorded", {
-        previewId: preview.id,
+        deploymentId: preview.id,
         userId: opts.userId,
         approverLogin: opts.approverLogin ?? "unknown",
       })
@@ -304,18 +302,24 @@ export async function triggerApply(opts: {
 
     // Queue apply job
     const job = await createIacJob({
-      previewId: preview.id,
+      deploymentId: preview.id,
       jobType: "apply",
     })
 
     logger.info("Apply job queued", {
-      previewId: preview.id,
+      deploymentId: preview.id,
       jobId: job.id,
       workspacePath: preview.workspacePath,
     })
 
     // Emit event so UI sees the job queued
-    events.emitPreviewUpdate(preview.id, preview.orgId, preview.repo, preview.prNumber)
+    events.emitDeploymentUpdate(
+      preview.id,
+      preview.orgId,
+      preview.repo,
+      preview.environmentKind as "named" | "transient",
+      preview.environmentName,
+    )
 
     return { applyStarted: true, jobId: job.id }
   })
@@ -333,7 +337,7 @@ export async function rerunPreview(opts: {
   triggeredBy?: string | null
 }): Promise<{ runGroupId: string; jobId: string }> {
   return previewMutex.run(`rerun:${opts.previewId}`, async () => {
-    const preview = await findPreviewById(opts.previewId)
+    const preview = await findDeploymentById(opts.previewId)
     if (!preview) {
       throw new Error("preview not found")
     }
@@ -349,17 +353,16 @@ export async function rerunPreview(opts: {
     }
 
     // Reset preview status to pending (keeps existing run group)
-    const { updatePreviewStatus } = await import("../db/queries/previews.ts")
-    await updatePreviewStatus(preview.id, "pending")
+    await updateDeploymentStatus(preview.id, "pending")
 
     // Queue a plan job - the scheduler will pick it up
     const job = await createIacJob({
-      previewId: preview.id,
+      deploymentId: preview.id,
       jobType: "plan",
     })
 
     logger.info("Manual re-run queued", {
-      previewId: opts.previewId,
+      deploymentId: opts.previewId,
       runGroupId: preview.runGroupId,
       jobId: job.id,
       triggeredBy: opts.triggeredBy ?? "unknown",
@@ -373,7 +376,7 @@ export async function rerunPreview(opts: {
 /**
  * Fetch config from the repo via the GitHub Contents API.
  */
-async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<YaffleConfig> {
+async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<YaffleTomlConfig> {
   if (!ctx.installationId) {
     throw new ConfigError(
       "Cannot fetch config without a GitHub App installation",
@@ -384,18 +387,17 @@ async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<Yaffle
     ctx.installationId,
     ctx.owner,
     ctx.repo,
-    ".yaffle/config.yml",
+    "yaffle.toml",
     ctx.headSha,
   )
 
   if (!raw) {
     throw new ConfigError(
-      "No .yaffle/config.yml found. Yaffle requires a config file. See https://yaffle.dev/docs/config",
+      "No yaffle.toml found. Yaffle requires a config file. See https://yaffle.dev/docs/config",
     )
   }
 
-  const parsed = parseYaml(raw)
-  return validateConfig(parsed)
+  return parseYaffleToml(raw)
 }
 
 // ---------------------------------------------------------------------------
@@ -467,7 +469,7 @@ async function handlePrOpenedOrUpdated(
   const installationToken = await acquireToken(ctx)
 
   // Load config
-  let config: YaffleConfig
+  let config: YaffleTomlConfig
   try {
     config = await configLoader(ctx, installationToken)
   } catch (err) {
@@ -478,10 +480,28 @@ async function handlePrOpenedOrUpdated(
     return
   }
 
-  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
+  // Check if this branch matches any pull_request trigger
+  if (!matchesPullRequestTrigger(config, ctx.branch)) {
+    logger.info(`ignoring PR for branch that doesn't match any trigger`, {
+      ...attrs,
+      branch: ctx.branch,
+    })
+    return
+  }
+
+  // Get workspaces that apply to transient (PR) environments
+  const environmentName = buildPrEnvironmentName(ctx.prNumber)
+  const workspacePaths = getWorkspacesForEnvironment(config, environmentName, true)
+
+  if (workspacePaths.length === 0) {
+    logger.info("no workspaces configured for transient environments", attrs)
+    return
+  }
+
+  const wsPaths = workspacePaths.join(", ")
   logger.info(
-    `config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`,
-    { ...attrs, "yaffle.workspace_count": config.workspaces.length },
+    `config loaded: ${workspacePaths.length} workspace(s) for PR [${wsPaths}]`,
+    { ...attrs, "yaffle.workspace_count": workspacePaths.length },
   )
 
   const statePrefix = previewStatePrefix(ctx.prNumber)
@@ -492,6 +512,8 @@ async function handlePrOpenedOrUpdated(
   const runGroup = await createRunGroup({
     orgId: org.id,
     repo: ctx.repo,
+    environmentKind: "transient",
+    environmentName,
     prNumber: ctx.prNumber,
     branch: ctx.branch,
     headSha: ctx.headSha,
@@ -499,8 +521,8 @@ async function handlePrOpenedOrUpdated(
     status: "pending",
   })
 
-  // Scan dependencies and compute execution order
-  const workspacePaths = config.workspaces.map((ws) => ws.path)
+  // Filter config.workspaces to only those that apply to this environment
+  const activeWorkspaces = config.workspaces.filter((ws) => workspacePaths.includes(ws.path))
   let executionOrder: string[]
   let dependencyGraph: SerializableDependencyGraph
 
@@ -525,7 +547,7 @@ async function handlePrOpenedOrUpdated(
   }
 
   // Create a map for quick workspace lookup by path
-  const workspaceByPath = new Map(config.workspaces.map((ws) => [ws.path, ws]))
+  const workspaceByPath = new Map(activeWorkspaces.map((ws) => [ws.path, ws]))
 
   // Build dependency maps:
   // - workspaceDeps: workspace path -> set of upstream workspace paths
@@ -556,11 +578,17 @@ async function handlePrOpenedOrUpdated(
     const upstreamPaths = workspaceDeps.get(ws.path) ?? new Set()
     const isRoot = upstreamPaths.size === 0
 
+    // Resolve approvers from approval rules (supports transient environments via "*")
+    const approvers = resolveApprovers(config, ws.path, environmentName)
+    const requireApproval = approvers.length > 0
+
     // Upsert preview with run_group_id
-    const preview = await upsertPreview({
+    const preview = await upsertDeployment({
       orgId: org.id,
       installationId: ctx.installationId,
       repo: ctx.repo,
+      environmentKind: "transient",
+      environmentName,
       prNumber: ctx.prNumber,
       workspacePath: ws.path,
       branch: ctx.branch,
@@ -569,8 +597,8 @@ async function handlePrOpenedOrUpdated(
       authorLogin: ctx.authorLogin,
       stateKey,
       mode: "terraform",
-      requireApproval: false,
-      approvers: null,
+      requireApproval,
+      approvers: approvers.length > 0 ? approvers : null,
       runGroupId: runGroup.id,
     })
 
@@ -586,17 +614,31 @@ async function handlePrOpenedOrUpdated(
         .map((path) => pathToPreviewId.get(path))
         .filter((id): id is string => id !== undefined)
 
-      await setPreviewUpstreams(preview.id, upstreamIds)
+      await setDeploymentUpstreams(preview.id, upstreamIds)
 
-      logger.info("Set upstream dependencies for preview", {
-        previewId: preview.id,
+      logger.info("Set upstream dependencies for deployment", {
+        deploymentId: preview.id,
         workspacePath: ws.path,
         upstreamIds,
       })
     }
   }
 
-  // Third pass: queue plan jobs for root workspaces only
+  // Third pass: cancel any pending destroy jobs and queue plan jobs
+  // On PR reopen, there may be pending destroy jobs from a previous close
+  // that need to be cancelled before queueing new plan jobs
+  for (const { preview } of previewData) {
+    const cancelledCount = await cancelJobsForPreview(preview.id)
+    if (cancelledCount > 0) {
+      logger.info("Cancelled pending jobs for deployment", {
+        ...attrs,
+        deploymentId: preview.id,
+        cancelledCount,
+      })
+    }
+  }
+
+  // Fourth pass: queue plan jobs for root workspaces only
   // Non-root workspaces will have their jobs queued by the IaC engine
   // when their upstreams complete (via notifyDownstreams)
   const rootCount = previewData.filter((p) => p.isRoot).length
@@ -610,14 +652,14 @@ async function handlePrOpenedOrUpdated(
     if (isRoot) {
       // Queue plan job for root workspaces
       const job = await createIacJob({
-        previewId: preview.id,
+        deploymentId: preview.id,
         jobType: "plan",
       })
 
       logger.info("Queued plan job for root workspace", {
         ...attrs,
         workspacePath: ws.path,
-        previewId: preview.id,
+        deploymentId: preview.id,
         jobId: job.id,
       })
 
@@ -629,7 +671,7 @@ async function handlePrOpenedOrUpdated(
       logger.info("Workspace waiting for upstream dependencies", {
         ...attrs,
         workspacePath: ws.path,
-        previewId: preview.id,
+        deploymentId: preview.id,
         upstreamCount: (workspaceDeps.get(ws.path) ?? new Set()).size,
       })
     }
@@ -638,27 +680,38 @@ async function handlePrOpenedOrUpdated(
   // Emit event so UI picks up the queued state
   if (previewData.length > 0) {
     const first = previewData[0]
-    events.emitPreviewUpdate(first.preview.id, org.id, ctx.repo, ctx.prNumber)
+    events.emitDeploymentUpdate(
+      first.preview.id,
+      org.id,
+      ctx.repo,
+      "transient",
+      environmentName,
+    )
   }
 }
 
 /**
- * PR closed -- destroy preview resources for all workspaces.
+ * PR closed -- queue destroy jobs for all workspaces.
  * Whether merged or not, the preview gets destroyed.
+ *
+ * Destroy jobs are queued in reverse dependency order:
+ * - Leaf workspaces (no downstreams) get destroy jobs queued immediately
+ * - Non-leaf workspaces wait for their downstreams to be destroyed first
+ * - The IaC engine handles cascading destroy via notifyDestroyComplete
  */
 async function handlePrClosed(
   ctx: PullRequestContext,
-  runner: Runner,
+  _runner: Runner, // Kept for API compatibility; execution now happens via IaC engine
   configLoader: ConfigLoader,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   const attrs = contextAttrs(ctx)
   const org = await ensureOrg(ctx.owner, ctx.ownerGithubId, ctx.installationId)
-  const installationToken = await acquireToken(ctx)
 
   // Load config to know which workspaces to destroy
-  let config: YaffleConfig
+  let config: YaffleTomlConfig
   try {
+    const installationToken = await acquireToken(ctx)
     config = await configLoader(ctx, installationToken)
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -668,119 +721,113 @@ async function handlePrClosed(
     return
   }
 
-  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
+  // Get workspaces that apply to transient environments
+  const environmentName = buildPrEnvironmentName(ctx.prNumber)
+  const workspacePaths = getWorkspacesForEnvironment(config, environmentName, true)
+
+  if (workspacePaths.length === 0) {
+    logger.info("no workspaces configured for transient environments", attrs)
+    return
+  }
+
   logger.info(
-    `config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`,
-    { ...attrs, "yaffle.workspace_count": config.workspaces.length },
+    `config loaded: ${workspacePaths.length} workspace(s) for PR destroy [${workspacePaths.join(", ")}]`,
+    { ...attrs, "yaffle.workspace_count": workspacePaths.length },
   )
 
-  const statePrefix = previewStatePrefix(ctx.prNumber)
-  const varCtx = prVariableContext({
-    prNumber: ctx.prNumber,
-    branch: ctx.branch,
-    sha: ctx.headSha,
-    owner: ctx.owner,
-    repo: ctx.repo,
-  })
-  const comment = createCommentManager(ctx)
+  // Get all deployments for this PR environment
+  const deployments = await findDeploymentsByEnvironment(org.id, ctx.repo, environmentName)
+
+  if (deployments.length === 0) {
+    logger.info("no deployments found for this PR, nothing to destroy", attrs)
+    return
+  }
+
   const usingTfcBackend = useTfcBackend()
 
-  // If using TFC backend, also get TFC workspaces to archive
+  // If using TFC backend, get TFC workspaces to archive
   const tfcWorkspacesToArchive = usingTfcBackend
     ? await getWorkspacesToArchive(org.id, ctx.repo, ctx.prNumber)
     : []
 
-  for (const ws of config.workspaces) {
-    await withSpan("workspace.destroy", async (wsSpan) => {
-      const stateKey = buildStateKey(statePrefix, ws.path)
-      const wsTag = `${tag}:${ws.path}`
-      const wsAttrs = { ...attrs, "yaffle.workspace_path": ws.path, "yaffle.state_key": stateKey }
-      wsSpan.setAttributes(wsAttrs)
+  // Identify leaf deployments (those with no downstream dependencies within this PR)
+  // A deployment is a leaf if no other deployment in this PR has it in their upstreamIds
+  const leafDeployments = deployments.filter((d) => {
+    const hasDownstreams = deployments.some((other) =>
+      other.upstreamIds?.includes(d.id),
+    )
+    return !hasDownstreams
+  })
 
-      const preview = await findPreview(org.id, ctx.repo, ctx.prNumber, ws.path)
-      if (!preview) {
-        logger.warn("no preview found, nothing to destroy", wsAttrs)
-        return
+  logger.info("Identified leaf deployments for destroy", {
+    ...attrs,
+    totalDeployments: deployments.length,
+    leafCount: leafDeployments.length,
+    leafPaths: leafDeployments.map((d) => d.workspacePath),
+  })
+
+  // Process each deployment: cancel pending jobs, lock TFC workspace, queue destroy
+  for (const deployment of deployments) {
+    const wsAttrs = { ...attrs, "yaffle.workspace_path": deployment.workspacePath, deploymentId: deployment.id }
+
+    // Cancel any pending plan/apply jobs for this deployment
+    const cancelledCount = await cancelJobsForPreview(deployment.id)
+    if (cancelledCount > 0) {
+      logger.info(`cancelled ${cancelledCount} pending job(s)`, wsAttrs)
+    }
+
+    // Lock TFC workspace if using TFC backend
+    const tfcWorkspace = tfcWorkspacesToArchive.find(
+      (w) => w.workspacePath === deployment.workspacePath,
+    )
+
+    if (tfcWorkspace) {
+      const locked = await beginWorkspaceArchive(tfcWorkspace.id)
+      if (!locked) {
+        logger.warn("Could not lock TFC workspace for archive, skipping destroy", {
+          ...wsAttrs,
+          tfcWorkspaceId: tfcWorkspace.id,
+        })
+        continue
       }
+    }
 
-      // Cancel any pending jobs for this preview
-      const cancelledCount = await cancelJobsForPreview(preview.id)
-      if (cancelledCount > 0) {
-        logger.info(`cancelled ${cancelledCount} pending job(s)`, wsAttrs)
-      }
+    // Set deployment to pending state (waiting for destroy job)
+    await updateDeploymentStatus(deployment.id, "pending")
 
-      // Find corresponding TFC workspace if using TFC backend
-      const tfcWorkspace = tfcWorkspacesToArchive.find(
-        (w) => w.workspacePath === ws.path,
-      )
+    // Only queue destroy jobs for leaf deployments
+    // Non-leaf deployments will have their destroy jobs queued by the IaC engine
+    // when all their downstreams complete (via notifyDestroyComplete)
+    const isLeaf = leafDeployments.some((leaf) => leaf.id === deployment.id)
 
-      // Begin TFC workspace archive (locks the workspace)
-      if (tfcWorkspace) {
-        const locked = await beginWorkspaceArchive(tfcWorkspace.id)
-        if (!locked) {
-          logger.warn("Could not lock TFC workspace for archive, skipping destroy", {
-            ...wsAttrs,
-            tfcWorkspaceId: tfcWorkspace.id,
-          })
-          return
-        }
-      }
-
-      // Generate TFC token for destroy if using TFC backend
-      let tfcWorkspaceId: string | undefined
-      let tfcWorkspaceName: string | undefined
-      let tfcOrganization: string | undefined
-      let tfcToken: string | undefined
-
-      if (tfcWorkspace) {
-        tfcWorkspaceId = tfcWorkspace.id
-        tfcWorkspaceName = tfcWorkspace.name
-        tfcOrganization = org.slug
-        tfcToken = await generateRunToken(preview.id, tfcWorkspace.id, org.id)
-      }
-
-      const variables = interpolateVariables(ws.variables, varCtx)
-
-      logger.info("destroying preview", wsAttrs)
-      await updatePreviewStatus(preview.id, "destroying")
-      await comment.update(ws.path, { phase: "destroying" })
-
-      const destroyResult = await executeRun({
-        ctx,
-        preview,
-        runner,
-        command: "destroy",
-        stateKey,
-        workspacePath: ws.path,
-        variables,
-        installationToken,
-        wsTag,
-        tfcWorkspaceId,
-        tfcWorkspaceName,
-        tfcOrganization,
-        tfcToken,
+    if (isLeaf) {
+      const job = await createIacJob({
+        deploymentId: deployment.id,
+        jobType: "destroy",
       })
 
-      if (destroyResult.success) {
-        await updatePreviewStatus(preview.id, "destroyed")
-        await comment.update(ws.path, { phase: "destroyed" })
+      logger.info("Queued destroy job for leaf deployment", {
+        ...wsAttrs,
+        jobId: job.id,
+      })
+    } else {
+      logger.info("Deployment waiting for downstream destroys", {
+        ...wsAttrs,
+        upstreamIds: deployment.upstreamIds,
+      })
+    }
+  }
 
-        // Archive TFC workspace
-        if (tfcWorkspace) {
-          await completeWorkspaceArchive(tfcWorkspace.id)
-        }
-
-        logger.info("preview destroyed", wsAttrs)
-      } else {
-        // Mark TFC workspace archive as failed
-        if (tfcWorkspace) {
-          await failWorkspaceArchive(
-            tfcWorkspace.id,
-            destroyResult.errorMessage ?? "terraform destroy failed",
-          )
-        }
-      }
-    })
+  // Emit event so UI sees the queued state
+  if (deployments.length > 0) {
+    const first = deployments[0]
+    events.emitDeploymentUpdate(
+      first.id,
+      org.id,
+      ctx.repo,
+      "transient",
+      environmentName,
+    )
   }
 }
 
@@ -806,7 +853,7 @@ async function handlePushEvent(
   const installationToken = await acquireToken(ctx)
 
   // Load config -- no PR to annotate on push events, just log
-  let config: YaffleConfig
+  let config: YaffleTomlConfig
   try {
     config = await configLoader(ctx, installationToken)
   } catch (err) {
@@ -816,38 +863,44 @@ async function handlePushEvent(
     return
   }
 
-  const wsPaths = config.workspaces.map((ws) => ws.path).join(", ")
-  logger.info(
-    `config loaded: ${config.workspaces.length} workspace(s) [${wsPaths}]`,
-    { ...attrs, "yaffle.workspace_count": config.workspaces.length },
-  )
-
-  // Determine default branch
-  const defaultBranch = config.default_branch ?? ctx.defaultBranch
-  if (ctx.branch !== defaultBranch) {
+  // Check if this branch matches any push trigger
+  const environmentName = findPushTriggerEnvironment(config, ctx.branch)
+  if (!environmentName) {
     logger.info(
-      `ignoring push to non-default branch (default: ${defaultBranch})`,
-      attrs,
+      `ignoring push to branch that doesn't match any trigger`,
+      { ...attrs, branch: ctx.branch },
     )
     return
   }
 
-  const statePrefix = branchStatePrefix(ctx.branch)
+  // Get workspaces that apply to this named environment
+  const workspacePaths = getWorkspacesForEnvironment(config, environmentName, false)
 
-  // Filter to workspaces that should run on push
-  const activeWorkspaces = config.workspaces.filter(
-    (ws) => ws.auto_apply_on_merge || ws.require_approval,
-  )
-
-  if (activeWorkspaces.length === 0) {
-    logger.info("no workspaces configured for production deploy", attrs)
+  if (workspacePaths.length === 0) {
+    logger.info("no workspaces configured for this environment", {
+      ...attrs,
+      environmentName,
+    })
     return
   }
 
+  const activeWorkspaces = config.workspaces.filter((ws) => workspacePaths.includes(ws.path))
+
+  const wsPaths = workspacePaths.join(", ")
+  logger.info(
+    `config loaded: ${workspacePaths.length} workspace(s) for ${environmentName} [${wsPaths}]`,
+    { ...attrs, "yaffle.workspace_count": workspacePaths.length, environmentName },
+  )
+
+  const statePrefix = branchStatePrefix(ctx.branch)
+
   // Create a single run group for this push event (covers both plan and apply)
+  // Push events to the default branch are "named" environments (e.g., "main", "production")
   const runGroup = await createRunGroup({
     orgId: org.id,
     repo: ctx.repo,
+    environmentKind: "named",
+    environmentName,
     prNumber: null, // null for branch/env runs
     branch: ctx.branch,
     headSha: ctx.headSha,
@@ -909,11 +962,17 @@ async function handlePushEvent(
     const upstreamPaths = workspaceDeps.get(ws.path) ?? new Set()
     const isRoot = upstreamPaths.size === 0
 
-    const preview = await upsertPreview({
+    // Resolve approvers from approval rules
+    const approvers = resolveApprovers(config, ws.path, environmentName)
+    const requireApproval = approvers.length > 0
+
+    const preview = await upsertDeployment({
       orgId: org.id,
       installationId: ctx.installationId,
       repo: ctx.repo,
-      prNumber: 0,
+      environmentKind: "named",
+      environmentName,
+      prNumber: null, // null for branch/env runs
       workspacePath: ws.path,
       branch: ctx.branch,
       headSha: ctx.headSha,
@@ -921,8 +980,8 @@ async function handlePushEvent(
       authorLogin: ctx.pusherLogin ?? undefined,
       stateKey,
       mode: "terraform",
-      requireApproval: ws.require_approval ?? false,
-      approvers: ws.approvers ?? null,
+      requireApproval,
+      approvers: approvers.length > 0 ? approvers : null,
       runGroupId: runGroup.id,
     })
 
@@ -938,10 +997,10 @@ async function handlePushEvent(
         .map((path) => pathToPreviewId.get(path))
         .filter((id): id is string => id !== undefined)
 
-      await setPreviewUpstreams(preview.id, upstreamIds)
+      await setDeploymentUpstreams(preview.id, upstreamIds)
 
-      logger.info("Set upstream dependencies for production preview", {
-        previewId: preview.id,
+      logger.info("Set upstream dependencies for production deployment", {
+        deploymentId: preview.id,
         workspacePath: ws.path,
         upstreamIds,
       })
@@ -959,21 +1018,21 @@ async function handlePushEvent(
   for (const { ws, preview, isRoot } of previewData) {
     if (isRoot) {
       const job = await createIacJob({
-        previewId: preview.id,
+        deploymentId: preview.id,
         jobType: "plan",
       })
 
       logger.info("Queued plan job for root production workspace", {
         ...attrs,
         workspacePath: ws.path,
-        previewId: preview.id,
+        deploymentId: preview.id,
         jobId: job.id,
       })
     } else {
       logger.info("Production workspace waiting for upstream dependencies", {
         ...attrs,
         workspacePath: ws.path,
-        previewId: preview.id,
+        deploymentId: preview.id,
         upstreamCount: (workspaceDeps.get(ws.path) ?? new Set()).size,
       })
     }
@@ -982,20 +1041,22 @@ async function handlePushEvent(
   // Emit event so UI picks up the queued state
   if (previewData.length > 0) {
     const first = previewData[0]
-    events.emitPreviewUpdate(first.preview.id, org.id, ctx.repo, 0)
+    events.emitDeploymentUpdate(
+      first.preview.id,
+      org.id,
+      ctx.repo,
+      "named",
+      environmentName,
+    )
   }
 
   // Mark workspaces that are no longer in the config as destroyed
-  const configWorkspacePaths = config.workspaces
-    .filter((ws) => ws.auto_apply_on_merge || ws.require_approval)
-    .map((ws) => ws.path)
-
   const destroyedCount = await markRemovedWorkspacesDestroyed(
     org.id,
     ctx.repo,
-    ctx.branch,
+    environmentName,
     ctx.headSha,
-    configWorkspacePaths,
+    workspacePaths,
   )
 
   if (destroyedCount > 0) {
@@ -1003,254 +1064,7 @@ async function handlePushEvent(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Shared execution logic
-// ---------------------------------------------------------------------------
 
-/**
- * Execute a single terraform run, creating DB records and updating
- * GitHub check runs.
- */
-/** TerraformResult extended with the check run ID created for this run. */
-type RunResult = TerraformResult & { checkRunId?: number }
-
-async function executeRun(opts: {
-  ctx: WebhookContext
-  preview: { id: string }
-  runner: Runner
-  command: "plan" | "apply" | "destroy"
-  stateKey: string
-  workspacePath: string
-  variables: Record<string, string | boolean>
-  installationToken?: string
-  wsTag: string
-  createCheckRun?: boolean
-  checkRunId?: number // Existing check run to update (instead of creating new)
-  existingRunId?: string // Use existing run record instead of creating new
-  runGroupId?: string // Run group this run belongs to
-  // TFC backend options (when YAFFLE_TFC_API_HOST is set)
-  tfcWorkspaceId?: string
-  tfcWorkspaceName?: string
-  tfcOrganization?: string
-  tfcToken?: string
-}): Promise<RunResult> {
-  return withSpan(`run.${opts.command}`, async (span) => {
-    const { ctx, preview, runner } = opts
-    const runAttrs = {
-      "yaffle.command": opts.command,
-      "yaffle.workspace_path": opts.workspacePath,
-      "yaffle.state_key": opts.stateKey,
-      "yaffle.owner": ctx.owner,
-      "yaffle.repo": ctx.repo,
-      "yaffle.ws_tag": opts.wsTag,
-    }
-    span.setAttributes(runAttrs)
-
-    // Use existing run or create new one
-    const runCreatedAt = Date.now()
-    const run = opts.existingRunId
-      ? { id: opts.existingRunId, previewId: preview.id }
-      : await createTfRun({
-          previewId: preview.id,
-          runGroupId: opts.runGroupId,
-          runType: opts.command,
-          status: "pending",
-        })
-
-    // Use existing check run or create a new one
-    let checkRunId: number | undefined = opts.checkRunId
-    if (!checkRunId && ctx.installationId && (ctx.kind === "pull_request" || opts.createCheckRun)) {
-      const checkName = opts.workspacePath === "."
-        ? CHECK_NAME
-        : `${CHECK_NAME} (${opts.workspacePath})`
-
-      try {
-          checkRunId = await createCheckRun(ctx.installationId, {
-            owner: ctx.owner,
-            repo: ctx.repo,
-            headSha: ctx.headSha,
-            name: checkName,
-            status: "in_progress",
-            title: `Running ${opts.command}`,
-            summary: `${opts.command} for ${opts.workspacePath}...`,
-          })
-      } catch (err) {
-        logger.warn("failed to create check run", {
-          ...runAttrs,
-          "error": err instanceof Error ? err.message : String(err),
-        })
-      }
-    }
-
-    const runStartedAt = Date.now()
-    const queueTimeMs = runStartedAt - runCreatedAt
-    getRunQueueTimeHistogram().record(queueTimeMs, {
-      command: opts.command,
-      workspace: opts.workspacePath,
-    })
-    span.setAttributes({ "yaffle.run.queue_time_ms": queueTimeMs })
-
-    await updateRunStatus(run.id, preview.id, "running", {
-      checkRunId,
-      startedAt: new Date(),
-    })
-
-    // Execute
-    let result: TerraformResult
-    let logBuffer = ""
-    let flushing: Promise<void> | null = null
-    let flushInterval: ReturnType<typeof setInterval> | null = null
-
-    const flushLogs = async (): Promise<void> => {
-      if (!logBuffer) return
-      const chunk = logBuffer
-      logBuffer = ""
-      try {
-        await appendRunLog(run.id, preview.id, chunk)
-      } catch (err) {
-        logger.warn("failed to append run logs", {
-          ...runAttrs,
-          "error": err instanceof Error ? err.message : String(err),
-        })
-      }
-    }
-    try {
-      // Flush logs frequently for smooth streaming (100ms interval)
-      flushInterval = setInterval(() => {
-        if (!flushing) {
-          flushing = flushLogs().finally(() => {
-            flushing = null
-          })
-        }
-      }, 100)
-
-      result = await runner.run({
-        owner: ctx.owner,
-        repo: ctx.repo,
-        headSha: ctx.headSha,
-        command: opts.command,
-        workspacePath: opts.workspacePath,
-        stateKey: opts.stateKey,
-        variables: opts.variables,
-        installationToken: opts.installationToken,
-        // Yaffle context for provider tags
-        runId: run.id,
-        prNumber: ctx.kind === "pull_request" ? ctx.prNumber : undefined,
-        // TFC backend options
-        tfcWorkspaceId: opts.tfcWorkspaceId,
-        tfcWorkspaceName: opts.tfcWorkspaceName,
-        tfcOrganization: opts.tfcOrganization,
-        tfcToken: opts.tfcToken,
-        onOutput: (chunk, source) => {
-          const entry = source === "stderr" ? `[stderr] ${chunk}` : chunk
-          logBuffer += entry
-          // Flush immediately on larger chunks for smooth streaming
-          if (logBuffer.length > 512 && !flushing) {
-            flushing = flushLogs().finally(() => {
-              flushing = null
-            })
-          }
-        },
-      })
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      logger.error(`${opts.command} threw: ${msg}`, runAttrs)
-      span.setStatus({ code: SpanStatusCode.ERROR, message: msg })
-      span.recordException(err instanceof Error ? err : new Error(msg))
-
-      result = {
-        success: false,
-        command: opts.command,
-        output: "",
-        errorMessage: msg,
-        durationMs: 0,
-      }
-    }
-
-    if (flushInterval) {
-      clearInterval(flushInterval)
-    }
-
-    if (flushing) {
-      await flushing
-    }
-    await flushLogs()
-
-    // Record metrics
-    getRunDurationHistogram().record(result.durationMs, {
-      command: opts.command,
-      workspace: opts.workspacePath,
-      success: String(result.success),
-    })
-    getRunResultCounter().add(1, {
-      command: opts.command,
-      workspace: opts.workspacePath,
-      result: result.success ? "success" : "failure",
-    })
-
-    // Update span with result
-    span.setAttributes({
-      "yaffle.run.success": result.success,
-      "yaffle.run.duration_ms": result.durationMs,
-    })
-
-    // Update DB
-    if (result.success) {
-      await updateRunStatus(run.id, preview.id, "success", {
-        completedAt: new Date(),
-        planSummary: result.planSummary,
-        planJson: result.planJson,
-        outputs: result.outputs,
-      })
-    } else {
-      await updateRunStatus(run.id, preview.id, "failed", {
-        completedAt: new Date(),
-        errorMessage: result.errorMessage,
-      })
-      await updatePreviewStatus(preview.id, "failed")
-      span.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: result.errorMessage ?? `${opts.command} failed`,
-      })
-    }
-
-    logger.info(
-      `${opts.command}: success=${result.success} duration=${result.durationMs}ms`,
-      runAttrs,
-    )
-
-    // Update check run
-    if (checkRunId && ctx.installationId) {
-      const MAX_TEXT_LENGTH = 65000
-      let text = result.output
-      if (text.length > MAX_TEXT_LENGTH) {
-        text = `${text.slice(0, MAX_TEXT_LENGTH)}\n\n... (output truncated)`
-      }
-      const formattedText = text ? `\`\`\`\n${text}\n\`\`\`` : undefined
-
-      await updateCheckRun(ctx.installationId, ctx.owner, ctx.repo, checkRunId, {
-        status: "completed",
-        conclusion: result.success ? "success" : "failure",
-        title: result.success
-          ? opts.command === "plan"
-            ? `Plan: ${result.planSummary ?? "complete"}`
-            : `${opts.command} complete`
-          : `${opts.command} failed`,
-        summary: result.success
-          ? opts.command === "plan"
-            ? `Plan: ${result.planSummary ?? "complete"}`
-            : `${opts.command} completed successfully`
-          : (result.errorMessage ?? `${opts.command} failed`),
-        text: formattedText,
-      }).catch((err) => logger.warn("failed to update check run", {
-        ...runAttrs,
-        "error": err instanceof Error ? err.message : String(err),
-      }))
-    }
-
-    return { ...result, checkRunId }
-  })
-}
 
 /**
  * Create a failed check run to surface a config error on a PR.

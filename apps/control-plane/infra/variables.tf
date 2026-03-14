@@ -3,10 +3,9 @@ variable "environment" {
   description = "Environment name - branch name (e.g., 'main') or preview (e.g., 'prvw-42')"
 }
 
-variable "is_preview" {
-  type        = bool
-  description = "Whether this is a preview environment (ephemeral, for PRs)"
-  default     = false
+variable "environment_kind" {
+  type        = string
+  description = "Kind of environment ('named' or 'transient')"
 }
 
 variable "aws_region" {
@@ -56,7 +55,9 @@ locals {
   name_suffix         = module.naming.suffix
   replica_name_suffix = module.naming_replica.suffix
 
+  is_preview = var.environment_kind == "transient"
+
   # API domain: api.yaffle.dev for production, api-{env}.preview.yaffle.dev for previews
   # Uses hyphen (not dot) to stay within *.preview.yaffle.dev wildcard cert coverage
-  api_domain = var.is_preview ? "api-${var.environment}.preview.${var.domain}" : "api.${var.domain}"
+  api_domain = local.is_preview ? "api-${var.environment}.preview.${var.domain}" : "api.${var.domain}"
 }

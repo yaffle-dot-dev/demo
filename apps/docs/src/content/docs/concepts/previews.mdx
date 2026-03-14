@@ -1,0 +1,73 @@
+---
+title: Previews
+description: Ephemeral environments for every PR
+---
+
+## What's a preview?
+
+An isolated OpenTofu workspace that exists while a PR is open.
+
+```
+PR opened   → Preview created, tofu apply
+PR updated  → Preview updated, tofu apply
+PR merged   → Production apply, preview destroyed
+PR closed   → Preview destroyed
+```
+
+## Isolation
+
+Each preview gets:
+
+- **Unique state** — `previews/pr-42/terraform.tfstate`
+- **Namespaced resources** — via `{{ environment }}` variable
+
+```hcl
+resource "aws_s3_bucket" "data" {
+  bucket = "myapp-${var.environment}"
+}
+```
+
+PR #42 creates `myapp-pr-42`. No collision with PR #99 or production.
+
+## Lifecycle
+
+| PR Event | Yaffle Action |
+|----------|---------------|
+| Opened | `plan` → `apply` to preview |
+| Pushed | `plan` → `apply` to preview |
+| Merged | `apply` to production → `destroy` preview |
+| Closed | `destroy` preview |
+
+## Outputs
+
+After apply, outputs are available:
+
+**In the GitHub check:**
+```
+Outputs:
+  api_url = "https://pr-42.api.example.com"
+```
+
+**Via API:**
+```bash
+curl https://api.yaffle.dev/previews/pr-42/outputs
+```
+
+**In GitHub Actions:**
+```yaml
+- uses: yaffledev/outputs-action@v1
+  with:
+    preview: pr-${{ github.event.pull_request.number }}
+```
+
+## Preview status
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Waiting for runner |
+| `planning` | Running `terraform plan` |
+| `applying` | Running `terraform apply` |
+| `ready` | Infrastructure is up |
+| `failed` | Run failed |
+| `destroying` | Running `terraform destroy` |
+| `destroyed` | Cleaned up |

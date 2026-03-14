@@ -145,6 +145,11 @@ function resetMeter(): void {
   _schedulerPollGroupsQueried = null
   _schedulerPollJobsFetched = null
   _schedulerSkipLockedMisses = null
+  // Provisioning metrics
+  _provisioningAttemptsCounter = null
+  _provisioningDurationHistogram = null
+  _provisioningFailuresCounter = null
+  _provisioningPermanentFailuresCounter = null
 }
 
 let _webhookReceivedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
@@ -479,6 +484,55 @@ export function getSchedulerSkipLockedMissesCounter(): typeof _schedulerSkipLock
     })
   }
   return _schedulerSkipLockedMisses
+}
+
+// ---------------------------------------------------------------------------
+// Org Provisioning metrics
+// ---------------------------------------------------------------------------
+
+let _provisioningAttemptsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: org provisioning attempts, by status (success/failure) and org. */
+export function getProvisioningAttemptsCounter(): typeof _provisioningAttemptsCounter & {} {
+  if (!_provisioningAttemptsCounter) {
+    _provisioningAttemptsCounter = getMeter().createCounter("yaffle.provisioning.attempts", {
+      description: "Org provisioning attempts",
+    })
+  }
+  return _provisioningAttemptsCounter
+}
+
+let _provisioningDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: org provisioning duration in ms. */
+export function getProvisioningDurationHistogram(): typeof _provisioningDurationHistogram & {} {
+  if (!_provisioningDurationHistogram) {
+    _provisioningDurationHistogram = getMeter().createHistogram("yaffle.provisioning.duration", {
+      description: "Org provisioning duration in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _provisioningDurationHistogram
+}
+
+let _provisioningFailuresCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: org provisioning failures, by error type. */
+export function getProvisioningFailuresCounter(): typeof _provisioningFailuresCounter & {} {
+  if (!_provisioningFailuresCounter) {
+    _provisioningFailuresCounter = getMeter().createCounter("yaffle.provisioning.failures", {
+      description: "Org provisioning failures by error type",
+    })
+  }
+  return _provisioningFailuresCounter
+}
+
+let _provisioningPermanentFailuresCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: org provisioning permanent failures (max attempts exceeded). */
+export function getProvisioningPermanentFailuresCounter(): typeof _provisioningPermanentFailuresCounter & {} {
+  if (!_provisioningPermanentFailuresCounter) {
+    _provisioningPermanentFailuresCounter = getMeter().createCounter("yaffle.provisioning.permanent_failures", {
+      description: "Org provisioning permanent failures (max attempts exceeded)",
+    })
+  }
+  return _provisioningPermanentFailuresCounter
 }
 
 // ---------------------------------------------------------------------------

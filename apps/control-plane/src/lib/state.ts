@@ -174,7 +174,7 @@ export async function removeLocalState(
 
 /**
  * Write a yaffle_injected_variables.tf that declares Yaffle-injected variables
- * (environment, is_preview) if they're not already declared in the workspace.
+ * (environment, environment_kind) if they're not already declared in the workspace.
  * This prevents "undeclared variable" errors when Yaffle passes these vars.
  *
  * NOTE: We use "yaffle_injected_variables.tf" not "*_override.tf" because
@@ -185,7 +185,7 @@ export async function configureVariablesOverride(
 ): Promise<void> {
   const variablesToInject = [
     { name: "environment", type: "string", description: "Environment name (injected by Yaffle)" },
-    { name: "is_preview", type: "bool", description: "Whether this is a preview environment (injected by Yaffle)" },
+    { name: "environment_kind", type: "string", description: "Environment kind: 'named' or 'transient' (injected by Yaffle)" },
   ]
 
   // Check which variables are already declared by scanning .tf files

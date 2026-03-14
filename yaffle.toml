@@ -1,0 +1,80 @@
+version = 1
+
+# =============================================================================
+# Environments
+# =============================================================================
+# Named, long-lived deployment targets
+
+[[environments]]
+name = "main"
+
+# =============================================================================
+# Triggers
+# =============================================================================
+
+# Deploy to main environment when main branch is pushed
+[[triggers.github.push]]
+branch = "main"
+environment = "main"
+
+# Create transient environments for all pull requests
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+# =============================================================================
+# Workspaces
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Core Infrastructure (shared, production, nonprod)
+# ---------------------------------------------------------------------------
+# These are foundational - changes here affect all applications.
+
+[[workspaces]]
+path = "infra/shared"
+environments = ["main"]
+variables.cloudflare_zone_id = "bde07ad246cac0ae6ae68324e6aae341"
+
+# [[workspaces]]
+# path = "infra/production"
+# environments = ["main"]
+
+# [[workspaces]]
+# path = "infra/nonprod"
+# environments = ["main"]
+
+# ---------------------------------------------------------------------------
+# Application Infrastructure
+# ---------------------------------------------------------------------------
+
+# [[workspaces]]
+# path = "apps/control-plane/infra"
+# environments = ["*"]
+
+# ---------------------------------------------------------------------------
+# App S3 Buckets (owned by individual apps)
+# ---------------------------------------------------------------------------
+# These create the S3 buckets for each app. They must be applied before
+# apps/infra which references their outputs for CloudFront configuration.
+
+[[workspaces]]
+path = "apps/marketing/infra"
+environments = ["*"]
+
+[[workspaces]]
+path = "apps/docs/infra"
+environments = ["*"]
+
+# [[workspaces]]
+# path = "apps/web/infra"
+# environments = ["*"]
+
+# ---------------------------------------------------------------------------
+# Unified Frontend (CloudFront + routing)
+# ---------------------------------------------------------------------------
+# This creates the CloudFront distribution that routes to all app buckets.
+# Depends on apps/marketing/infra and apps/web/infra outputs.
+
+[[workspaces]]
+path = "apps/infra"
+environments = ["*"]
