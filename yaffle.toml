@@ -1,0 +1,145 @@
+# Yaffle Configuration Demo
+# This file demonstrates the full range of yaffle.toml configuration options.
+
+version = 1
+
+# =============================================================================
+# ENVIRONMENTS
+# =============================================================================
+# Named, long-lived environments tied to branches (e.g., main, staging).
+# Transient environments (PR environments like "pr-123") are created
+# automatically and don't need to be declared here.
+
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+
+[[environments]]
+name = "development"
+
+# =============================================================================
+# WORKSPACES
+# =============================================================================
+# Each workspace maps to a Terraform root module directory.
+# Workspaces can target specific environments or all environments with "*".
+
+# Shared infrastructure - deploys to all environments (including PR environments)
+[[workspaces]]
+path = "infra/shared"
+environments = "*"
+
+# Core infrastructure - deploys to specific named environments only
+[[workspaces]]
+path = "infra/core"
+environments = ["production", "staging"]
+# Variables can be strings, numbers, or booleans
+[workspaces.variables]
+project_name = "yaffle-demo"
+enable_monitoring = true
+retention_days = 30
+
+# Database infrastructure - production only
+[[workspaces]]
+path = "infra/database"
+environments = ["production"]
+variables.instance_count = 3
+variables.enable_backups = true
+
+# App infrastructure - staging and development
+[[workspaces]]
+path = "infra/app"
+environments = ["staging", "development"]
+# Inline table syntax for variables
+variables = { min_instances = 1, max_instances = 5, enable_debug = false }
+
+# Feature flags workspace - all environments including transient PR environments
+[[workspaces]]
+path = "infra/feature-flags"
+environments = ["*"]
+
+# Single environment shorthand (string instead of array)
+[[workspaces]]
+path = "infra/sandbox"
+environments = "development"
+variables.sandbox_mode = true
+
+# =============================================================================
+# TRIGGERS
+# =============================================================================
+# Define when Terraform runs are triggered based on Git events.
+
+[triggers.github]
+
+# Push triggers - map branches to environments
+# When a push happens to a matching branch, the environment is deployed
+[[triggers.github.push]]
+ref = "refs/heads/main"
+environment = "production"
+
+[[triggers.github.push]]
+branch = "staging"
+environment = "staging"
+
+[[triggers.github.push]]
+branch = "develop"
+environment = "development"
+
+# Glob patterns work for branch matching
+# Note: "*" in branch patterns matches single path segments only
+[[triggers.github.push]]
+ref = "refs/heads/release/*"
+environment = "staging"
+
+# Pull request triggers - create transient environments
+# When a PR is opened with a head branch matching the pattern,
+# a transient environment (e.g., "pr-123") is created
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+[[triggers.github.pull_request]]
+branch_pattern = "feature/*"
+
+[[triggers.github.pull_request]]
+branch_pattern = "bugfix/*"
+
+# =============================================================================
+# APPROVALS
+# =============================================================================
+# Define who must approve Terraform applies for specific workspace/environment
+# combinations. Approvers are namespaced strings with format:
+#   <provider>:<type>:<identifier>
+# Examples:
+#   - github:user:alice
+#   - github:team:myorg/platform-team
+
+# Production deployments require senior engineer approval
+[[approvals]]
+workspaces = ["infra/database", "infra/core"]
+environments = ["production"]
+approvers = ["github:user:senior-engineer", "github:team:acme/platform"]
+
+# All production workspaces need at least one reviewer
+[[approvals]]
+workspaces = ["*"]
+environments = ["production"]
+approvers = ["github:user:on-call-lead"]
+
+# Staging needs team approval via glob pattern
+[[approvals]]
+workspaces = ["infra/*"]
+environments = ["staging"]
+approvers = ["github:team:acme/infrastructure"]
+
+# Feature flags have a dedicated owner across all environments
+[[approvals]]
+workspaces = ["infra/feature-flags"]
+environments = ["*"]
+approvers = ["github:user:feature-flag-owner"]
+
+# Development and PR environments don't require approval (empty approvers)
+[[approvals]]
+workspaces = ["*"]
+environments = ["development"]
+approvers = []
