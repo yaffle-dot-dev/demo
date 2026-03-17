@@ -27,6 +27,11 @@ variable "replica_region" {
   default     = "us-west-2"
 }
 
+variable "cloudflare_zone_id" {
+  type        = string
+  description = "Cloudflare zone ID for yaffle.dev (dual DNS setup)"
+}
+
 module "naming" {
   source      = "../../infra_modules/public/naming"
   environment = var.environment

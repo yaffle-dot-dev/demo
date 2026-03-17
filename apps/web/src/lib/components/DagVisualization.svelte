@@ -208,6 +208,30 @@
   
   // Track which workspaces have had their timers auto-started (to avoid re-triggering)
   let autoStartedTimers = $state<Set<string>>(new Set())
+
+  // Derive a list of workspace paths that are ready for auto-apply timer.
+  // This derived value ensures the $effect below re-runs when workspace status changes.
+  const workspacesReadyForAutoTimer = $derived.by((): string[] => {
+    const ready: string[] = []
+    for (const ws of workspaces) {
+      const wsPath = ws.preview.workspacePath
+      const planStatus = getEffectiveStatus(ws, "plan")
+      const applyStatus = getEffectiveStatus(ws, "apply")
+      const summary = getPlanSummary(ws)
+      const requiresApproval = ws.preview.requireApproval
+      
+      // Ready for auto-timer: plan succeeded with changes, no apply yet, no approval required
+      if (
+        planStatus === "success" &&
+        hasChanges(summary) &&
+        applyStatus === null &&
+        !requiresApproval
+      ) {
+        ready.push(wsPath)
+      }
+    }
+    return ready
+  })
   
   // Parse plan summary string like "+3, ~1, -0" into structured data
   function parsePlanSummary(summary: string | null): { add: number; change: number; destroy: number } | null {
@@ -281,13 +305,12 @@
   // Auto-apply countdown duration in seconds
   const AUTO_APPLY_DELAY_SEC = 10
   
-  // Auto-start timers for workspaces that are ready for apply
+  // Auto-start timers for workspaces that are ready for apply.
+  // Uses the derived workspacesReadyForAutoTimer to ensure proper reactivity tracking.
   $effect(() => {
-    for (const ws of workspaces) {
-      const wsPath = ws.preview.workspacePath
-      
-      // Check if this workspace should have an auto-started timer
-      if (shouldAutoStartTimer(ws) && !autoStartedTimers.has(wsPath)) {
+    for (const wsPath of workspacesReadyForAutoTimer) {
+      // Only start timer if not already started or active
+      if (!timers.has(wsPath) && !autoStartedTimers.has(wsPath)) {
         autoStartedTimers.add(wsPath)
         autoStartedTimers = new Set(autoStartedTimers)
         startTimer(wsPath, AUTO_APPLY_DELAY_SEC)

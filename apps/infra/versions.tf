@@ -17,6 +17,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
   }
 
   # Backend is injected by Yaffle via backend_override.tf
@@ -51,4 +55,9 @@ provider "aws" {
       managed_by  = "yaffle"
     }
   }
+}
+
+# Cloudflare provider for dual DNS
+provider "cloudflare" {
+  # API token from CLOUDFLARE_API_TOKEN env var
 }

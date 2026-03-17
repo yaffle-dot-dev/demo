@@ -15,7 +15,7 @@ resource "aws_cloudfront_distribution" "main" {
   price_class         = var.is_preview ? "PriceClass_100" : "PriceClass_All"
   comment             = "Yaffle frontend - ${var.environment}"
 
-  aliases = [local.site_domain]
+  aliases = [local.site_domain, "www.${local.site_domain}"]
 
   # ===========================================================================
   # ORIGIN GROUPS (for failover)
@@ -331,6 +331,52 @@ resource "aws_route53_record" "main" {
 resource "aws_route53_record" "main_aaaa" {
   zone_id = local.route53_zone_id
   name    = local.site_domain
+  type    = "AAAA"
+
+  alias {
+    name                   = aws_cloudfront_distribution.main.domain_name
+    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+# =============================================================================
+# Cloudflare DNS Records (Dual DNS)
+# =============================================================================
+
+resource "cloudflare_dns_record" "main" {
+  zone_id = var.cloudflare_zone_id
+  name    = local.site_domain
+  type    = "CNAME"
+  content = aws_cloudfront_distribution.main.domain_name
+  ttl     = 1 # Auto TTL
+  proxied = false
+}
+
+resource "cloudflare_dns_record" "www" {
+  zone_id = var.cloudflare_zone_id
+  name    = "www.${local.site_domain}"
+  type    = "CNAME"
+  content = aws_cloudfront_distribution.main.domain_name
+  ttl     = 1 # Auto TTL
+  proxied = false
+}
+
+resource "aws_route53_record" "www" {
+  zone_id = local.route53_zone_id
+  name    = "www.${local.site_domain}"
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.main.domain_name
+    zone_id                = aws_cloudfront_distribution.main.hosted_zone_id
+    evaluate_target_health = false
+  }
+}
+
+resource "aws_route53_record" "www_aaaa" {
+  zone_id = local.route53_zone_id
+  name    = "www.${local.site_domain}"
   type    = "AAAA"
 
   alias {
