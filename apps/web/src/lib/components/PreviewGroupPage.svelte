@@ -61,9 +61,11 @@
     if (viewedRunGroupId) {
       return runGroups.find((rg) => rg.id === viewedRunGroupId) ?? null
     }
-    // Not pinned: show latest run group (prefer current/running, then latest)
-    const current = runGroups.find((rg) => rg.status === "running" || rg.status === "pending")
-    return current ?? runGroups[0] ?? null
+    // Not pinned: show the latest run group (runGroups is sorted by createdAt DESC)
+    // We always show the latest - if it's running/pending, great; if completed, that's fine too.
+    // Previously this tried to find ANY running run group, but that caused bugs when old
+    // run groups were stuck in "running" status.
+    return runGroups[0] ?? null
   })
 
   // Workspaces with runs filtered to the viewed run group

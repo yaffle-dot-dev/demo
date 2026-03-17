@@ -401,7 +401,21 @@ async function executeJobWork(
       if (hasChanges) {
         await updateDeploymentStatus(deployment.id, "awaiting_apply")
       } else {
+        // No changes - mark as ready and notify downstreams immediately.
+        // Since no apply will run, we need to signal completion to unblock dependents.
         await updateDeploymentStatus(deployment.id, "ready")
+
+        // Create a skipped apply run to record that apply was not needed
+        const skippedApply = await createTfRun({
+          deploymentId: deployment.id,
+          runGroupId: deployment.runGroupId ?? undefined,
+          runType: "apply",
+          status: "skipped",
+        })
+        events.emitRunUpdate(skippedApply.id, deployment.id)
+
+        // Notify downstreams that this workspace is complete (no apply needed)
+        await notifyDownstreams(deployment.id, "apply")
       }
     } else if (job.jobType === "apply") {
       await updateDeploymentStatus(deployment.id, "ready")
