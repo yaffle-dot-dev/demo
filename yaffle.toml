@@ -33,7 +33,7 @@ branch_pattern = "*"
 [[workspaces]]
 path = "infra/shared"
 environments = ["main"]
-variables.cloudflare_zone_id = "bde07ad246cac0ae6ae68324e6aae341"
+variables.cloudflare_zone_id = "ba87a43c4698d9a9ca066c62311445b6"
 
 # [[workspaces]]
 # path = "infra/production"

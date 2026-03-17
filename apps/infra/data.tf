@@ -25,6 +25,10 @@ module "web" {
   source = "yaffle.local:6969/yaffle-dot-dev/apps--web--infra/yaffle"
 }
 
+module "docs" {
+  source = "yaffle.local:6969/yaffle-dot-dev/apps--docs--infra/yaffle"
+}
+
 # -----------------------------------------------------------------------------
 # Convenience Locals
 # -----------------------------------------------------------------------------
@@ -45,4 +49,10 @@ locals {
   web_replica_bucket_domain = module.web.replica_bucket_regional_domain_name
   web_primary_bucket_arn    = module.web.primary_bucket_arn
   web_replica_bucket_arn    = module.web.replica_bucket_arn
+
+  # Docs site buckets
+  docs_primary_bucket_domain = module.docs.primary_bucket_regional_domain_name
+  docs_replica_bucket_domain = module.docs.replica_bucket_regional_domain_name
+  docs_primary_bucket_arn    = module.docs.primary_bucket_arn
+  docs_replica_bucket_arn    = module.docs.replica_bucket_arn
 }

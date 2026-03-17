@@ -3,7 +3,7 @@ module "shared" {
 }
 
 module "static_site" {
-  source = "../../infra_modules/static_site"
+  source = "../../../infra_modules/static_site"
 
   site_name                = "marketing"
   environment              = var.environment

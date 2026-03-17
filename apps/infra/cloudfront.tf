@@ -24,18 +24,35 @@ resource "aws_cloudfront_distribution" "main" {
 
   # Marketing site origin group
   origin_group {
-    origin_id = "marketing-failover"
+    origin_id = module.site_marketing.failover_origin_id
 
     failover_criteria {
       status_codes = [500, 502, 503, 504, 403, 404]
     }
 
     member {
-      origin_id = "marketing-primary"
+      origin_id = module.site_marketing.primary_origin_id
     }
 
     member {
-      origin_id = "marketing-replica"
+      origin_id = module.site_marketing.replica_origin_id
+    }
+  }
+
+  # Docs site origin group
+  origin_group {
+    origin_id = module.site_docs.failover_origin_id
+
+    failover_criteria {
+      status_codes = [500, 502, 503, 504, 403, 404]
+    }
+
+    member {
+      origin_id = module.site_docs.primary_origin_id
+    }
+
+    member {
+      origin_id = module.site_docs.replica_origin_id
     }
   }
 
@@ -65,15 +82,31 @@ resource "aws_cloudfront_distribution" "main" {
   # ---------------------------------------------------------------------------
 
   origin {
-    domain_name              = local.marketing_primary_bucket_domain
-    origin_id                = "marketing-primary"
-    origin_access_control_id = aws_cloudfront_origin_access_control.marketing.id
+    domain_name              = module.site_marketing.primary_bucket_domain
+    origin_id                = module.site_marketing.primary_origin_id
+    origin_access_control_id = module.site_marketing.origin_access_control_id
   }
 
   origin {
-    domain_name              = local.marketing_replica_bucket_domain
-    origin_id                = "marketing-replica"
-    origin_access_control_id = aws_cloudfront_origin_access_control.marketing.id
+    domain_name              = module.site_marketing.replica_bucket_domain
+    origin_id                = module.site_marketing.replica_origin_id
+    origin_access_control_id = module.site_marketing.origin_access_control_id
+  }
+
+  # ---------------------------------------------------------------------------
+  # Docs Site Origins
+  # ---------------------------------------------------------------------------
+
+  origin {
+    domain_name              = module.site_docs.primary_bucket_domain
+    origin_id                = module.site_docs.primary_origin_id
+    origin_access_control_id = module.site_docs.origin_access_control_id
+  }
+
+  origin {
+    domain_name              = module.site_docs.replica_bucket_domain
+    origin_id                = module.site_docs.replica_origin_id
+    origin_access_control_id = module.site_docs.origin_access_control_id
   }
 
   # ---------------------------------------------------------------------------
@@ -101,7 +134,7 @@ resource "aws_cloudfront_distribution" "main" {
   # ---------------------------------------------------------------------------
 
   default_cache_behavior {
-    target_origin_id       = "marketing-failover"
+    target_origin_id       = module.site_marketing.failover_origin_id
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
@@ -110,10 +143,9 @@ resource "aws_cloudfront_distribution" "main" {
     cache_policy_id          = aws_cloudfront_cache_policy.default.id
     origin_request_policy_id = data.aws_cloudfront_origin_request_policy.cors_s3.id
 
-    # Astro static site - handle clean URLs
     function_association {
       event_type   = "viewer-request"
-      function_arn = aws_cloudfront_function.marketing_routing.arn
+      function_arn = aws_cloudfront_function.static_routing.arn
     }
   }
 
@@ -122,8 +154,45 @@ resource "aws_cloudfront_distribution" "main" {
   # ---------------------------------------------------------------------------
 
   ordered_cache_behavior {
-    path_pattern           = "_astro/*"
-    target_origin_id       = "marketing-failover"
+    path_pattern           = module.site_marketing.immutable_path_pattern
+    target_origin_id       = module.site_marketing.failover_origin_id
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = aws_cloudfront_cache_policy.immutable.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.cors_s3.id
+  }
+
+  # ---------------------------------------------------------------------------
+  # Docs Site: /docs/*
+  # ---------------------------------------------------------------------------
+
+  ordered_cache_behavior {
+    path_pattern           = module.site_docs.path_pattern
+    target_origin_id       = module.site_docs.failover_origin_id
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = aws_cloudfront_cache_policy.default.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.cors_s3.id
+
+    function_association {
+      event_type   = "viewer-request"
+      function_arn = aws_cloudfront_function.static_routing.arn
+    }
+  }
+
+  # ---------------------------------------------------------------------------
+  # Docs: Immutable assets (/docs/_astro/*)
+  # ---------------------------------------------------------------------------
+
+  ordered_cache_behavior {
+    path_pattern           = module.site_docs.immutable_path_pattern
+    target_origin_id       = module.site_docs.failover_origin_id
     viewer_protocol_policy = "redirect-to-https"
     allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
@@ -228,8 +297,8 @@ resource "aws_cloudfront_distribution" "main" {
 resource "aws_cloudfront_cache_policy" "default" {
   name        = "yaffle-frontend-default-${local.name_suffix}"
   comment     = "Default cache policy for yaffle frontend"
-  default_ttl = 86400    # 1 day
-  max_ttl     = 604800   # 7 days
+  default_ttl = 86400  # 1 day
+  max_ttl     = 604800 # 7 days
   min_ttl     = 0
 
   parameters_in_cache_key_and_forwarded_to_origin {
@@ -287,13 +356,7 @@ data "aws_cloudfront_origin_request_policy" "cors_s3" {
 # Origin Access Controls
 # =============================================================================
 
-resource "aws_cloudfront_origin_access_control" "marketing" {
-  name                              = "yaffle-marketing-${local.name_suffix}"
-  description                       = "OAC for yaffle marketing S3 buckets"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
-}
+# Marketing and Docs OACs are managed by their respective micro_site modules
 
 resource "aws_cloudfront_origin_access_control" "web" {
   name                              = "yaffle-web-${local.name_suffix}"
@@ -307,11 +370,11 @@ resource "aws_cloudfront_origin_access_control" "web" {
 # CloudFront Functions
 # =============================================================================
 
-# Marketing site: Astro static routing (clean URLs)
-resource "aws_cloudfront_function" "marketing_routing" {
-  name    = "yaffle-marketing-routing-${local.name_suffix}"
+# Static site: Append /index.html to clean URLs (shared by marketing, docs, etc.)
+resource "aws_cloudfront_function" "static_routing" {
+  name    = "yaffle-static-routing-${local.name_suffix}"
   runtime = "cloudfront-js-2.0"
-  comment = "Handle clean URLs for Astro static site"
+  comment = "Append /index.html to clean URLs for static sites"
   publish = true
 
   code = <<-EOF
@@ -319,12 +382,12 @@ resource "aws_cloudfront_function" "marketing_routing" {
       var request = event.request;
       var uri = request.uri;
 
-      // If the URI has a file extension, serve it directly
+      // If URI has a file extension, serve directly
       if (uri.includes('.')) {
         return request;
       }
 
-      // For clean URLs, append /index.html
+      // Append /index.html for clean URLs
       if (!uri.endsWith('/')) {
         uri += '/';
       }

@@ -51,6 +51,11 @@ output "marketing_url" {
   description = "Marketing site URL"
 }
 
+output "docs_url" {
+  value       = "https://${local.site_domain}/docs/"
+  description = "Documentation site URL"
+}
+
 output "web_app_url" {
   value       = "https://${local.site_domain}/app/"
   description = "Web application URL"
@@ -63,6 +68,11 @@ output "web_app_url" {
 output "marketing_bucket_name" {
   value       = module.marketing.primary_bucket_name
   description = "Marketing site S3 bucket name"
+}
+
+output "docs_bucket_name" {
+  value       = module.docs.primary_bucket_name
+  description = "Docs site S3 bucket name"
 }
 
 output "web_bucket_name" {

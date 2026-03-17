@@ -47,27 +47,3 @@ output "acm_certificate_validated_arn" {
   value       = aws_acm_certificate_validation.main.certificate_arn
   description = "ARN of the validated ACM certificate (use this for ALB listeners)"
 }
-
-# -----------------------------------------------------------------------------
-# Documentation Site
-# -----------------------------------------------------------------------------
-
-output "docs_bucket_name" {
-  value       = aws_s3_bucket.docs.bucket
-  description = "S3 bucket name for the public documentation site"
-}
-
-output "docs_bucket_arn" {
-  value       = aws_s3_bucket.docs.arn
-  description = "S3 bucket ARN for the public documentation site"
-}
-
-output "docs_bucket_regional_domain_name" {
-  value       = aws_s3_bucket.docs.bucket_regional_domain_name
-  description = "S3 bucket regional domain name (for CloudFront origin)"
-}
-
-output "docs_oac_id" {
-  value       = aws_cloudfront_origin_access_control.docs.id
-  description = "Origin Access Control ID for docs bucket"
-}
