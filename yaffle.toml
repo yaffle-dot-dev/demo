@@ -79,11 +79,11 @@ ref = "refs/heads/main"
 environment = "production"
 
 [[triggers.github.push]]
-branch = "staging"
+ref = "refs/heads/staging"
 environment = "staging"
 
 [[triggers.github.push]]
-branch = "develop"
+ref = "refs/heads/develop"
 environment = "development"
 
 # Glob patterns work for branch matching

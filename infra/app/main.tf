@@ -74,6 +74,16 @@ resource "null_resource" "debug_config" {
   }
 }
 
+# Debug configuration (only in debug mode)
+resource "null_resource" "debug_config_2" {
+  count = var.enable_debug ? 1 : 0
+
+  triggers = {
+    debug_enabled = "true"
+    deployment_id = random_id.deployment_id.hex
+  }
+}
+
 # Generate API keys
 resource "random_string" "api_key" {
   length  = 32
