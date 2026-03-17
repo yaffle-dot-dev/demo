@@ -1,6 +1,8 @@
 <script lang="ts" module>
   import type { DependencyGraph } from "$lib/api"
 
+  export type LayoutMode = "alphabetical" | "flexible"
+
   export interface DagNode<T> {
     id: string
     data: T
@@ -18,6 +20,8 @@
     sourceRow: number
     targetCol: number
     targetRow: number
+    sourceId: string
+    targetId: string
   }
 
   export interface DagLayoutInfo<T> {
@@ -52,6 +56,8 @@
     minColumnWidth?: number
     /** When true, independent items fill horizontal space first (row-major), otherwise vertical first (column-major) */
     horizontalFirst?: boolean
+    /** Layout algorithm mode */
+    layoutMode?: LayoutMode
     /** Snippet to render each node */
     node: Snippet<[{ item: T; position: DagPosition; width: number; height: number }]>
   }
@@ -66,6 +72,7 @@
     nodeGapY = 12,
     minColumnWidth = 80,
     horizontalFirst = false,
+    layoutMode = "flexible",
     node,
   }: Props = $props()
 
@@ -121,9 +128,9 @@
   }
 
   /**
-   * Group items by their depth into columns.
+   * Group items by their depth into columns with alphabetical ordering.
    */
-  function groupByDepth<U>(
+  function groupByDepthAlphabetical<U>(
     itemList: U[],
     getItemId: (item: U) => string,
     depths: Map<string, number>
@@ -145,8 +152,161 @@
     return columns
   }
 
+  // Store for flexible layout Y positions  
+  let flexibleYPositions: Map<string, number> | null = null
+
+  /**
+   * Compute flexible Y positions that avoid edge-node crossings.
+   * 
+   * Simple approach: For nodes connected by long edges (spanning multiple columns),
+   * center BOTH the source and target nodes vertically relative to the intermediate
+   * column(s). This ensures bezier curves pass through the gaps between intermediate
+   * nodes rather than through them.
+   * 
+   * Algorithm:
+   * 1. Start with grid layout for all nodes
+   * 2. Find long edges (spanning 2+ columns)
+   * 3. For each long edge, compute the vertical center of intermediate columns
+   * 4. Offset both source and target to align with that center
+   */
+  function computeFlexibleYPositions<U>(
+    cols: U[][],
+    getItemId: (item: U) => string,
+    graph: DependencyGraph,
+    nodeH: number,
+    gapY: number
+  ): Map<string, number> {
+    const yPositions = new Map<string, number>()
+    const minSpacing = nodeH + gapY
+
+    // Build column lookup
+    const nodeColumn = new Map<string, number>()
+    for (let colIdx = 0; colIdx < cols.length; colIdx++) {
+      for (const item of cols[colIdx]) {
+        nodeColumn.set(getItemId(item), colIdx)
+      }
+    }
+
+    // Step 1: Initialize all nodes with grid positions
+    for (let colIdx = 0; colIdx < cols.length; colIdx++) {
+      for (let rowIdx = 0; rowIdx < cols[colIdx].length; rowIdx++) {
+        const id = getItemId(cols[colIdx][rowIdx])
+        yPositions.set(id, gapY + rowIdx * minSpacing)
+      }
+    }
+
+    // Step 2: Find long edges and the intermediate columns they span
+    const longEdges: Array<{
+      sourceId: string
+      targetId: string
+      sourceCol: number
+      targetCol: number
+      intermediateCols: number[]
+    }> = []
+
+    for (const [dependent, dependency] of graph.edges) {
+      const sourceCol = nodeColumn.get(dependency)
+      const targetCol = nodeColumn.get(dependent)
+      if (sourceCol === undefined || targetCol === undefined) continue
+
+      const colSpan = targetCol - sourceCol
+      if (colSpan > 1) {
+        const intermediateCols: number[] = []
+        for (let col = sourceCol + 1; col < targetCol; col++) {
+          intermediateCols.push(col)
+        }
+        longEdges.push({
+          sourceId: dependency,
+          targetId: dependent,
+          sourceCol,
+          targetCol,
+          intermediateCols,
+        })
+      }
+    }
+
+    if (longEdges.length === 0) {
+      return yPositions
+    }
+
+    // Step 3: For each long edge, compute the vertical span of intermediate columns
+    // and adjust source/target to center relative to that span
+    for (const edge of longEdges) {
+      // Find min/max Y of all nodes in intermediate columns
+      let minY = Infinity
+      let maxY = -Infinity
+
+      for (const colIdx of edge.intermediateCols) {
+        for (const item of cols[colIdx]) {
+          const y = yPositions.get(getItemId(item))
+          if (y !== undefined) {
+            minY = Math.min(minY, y)
+            maxY = Math.max(maxY, y + nodeH)
+          }
+        }
+      }
+
+      if (minY === Infinity) continue
+
+      // The center Y where edges should pass through
+      const centerY = (minY + maxY) / 2
+
+      // For a bezier curve, if both source and target are at centerY,
+      // the entire curve will be at centerY (a horizontal line through the center)
+      // This ensures the edge passes through the vertical center of intermediate columns
+      
+      // Adjust source node position
+      const sourceY = yPositions.get(edge.sourceId)
+      if (sourceY !== undefined) {
+        // Move source so its center aligns with the intermediate center
+        const newSourceY = centerY - nodeH / 2
+        yPositions.set(edge.sourceId, Math.max(gapY, newSourceY))
+      }
+
+      // Adjust target node position
+      const targetY = yPositions.get(edge.targetId)
+      if (targetY !== undefined) {
+        // Move target so its center aligns with the intermediate center
+        const newTargetY = centerY - nodeH / 2
+        yPositions.set(edge.targetId, Math.max(gapY, newTargetY))
+      }
+    }
+
+    // Step 4: Resolve any overlaps within columns caused by adjustments
+    // For each column, ensure nodes don't overlap
+    for (let colIdx = 0; colIdx < cols.length; colIdx++) {
+      const col = cols[colIdx]
+      if (col.length <= 1) continue
+
+      // Get current positions for this column
+      const colNodes = col.map(item => ({
+        id: getItemId(item),
+        y: yPositions.get(getItemId(item)) ?? 0,
+      }))
+
+      // Sort by current Y position
+      colNodes.sort((a, b) => a.y - b.y)
+
+      // Ensure minimum spacing between consecutive nodes
+      for (let i = 1; i < colNodes.length; i++) {
+        const prevBottom = colNodes[i - 1].y + nodeH
+        const currTop = colNodes[i].y
+        if (currTop < prevBottom + gapY) {
+          // Push this node down
+          colNodes[i].y = prevBottom + gapY
+          yPositions.set(colNodes[i].id, colNodes[i].y)
+        }
+      }
+    }
+
+    return yPositions
+  }
+
   // Compute columns layout
   const columns = $derived.by((): T[][] => {
+    // Reset flexible positions when recomputing columns
+    flexibleYPositions = null
+
     if (!dependencyGraph || dependencyGraph.edges.length === 0) {
       if (horizontalFirst) {
         // No dependencies + horizontal first - each item gets its own column (horizontal layout)
@@ -159,7 +319,20 @@
 
     const itemIds = new Set(items.map(getId))
     const depths = computeDepths(dependencyGraph, itemIds)
-    return groupByDepth(items, getId, depths)
+
+    switch (layoutMode) {
+      case "flexible": {
+        // For flexible layout, use alphabetical ordering for columns
+        // then compute flexible Y positions to avoid edge-node crossings
+        const cols = groupByDepthAlphabetical(items, getId, depths)
+        flexibleYPositions = computeFlexibleYPositions(cols, getId, dependencyGraph, nodeHeight, nodeGapY)
+        return cols
+      }
+
+      case "alphabetical":
+      default:
+        return groupByDepthAlphabetical(items, getId, depths)
+    }
   })
 
   // Maximum rows across all columns
@@ -188,7 +361,18 @@
   const svgWidth = $derived(
     columnWidths.reduce((sum, w) => sum + w, 0) + nodeGapX * (columnWidths.length + 1)
   )
-  const svgHeight = $derived(maxRows * (nodeHeight + nodeGapY) + nodeGapY)
+
+  // For flexible layout, compute max Y from actual positions
+  const svgHeight = $derived.by(() => {
+    if (layoutMode === "flexible" && flexibleYPositions) {
+      let maxY = 0
+      for (const y of flexibleYPositions.values()) {
+        maxY = Math.max(maxY, y)
+      }
+      return maxY + nodeHeight + nodeGapY
+    }
+    return maxRows * (nodeHeight + nodeGapY) + nodeGapY
+  })
 
   // Get node position
   function getNodeX(colIdx: number): number {
@@ -205,11 +389,20 @@
     columns.forEach((col, colIdx) => {
       col.forEach((item, rowIdx) => {
         const id = getId(item)
+
+        // Use flexible Y position if available
+        let y: number
+        if (layoutMode === "flexible" && flexibleYPositions) {
+          y = flexibleYPositions.get(id) ?? getNodeY(rowIdx)
+        } else {
+          y = getNodeY(rowIdx)
+        }
+
         posMap.set(id, {
           col: colIdx,
           row: rowIdx,
           x: getNodeX(colIdx),
-          y: getNodeY(rowIdx),
+          y,
         })
       })
     })
@@ -223,15 +416,19 @@
     const result: DagEdge[] = []
 
     // Create edges (source depends on target, so arrow goes target -> source)
-    for (const [source, target] of dependencyGraph.edges) {
-      const sourcePos = positions.get(source)
-      const targetPos = positions.get(target)
-      if (sourcePos && targetPos) {
+    // In our convention: edge goes FROM the dependency TO the dependent
+    // So if [A, B] means "A depends on B", the visual edge goes B -> A
+    for (const [dependent, dependency] of dependencyGraph.edges) {
+      const dependentPos = positions.get(dependent)
+      const dependencyPos = positions.get(dependency)
+      if (dependentPos && dependencyPos) {
         result.push({
-          sourceCol: targetPos.col,
-          sourceRow: targetPos.row,
-          targetCol: sourcePos.col,
-          targetRow: sourcePos.row,
+          sourceCol: dependencyPos.col,
+          sourceRow: dependencyPos.row,
+          targetCol: dependentPos.col,
+          targetRow: dependentPos.row,
+          sourceId: dependency,
+          targetId: dependent,
         })
       }
     }
@@ -239,16 +436,18 @@
     return result
   })
 
-  // Generate edge path (bezier curve)
+  // Generate edge path - simple bezier curve for all edges
   function edgePath(edge: DagEdge): string {
+    const sourcePos = positions.get(edge.sourceId)
+    const targetPos = positions.get(edge.targetId)
+
     const x1 = getNodeX(edge.sourceCol) + columnWidths[edge.sourceCol]
-    const y1 = getNodeY(edge.sourceRow) + nodeHeight / 2
+    const y1 = (sourcePos?.y ?? getNodeY(edge.sourceRow)) + nodeHeight / 2
     const x2 = getNodeX(edge.targetCol)
-    const y2 = getNodeY(edge.targetRow) + nodeHeight / 2
+    const y2 = (targetPos?.y ?? getNodeY(edge.targetRow)) + nodeHeight / 2
 
-    // Control points for bezier curve
+    // Simple bezier curve - the flexible layout positions nodes so this works
     const midX = (x1 + x2) / 2
-
     return `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`
   }
 </script>

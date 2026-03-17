@@ -13,6 +13,8 @@
 
   let props: Props = $props()
 
+
+
   const workspacesWithRuns = $derived(props.workspaces)
   const dependencyGraph = $derived(props.dependencyGraph)
   const selectedPath = $derived(props.selectedPath)
@@ -130,6 +132,12 @@
     if (!ws) {
       console.error(`Workspace not found: ${workspacePath}`)
       return
+    }
+    
+    // Clear any active timer for this workspace (user clicked Approve)
+    if (timers.has(workspacePath)) {
+      timers.delete(workspacePath)
+      timers = new Map(timers)
     }
     
     const previewId = ws.preview.id
@@ -703,4 +711,5 @@
   :global(.text-text-muted) {
     fill: var(--color-text-muted);
   }
+
 </style>
