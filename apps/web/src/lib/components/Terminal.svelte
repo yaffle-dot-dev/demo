@@ -110,6 +110,8 @@
             writeTimeout = setTimeout(() => {
               if (term && writeBuffer) {
                 term.write(writeBuffer)
+                // Auto-scroll to bottom when streaming new content
+                term.scrollToBottom()
                 writeBuffer = ""
               }
               writeTimeout = null
@@ -126,6 +128,7 @@
         }
         term.clear()
         term.write(output)
+        term.scrollToBottom()
         lastOutput = output
       }
     } else {
@@ -133,6 +136,7 @@
       if (output !== lastOutput) {
         term.clear()
         term.write(output)
+        term.scrollToBottom()
         lastOutput = output
       }
     }
@@ -154,14 +158,10 @@
   }
 </script>
 
-<div bind:this={container} class="h-full w-full min-h-[200px] rounded-lg overflow-hidden"></div>
+<div bind:this={container} class="h-full w-full overflow-hidden"></div>
 
 <style>
   :global(.xterm) {
     padding: 12px;
-  }
-
-  :global(.xterm-viewport) {
-    border-radius: 8px;
   }
 </style>
