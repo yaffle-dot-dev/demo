@@ -14,7 +14,7 @@ name = "main"
 
 # Deploy to main environment when main branch is pushed
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 # Create transient environments for all pull requests
@@ -35,21 +35,22 @@ path = "infra/shared"
 environments = ["main"]
 variables.cloudflare_zone_id = "ba87a43c4698d9a9ca066c62311445b6"
 
-# [[workspaces]]
-# path = "infra/production"
-# environments = ["main"]
+[[workspaces]]
+path = "infra/production"
+environments = ["main"]
 
-# [[workspaces]]
-# path = "infra/nonprod"
-# environments = ["main"]
+[[workspaces]]
+path = "infra/nonprod"
+environments = ["main"]
 
 # ---------------------------------------------------------------------------
 # Application Infrastructure
 # ---------------------------------------------------------------------------
 
-# [[workspaces]]
-# path = "apps/control-plane/infra"
-# environments = ["*"]
+[[workspaces]]
+path = "apps/control-plane/infra"
+environments = ["*"]
+variables.secrets_arn_prefix = "arn:aws:secretsmanager:us-east-1:870923192739:secret:yaffle/main"
 
 # ---------------------------------------------------------------------------
 # App S3 Buckets (owned by individual apps)
@@ -65,9 +66,9 @@ environments = ["*"]
 path = "apps/docs/infra"
 environments = ["*"]
 
-# [[workspaces]]
-# path = "apps/web/infra"
-# environments = ["*"]
+[[workspaces]]
+path = "apps/web/infra"
+environments = ["*"]
 
 # ---------------------------------------------------------------------------
 # Unified Frontend (CloudFront + routing)
