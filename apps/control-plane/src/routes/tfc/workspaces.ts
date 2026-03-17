@@ -375,7 +375,7 @@ workspacesRoute.post(
           repo: z.string().optional(),
           "workspace-path": z.string().optional(),
           environment: z.string().min(1).max(50).optional(),
-          branch: z.string().optional(),
+          ref: z.string().optional(),
           "pr-number": z.number().optional(),
           "terraform-version": z.string().optional(),
         }),
@@ -415,7 +415,7 @@ workspacesRoute.post(
       repo: attrs.repo ?? "",
       workspacePath: attrs["workspace-path"] ?? "",
       environment: attrs.environment ?? "preview",
-      branch: attrs.branch ?? "main",
+      ref: attrs.ref ?? "refs/heads/main",
       prNumber: attrs["pr-number"],
       terraformVersion: attrs["terraform-version"],
     })

@@ -57,7 +57,7 @@
     key: string
     repo: string
     prNumber: number
-    branch: string
+    ref: string
     headSha: string
     createdAt: string
     status: string
@@ -66,6 +66,11 @@
     /** GitHub username of the PR author (for display) */
     authorLogin: string | null
     workspaces: Preview[]
+  }
+  
+  /** Extract display name from a full ref (e.g., "refs/heads/main" -> "main") */
+  function refName(ref: string): string {
+    return ref.replace(/^refs\/(heads|tags)\//, "")
   }
 
   async function load() {
@@ -138,7 +143,7 @@
       const status = existing ? groupStatus([...existing.workspaces, preview]) : preview.status
 
       const headSha = existing?.headSha ?? preview.headSha
-      const branch = existing?.branch ?? preview.branch
+      const ref = existing?.ref ?? preview.ref
       const authorGithubId = existing?.authorGithubId ?? preview.authorGithubId ?? null
       const authorLogin = existing?.authorLogin ?? preview.authorLogin ?? null
 
@@ -146,7 +151,7 @@
         key,
         repo: preview.repo,
         prNumber: preview.prNumber,
-        branch,
+        ref,
         headSha,
         createdAt,
         status,
@@ -251,7 +256,7 @@
                   <div class="flex items-center gap-2">
                     <a href="{base}/{org}/{env.repo}/env/{env.environmentName}" class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
                     <a 
-                      href={githubTreeUrl({ org, repo: env.repo }, env.branch)}
+                      href={githubTreeUrl({ org, repo: env.repo }, refName(env.ref))}
                       target="_blank"
                       rel="noopener noreferrer"
                       class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded hover:text-yaffle-400 transition-colors"
@@ -358,7 +363,7 @@
                     </div>
                     <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
                       <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                        {group.branch}
+                        {refName(group.ref)}
                       </span>
                       <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
                       <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
@@ -412,7 +417,7 @@
                     </div>
                     <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
                       <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                        {group.branch}
+                        {refName(group.ref)}
                       </span>
                       <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
                       <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
@@ -461,9 +466,9 @@
                   {/if}
                 </div>
                 <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
-                  <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                    {group.branch}
-                  </span>
+                      <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
+                        {refName(group.ref)}
+                      </span>
                   <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
                   <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
                   {#if group.authorLogin}

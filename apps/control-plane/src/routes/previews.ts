@@ -456,7 +456,7 @@ interface SerializedPreview {
   environmentKind: string
   environmentName: string
   workspacePath: string
-  branch: string
+  ref: string
   headSha: string
   authorGithubId: number | null
   authorLogin: string | null
@@ -475,7 +475,7 @@ function serializePreview(p: {
   environmentKind: string
   environmentName: string
   workspacePath: string
-  branch: string
+  ref: string
   headSha: string
   authorGithubId: number | null
   authorLogin: string | null
@@ -496,7 +496,7 @@ function serializePreview(p: {
     environmentKind: p.environmentKind,
     environmentName: p.environmentName,
     workspacePath: p.workspacePath,
-    branch: p.branch,
+    ref: p.ref,
     headSha: p.headSha,
     authorGithubId: p.authorGithubId ?? null,
     authorLogin: p.authorLogin ?? null,

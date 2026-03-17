@@ -8,6 +8,7 @@ import {
   isApprovalRequired,
   matchBranchPattern,
   matchesPullRequestTrigger,
+  matchRefPattern,
   matchWorkspacePattern,
   parsePrEnvironmentName,
   parseYaffleToml,
@@ -35,11 +36,11 @@ path = "apps/web/infra"
 environments = ["*"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 [[triggers.github.push]]
-branch = "staging"
+ref = "refs/heads/staging"
 environment = "staging"
 
 [[triggers.github.pull_request]]
@@ -58,6 +59,7 @@ branch_pattern = "*"
     expect(config.workspaces[1].path).toBe("apps/web/infra")
     expect(config.workspaces[1].environments).toBe("*")
     expect(config.triggers.github?.push).toHaveLength(2)
+    expect(config.triggers.github?.push?.[0].ref).toBe("refs/heads/main")
     expect(config.triggers.github?.pull_request).toHaveLength(1)
   })
 
@@ -73,7 +75,7 @@ path = "infra"
 environments = "main"
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 `
 
@@ -131,7 +133,7 @@ path = "infra"
 environments = ["main"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 `
 
@@ -168,7 +170,7 @@ path = "infra"
 environments = ["main", "staging"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 `
 
@@ -188,12 +190,72 @@ path = "infra"
 environments = ["main"]
 
 [[triggers.github.push]]
-branch = "production"
+ref = "refs/heads/production"
 environment = "production"
 `
 
     expect(() => parseYaffleToml(toml)).toThrow(ConfigError)
     expect(() => parseYaffleToml(toml)).toThrow(/undeclared environment "production"/)
+  })
+
+  test("rejects ref without proper prefix", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+[[triggers.github.push]]
+ref = "main"
+environment = "main"
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(ConfigError)
+    expect(() => parseYaffleToml(toml)).toThrow(/ref must start with/)
+  })
+
+  test("rejects ref with only prefix", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+[[triggers.github.push]]
+ref = "refs/heads/"
+environment = "main"
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(ConfigError)
+    expect(() => parseYaffleToml(toml)).toThrow(/ref must have a name after the prefix/)
+  })
+
+  test("accepts refs/tags/ prefix", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "release"
+
+[[workspaces]]
+path = "infra"
+environments = ["release"]
+
+[[triggers.github.push]]
+ref = "refs/tags/v*"
+environment = "release"
+`
+
+    const config = parseYaffleToml(toml)
+    expect(config.triggers.github?.push?.[0].ref).toBe("refs/tags/v*")
   })
 
   test("allows workspaces with no triggers (using '*' for PR environments)", () => {
@@ -282,31 +344,57 @@ path = "infra"
 environments = ["main", "staging", "release"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 [[triggers.github.push]]
-branch = "staging"
+ref = "refs/heads/staging"
 environment = "staging"
 
 [[triggers.github.push]]
-branch = "release/*"
+ref = "refs/tags/v*"
 environment = "release"
 `)
 
-  test("finds exact match", () => {
-    expect(findPushTriggerEnvironment(config, "main")).toBe("main")
-    expect(findPushTriggerEnvironment(config, "staging")).toBe("staging")
+  test("finds exact branch match", () => {
+    expect(findPushTriggerEnvironment(config, "refs/heads/main")).toBe("main")
+    expect(findPushTriggerEnvironment(config, "refs/heads/staging")).toBe("staging")
   })
 
-  test("finds pattern match", () => {
-    expect(findPushTriggerEnvironment(config, "release/v1")).toBe("release")
-    expect(findPushTriggerEnvironment(config, "release/hotfix")).toBe("release")
+  test("finds tag pattern match", () => {
+    expect(findPushTriggerEnvironment(config, "refs/tags/v1")).toBe("release")
+    expect(findPushTriggerEnvironment(config, "refs/tags/v1.0.0")).toBe("release")
   })
 
   test("returns undefined for no match", () => {
-    expect(findPushTriggerEnvironment(config, "develop")).toBeUndefined()
-    expect(findPushTriggerEnvironment(config, "feature/login")).toBeUndefined()
+    expect(findPushTriggerEnvironment(config, "refs/heads/develop")).toBeUndefined()
+    expect(findPushTriggerEnvironment(config, "refs/heads/feature/login")).toBeUndefined()
+    expect(findPushTriggerEnvironment(config, "refs/tags/release-1")).toBeUndefined()
+  })
+})
+
+describe("matchRefPattern", () => {
+  test("matches exact refs", () => {
+    expect(matchRefPattern("refs/heads/main", "refs/heads/main")).toBe(true)
+    expect(matchRefPattern("refs/tags/v1.0.0", "refs/tags/v1.0.0")).toBe(true)
+    expect(matchRefPattern("refs/heads/main", "refs/heads/develop")).toBe(false)
+  })
+
+  test("matches tag patterns", () => {
+    expect(matchRefPattern("refs/tags/v*", "refs/tags/v1")).toBe(true)
+    expect(matchRefPattern("refs/tags/v*", "refs/tags/v1.0.0")).toBe(true)
+    expect(matchRefPattern("refs/tags/v*", "refs/tags/release")).toBe(false)
+  })
+
+  test("matches branch patterns", () => {
+    expect(matchRefPattern("refs/heads/feature/*", "refs/heads/feature/login")).toBe(true)
+    expect(matchRefPattern("refs/heads/release/*", "refs/heads/release/v1")).toBe(true)
+    expect(matchRefPattern("refs/heads/feature/*", "refs/heads/bugfix/crash")).toBe(false)
+  })
+
+  test("wildcard does not cross path segments", () => {
+    expect(matchRefPattern("refs/tags/v*", "refs/tags/v1/beta")).toBe(false)
+    expect(matchRefPattern("refs/heads/feature/*", "refs/heads/feature/a/b")).toBe(false)
   })
 })
 
@@ -351,7 +439,7 @@ path = "infra"
 environments = ["main"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 `)
 
@@ -382,11 +470,11 @@ path = "apps/web/infra"
 environments = ["*"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 [[triggers.github.push]]
-branch = "staging"
+ref = "refs/heads/staging"
 environment = "staging"
 
 [[triggers.github.pull_request]]
@@ -592,7 +680,7 @@ path = "infra/production"
 environments = ["main"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 [[approvals]]
@@ -642,7 +730,7 @@ path = "infra/staging"
 environments = ["main"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 [[approvals]]
@@ -695,11 +783,11 @@ path = "apps/web/infra"
 environments = ["*"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 [[triggers.github.push]]
-branch = "staging"
+ref = "refs/heads/staging"
 environment = "staging"
 
 [[approvals]]
@@ -758,7 +846,7 @@ path = "infra/shared"
 environments = ["main"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 [[approvals]]
@@ -795,7 +883,7 @@ path = "infra/dev"
 environments = ["main"]
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "main"
 
 [[approvals]]

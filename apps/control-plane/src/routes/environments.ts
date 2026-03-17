@@ -28,7 +28,7 @@ interface EnvironmentWorkspace {
 
 interface EnvironmentGroup {
   repo: string
-  branch: string
+  ref: string
   environmentName: string
   headSha: string
   status: string
@@ -157,7 +157,7 @@ async function fetchEnvironments(
     if (!existing) {
       groups.set(key, {
         repo: preview.repo,
-        branch: preview.branch,
+        ref: preview.ref,
         environmentName: preview.environmentName,
         headSha: preview.headSha,
         status: preview.status,

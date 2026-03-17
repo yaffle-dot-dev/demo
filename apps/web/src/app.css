@@ -1,6 +1,10 @@
 @import "tailwindcss";
 @import "@yaffle/design";
 
+html {
+  overflow-y: scroll;
+}
+
 body {
   @apply bg-surface text-text antialiased;
   font-family: var(--font-family-sans);

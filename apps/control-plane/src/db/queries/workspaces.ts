@@ -119,7 +119,7 @@ export async function upsertWorkspace(values: NewWorkspace): Promise<Workspace> 
         set: {
           repo: values.repo,
           workspacePath: values.workspacePath,
-          branch: values.branch,
+          ref: values.ref,
           terraformVersion: values.terraformVersion,
         },
       })
@@ -222,17 +222,19 @@ export async function updateWorkspaceCurrentState(
 
 /**
  * Build a workspace name from components.
- * Format: {repo}-{environment}-{branch}-{workspace_path}
+ * Format: {repo}-{environment}-{refName}-{workspace_path}
  *
  * All components are slugified (special chars replaced with `-`, lowercased).
  *
  * The repo is included to prevent collisions between workspaces with the same
  * path in different repositories within the same organization.
+ *
+ * @param ref - Full git ref (e.g., "refs/heads/main", "refs/tags/v1.0.0")
  */
 export function buildWorkspaceName(
   repo: string,
   environment: string,
-  branch: string,
+  ref: string,
   workspacePath: string,
 ): string {
   const slugify = (s: string): string =>
@@ -244,10 +246,13 @@ export function buildWorkspaceName(
   // Extract repo name from "owner/repo" format, or use as-is
   const repoName = repo.includes("/") ? repo.split("/")[1] : repo
 
+  // Extract ref name (strip refs/heads/ or refs/tags/ prefix)
+  const refName = ref.replace(/^refs\/(heads|tags)\//, "")
+
   return [
     slugify(repoName),
     slugify(environment),
-    slugify(branch),
+    slugify(refName),
     slugify(workspacePath),
   ].join("-")
 }

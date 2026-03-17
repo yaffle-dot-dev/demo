@@ -120,6 +120,9 @@ export async function claimQueuedJobs(
 
 /**
  * Mark a job as running (called by IaC engine when it starts).
+ * 
+ * Only transitions from "dispatched" state to prevent marking already
+ * completed/failed jobs as running.
  */
 export async function markJobRunning(
   jobId: string,
@@ -135,7 +138,12 @@ export async function markJobRunning(
         lastHeartbeat: new Date(),
         attempts: sql`${iacJobs.attempts} + 1`,
       })
-      .where(eq(iacJobs.id, jobId))
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          eq(iacJobs.status, "dispatched"),
+        ),
+      )
       .returning()
 
     const job = rows[0]
@@ -238,52 +246,68 @@ export async function findStaleJobs(
 
 /**
  * Re-queue a stale job for retry, or mark as failed if max attempts reached.
+ * 
+ * Uses FOR UPDATE to prevent TOCTOU race conditions where a "stale" worker
+ * wakes up between our check and update.
  */
 export async function requeueOrFailStaleJob(
   jobId: string,
 ): Promise<{ requeued: boolean; failed: boolean }> {
   return withDbSpan("update", "iac_jobs", async () => {
-    // First check the job's current state
-    const job = await db
-      .select()
-      .from(iacJobs)
-      .where(eq(iacJobs.id, jobId))
-      .limit(1)
-      .then((rows) => rows[0])
+    // Use a transaction with FOR UPDATE to lock the row and prevent races
+    return db.transaction(async (tx) => {
+      // Lock the job row while we check and update
+      const jobs = await tx
+        .select()
+        .from(iacJobs)
+        .where(eq(iacJobs.id, jobId))
+        .for("update")
+        .limit(1)
 
-    if (!job) {
-      return { requeued: false, failed: false }
-    }
+      const job = jobs[0]
+      if (!job) {
+        return { requeued: false, failed: false }
+      }
 
-    if (job.attempts >= job.maxAttempts) {
-      // Max retries reached, mark as failed
-      await db
+      // Double-check it's still stale (worker might have heartbeated while we waited for lock)
+      const isStillStale = !job.lastHeartbeat ||
+        (Date.now() - job.lastHeartbeat.getTime()) > 5 * 60 * 1000
+
+      if (!isStillStale) {
+        // Job is no longer stale - worker is alive
+        return { requeued: false, failed: false }
+      }
+
+      if (job.attempts >= job.maxAttempts) {
+        // Max retries reached, mark as failed
+        await tx
+          .update(iacJobs)
+          .set({
+            status: "failed",
+            completedAt: new Date(),
+            errorMessage: `Job timed out after ${job.attempts} attempts (worker died or timed out)`,
+          })
+          .where(eq(iacJobs.id, jobId))
+
+        events.emitJobUpdate(job.id, job.deploymentId)
+        return { requeued: false, failed: true }
+      }
+
+      // Re-queue for another attempt
+      await tx
         .update(iacJobs)
         .set({
-          status: "failed",
-          completedAt: new Date(),
-          errorMessage: `Job timed out after ${job.attempts} attempts (worker died or timed out)`,
+          status: "queued",
+          workerId: null,
+          dispatchedAt: null,
+          startedAt: null,
+          lastHeartbeat: null,
         })
         .where(eq(iacJobs.id, jobId))
 
       events.emitJobUpdate(job.id, job.deploymentId)
-      return { requeued: false, failed: true }
-    }
-
-    // Re-queue for another attempt
-    await db
-      .update(iacJobs)
-      .set({
-        status: "queued",
-        workerId: null,
-        dispatchedAt: null,
-        startedAt: null,
-        lastHeartbeat: null,
-      })
-      .where(eq(iacJobs.id, jobId))
-
-    events.emitJobUpdate(job.id, job.deploymentId)
-    return { requeued: true, failed: false }
+      return { requeued: true, failed: false }
+    })
   })
 }
 
@@ -300,7 +324,7 @@ export async function getJobWithContext(jobId: string): Promise<
         environmentName: string
         prNumber: number | null
         workspacePath: string
-        branch: string
+        ref: string
         headSha: string
         stateKey: string
         installationId: number | null
@@ -313,7 +337,7 @@ export async function getJobWithContext(jobId: string): Promise<
         repo: string
         prNumber: number | null
         workspacePath: string
-        branch: string
+        ref: string
         headSha: string
         stateKey: string
         installationId: number | null
@@ -334,7 +358,7 @@ export async function getJobWithContext(jobId: string): Promise<
           environmentName: workspaceDeployments.environmentName,
           prNumber: workspaceDeployments.prNumber,
           workspacePath: workspaceDeployments.workspacePath,
-          branch: workspaceDeployments.branch,
+          ref: workspaceDeployments.ref,
           headSha: workspaceDeployments.headSha,
           stateKey: workspaceDeployments.stateKey,
           installationId: workspaceDeployments.installationId,

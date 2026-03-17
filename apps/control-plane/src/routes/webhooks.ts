@@ -4,6 +4,7 @@ import type {
   PullRequestAction,
   PullRequestContext,
   PushContext,
+  RefType,
 } from "@yaffle/shared"
 
 import { getEnv } from "../lib/env.ts"
@@ -144,31 +145,40 @@ webhooksRoute.post("/github", async (c) => {
   }
 
   if (event === "push") {
-    // Extract the branch name from refs/heads/...
     const ref = payload.ref as string
-    if (!ref.startsWith("refs/heads/")) {
-      return c.json({ data: { ignored: true, reason: `non-branch push: ${ref}` } })
-    }
 
-    const branch = ref.replace("refs/heads/", "")
+    // Determine ref type and extract name
+    let refType: RefType
+    let refName: string
+    if (ref.startsWith("refs/heads/")) {
+      refType = "branch"
+      refName = ref.replace("refs/heads/", "")
+    } else if (ref.startsWith("refs/tags/")) {
+      refType = "tag"
+      refName = ref.replace("refs/tags/", "")
+    } else {
+      return c.json({ data: { ignored: true, reason: `unsupported ref type: ${ref}` } })
+    }
 
     // Log both `after` and `head_commit.id` to diagnose SHA discrepancies
     const afterSha = payload.after as string
     const headCommitSha = payload.head_commit?.id as string | undefined
     const beforeSha = payload.before as string
-    console.log(`[webhook] push event: branch=${branch} after=${afterSha} head_commit=${headCommitSha} before=${beforeSha}`)
+    console.log(`[webhook] push event: ref=${ref} refType=${refType} after=${afterSha} head_commit=${headCommitSha} before=${beforeSha}`)
     logger.info(`push webhook received`, {
-      "webhook.branch": branch,
+      "webhook.ref": ref,
+      "webhook.ref_type": refType,
+      "webhook.ref_name": refName,
       "webhook.after": afterSha,
       "webhook.head_commit_id": headCommitSha ?? "none",
       "webhook.before": beforeSha,
       "webhook.sha_match": afterSha === headCommitSha,
     })
 
-    // Ignore branch deletion events (after SHA is all zeros)
+    // Ignore deletion events (after SHA is all zeros)
     const nullSha = "0000000000000000000000000000000000000000"
     if (!afterSha || afterSha === nullSha) {
-      return c.json({ data: { ignored: true, reason: "branch deletion push (no head SHA)" } })
+      return c.json({ data: { ignored: true, reason: `${refType} deletion push (no head SHA)` } })
     }
 
     const context: PushContext = {
@@ -178,17 +188,19 @@ webhooksRoute.post("/github", async (c) => {
       owner: payload.repository.owner.login,
       repo: payload.repository.name,
       headSha: payload.after,
-      branch,
+      ref,
+      refType,
+      refName,
       pusherGithubId: payload.sender?.id ?? null,
       pusherLogin: payload.sender?.login ?? null,
       defaultBranch: payload.repository.default_branch,
     }
 
     handleWebhookEvent(context).catch((err) => {
-      logger.error(`error handling push event for ${context.owner}/${context.repo}@${context.branch}`, {
+      logger.error(`error handling push event for ${context.owner}/${context.repo}@${context.ref}`, {
         "yaffle.owner": context.owner,
         "yaffle.repo": context.repo,
-        "yaffle.branch": context.branch,
+        "yaffle.ref": context.ref,
         "error": err instanceof Error ? err.message : String(err),
       })
     })

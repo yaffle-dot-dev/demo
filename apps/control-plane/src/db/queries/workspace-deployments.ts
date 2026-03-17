@@ -156,7 +156,7 @@ export async function findPreview(
 
 /**
  * Upsert a deployment. On conflict (same org/repo/env/workspace), update the head SHA,
- * branch, and reset status to pending.
+ * ref, and reset status to pending.
  */
 export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<WorkspaceDeployment> {
   return withDbSpan("upsert", "workspace_deployments", async () => {
@@ -172,7 +172,7 @@ export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<
         ],
         set: {
           headSha: values.headSha,
-          branch: values.branch,
+          ref: values.ref,
           installationId: values.installationId,
           authorGithubId: values.authorGithubId,
           authorLogin: values.authorLogin,
@@ -399,6 +399,147 @@ export function isDeploymentReady(deployment: WorkspaceDeployment): boolean {
     }
   }
   return true
+}
+
+/**
+ * Result of attempting to mark an upstream as complete.
+ */
+export interface UpstreamCompleteResult {
+  /** The updated deployment */
+  deployment: WorkspaceDeployment
+  /** Whether this call won the race to queue the downstream job */
+  shouldQueueJob: boolean
+}
+
+/**
+ * Add a completed upstream to a deployment and atomically determine if we should queue a job.
+ * 
+ * This function prevents race conditions where multiple upstreams complete simultaneously
+ * and both try to queue a plan job for the same downstream deployment.
+ * 
+ * The atomic guarantee comes from using a CAS (compare-and-swap) pattern:
+ * 1. Add the completed upstream ID to the array
+ * 2. Check if all upstreams are now complete
+ * 3. If ready, atomically transition status from "pending" to "planning" 
+ *    (only one caller can win this transition)
+ * 4. The winner is responsible for creating the job
+ */
+export async function addCompletedUpstreamAtomic(
+  deploymentId: string,
+  completedUpstreamId: string,
+): Promise<UpstreamCompleteResult | undefined> {
+  return withDbSpan("update", "workspace_deployments", async () => {
+    // Step 1: Add the completed upstream (idempotent)
+    const rows = await db
+      .update(workspaceDeployments)
+      .set({
+        completedUpstreams: sql`
+          CASE
+            WHEN ${completedUpstreamId} = ANY(${workspaceDeployments.completedUpstreams})
+            THEN ${workspaceDeployments.completedUpstreams}
+            ELSE array_append(${workspaceDeployments.completedUpstreams}, ${completedUpstreamId})
+          END
+        `,
+      })
+      .where(eq(workspaceDeployments.id, deploymentId))
+      .returning()
+
+    const deployment = rows[0]
+    if (!deployment) {
+      return undefined
+    }
+
+    // Emit update event
+    events.emitDeploymentUpdate(
+      deployment.id,
+      deployment.orgId,
+      deployment.repo,
+      deployment.environmentKind as EnvironmentKind,
+      deployment.environmentName,
+    )
+
+    // Step 2: Check if deployment is now ready
+    if (!isDeploymentReady(deployment)) {
+      return { deployment, shouldQueueJob: false }
+    }
+
+    // Step 3: If ready and pending, atomically claim the right to queue
+    // This is a CAS operation: only transition if status is still "pending"
+    if (deployment.status === "pending") {
+      const claimed = await db
+        .update(workspaceDeployments)
+        .set({ status: "planning" })
+        .where(
+          and(
+            eq(workspaceDeployments.id, deploymentId),
+            eq(workspaceDeployments.status, "pending"),
+          ),
+        )
+        .returning()
+
+      if (claimed.length > 0) {
+        // We won the race - emit update and signal to create job
+        events.emitDeploymentUpdate(
+          claimed[0].id,
+          claimed[0].orgId,
+          claimed[0].repo,
+          claimed[0].environmentKind as EnvironmentKind,
+          claimed[0].environmentName,
+        )
+        return { deployment: claimed[0], shouldQueueJob: true }
+      }
+      // Someone else won the race - they'll create the job
+      return { deployment, shouldQueueJob: false }
+    }
+
+    // Status wasn't "pending" (maybe already planning/ready/etc)
+    return { deployment, shouldQueueJob: false }
+  })
+}
+
+/**
+ * Atomically claim the right to queue a destroy job for an upstream deployment.
+ * 
+ * This is used when a downstream completes its destroy - we need to check if
+ * all downstreams of the upstream are now destroyed, and if so, queue the
+ * upstream's destroy job.
+ * 
+ * The race condition is: multiple downstreams complete destroy simultaneously,
+ * both check that all downstreams are destroyed, both try to queue. This function
+ * uses a CAS pattern to ensure only one wins.
+ * 
+ * @returns true if this call won the race and should create the destroy job
+ */
+export async function claimDestroyJobForUpstream(
+  upstreamId: string,
+): Promise<{ claimed: boolean; deployment?: WorkspaceDeployment }> {
+  return withDbSpan("update", "workspace_deployments", async () => {
+    // Atomically transition from "pending" to "destroying"
+    // Only one caller can win this transition
+    const claimed = await db
+      .update(workspaceDeployments)
+      .set({ status: "destroying" })
+      .where(
+        and(
+          eq(workspaceDeployments.id, upstreamId),
+          eq(workspaceDeployments.status, "pending"),
+        ),
+      )
+      .returning()
+
+    if (claimed.length > 0) {
+      events.emitDeploymentUpdate(
+        claimed[0].id,
+        claimed[0].orgId,
+        claimed[0].repo,
+        claimed[0].environmentKind as EnvironmentKind,
+        claimed[0].environmentName,
+      )
+      return { claimed: true, deployment: claimed[0] }
+    }
+
+    return { claimed: false }
+  })
 }
 
 /**

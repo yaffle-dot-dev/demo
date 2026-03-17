@@ -48,7 +48,7 @@ export interface RunOpts {
 /**
  * Build a state key for a workspace.
  * Preview: preview-pr-{n}/{workspacePath}/terraform.tfstate
- * Non-preview: {branch}/{workspacePath}/terraform.tfstate
+ * Named environment: {environment}/{workspacePath}/terraform.tfstate
  */
 export function buildStateKey(
   prefix: string,
@@ -66,9 +66,9 @@ export function previewStatePrefix(prNumber: number): string {
 }
 
 /**
- * Build a state key prefix for a branch (non-preview).
- * Format: {branch}
+ * Build a state key prefix for a named environment (non-preview).
+ * Format: {environment}
  */
-export function branchStatePrefix(branch: string): string {
-  return branch
+export function environmentStatePrefix(environment: string): string {
+  return environment
 }

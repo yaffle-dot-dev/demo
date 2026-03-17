@@ -44,8 +44,11 @@ export interface PullRequestContext {
   defaultBranch: string
 }
 
+/** Type of git ref being pushed */
+export type RefType = "branch" | "tag"
+
 /**
- * Context for a push webhook event (push to default branch).
+ * Context for a push webhook event (push to branch or tag).
  */
 export interface PushContext {
   kind: "push"
@@ -54,7 +57,12 @@ export interface PushContext {
   owner: string
   repo: string
   headSha: string
-  branch: string
+  /** Full ref path (e.g., "refs/heads/main", "refs/tags/v1.0.0") */
+  ref: string
+  /** Type of ref: "branch" or "tag" */
+  refType: RefType
+  /** Stripped ref name for display (e.g., "main", "v1.0.0") */
+  refName: string
   /** GitHub user ID of the pusher (from sender object) */
   pusherGithubId: number | null
   /** GitHub username of the pusher (from sender object) */

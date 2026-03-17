@@ -5,7 +5,7 @@ export interface Preview {
   repo: string
   prNumber: number
   workspacePath: string
-  branch: string
+  ref: string
   headSha: string
   /** GitHub user ID (stable identifier for matching) */
   authorGithubId: number | null
@@ -49,7 +49,7 @@ export interface RunGroup {
   id: string
   repo: string
   prNumber: number | null
-  branch: string
+  ref: string
   headSha: string
   trigger: string
   status: string
@@ -87,7 +87,7 @@ export interface EnvironmentWorkspace {
 
 export interface EnvironmentGroup {
   repo: string
-  branch: string
+  ref: string
   environmentName: string
   headSha: string
   status: string
@@ -124,7 +124,7 @@ export interface PrPreviewGroup {
   org: string
   repo: string
   prNumber: number
-  branch: string
+  ref: string
   headSha: string
   authorLogin: string | null
   workspaces: WorkspaceWithRuns[]
@@ -134,7 +134,7 @@ export interface PrPreviewGroup {
 export interface EnvPreviewGroup {
   org: string
   repo: string
-  branch: string
+  ref: string
   headSha: string
   workspaces: WorkspaceWithRuns[]
   runGroups: RunGroup[]
@@ -149,7 +149,7 @@ export interface EnvironmentPreviewGroup {
   repo: string
   environmentKind: "named" | "transient"
   environmentName: string
-  branch: string
+  ref: string
   headSha: string
   prNumber: number | null
   authorGithubId: number | null

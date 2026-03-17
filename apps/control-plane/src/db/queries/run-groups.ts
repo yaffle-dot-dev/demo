@@ -81,12 +81,13 @@ export async function listRunGroupsForPr(
 }
 
 /**
- * List run groups for a branch (environment).
+ * List run groups for a ref (environment).
+ * @deprecated Use listRunGroupsForEnvironment instead
  */
 export async function listRunGroupsForBranch(
   orgId: string,
   repo: string,
-  branch: string,
+  ref: string,
   limit = 20,
 ): Promise<RunGroup[]> {
   return withDbSpan("select", "run_groups", async () => {
@@ -97,9 +98,9 @@ export async function listRunGroupsForBranch(
         and(
           eq(runGroups.orgId, orgId),
           eq(runGroups.repo, repo),
-          // Match both NULL (push triggers) and 0 (manual reruns) for branch/env run groups
+          // Match both NULL (push triggers) and 0 (manual reruns) for ref/env run groups
           or(isNull(runGroups.prNumber), eq(runGroups.prNumber, 0)),
-          eq(runGroups.branch, branch),
+          eq(runGroups.ref, ref),
         ),
       )
       .orderBy(desc(runGroups.createdAt))
@@ -160,12 +161,13 @@ export async function getLatestRunGroupForPr(
 }
 
 /**
- * Get the latest run group for a branch (environment).
+ * Get the latest run group for a ref (environment).
+ * @deprecated Use getLatestRunGroupForEnvironment instead
  */
 export async function getLatestRunGroupForBranch(
   orgId: string,
   repo: string,
-  branch: string,
+  ref: string,
 ): Promise<RunGroup | undefined> {
   return withDbSpan("select", "run_groups", async () => {
     const rows = await db
@@ -176,7 +178,7 @@ export async function getLatestRunGroupForBranch(
           eq(runGroups.orgId, orgId),
           eq(runGroups.repo, repo),
           isNull(runGroups.prNumber),
-          eq(runGroups.branch, branch),
+          eq(runGroups.ref, ref),
         ),
       )
       .orderBy(desc(runGroups.createdAt))

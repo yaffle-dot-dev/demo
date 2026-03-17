@@ -112,7 +112,7 @@ export const workspaceDeployments = pgTable(
     // PR number as metadata (nullable, not a discriminator)
     prNumber: integer("pr_number"), // NULL for named environments, PR number for transient
     workspacePath: text("workspace_path").notNull(),
-    branch: text("branch").notNull(),
+    ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
     headSha: text("head_sha").notNull(),
     // GitHub user ID (stable) - used for matching to internal users via account table
     authorGithubId: bigint("author_github_id", { mode: "number" }),
@@ -162,7 +162,7 @@ export const runGroups = pgTable("run_groups", {
   environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
   // PR number as metadata (nullable, not a discriminator)
   prNumber: integer("pr_number"), // NULL for named environments, PR number for transient
-  branch: text("branch").notNull(),
+  ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
   headSha: text("head_sha").notNull(),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
   status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
@@ -308,9 +308,9 @@ export const workspaces = pgTable(
     name: text("name").notNull(),
     repo: text("repo").notNull(),
     workspacePath: text("workspace_path").notNull(),
-    environment: text("environment").notNull(), // "preview" or branch name (e.g. "main")
+    environment: text("environment").notNull(), // "preview" or environment name (e.g. "main")
     prNumber: integer("pr_number"),
-    branch: text("branch").notNull(),
+    ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
     locked: boolean("locked").default(false).notNull(),
     lockedBy: text("locked_by"), // "user:{id}" or "run:{id}"
     lockedAt: timestamp("locked_at"),

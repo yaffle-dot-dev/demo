@@ -89,7 +89,7 @@ reposRoute.get(
         org: c.req.param("org"),
         repo,
         prNumber,
-        branch: first.branch,
+        ref: first.ref,
         headSha: first.headSha,
         authorGithubId: first.authorGithubId,
         authorLogin: first.authorLogin,
@@ -182,7 +182,7 @@ reposRoute.get(
               org: c.req.param("org"),
               repo,
               prNumber,
-              branch: first.branch,
+              ref: first.ref,
               headSha: first.headSha,
               authorGithubId: first.authorGithubId,
               authorLogin: first.authorLogin,
@@ -537,7 +537,7 @@ reposRoute.get(
         repo,
         environmentKind: first.environmentKind,
         environmentName: first.environmentName,
-        branch: first.branch,
+        ref: first.ref,
         headSha: first.headSha,
         prNumber: first.prNumber,
         authorGithubId: first.authorGithubId,
@@ -614,7 +614,7 @@ reposRoute.get(
               repo,
               environmentKind: first?.environmentKind ?? "named",
               environmentName,
-              branch: first?.branch ?? environmentName,
+              ref: first?.ref ?? `refs/heads/${environmentName}`,
               headSha: first?.headSha ?? "",
               prNumber: first?.prNumber ?? null,
               authorGithubId: first?.authorGithubId ?? null,
@@ -788,7 +788,7 @@ interface SerializedRunGroup {
   id: string
   repo: string
   prNumber: number | null
-  branch: string
+  ref: string
   headSha: string
   trigger: string
   status: string
@@ -803,7 +803,7 @@ function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
     id: rg.id,
     repo: rg.repo,
     prNumber: rg.prNumber,
-    branch: rg.branch,
+    ref: rg.ref,
     headSha: rg.headSha,
     trigger: rg.trigger,
     status: rg.status,

@@ -72,7 +72,7 @@ const DEFAULT_CONFIG: YaffleTomlConfig = {
   ],
   triggers: {
     github: {
-      push: [{ branch: "main", environment: "main" }],
+      push: [{ ref: "refs/heads/main", environment: "main" }],
       pull_request: [{ branch_pattern: "*" }],
     },
   },
@@ -97,7 +97,7 @@ const MULTI_WORKSPACE_CONFIG: YaffleTomlConfig = {
   ],
   triggers: {
     github: {
-      push: [{ branch: "main", environment: "main" }],
+      push: [{ ref: "refs/heads/main", environment: "main" }],
       pull_request: [{ branch_pattern: "*" }],
     },
   },
@@ -116,7 +116,7 @@ const APPROVAL_CONFIG: YaffleTomlConfig = {
   ],
   triggers: {
     github: {
-      push: [{ branch: "main", environment: "main" }],
+      push: [{ ref: "refs/heads/main", environment: "main" }],
       pull_request: [{ branch_pattern: "*" }],
     },
   },
@@ -154,6 +154,9 @@ function makePrContext(overrides?: Partial<PullRequestContext>): PullRequestCont
 }
 
 function makePushContext(overrides?: Partial<PushContext>): PushContext {
+  const ref = overrides?.ref ?? "refs/heads/main"
+  const refType = ref.startsWith("refs/tags/") ? "tag" : "branch"
+  const refName = ref.replace(/^refs\/(heads|tags)\//, "")
   return {
     kind: "push",
     installationId: 0,
@@ -161,7 +164,9 @@ function makePushContext(overrides?: Partial<PushContext>): PushContext {
     owner: "test-org",
     repo: "test-repo",
     headSha: "abc123def456",
-    branch: "main",
+    ref,
+    refType,
+    refName,
     pusherGithubId: 12345,
     pusherLogin: "octocat",
     defaultBranch: "main",
@@ -529,8 +534,8 @@ describe("webhook-handler", () => {
   // Push to non-default branch -- ignored
   // -----------------------------------------------------------------------
 
-  test("push to non-default branch is ignored", async () => {
-    await handler.handleWebhookEvent(makePushContext({ branch: "feature/something" }))
+  test("push to non-matching ref is ignored", async () => {
+    await handler.handleWebhookEvent(makePushContext({ ref: "refs/heads/feature/something" }))
 
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(0)
@@ -545,14 +550,14 @@ describe("webhook-handler", () => {
   // Push trigger environment matching
   // -----------------------------------------------------------------------
 
-  test("push respects trigger branch configuration", async () => {
+  test("push respects trigger ref configuration", async () => {
     const config: YaffleTomlConfig = {
       version: 1,
       environments: [{ name: "develop" }],
       workspaces: [{ path: "infra", environments: ["develop"] }],
       triggers: {
         github: {
-          push: [{ branch: "develop", environment: "develop" }],
+          push: [{ ref: "refs/heads/develop", environment: "develop" }],
           pull_request: [{ branch_pattern: "*" }],
         },
       },
@@ -561,13 +566,13 @@ describe("webhook-handler", () => {
     const h = createHandler(runner, { configLoader: fakeConfigLoader(config) })
 
     // Push to "main" should be ignored because no trigger matches
-    await h.handleWebhookEvent(makePushContext({ branch: "main", defaultBranch: "main" }))
+    await h.handleWebhookEvent(makePushContext({ ref: "refs/heads/main", defaultBranch: "main" }))
     expect(runner.calls).toHaveLength(0)
     let jobs = await getAllJobs()
     expect(jobs).toHaveLength(0)
 
     // Push to "develop" should queue plan job
-    await h.handleWebhookEvent(makePushContext({ branch: "develop", defaultBranch: "main" }))
+    await h.handleWebhookEvent(makePushContext({ ref: "refs/heads/develop", defaultBranch: "main" }))
     // Runner NOT called - job-based
     expect(runner.calls).toHaveLength(0)
     jobs = await getAllJobs()

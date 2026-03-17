@@ -40,9 +40,18 @@ const workspaceSchema = z.object({
 })
 
 const pushTriggerSchema = z.object({
-  branch: z.string().min(1, "branch is required"),
+  ref: z.string().min(1, "ref is required"),
   environment: z.string().min(1, "environment is required"),
-})
+}).refine(
+  (data) => data.ref.startsWith("refs/heads/") || data.ref.startsWith("refs/tags/"),
+  { message: "ref must start with \"refs/heads/\" or \"refs/tags/\"", path: ["ref"] },
+).refine(
+  (data) => {
+    const prefix = data.ref.startsWith("refs/heads/") ? "refs/heads/" : "refs/tags/"
+    return data.ref.length > prefix.length
+  },
+  { message: "ref must have a name after the prefix", path: ["ref"] },
+)
 
 const pullRequestTriggerSchema = z.object({
   branch_pattern: z.string().min(1, "branch_pattern is required"),
@@ -129,8 +138,8 @@ export interface GitHubTriggers {
 }
 
 export interface PushTrigger {
-  /** Explicit branch name or glob pattern */
-  branch: string
+  /** Full ref pattern: refs/heads/main, refs/tags/v*, etc. */
+  ref: string
   /** Must reference a declared environment */
   environment: string
 }
@@ -244,7 +253,7 @@ function validateSemantics(config: YaffleTomlConfig): void {
   if (config.triggers.github?.push) {
     for (const trigger of config.triggers.github.push) {
       if (!declaredEnvs.has(trigger.environment)) {
-        errors.push(`Push trigger for branch "${trigger.branch}" references undeclared environment "${trigger.environment}"`)
+        errors.push(`Push trigger for ref "${trigger.ref}" references undeclared environment "${trigger.environment}"`)
       }
       triggeredEnvs.add(trigger.environment)
     }
@@ -331,22 +340,33 @@ export function matchWorkspacePattern(pattern: string, workspacePath: string): b
 }
 
 /**
- * Find matching push trigger for a branch.
+ * Find matching push trigger for a ref.
  * Returns the environment name if matched, undefined otherwise.
+ *
+ * @param config - Parsed config
+ * @param ref - Full ref path (e.g., "refs/heads/main", "refs/tags/v1.0.0")
  */
 export function findPushTriggerEnvironment(
   config: YaffleTomlConfig,
-  branch: string,
+  ref: string,
 ): string | undefined {
   const pushTriggers = config.triggers.github?.push ?? []
 
   for (const trigger of pushTriggers) {
-    if (matchBranchPattern(trigger.branch, branch)) {
+    if (matchRefPattern(trigger.ref, ref)) {
       return trigger.environment
     }
   }
 
   return undefined
+}
+
+/**
+ * Match a ref against a pattern.
+ * Uses the same glob semantics as branch matching.
+ */
+export function matchRefPattern(pattern: string, ref: string): boolean {
+  return matchBranchPattern(pattern, ref)
 }
 
 /**

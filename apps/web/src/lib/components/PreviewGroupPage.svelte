@@ -20,7 +20,7 @@
     org: string
     repo: string
     identifier: number | string // PR number or branch name
-    branch: string
+    ref: string
     headSha: string
     authorLogin?: string | null
     workspaces: WorkspaceWithRuns[]
@@ -36,6 +36,11 @@
     /** Callback to unpin and switch to latest run group */
     onSwitchToLatest?: () => void
   }
+  
+  /** Extract display name from a full ref (e.g., "refs/heads/main" -> "main") */
+  function refName(ref: string): string {
+    return ref.replace(/^refs\/(heads|tags)\//, "")
+  }
 
   let props: Props = $props()
 
@@ -44,7 +49,7 @@
   const org = $derived(props.org)
   const repo = $derived(props.repo)
   const identifier = $derived(props.identifier)
-  const branch = $derived(props.branch)
+  const ref = $derived(props.ref)
   const headSha = $derived(props.headSha)
   const authorLogin = $derived(props.authorLogin ?? null)
   const workspaces = $derived(props.workspaces)
@@ -225,6 +230,27 @@
   // Tab state
   type TabId = "plan" | "apply" | "outputs"
   let activeTab = $state<TabId>("plan")
+
+  // Terminal expanded state - collapsed by default, persisted to localStorage
+  const TERMINAL_EXPANDED_KEY = "yaffle:terminal-expanded"
+  let terminalExpanded = $state(
+    typeof localStorage !== "undefined" && localStorage.getItem(TERMINAL_EXPANDED_KEY) === "true"
+  )
+  let terminalContainer: HTMLDivElement | null = null
+
+  function toggleTerminalExpanded() {
+    const expanding = !terminalExpanded
+    terminalExpanded = !terminalExpanded
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(TERMINAL_EXPANDED_KEY, String(terminalExpanded))
+    }
+    // When expanding, scroll to keep the bottom of the terminal in view after transition
+    if (expanding && terminalContainer) {
+      setTimeout(() => {
+        terminalContainer?.scrollIntoView({ behavior: "smooth", block: "end" })
+      }, 220)
+    }
+  }
   
   // Cancel state
   let cancellingRunId = $state<string | null>(null)
@@ -471,7 +497,7 @@ terraform {
             </a>
           {:else}
             <a
-              href={githubTreeUrl({ org, repo }, branch)}
+              href={githubTreeUrl({ org, repo }, refName(ref))}
               target="_blank"
               rel="noopener noreferrer"
               class="px-2 py-0.5 bg-surface-overlay rounded text-xs text-text-muted hover:text-yaffle-400 transition-colors"
@@ -482,12 +508,12 @@ terraform {
         </div>
         <div class="flex items-center gap-3 text-sm text-text-muted">
           <a
-            href={githubTreeUrl({ org, repo }, branch)}
+            href={githubTreeUrl({ org, repo }, refName(ref))}
             target="_blank"
             rel="noopener noreferrer"
             class="font-mono text-xs hover:text-yaffle-400 transition-colors"
           >
-            {branch}
+            {refName(ref)}
           </a>
           <span class="text-text-dim">@</span>
           <a
@@ -574,6 +600,7 @@ terraform {
             : selectedWorkspace.preview.status)
           : selectedWorkspace.preview.status}
         {@const cfg = statusConfig(displayStatus)}
+        <!-- Workspace header bar -->
         <div class="flex-shrink-0 px-6 py-4 border-b border-border">
           <div class="flex items-center justify-between">
             <div>
@@ -665,13 +692,25 @@ terraform {
           </div>
         </div>
 
-        <!-- Tabs -->
-        {#if tabs.length > 0}
-          <div class="flex-shrink-0 border-b border-border px-6">
+        {#if isQueuedWorkspace}
+          <!-- Queued workspace - no runs dispatched yet -->
+          <div class="flex flex-col items-center justify-center h-48 text-center">
+            <svg class="w-10 h-10 text-text-dim/50 mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="10" stroke-dasharray="4 4"/>
+              <path d="M12 6v6l4 2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <p class="text-sm text-text-muted mb-1">Queued</p>
+            <p class="text-xs text-text-dim/75 max-w-sm">
+              This workspace is waiting to be dispatched. It will start once its upstream dependencies complete.
+            </p>
+          </div>
+        {:else if tabs.length > 0}
+          <!-- Tabs subbar -->
+          <div class="flex-shrink-0 flex items-center justify-between border-b border-border px-6">
             <div class="flex gap-4">
               {#each tabs as tab (tab.id)}
                 <button
-                  class="pb-2 text-sm font-medium transition-colors border-b-2 -mb-px
+                  class="py-2 text-sm font-medium transition-colors border-b-2 -mb-px
                          {activeTab === tab.id 
                            ? 'border-yaffle-500 text-text' 
                            : 'border-transparent text-text-muted hover:text-text'}"
@@ -686,46 +725,56 @@ terraform {
                 </button>
               {/each}
             </div>
+            <!-- Expand/collapse button (only show for terminal tabs) -->
+            {#if activeTab !== "outputs"}
+              <button
+                class="p-1.5 text-text-muted hover:text-text transition-colors rounded hover:bg-surface-overlay"
+                onclick={toggleTerminalExpanded}
+                title={terminalExpanded ? "Collapse terminal" : "Expand terminal"}
+              >
+                {#if terminalExpanded}
+                  <svg class="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M4 10l4-4 4 4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                {:else}
+                  <svg class="w-4 h-4" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M4 6l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+                  </svg>
+                {/if}
+              </button>
+            {/if}
           </div>
-        {/if}
 
-        <!-- Tab content -->
-        <div class="flex-1 overflow-auto p-6">
-          {#if isQueuedWorkspace}
-            <!-- Queued workspace - no runs dispatched yet -->
-            <div class="flex flex-col items-center justify-center h-64 text-center">
-              <svg class="w-10 h-10 text-text-dim/50 mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                <circle cx="12" cy="12" r="10" stroke-dasharray="4 4"/>
-                <path d="M12 6v6l4 2" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-              <p class="text-sm text-text-muted mb-1">Queued</p>
-              <p class="text-xs text-text-dim/75 max-w-sm">
-                This workspace is waiting to be dispatched. It will start once its upstream dependencies complete.
-              </p>
+          <!-- Tab content area -->
+          {#if activeTab === "outputs" && hasOutputs}
+            <div class="flex-1 overflow-auto p-6">
+              <OutputsView outputs={displayOutputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
             </div>
-          {:else if activeTab === "outputs" && hasOutputs}
-            <OutputsView outputs={displayOutputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
-          {:else if activeTab === "plan" && latestPlan}
-            <!-- Show terminal with plan output -->
-            <!-- Key by workspace+tab to force re-mount when switching -->
-            {#key `${selectedPath}-plan`}
-              <div class="h-[500px]">
-                <Terminal output={terminalOutput} {streaming} />
-              </div>
-            {/key}
-          {:else if activeTab === "apply" && latestApply}
-            <!-- Show terminal with apply output -->
-            {#key `${selectedPath}-apply`}
-              <div class="h-[500px]">
+          {:else if (activeTab === "plan" && latestPlan) || (activeTab === "apply" && latestApply)}
+            <!-- Terminal connected directly to tabs bar -->
+            {#key `${selectedPath}-${activeTab}`}
+              <div 
+                bind:this={terminalContainer}
+                class="transition-all duration-200 ease-in-out"
+                style="height: {terminalExpanded ? '500px' : '250px'}"
+              >
                 <Terminal output={terminalOutput} {streaming} />
               </div>
             {/key}
           {:else}
-            <div class="text-text-dim text-sm text-center py-8">
-              No data available for this tab.
+            <div class="flex-1 overflow-auto p-6">
+              <div class="text-text-dim text-sm text-center py-8">
+                No data available for this tab.
+              </div>
             </div>
           {/if}
-        </div>
+        {:else}
+          <div class="flex-1 flex items-center justify-center">
+            <div class="text-text-dim text-sm text-center py-8">
+              No data available yet.
+            </div>
+          </div>
+        {/if}
       {:else}
         <div class="flex-1 flex flex-col items-center justify-center text-text-dim gap-2">
           {#if filteredWorkspaces.length === 0}

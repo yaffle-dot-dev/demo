@@ -56,7 +56,7 @@ async function seedProductionPreview(
       environmentName,
       prNumber: null,
       workspacePath,
-      branch: "main",
+      ref: "refs/heads/main",
       headSha: "abc123",
       status: "ready",
       stateKey: `main/${workspacePath}/terraform.tfstate`,
@@ -139,7 +139,7 @@ describe("GET /api/environments", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.data).toHaveLength(1)
-    expect(body.data[0].branch).toBe("main")
+    expect(body.data[0].ref).toBe("refs/heads/main")
     expect(body.data[0].repo).toBe("test-repo")
     expect(body.data[0].workspaces).toHaveLength(1)
     expect(body.data[0].workspaces[0].workspacePath).toBe("infra")

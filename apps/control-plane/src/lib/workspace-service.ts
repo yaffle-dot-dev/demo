@@ -120,11 +120,13 @@ export async function ensurePreviewWorkspace(opts: {
   environment: string
   prNumber: number
   workspacePath: string
-  branch: string
+  ref: string
 }): Promise<Workspace> {
   const { buildWorkspaceName, createWorkspace } = await import("../db/queries/workspaces.ts")
 
-  const workspaceName = buildWorkspaceName(opts.repo, opts.environment, opts.branch, opts.workspacePath)
+  // Extract branch/tag name from full ref for workspace naming
+  const refName = opts.ref.replace(/^refs\/(heads|tags)\//, "")
+  const workspaceName = buildWorkspaceName(opts.repo, opts.environment, refName, opts.workspacePath)
 
   // Check if workspace already exists
   let workspace = await findWorkspaceByName(opts.orgId, workspaceName)
@@ -145,7 +147,7 @@ export async function ensurePreviewWorkspace(opts: {
     workspacePath: opts.workspacePath,
     environment: "preview",
     prNumber: opts.prNumber,
-    branch: opts.branch,
+    ref: opts.ref,
     status: "active",
   })
 
@@ -160,19 +162,21 @@ export async function ensurePreviewWorkspace(opts: {
 
 /**
  * Find or create a TFC workspace for a named environment (non-preview).
- * Used for branches that trigger named environments (e.g., main → production).
+ * Used for refs that trigger named environments (e.g., refs/heads/main → production).
  */
 export async function ensureNamedWorkspace(opts: {
   orgId: string
   orgSlug: string
   repo: string
   environment: string
-  branch: string
+  ref: string
   workspacePath: string
 }): Promise<Workspace> {
   const { buildWorkspaceName, createWorkspace } = await import("../db/queries/workspaces.ts")
 
-  const workspaceName = buildWorkspaceName(opts.repo, opts.environment, opts.branch, opts.workspacePath)
+  // Extract branch/tag name from full ref for workspace naming
+  const refName = opts.ref.replace(/^refs\/(heads|tags)\//, "")
+  const workspaceName = buildWorkspaceName(opts.repo, opts.environment, refName, opts.workspacePath)
 
   // Check if workspace already exists
   let workspace = await findWorkspaceByName(opts.orgId, workspaceName)
@@ -188,7 +192,7 @@ export async function ensureNamedWorkspace(opts: {
     workspacePath: opts.workspacePath,
     environment: opts.environment,
     prNumber: null,
-    branch: opts.branch,
+    ref: opts.ref,
     status: "active",
   })
 
@@ -196,7 +200,7 @@ export async function ensureNamedWorkspace(opts: {
     workspaceId: workspace.id,
     workspaceName,
     environment: opts.environment,
-    branch: opts.branch,
+    ref: opts.ref,
   })
 
   return workspace

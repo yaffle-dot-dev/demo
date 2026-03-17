@@ -46,7 +46,7 @@ import {
   type Runner,
   buildStateKey,
   previewStatePrefix,
-  branchStatePrefix,
+  environmentStatePrefix,
 } from "./runner.ts"
 
 import {
@@ -80,7 +80,7 @@ function mutexKey(ctx: WebhookContext): string {
   if (ctx.kind === "pull_request") {
     return `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   }
-  return `${ctx.owner}/${ctx.repo}@${ctx.branch}`
+  return `${ctx.owner}/${ctx.repo}@${ctx.ref}`
 }
 
 /** Common span attributes from a webhook context. */
@@ -96,7 +96,9 @@ function contextAttrs(ctx: WebhookContext): Record<string, string | number> {
     attrs["yaffle.pr_action"] = ctx.action
     attrs["yaffle.branch"] = ctx.branch
   } else {
-    attrs["yaffle.branch"] = ctx.branch
+    attrs["yaffle.ref"] = ctx.ref
+    attrs["yaffle.ref_type"] = ctx.refType
+    attrs["yaffle.ref_name"] = ctx.refName
   }
   return attrs
 }
@@ -515,7 +517,7 @@ async function handlePrOpenedOrUpdated(
     environmentKind: "transient",
     environmentName,
     prNumber: ctx.prNumber,
-    branch: ctx.branch,
+    ref: `refs/heads/${ctx.branch}`,
     headSha: ctx.headSha,
     trigger,
     status: "pending",
@@ -583,6 +585,7 @@ async function handlePrOpenedOrUpdated(
     const requireApproval = approvers.length > 0
 
     // Upsert preview with run_group_id
+    // PRs are always branch-based, so construct the full ref
     const preview = await upsertDeployment({
       orgId: org.id,
       installationId: ctx.installationId,
@@ -591,7 +594,7 @@ async function handlePrOpenedOrUpdated(
       environmentName,
       prNumber: ctx.prNumber,
       workspacePath: ws.path,
-      branch: ctx.branch,
+      ref: `refs/heads/${ctx.branch}`,
       headSha: ctx.headSha,
       authorGithubId: ctx.authorGithubId,
       authorLogin: ctx.authorLogin,
@@ -845,7 +848,7 @@ async function handlePushEvent(
   _runner: Runner, // Kept for API compatibility; execution now happens via IaC engine
   configLoader: ConfigLoader,
 ): Promise<void> {
-  const tag = `${ctx.owner}/${ctx.repo}@${ctx.branch}`
+  const tag = `${ctx.owner}/${ctx.repo}@${ctx.ref}`
   const attrs = contextAttrs(ctx)
   logger.info(`handling push event: ${tag} sha=${ctx.headSha}`, attrs)
 
@@ -863,12 +866,12 @@ async function handlePushEvent(
     return
   }
 
-  // Check if this branch matches any push trigger
-  const environmentName = findPushTriggerEnvironment(config, ctx.branch)
+  // Check if this ref matches any push trigger
+  const environmentName = findPushTriggerEnvironment(config, ctx.ref)
   if (!environmentName) {
     logger.info(
-      `ignoring push to branch that doesn't match any trigger`,
-      { ...attrs, branch: ctx.branch },
+      `ignoring push to ref that doesn't match any trigger`,
+      { ...attrs, ref: ctx.ref },
     )
     return
   }
@@ -892,7 +895,7 @@ async function handlePushEvent(
     { ...attrs, "yaffle.workspace_count": workspacePaths.length, environmentName },
   )
 
-  const statePrefix = branchStatePrefix(ctx.branch)
+  const statePrefix = environmentStatePrefix(environmentName)
 
   // Create a single run group for this push event (covers both plan and apply)
   // Push events to the default branch are "named" environments (e.g., "main", "production")
@@ -902,7 +905,7 @@ async function handlePushEvent(
     environmentKind: "named",
     environmentName,
     prNumber: null, // null for branch/env runs
-    branch: ctx.branch,
+    ref: ctx.ref,
     headSha: ctx.headSha,
     trigger: "push",
     status: "pending",
@@ -974,7 +977,7 @@ async function handlePushEvent(
       environmentName,
       prNumber: null, // null for branch/env runs
       workspacePath: ws.path,
-      branch: ctx.branch,
+      ref: ctx.ref,
       headSha: ctx.headSha,
       authorGithubId: ctx.pusherGithubId ?? undefined,
       authorLogin: ctx.pusherLogin ?? undefined,

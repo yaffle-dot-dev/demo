@@ -75,7 +75,7 @@ async function seedPreview(
       environmentName,
       prNumber,
       workspacePath,
-      branch: "feature/test",
+      ref: "refs/heads/feature/test",
       headSha: "abc123",
       status: "ready",
       stateKey: `preview-pr-${prNumber}/${workspacePath}/terraform.tfstate`,

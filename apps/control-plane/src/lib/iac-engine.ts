@@ -28,10 +28,10 @@ import {
   updateJobHeartbeat,
 } from "../db/queries/iac-jobs.ts"
 import {
-  addCompletedUpstream,
+  addCompletedUpstreamAtomic,
+  claimDestroyJobForUpstream,
   findDownstreamDeployments,
   findDeploymentById,
-  isDeploymentReady,
   markDeploymentSkipped,
   updateDeploymentStatus,
 } from "../db/queries/workspace-deployments.ts"
@@ -219,9 +219,11 @@ async function executeJobWork(
   // Determine environment kind and name
   const isPr = deployment.prNumber != null && deployment.prNumber > 0
   const environmentKind = isPr ? "transient" : "named"
+  // For named environments, use the environment name from the deployment (which comes from yaffle.toml)
+  // For PR environments, generate the standard preview name
   const environmentName = isPr
     ? buildPrEnvironmentName(deployment.prNumber!)
-    : deployment.branch
+    : deployment.environmentName
 
   // Fetch config to get workspace-specific variables
   let workspace: Workspace | undefined
@@ -254,13 +256,15 @@ async function executeJobWork(
   }
   if (workspace?.variables) {
     // Build template context for variable rendering
+    // Extract branch/tag name from full ref for template usage
+    const refName = deployment.ref.replace(/^refs\/(heads|tags)\//, "")
     const templateContext: TemplateContext = {
       environment: environmentName,
       environment_kind: environmentKind,
       org: owner,
       repo,
       workspace_path: deployment.workspacePath,
-      branch: deployment.branch,
+      branch: refName,
       commit_sha: deployment.headSha,
       pr_number: isPr ? deployment.prNumber! : null,
     }
@@ -304,14 +308,14 @@ async function executeJobWork(
           environment: environmentName,
           prNumber: deployment.prNumber!, // Non-null assertion safe: isPrForTfc guard ensures this
           workspacePath: deployment.workspacePath,
-          branch: deployment.branch,
+          ref: deployment.ref,
         })
       : await ensureNamedWorkspace({
           orgId: org.id,
           orgSlug: org.slug,
           repo: deployment.repo,
           environment: environmentName,
-          branch: deployment.branch,
+          ref: deployment.ref,
           workspacePath: deployment.workspacePath,
         })
 
@@ -491,10 +495,11 @@ async function notifyDownstreams(
   })
 
   for (const downstream of downstreams) {
-    // Add this preview to downstream's completed_upstreams
-    const updated = await addCompletedUpstream(downstream.id, previewId)
+    // Add this preview to downstream's completed_upstreams using atomic operation
+    // This prevents race conditions when multiple upstreams complete simultaneously
+    const result = await addCompletedUpstreamAtomic(downstream.id, previewId)
 
-    if (!updated) {
+    if (!result) {
       logger.warn("Failed to update downstream completed_upstreams", {
         previewId,
         downstreamId: downstream.id,
@@ -502,27 +507,29 @@ async function notifyDownstreams(
       continue
     }
 
-    // Check if downstream is now ready
-    if (isDeploymentReady(updated)) {
-      // Check if it's pending (waiting to plan)
-      if (updated.status === "pending") {
-        logger.info("Downstream preview now ready, queueing plan", {
-          downstreamId: downstream.id,
-          workspacePath: downstream.workspacePath,
-        })
+    // Check if we won the race to queue this downstream's plan job
+    if (result.shouldQueueJob) {
+      logger.info("Downstream preview now ready, queueing plan (won race)", {
+        downstreamId: downstream.id,
+        workspacePath: result.deployment.workspacePath,
+      })
 
-        // Queue a plan job
-        await createIacJob({
-          deploymentId: downstream.id,
-          jobType: "plan",
-        })
-      }
-      // Note: we don't auto-queue apply jobs - those require user approval
+      // Queue a plan job - we're the only one who will do this
+      await createIacJob({
+        deploymentId: downstream.id,
+        jobType: "plan",
+      })
+    } else if (result.deployment.status === "planning") {
+      logger.debug("Downstream preview ready but another thread is queueing", {
+        downstreamId: downstream.id,
+        workspacePath: result.deployment.workspacePath,
+      })
     } else {
       logger.debug("Downstream preview not yet ready", {
         downstreamId: downstream.id,
-        upstreamIds: updated.upstreamIds,
-        completedUpstreams: updated.completedUpstreams,
+        upstreamIds: result.deployment.upstreamIds,
+        completedUpstreams: result.deployment.completedUpstreams,
+        status: result.deployment.status,
       })
     }
   }
@@ -612,24 +619,25 @@ async function notifyDestroyComplete(deploymentId: string): Promise<void> {
     const allDestroyed = downstreams.every((d) => d.status === "destroyed")
 
     if (allDestroyed) {
-      const upstream = await findDeploymentById(upstreamId)
+      // Atomically claim the right to queue the destroy job
+      // This prevents race conditions when multiple downstreams complete simultaneously
+      const result = await claimDestroyJobForUpstream(upstreamId)
 
-      // Only queue destroy if upstream is in pending state (waiting for destroy)
-      if (upstream?.status === "pending") {
+      if (result.claimed && result.deployment) {
+        // We won the race - create the destroy job
         await createIacJob({
           deploymentId: upstreamId,
           jobType: "destroy",
         })
 
-        logger.info("Queued destroy job for upstream after all downstreams destroyed", {
+        logger.info("Queued destroy job for upstream after all downstreams destroyed (won race)", {
           upstreamId,
-          workspacePath: upstream.workspacePath,
+          workspacePath: result.deployment.workspacePath,
           destroyedDownstreams: downstreams.map((d) => d.workspacePath),
         })
       } else {
-        logger.debug("Upstream not in pending state, skipping destroy queue", {
+        logger.debug("Upstream destroy already claimed by another thread", {
           upstreamId,
-          status: upstream?.status,
         })
       }
     } else {

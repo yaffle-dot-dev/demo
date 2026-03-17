@@ -62,7 +62,7 @@
     {org}
     repo={displayData.repo}
     {identifier}
-    branch={displayData.branch}
+    ref={displayData.ref}
     headSha={stream.pinnedHeadSha ?? displayData.headSha}
     authorLogin={displayData.authorLogin}
     workspaces={displayData.workspaces}
