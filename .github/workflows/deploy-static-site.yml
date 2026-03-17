@@ -1,0 +1,128 @@
+# Reusable workflow for deploying static sites to S3 + CloudFront
+# Called by marketing and docs deploy workflows
+
+name: Deploy Static Site
+
+on:
+  workflow_call:
+    inputs:
+      site-name:
+        description: "Site name (marketing, docs)"
+        required: true
+        type: string
+      app-path:
+        description: "Path to the app directory"
+        required: true
+        type: string
+      build-command:
+        description: "Build command to run"
+        required: false
+        type: string
+        default: "bun run build"
+      dist-path:
+        description: "Path to built assets relative to app-path"
+        required: false
+        type: string
+        default: "dist"
+      s3-prefix:
+        description: "Prefix path in S3 bucket (empty for root, 'docs' for /docs/)"
+        required: false
+        type: string
+        default: ""
+      site-infra-workspace:
+        description: "Yaffle workspace for site's own infra (S3 buckets)"
+        required: true
+        type: string
+      frontend-infra-workspace:
+        description: "Yaffle workspace for frontend infra (CloudFront)"
+        required: false
+        type: string
+        default: "apps/infra"
+    secrets:
+      AWS_REGION:
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.site-name }}
+    runs-on: depot-ubuntu-24.04
+
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build site
+        run: ${{ inputs.build-command }}
+        working-directory: ${{ inputs.app-path }}
+
+      # Wait for site infra (S3 buckets) to be ready
+      - name: Wait for site infrastructure
+        uses: ./actions/outputs-action
+        id: site-infra
+        with:
+          workspace: ${{ inputs.site-infra-workspace }}
+          wait: true
+          wait-timeout: 600
+
+      # Wait for frontend infra (CloudFront) to be ready
+      - name: Wait for frontend infrastructure
+        uses: ./actions/outputs-action
+        id: frontend-infra
+        with:
+          workspace: ${{ inputs.frontend-infra-workspace }}
+          wait: true
+          wait-timeout: 600
+
+      - name: Configure AWS credentials (S3 deploy)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.site-infra.outputs.deploy_role_arn }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Sync to S3
+        run: |
+          if [ -n "${{ inputs.s3-prefix }}" ]; then
+            aws s3 sync ${{ inputs.app-path }}/${{ inputs.dist-path }} \
+              s3://${{ steps.site-infra.outputs.primary_bucket_name }}/${{ inputs.s3-prefix }} \
+              --delete
+          else
+            aws s3 sync ${{ inputs.app-path }}/${{ inputs.dist-path }} \
+              s3://${{ steps.site-infra.outputs.primary_bucket_name }} \
+              --delete
+          fi
+
+      - name: Configure AWS credentials (CloudFront invalidation)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ steps.frontend-infra.outputs.invalidation_role_arn }}
+          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+
+      - name: Invalidate CloudFront cache
+        run: |
+          if [ -n "${{ inputs.s3-prefix }}" ]; then
+            aws cloudfront create-invalidation \
+              --distribution-id ${{ steps.frontend-infra.outputs.cloudfront_distribution_id }} \
+              --paths "/${{ inputs.s3-prefix }}/*"
+          else
+            aws cloudfront create-invalidation \
+              --distribution-id ${{ steps.frontend-infra.outputs.cloudfront_distribution_id }} \
+              --paths "/*"
+          fi
+
+      - name: Summary
+        run: |
+          echo "## Deployed ${{ inputs.site-name }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**URL:** ${{ steps.frontend-infra.outputs.site_url }}${{ inputs.s3-prefix && format('/{0}/', inputs.s3-prefix) || '' }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Bucket:** ${{ steps.site-infra.outputs.primary_bucket_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "**Distribution:** ${{ steps.frontend-infra.outputs.cloudfront_distribution_id }}" >> $GITHUB_STEP_SUMMARY

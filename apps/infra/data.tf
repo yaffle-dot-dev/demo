@@ -10,7 +10,7 @@
 # -----------------------------------------------------------------------------
 
 module "shared" {
-  source = "yaffle.local:6969/yaffle-dot-dev/infra--shared/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 # -----------------------------------------------------------------------------
@@ -18,15 +18,15 @@ module "shared" {
 # -----------------------------------------------------------------------------
 
 module "marketing" {
-  source = "yaffle.local:6969/yaffle-dot-dev/apps--marketing--infra/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--marketing--infra/yaffle"
 }
 
 module "web" {
-  source = "yaffle.local:6969/yaffle-dot-dev/apps--web--infra/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--web--infra/yaffle"
 }
 
 module "docs" {
-  source = "yaffle.local:6969/yaffle-dot-dev/apps--docs--infra/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--docs--infra/yaffle"
 }
 
 # -----------------------------------------------------------------------------

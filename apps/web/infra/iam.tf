@@ -12,7 +12,7 @@
 # -----------------------------------------------------------------------------
 
 module "shared" {
-  source = "yaffle.local:6969/yaffle-dot-dev/infra--shared/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 locals {

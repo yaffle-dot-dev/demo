@@ -1,0 +1,27 @@
+name: Deploy Marketing
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/marketing/**"
+      - ".github/workflows/deploy-marketing.yml"
+      - ".github/workflows/deploy-static-site.yml"
+  pull_request:
+    paths:
+      - "apps/marketing/**"
+      - ".github/workflows/deploy-marketing.yml"
+      - ".github/workflows/deploy-static-site.yml"
+
+# Required for OIDC authentication to AWS
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  deploy:
+    uses: ./.github/workflows/deploy-static-site.yml
+    with:
+      site-name: marketing
+      app-path: apps/marketing
+      site-infra-workspace: apps/marketing/infra

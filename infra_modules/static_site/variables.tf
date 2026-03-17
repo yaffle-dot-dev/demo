@@ -31,13 +31,13 @@ variable "replica_region" {
 }
 
 module "naming" {
-  source      = "../../../infra_modules/public/naming"
+  source      = "../public/naming"
   environment = var.environment
   aws_region  = var.aws_region
 }
 
 module "naming_replica" {
-  source      = "../../../infra_modules/public/naming"
+  source      = "../public/naming"
   environment = var.environment
   aws_region  = var.replica_region
 }
