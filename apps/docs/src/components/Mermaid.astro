@@ -1,0 +1,32 @@
+---
+import { renderMermaidSVG, THEMES } from "beautiful-mermaid"
+
+interface Props {
+  chart: string
+  theme?: "light" | "dark"
+}
+
+const { chart, theme = "light" } = Astro.props
+
+const themeColors = theme === "dark" ? THEMES["zinc-dark"] : THEMES["zinc-light"]
+
+const svg = renderMermaidSVG(chart.trim(), {
+  ...themeColors,
+  transparent: true,
+  padding: 20,
+})
+---
+
+<div class="mermaid-diagram" set:html={svg} />
+
+<style>
+  .mermaid-diagram {
+    display: flex;
+    justify-content: center;
+    margin: 1.5rem 0;
+  }
+  .mermaid-diagram :global(svg) {
+    max-width: 100%;
+    height: auto;
+  }
+</style>

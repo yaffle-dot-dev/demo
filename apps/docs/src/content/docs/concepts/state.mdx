@@ -5,15 +5,16 @@ description: How Yaffle manages OpenTofu state
 
 import { Aside } from '@astrojs/starlight/components';
 
-Yaffle fully manages OpenTofu state. You don't configure backends, set up S3 buckets, or manage DynamoDB tables. State storage and locking are handled automatically.
+Yaffle fully manages OpenTofu state. You don't configure backends, set up buckets, or manage lock tables. State storage and locking are handled automatically.
 
 ## How it works
 
 When Yaffle runs OpenTofu, it configures the backend automatically. Any backend configuration in your code is ignored during Yaffle runs.
 
-**Your OpenTofu (ignored by Yaffle):**
 ```hcl
 terraform {
+  # This block is ignored by Yaffle
+  # Yaffle manages state for all runs it executes
   backend "s3" {
     bucket = "my-existing-bucket"
     key    = "terraform.tfstate"
@@ -21,19 +22,20 @@ terraform {
 }
 ```
 
-Your local development can still use your own backend. Yaffle only manages state for runs it executes.
-
 ## State isolation
 
-Each environment and preview gets isolated state:
+Each environment and preview gets isolated state. Environment names are completely up to you—use whatever fits your workflow:
 
 | Context | State isolation |
 |---------|-----------------|
-| Production | Dedicated state per workspace |
-| Staging | Dedicated state per workspace |
+| Named environment (e.g. `prod`, `staging`, `eu-west`) | Dedicated state per workspace |
 | Preview (PR #42) | Ephemeral state, destroyed with PR |
 
-Preview state is completely isolated from production. A bug in a preview can't corrupt production state.
+<Aside type="tip">
+Yaffle doesn't prescribe environment names. Use `production` and `staging`, or `us-east` and `eu-west`, or `dev`, `test`, `qa`, `prod`—whatever makes sense for your team. You can have as many or as few named environments as you need.
+</Aside>
+
+Preview state is completely isolated from named environments. A bug in a preview can't corrupt your other environments' state.
 
 ## Locking
 
@@ -46,7 +48,7 @@ Yaffle prevents concurrent modifications. If two commits push simultaneously, ru
 | PR opened | State created on first apply |
 | PR updated | State updated |
 | PR merged/closed | State destroyed with resources |
-| Push to main | Production state updated |
+| Push to trigger branch | Named environment state updated |
 
 <Aside type="caution">
 Preview state is ephemeral. When a PR closes, Yaffle destroys the preview resources and deletes the state. Don't store anything permanent in previews.

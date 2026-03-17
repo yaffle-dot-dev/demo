@@ -1,0 +1,287 @@
+---
+title: Platform as Product
+description: How platform teams can provide live infrastructure to downstream teams
+---
+
+import { Aside } from "@astrojs/starlight/components"
+import Mermaid from "../../../components/Mermaid.astro"
+
+## The platform team challenge
+
+Platform teams face a fundamental tension: they need to provide stable, secure infrastructure to downstream teams while maintaining the velocity to iterate and improve. Traditional approaches force a choice—either lock everything down and slow everyone down, or give teams direct access and risk chaos.
+
+Yaffle enables a third path: **live infrastructure as an API surface**.
+
+## Not modules—running systems
+
+This isn't about publishing reusable Terraform modules. Platform teams don't hand downstream teams a "blessed way to run RDS" and wish them luck. Instead:
+
+**Platform teams run the infrastructure. Downstream teams consume its outputs.**
+
+<Mermaid chart={`
+graph TB
+    subgraph Platform Team Workspaces
+        network[network workspace]
+        database[database workspace]
+        cache[cache workspace]
+    end
+
+    subgraph Running Infrastructure
+        vpc[VPC + Subnets]
+        rds[(RDS Instance)]
+        redis[(ElastiCache)]
+    end
+
+    subgraph Yaffle Registry
+        outputs[Live Outputs]
+    end
+
+    subgraph Product Teams
+        team1[Team A]
+        team2[Team B]
+    end
+
+    network -->|manages| vpc
+    database -->|manages| rds
+    cache -->|manages| redis
+
+    vpc --> outputs
+    rds --> outputs
+    redis --> outputs
+
+    outputs -->|subnet_ids| team1
+    outputs -->|db_endpoint| team1
+    outputs -->|redis_url| team2
+`} />
+
+When a product team references the platform's database workspace, they get:
+
+```hcl
+module "platform_database" {
+  source = "yaffle.dev/api/registry/platform/database/yaffle"
+}
+
+resource "aws_ecs_service" "api" {
+  environment = [
+    {
+      name  = "DATABASE_URL"
+      value = module.platform_database.connection_string  # Live RDS endpoint
+    }
+  ]
+}
+```
+
+That `connection_string` isn't a template—it's the actual endpoint of a running RDS instance that the platform team manages.
+
+<Aside type="tip">
+The Yaffle module registry doesn't serve static module code. It serves the **outputs** of workspaces that have already been applied. Downstream teams consume live infrastructure, not blueprints.
+</Aside>
+
+## The contract is outputs
+
+The platform team's workspace outputs define the API surface:
+
+```hcl
+# platform/database/outputs.tf
+
+output "connection_string" {
+  description = "PostgreSQL connection string (without credentials)"
+  value       = "postgresql://${aws_db_instance.main.endpoint}/${aws_db_instance.main.db_name}"
+}
+
+output "security_group_id" {
+  description = "Security group to allow database access"
+  value       = aws_security_group.db_access.id
+}
+
+output "secret_arn" {
+  description = "Secrets Manager ARN for database credentials"
+  value       = aws_secretsmanager_secret.db_creds.arn
+}
+```
+
+Downstream teams don't need to know:
+- What RDS instance class is used
+- How backups are configured  
+- What the maintenance window is
+- How replicas are set up
+
+They just need the connection string and a way to authenticate.
+
+## Environment isolation
+
+Each named environment runs its own copy of the platform infrastructure:
+
+```toml
+# platform team's yaffle.toml
+
+[[environments]]
+name = "dev"
+
+[[environments]]
+name = "staging"
+
+[[environments]]
+name = "prod"
+
+[[workspaces]]
+path = "database"
+environments = ["*"]
+```
+
+When the platform applies to `staging`, the database workspace creates/updates a staging RDS instance. The outputs for `staging` reflect that specific instance.
+
+When a product team's workspace runs in `staging`, they automatically get staging outputs:
+
+```hcl
+# This resolves to the staging RDS endpoint when running in staging,
+# and the prod RDS endpoint when running in prod
+module "platform_database" {
+  source = "yaffle.dev/api/registry/platform/database/yaffle"
+}
+```
+
+No environment switching. No variable juggling. The right infrastructure for the right environment, automatically.
+
+## Preview environments for safe iteration
+
+When a platform engineer opens a PR to change the database configuration:
+
+1. Yaffle creates an isolated preview environment (`pr-42`)
+2. The database workspace applies to preview infrastructure—a separate RDS instance
+3. **Downstream teams are unaffected**—they still consume stable named environment outputs
+4. Platform team validates changes against real infrastructure
+5. On merge, changes promote to the target environment
+
+<Mermaid chart={`
+graph LR
+    subgraph Preview
+        pr_db[(pr-42 RDS)]
+    end
+
+    subgraph Staging  
+        staging_db[(staging RDS)]
+    end
+
+    subgraph Prod
+        prod_db[(prod RDS)]
+    end
+
+    engineer[Platform Engineer] -->|PR opened| pr_db
+    pr_db -->|merge to main| staging_db
+    staging_db -->|promotion| prod_db
+
+    team[Product Teams] -->|always consume| staging_db
+    team -->|always consume| prod_db
+`} />
+
+Product teams never see preview infrastructure. They consume stable, named environments while the platform team iterates safely.
+
+## What platform teams provide
+
+A typical platform-as-product offers:
+
+| Workspace | Outputs consumed by product teams |
+|-----------|-----------------------------------|
+| `network` | `vpc_id`, `private_subnet_ids`, `public_subnet_ids` |
+| `database` | `connection_string`, `secret_arn`, `security_group_id` |
+| `cache` | `redis_url`, `redis_port` |
+| `dns` | `zone_id`, `domain_name` |
+| `monitoring` | `log_group_name`, `metrics_namespace` |
+| `secrets` | `kms_key_arn` |
+
+Product teams compose these outputs into their own infrastructure:
+
+```hcl
+module "platform" {
+  source = "yaffle.dev/api/registry/platform/network/yaffle"
+}
+
+module "platform_db" {
+  source = "yaffle.dev/api/registry/platform/database/yaffle"
+}
+
+resource "aws_ecs_service" "api" {
+  network_configuration {
+    subnets         = module.platform.private_subnet_ids
+    security_groups = [module.platform_db.security_group_id]
+  }
+}
+```
+
+## Maintaining velocity
+
+Platform teams stay fast because:
+
+1. **Preview environments are real infrastructure**—test against actual RDS, not mocks
+2. **No coordination required**—previews are isolated from consumers
+3. **Promotion is explicit**—merge to `main` triggers staging, manual promotion to prod
+
+Product teams stay unblocked because:
+
+1. **No tickets to file**—consume outputs directly
+2. **No surprises**—named environment outputs only change on explicit applies
+3. **No configuration drift**—everyone gets the same VPC, same subnets, same security groups
+
+## Repository structure
+
+```
+platform-infra/
+├── network/              # VPC, subnets, security groups
+│   ├── main.tf
+│   └── outputs.tf        # Contract: vpc_id, subnet_ids, etc.
+├── database/             # RDS instances  
+│   ├── main.tf
+│   └── outputs.tf        # Contract: connection_string, secret_arn
+├── cache/                # ElastiCache
+│   ├── main.tf
+│   └── outputs.tf        # Contract: redis_url
+└── yaffle.toml
+```
+
+```toml
+# yaffle.toml
+
+[[environments]]
+name = "dev"
+
+[[environments]]
+name = "staging"  
+
+[[environments]]
+name = "prod"
+
+[[workspaces]]
+path = "network"
+environments = ["*"]
+
+[[workspaces]]
+path = "database"  
+environments = ["*"]
+
+[[workspaces]]
+path = "cache"
+environments = ["*"]
+
+# Triggers
+[[triggers.github.push]]
+branch = "main"
+environment = "staging"
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+```
+
+## Summary
+
+Yaffle enables platform teams to operate as product teams—but the product is **running infrastructure**, not reusable modules:
+
+| Traditional IaC | Platform as Product with Yaffle |
+|-----------------|--------------------------------|
+| Publish module, teams instantiate their own | Run infrastructure, teams consume outputs |
+| "Here's how to create an RDS instance" | "Here's your database endpoint" |
+| Teams manage their own state | Platform manages state, teams consume results |
+| Drift between team configurations | Consistency across all consumers |
+| Coordination to change shared patterns | Preview environments for safe iteration |
+
+The result: platform teams own the infrastructure lifecycle end-to-end, downstream teams get stable APIs to build on, and everyone ships with confidence.

@@ -1,0 +1,39 @@
+---
+title: GitHub Action
+description: yaffle-dot-dev/outputs-action reference
+---
+
+Fetch Terraform outputs from Yaffle environments. See [CI/CD Integration](/docs/guides/ci-cd) for usage examples.
+
+```yaml
+- uses: yaffle-dot-dev/outputs-action@v1
+```
+
+## Inputs
+
+| Input | Description | Default |
+|-------|-------------|---------|
+| `workspace` | Workspace path | `.` |
+| `wait` | Wait for preview to be ready | `false` |
+| `wait-timeout` | Timeout in seconds when waiting | `300` |
+| `environment` | Environment name (e.g., `main`, `pr-42`) | Auto-detected |
+| `pr-number` | PR number (sets environment to `pr-{n}`) | Current PR |
+| `org` | Organization/owner name | Repository owner |
+| `repo` | Repository name | Current repository |
+| `token` | GitHub token for authentication | `github.token` |
+
+### Environment auto-detection
+
+1. Explicit `environment` input
+2. `pr-number` input → `pr-{n}`
+3. PR context from `pull_request` events
+4. Branch name from `push` events
+
+## Outputs
+
+| Output | Description |
+|--------|-------------|
+| `preview-id` | Yaffle preview ID |
+| `preview-status` | Status: `ready`, `planning`, `applying`, `failed` |
+| `outputs-json` | All outputs as JSON |
+| `<name>` | Each Terraform output as a separate action output |

@@ -30,34 +30,33 @@ export default defineConfig({
         {
           icon: "github",
           label: "GitHub",
-          href: "https://github.com/yaffledev/yaffle",
+          href: "https://github.com/yaffle-dot-dev",
         },
       ],
-      editLink: {
-        baseUrl: "https://github.com/yaffledev/yaffle/edit/main/apps/docs/",
-      },
       customCss: ["./src/styles/custom.css"],
       sidebar: [
         {
           label: "Start",
           items: [
             { label: "Introduction", slug: "getting-started/introduction" },
+            { label: "How it works", slug: "getting-started/how-it-works" },
             { label: "Quick Start", slug: "getting-started/quickstart" },
           ],
         },
         {
           label: "Concepts",
           items: [
-            { label: "How it works", slug: "concepts/how-it-works" },
             { label: "Workspaces", slug: "concepts/workspaces" },
             { label: "Previews", slug: "concepts/previews" },
             { label: "Runs", slug: "concepts/runs" },
             { label: "State", slug: "concepts/state" },
+            { label: "Platform as Product", slug: "concepts/platform-as-product" },
           ],
         },
         {
           label: "Guides",
           items: [
+            { label: "Starting with Previews", slug: "guides/previews-only" },
             { label: "GitHub", slug: "guides/github" },
             { label: "CI/CD Integration", slug: "guides/ci-cd" },
             { label: "AWS", slug: "guides/aws" },
@@ -69,6 +68,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { label: "Configuration", slug: "reference/configuration" },
+            { label: "GitHub Action", slug: "reference/github-action" },
           ],
         },
       ],

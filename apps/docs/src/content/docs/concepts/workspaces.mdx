@@ -4,6 +4,7 @@ description: Workspace configuration and dependencies
 ---
 
 import { Aside } from "@astrojs/starlight/components"
+import Mermaid from "../../../components/Mermaid.astro"
 
 ## What's a workspace?
 
@@ -58,9 +59,10 @@ Yaffle automatically detects dependencies by scanning your OpenTofu files for mo
 2. B's outputs become available as a module
 3. A runs and can consume B's outputs
 
-```
-network → database → compute
-```
+<Mermaid chart={`
+graph LR
+    network --> database --> compute
+`} />
 
 <Aside type="tip">
 Dependencies are inferred from your OpenTofu code. You don't need to declare them manually.
@@ -73,7 +75,7 @@ Reference another workspace's outputs using the Yaffle module registry:
 ```hcl
 # infra/compute/main.tf
 module "network" {
-  source = "yaffle.local:6969/your-org/infra--network/yaffle"
+  source = "yaffle.dev/api/registry/your-org/infra--network/yaffle"
 }
 
 resource "aws_ecs_service" "app" {
@@ -87,7 +89,7 @@ resource "aws_ecs_service" "app" {
 
 The module source follows this pattern:
 ```
-yaffle.local:PORT/ORG/WORKSPACE--PATH/yaffle
+yaffle.dev/api/registry/ORG/WORKSPACE--PATH/yaffle
 ```
 
 Where `WORKSPACE--PATH` uses `--` as path separator:
@@ -98,16 +100,54 @@ Where `WORKSPACE--PATH` uses `--` as path separator:
 
 Yaffle builds a dependency graph and executes workspaces in the right order:
 
-```
-network (no deps)     ──┐
-                        ├── database ──┐
-                        │              ├── compute
-network-monitoring ────┘              │
-                                      │
-app-config ───────────────────────────┘
-```
+<Mermaid chart={`
+graph LR
+    network[network]
+    monitoring[network-monitoring]
+    database[database]
+    compute[compute]
+    appconfig[app-config]
+
+    network --> database
+    monitoring --> database
+    database --> compute
+    appconfig --> compute
+`} />
 
 Root workspaces (no dependencies) run first, in parallel. Downstream workspaces wait for their dependencies to complete.
+
+## Run lifecycle and approval
+
+When you open a PR or push to a branch, Yaffle executes runs through several stages:
+
+<Mermaid chart={`
+stateDiagram-v2
+    [*] --> pending: Trigger received
+    pending --> planning: Runner acquired
+    planning --> waiting_approval: Plan complete
+    waiting_approval --> applying: Approved
+    waiting_approval --> cancelled: Rejected
+    applying --> success: Apply complete
+    applying --> failed: Apply error
+    planning --> failed: Plan error
+    success --> [*]
+    failed --> [*]
+    cancelled --> [*]
+`} />
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Run is queued, waiting for a runner |
+| `planning` | OpenTofu plan is executing |
+| `waiting_approval` | Plan complete, awaiting human approval |
+| `applying` | Apply in progress (after approval) |
+| `success` | Run completed successfully |
+| `failed` | Run failed with error |
+| `cancelled` | Run was cancelled or rejected |
+
+<Aside type="note">
+Preview environments require approval before `apply` runs. Configure auto-approval for specific environments in your `yaffle.toml` if needed.
+</Aside>
 
 ## Workspace variables
 

@@ -1,0 +1,201 @@
+---
+title: Starting with Previews
+description: Try Yaffle without migrating production state
+---
+
+import { Aside } from "@astrojs/starlight/components"
+
+## Why start with previews?
+
+You're already running Terraform or OpenTofu in production—maybe with Atlantis, Terraform Cloud, or CI scripts. Migrating production state is a big commitment for a proof of concept.
+
+Yaffle doesn't require you to go all-in. You can use Yaffle exclusively for preview environments while keeping your existing production workflow. Get ephemeral PR environments today, migrate production when you're ready.
+
+## What you get
+
+Using Yaffle for previews only:
+
+- **Ephemeral environments for every PR**—real infrastructure to test against
+- **Isolated state**—previews can't affect your production
+- **Automatic cleanup**—resources destroyed when the PR closes
+- **Plan visibility**—see exactly what will change before merge
+- **Cross-workspace dependencies**—your workspaces can reference each other within the preview
+
+What you're deferring:
+
+- Production applies through Yaffle
+- Consuming outputs from named environments (the [platform as product](/docs/concepts/platform-as-product) pattern)
+
+## Setup
+
+### 1. Install Yaffle
+
+Connect your repository at [yaffle.dev](https://yaffle.dev) and add a `yaffle.toml` to your repo root.
+
+### 2. Configure for previews only
+
+The key: define workspaces but only trigger on pull requests.
+
+```toml
+# yaffle.toml
+
+# No named environments—we're not managing production
+# Previews are created automatically for PRs
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
+# Only trigger on PRs, not pushes
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+# No push triggers—production stays with your existing tool
+```
+
+That's it. When a PR opens, Yaffle creates a preview environment and runs `plan` → `apply`. When the PR closes, Yaffle destroys the preview resources.
+
+### 3. Namespace your resources
+
+Preview environments need unique resource names to avoid collisions. Use the `{{ environment }}` template variable:
+
+```hcl
+# infra/main.tf
+
+variable "environment" {
+  type = string
+}
+
+resource "aws_s3_bucket" "data" {
+  bucket = "myapp-data-${var.environment}"
+}
+
+resource "aws_ecs_service" "api" {
+  name = "api-${var.environment}"
+  # ...
+}
+```
+
+Yaffle automatically sets `environment` to `pr-42`, `pr-99`, etc. for preview runs.
+
+<Aside type="tip">
+You probably already have an `environment` variable for staging vs production. The same pattern works for previews—just make sure resources use it for naming.
+</Aside>
+
+### 4. Keep your existing production workflow
+
+Your existing tool (Atlantis, TFC, CI scripts) continues to manage production. Nothing changes there.
+
+```
+PR opened     → Yaffle creates preview, applies
+PR updated    → Yaffle updates preview
+PR merged     → Yaffle destroys preview
+                Your existing tool applies to production
+```
+
+## Example: Alongside Atlantis
+
+If you're running Atlantis today:
+
+```yaml
+# atlantis.yaml (unchanged—still manages production)
+version: 3
+projects:
+  - dir: infra
+    workflow: default
+    autoplan:
+      when_modified: ["*.tf"]
+```
+
+```toml
+# yaffle.toml (new—manages previews only)
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+```
+
+Both tools can coexist:
+- Atlantis comments on PRs with production plans
+- Yaffle creates actual preview infrastructure
+- On merge, Atlantis applies to production, Yaffle cleans up the preview
+
+## Example: Alongside Terraform Cloud
+
+If you're using TFC with VCS-driven runs:
+
+```hcl
+# TFC workspace configured for main branch (unchanged)
+# Continues to manage production applies
+```
+
+```toml
+# yaffle.toml (new—manages previews only)
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+```
+
+TFC runs speculative plans on PRs. Yaffle creates real preview infrastructure. Different purposes, no conflict.
+
+## Limitations
+
+Using Yaffle for previews only has some limitations compared to full adoption:
+
+| Feature | Previews only | Full Yaffle |
+|---------|---------------|-------------|
+| Ephemeral PR environments | Yes | Yes |
+| Cross-workspace modules (within preview) | Yes | Yes |
+| Production applies | No (use existing tool) | Yes |
+| Named environment outputs | No | Yes |
+| Platform as product pattern | No | Yes |
+
+The key limitation: you can't consume outputs from named environments. If your platform team runs shared infrastructure in a `production` environment and you want to reference their VPC outputs, that requires Yaffle to manage those named environments too.
+
+Within a preview, cross-workspace references work fine—your `compute` workspace can consume outputs from your `network` workspace as long as both are part of the same PR.
+
+## Graduating to full Yaffle
+
+When you're ready to migrate production:
+
+### 1. Add named environments
+
+```toml
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+```
+
+### 2. Add push triggers
+
+```toml
+[[triggers.github.push]]
+branch = "main"
+environment = "production"
+```
+
+### 3. Import existing state
+
+Yaffle can import your existing state, or you can start fresh and `tofu import` resources.
+
+### 4. Remove your old tool
+
+Once Yaffle is managing production, retire Atlantis/TFC/your CI scripts.
+
+## Summary
+
+Starting with previews lets you:
+
+1. **Try Yaffle today** without migrating production state
+2. **Get real value immediately**—ephemeral PR environments
+3. **Reduce risk**—previews are isolated, production is unchanged
+4. **Graduate when ready**—add named environments and push triggers later
+
+Start with previews, migrate production when you're confident. No big bang required.

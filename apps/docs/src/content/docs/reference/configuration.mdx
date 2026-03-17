@@ -16,7 +16,7 @@ version = 1
 name = "production"
 
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "production"
 
 [[triggers.github.pull_request]]
@@ -41,12 +41,12 @@ name = "staging"
 
 # Push to main → production
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "production"
 
 # Push to staging → staging
 [[triggers.github.push]]
-branch = "staging"
+ref = "refs/heads/staging"
 environment = "staging"
 
 # All PRs create transient previews
@@ -108,22 +108,30 @@ PR previews are *transient* environments—they don't need to be declared.
 
 ### `[[triggers.github.push]]`
 
-Run workspaces when a branch is pushed.
+Run workspaces when a ref (branch or tag) is pushed.
 
 | Field | Description |
 |-------|-------------|
-| `branch` | Branch name or glob pattern |
+| `ref` | Full git ref pattern (must start with `refs/heads/` or `refs/tags/`) |
 | `environment` | Which environment to target |
 
 ```toml
+# Trigger on branch push
 [[triggers.github.push]]
-branch = "main"
+ref = "refs/heads/main"
 environment = "production"
 
 [[triggers.github.push]]
-branch = "staging/*"
+ref = "refs/heads/staging/*"
 environment = "staging"
+
+# Trigger on tag push
+[[triggers.github.push]]
+ref = "refs/tags/v*"
+environment = "release"
 ```
+
+The `ref` field supports glob patterns. The `*` wildcard matches any characters except `/`.
 
 ### `[[triggers.github.pull_request]]`
 
@@ -211,28 +219,57 @@ Multiple approval blocks can match. Approvers are combined. Any single approver 
 
 ## Variable templating
 
-Use `{{ }}` in variable values:
+Use `{{ }}` in variable values. Yaffle uses [MiniJinja](https://github.com/mitsuhiko/minijinja) syntax.
 
-| Template | Value |
-|----------|-------|
-| `{{ environment }}` | Environment name (`production`, `pr-42`, etc.) |
+### Available variables
+
+| Template | Description | Example value |
+|----------|-------------|---------------|
+| `{{ environment }}` | Environment name | `production`, `pr-42` |
+| `{{ environment_kind }}` | `named` or `transient` | `transient` |
+| `{{ org }}` | GitHub organization/owner | `acme` |
+| `{{ repo }}` | Repository name | `infra` |
+| `{{ workspace_path }}` | Workspace path | `infra/network` |
+| `{{ branch }}` | Git branch name | `main`, `feature/login` |
+| `{{ commit_sha }}` | Full commit SHA | `a1b2c3d4...` |
+| `{{ pr_number }}` | PR number (null for named envs) | `42` |
+
+### Examples
 
 ```toml
 [[workspaces]]
 path = "infra"
 environments = ["*"]
 variables.env = "{{ environment }}"
-variables.bucket = "myapp-{{ environment }}"
+variables.bucket = "{{ org }}-{{ repo }}-{{ environment }}"
+variables.commit = "{{ commit_sha }}"
+```
+
+### Filters
+
+MiniJinja filters are supported:
+
+```toml
+variables.branch_slug = "{{ branch | replace('/', '-') }}"
+variables.env_upper = "{{ environment | upper }}"
+variables.fallback = "{{ pr_number | default('main') }}"
+```
+
+### Conditionals
+
+```toml
+variables.domain = "{% if environment_kind == 'transient' %}preview-{{ pr_number }}{% else %}{{ environment }}{% endif %}.example.com"
 ```
 
 ---
 
 ## Glob patterns
 
-Globs work in `branch`, `branch_pattern`, `workspaces`, and `environments`:
+Globs work in `ref`, `branch_pattern`, `workspaces`, and `environments`:
 
 | Pattern | Matches |
 |---------|---------|
-| `*` | Anything |
-| `infra/*` | `infra/foo`, `infra/foo/bar` |
-| `feature/*` | `feature/add-cache`, etc. |
+| `*` | Anything (but not `/`) |
+| `refs/heads/feature/*` | `refs/heads/feature/login`, but not `refs/heads/feature/a/b` |
+| `refs/tags/v*` | `refs/tags/v1`, `refs/tags/v1.0.0` |
+| `infra/*` | `infra/foo`, `infra/foo/bar` (workspace patterns match across `/`) |
