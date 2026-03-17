@@ -181,6 +181,10 @@ export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<
           runGroupId: values.runGroupId,
           prNumber: values.prNumber,
           status: "pending",
+          // Reset DAG tracking for new run - upstreams will be set by webhook handler,
+          // completedUpstreams must start empty to properly track upstream completion
+          upstreamIds: values.upstreamIds,
+          completedUpstreams: [],
         },
       })
       .returning()

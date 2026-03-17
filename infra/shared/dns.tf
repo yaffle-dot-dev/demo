@@ -98,8 +98,8 @@ resource "cloudflare_dns_record" "cert_validation" {
   for_each = local.cert_domains
 
   zone_id = var.cloudflare_zone_id
-  name    = local.cert_validation_records[each.key].name
-  content = local.cert_validation_records[each.key].record
+  name    = trimsuffix(local.cert_validation_records[each.key].name, ".")
+  content = trimsuffix(local.cert_validation_records[each.key].record, ".")
   type    = local.cert_validation_records[each.key].type
   ttl     = 60
   proxied = false
@@ -300,24 +300,6 @@ resource "aws_route53_record" "fastmail_mx_mail" {
   ]
 }
 
-# A records for root domain (Fastmail web)
-resource "aws_route53_record" "fastmail_a" {
-  zone_id = aws_route53_zone.main.zone_id
-  name    = var.domain
-  type    = "A"
-  ttl     = 3600
-  records = ["103.168.172.37", "103.168.172.52"]
-}
-
-# A records for wildcard (Fastmail web)
-resource "aws_route53_record" "fastmail_a_wildcard" {
-  zone_id = aws_route53_zone.main.zone_id
-  name    = "*.${var.domain}"
-  type    = "A"
-  ttl     = 3600
-  records = ["103.168.172.37", "103.168.172.52"]
-}
-
 # A record for mail subdomain
 resource "aws_route53_record" "fastmail_a_mail" {
   zone_id = aws_route53_zone.main.zone_id
@@ -434,44 +416,6 @@ resource "cloudflare_dns_record" "fastmail_mx_mail_secondary" {
   proxied  = false
 }
 
-# A records for root domain
-resource "cloudflare_dns_record" "fastmail_a_1" {
-  zone_id = var.cloudflare_zone_id
-  name    = var.domain
-  type    = "A"
-  ttl     = 3600
-  content = "103.168.172.37"
-  proxied = false
-}
-
-resource "cloudflare_dns_record" "fastmail_a_2" {
-  zone_id = var.cloudflare_zone_id
-  name    = var.domain
-  type    = "A"
-  ttl     = 3600
-  content = "103.168.172.52"
-  proxied = false
-}
-
-# A records for wildcard
-resource "cloudflare_dns_record" "fastmail_a_wildcard_1" {
-  zone_id = var.cloudflare_zone_id
-  name    = "*.${var.domain}"
-  type    = "A"
-  ttl     = 3600
-  content = "103.168.172.37"
-  proxied = false
-}
-
-resource "cloudflare_dns_record" "fastmail_a_wildcard_2" {
-  zone_id = var.cloudflare_zone_id
-  name    = "*.${var.domain}"
-  type    = "A"
-  ttl     = 3600
-  content = "103.168.172.52"
-  proxied = false
-}
-
 # A record for mail subdomain
 resource "cloudflare_dns_record" "fastmail_a_mail" {
   zone_id = var.cloudflare_zone_id
@@ -528,5 +472,11 @@ resource "cloudflare_dns_record" "fastmail_srv" {
     weight   = each.value.weight
     port     = each.value.port
     target   = each.value.target
+  }
+
+  # Cloudflare provider v5 moved priority into data block, but API still returns
+  # it at top level. Ignore to prevent perpetual drift.
+  lifecycle {
+    ignore_changes = [priority]
   }
 }

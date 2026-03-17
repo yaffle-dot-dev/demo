@@ -5,10 +5,12 @@
  * between workspaces based on Yaffle registry module sources.
  *
  * Module sources follow the pattern:
- *   source = "yaffle.local:PORT/ORG/WORKSPACE--PATH/yaffle"
+ *   source = "yaffle.local:PORT/ORG--REPO/WORKSPACE--PATH/yaffle"
  *
- * Where WORKSPACE--PATH uses `--` as path separator (e.g., `apps--web--infra`
- * maps to workspace path `apps/web/infra`).
+ * Where:
+ * - ORG--REPO is the namespace (e.g., `yaffle-dot-dev--yaffle`)
+ * - WORKSPACE--PATH uses `--` as path separator (e.g., `apps--web--infra`
+ *   maps to workspace path `apps/web/infra`)
  */
 
 import { readdir, readFile, stat } from "node:fs/promises"
@@ -43,11 +45,13 @@ export interface InferredDependencyGraph {
  * - Group 1: The workspace path portion (with -- separators)
  *
  * Examples matched:
- * - source = "yaffle.local:6969/yaffle-dot-dev/infra--shared/yaffle"
- * - source = "yaffle.local:6969/org-name/apps--web--infra/yaffle"
+ * - source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
+ * - source = "yaffle.local:6969/org-name--repo/apps--web--infra/yaffle"
+ *
+ * The namespace format is "{org}--{repo}" but we only need the workspace path.
  */
 const YAFFLE_MODULE_SOURCE_PATTERN =
-  /source\s*=\s*"yaffle\.local:\d+\/[^/]+\/([^/]+)\/yaffle"/g
+  /source\s*=\s*"yaffle\.local:\d+\/[^/]+--[^/]+\/([^/]+)\/yaffle"/g
 
 /**
  * Convert a module name back to a workspace path.

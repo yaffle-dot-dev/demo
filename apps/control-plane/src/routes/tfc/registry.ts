@@ -108,6 +108,33 @@ function verifyArchiveToken(path: string, token: string): boolean {
 // =============================================================================
 
 /**
+ * Parse namespace into org slug and repo name.
+ *
+ * Namespace format: "{org}--{repo}"
+ *   "yaffle-dot-dev--yaffle" -> { orgSlug: "yaffle-dot-dev", repo: "yaffle" }
+ *   "acme--infrastructure" -> { orgSlug: "acme", repo: "infrastructure" }
+ *
+ * Note: Org slugs can contain hyphens, so we split on the LAST "--" occurrence.
+ */
+function parseNamespace(namespace: string): { orgSlug: string; repo: string } | null {
+  const lastSeparator = namespace.lastIndexOf("--")
+  if (lastSeparator === -1) {
+    return null
+  }
+  return {
+    orgSlug: namespace.slice(0, lastSeparator),
+    repo: namespace.slice(lastSeparator + 2),
+  }
+}
+
+/**
+ * Build namespace from org slug and repo name.
+ */
+export function buildNamespace(orgSlug: string, repo: string): string {
+  return `${orgSlug}--${repo}`
+}
+
+/**
  * Parse module name back to workspace path.
  *
  * Module name uses `--` as path separator:
@@ -185,6 +212,8 @@ async function checkOrgMembership(
  * List available versions of a module.
  * Versions correspond to state version serials.
  *
+ * Namespace format: "{org}--{repo}" (e.g., "yaffle-dot-dev--yaffle")
+ *
  * Query parameters:
  * - preview: "pr-{n}" to list versions from a preview workspace
  */
@@ -205,8 +234,18 @@ registryRoute.get(
       )
     }
 
+    // Parse namespace into org and repo
+    const parsed = parseNamespace(namespace)
+    if (!parsed) {
+      return c.json(
+        { errors: [{ status: "400", title: "Invalid namespace", detail: "Namespace must be in format: {org}--{repo}" }] },
+        400,
+      )
+    }
+    const { orgSlug, repo } = parsed
+
     // Find the organization
-    const org = await findOrgBySlug(namespace)
+    const org = await findOrgBySlug(orgSlug)
     if (!org) {
       return c.json(
         { errors: [{ status: "404", title: "Namespace not found" }] },
@@ -230,16 +269,16 @@ registryRoute.get(
     let workspace
     if (previewContext) {
       // Try preview workspace first
-      workspace = await findPreviewWorkspace(org.id, workspacePath, previewContext.prNumber)
+      workspace = await findPreviewWorkspace(org.id, repo, workspacePath, previewContext.prNumber)
     }
     if (!workspace) {
       // Fall back to non-preview (e.g. main branch) workspace
-      workspace = await findNonPreviewWorkspace(org.id, workspacePath)
+      workspace = await findNonPreviewWorkspace(org.id, repo, workspacePath)
     }
 
     if (!workspace) {
       return c.json(
-        { errors: [{ status: "404", title: "Module not found", detail: `No workspace at path: ${workspacePath}` }] },
+        { errors: [{ status: "404", title: "Module not found", detail: `No workspace at path: ${workspacePath} in repo: ${repo}` }] },
         404,
       )
     }
@@ -254,6 +293,8 @@ registryRoute.get(
 
     log.info("Module versions listed", {
       namespace,
+      orgSlug,
+      repo,
       moduleName,
       workspacePath,
       workspaceId: workspace.id,
@@ -282,6 +323,8 @@ registryRoute.get(
  * Returns a redirect URL to download the module archive.
  * The Terraform CLI follows the X-Terraform-Get header to get the actual module.
  *
+ * Namespace format: "{org}--{repo}" (e.g., "yaffle-dot-dev--yaffle")
+ *
  * Query parameters:
  * - preview: "pr-{n}" to download from a preview workspace
  */
@@ -303,8 +346,18 @@ registryRoute.get(
       )
     }
 
+    // Parse namespace into org and repo
+    const parsed = parseNamespace(namespace)
+    if (!parsed) {
+      return c.json(
+        { errors: [{ status: "400", title: "Invalid namespace", detail: "Namespace must be in format: {org}--{repo}" }] },
+        400,
+      )
+    }
+    const { orgSlug, repo } = parsed
+
     // Find the organization
-    const org = await findOrgBySlug(namespace)
+    const org = await findOrgBySlug(orgSlug)
     if (!org) {
       return c.json(
         { errors: [{ status: "404", title: "Namespace not found" }] },
@@ -338,6 +391,7 @@ registryRoute.get(
     // Resolve the module
     const resolved = await resolveModule({
       orgId: org.id,
+      repo,
       workspacePath,
       serial,
       previewContext,
@@ -352,6 +406,8 @@ registryRoute.get(
 
     log.info("Module download requested", {
       namespace,
+      orgSlug,
+      repo,
       moduleName,
       version,
       workspaceId: resolved.workspace.id,
@@ -388,6 +444,8 @@ registryRoute.get(
  * Returns the generated shim module as a tar.gz archive.
  * This is called by Terraform CLI after following the X-Terraform-Get header.
  *
+ * Namespace format: "{org}--{repo}" (e.g., "yaffle-dot-dev--yaffle")
+ *
  * Query parameters:
  * - preview: "pr-{n}" to download from a preview workspace
  */
@@ -418,8 +476,18 @@ registryRoute.get(
       )
     }
 
+    // Parse namespace into org and repo
+    const parsed = parseNamespace(namespace)
+    if (!parsed) {
+      return c.json(
+        { errors: [{ status: "400", title: "Invalid namespace", detail: "Namespace must be in format: {org}--{repo}" }] },
+        400,
+      )
+    }
+    const { orgSlug, repo } = parsed
+
     // Find the organization
-    const org = await findOrgBySlug(namespace)
+    const org = await findOrgBySlug(orgSlug)
     if (!org) {
       return c.json(
         { errors: [{ status: "404", title: "Namespace not found" }] },
@@ -450,6 +518,7 @@ registryRoute.get(
     // Resolve the module
     const resolved = await resolveModule({
       orgId: org.id,
+      repo,
       workspacePath,
       serial,
       previewContext,

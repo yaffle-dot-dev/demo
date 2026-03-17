@@ -78,3 +78,4 @@ environments = ["*"]
 [[workspaces]]
 path = "apps/infra"
 environments = ["*"]
+variables.cloudflare_zone_id = "ba87a43c4698d9a9ca066c62311445b6"

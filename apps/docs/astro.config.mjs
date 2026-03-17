@@ -14,7 +14,6 @@ export default defineConfig({
   integrations: [
     starlight({
       title: "Yaffle",
-      defaultTheme: "dark",
       tagline: "Run OpenTofu from PR to production",
       description:
         "The OpenTofu platform with remote execution, state management, and preview environments.",

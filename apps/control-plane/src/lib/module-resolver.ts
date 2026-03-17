@@ -54,6 +54,8 @@ export interface ResolvedModule {
 export interface ResolveModuleOptions {
   /** Organization ID */
   orgId: string
+  /** Repository name (e.g., "yaffle", "infrastructure") */
+  repo: string
   /** Workspace path (e.g., "core-infrastructure/vpc") */
   workspacePath: string
   /** State version serial, or "latest" for current */
@@ -76,17 +78,18 @@ export interface ResolveModuleOptions {
 export async function resolveModule(
   options: ResolveModuleOptions,
 ): Promise<ResolvedModule | null> {
-  const { orgId, workspacePath, serial, previewContext } = options
+  const { orgId, repo, workspacePath, serial, previewContext } = options
 
   let workspace: Workspace | undefined
   let isPreview = false
 
   // Try preview workspace first if we have preview context
   if (previewContext) {
-    workspace = await findPreviewWorkspace(orgId, workspacePath, previewContext.prNumber)
+    workspace = await findPreviewWorkspace(orgId, repo, workspacePath, previewContext.prNumber)
     if (workspace) {
       isPreview = true
       logger.debug("Resolved to preview workspace", {
+        repo,
         workspacePath,
         prNumber: previewContext.prNumber,
         workspaceId: workspace.id,
@@ -96,9 +99,10 @@ export async function resolveModule(
 
   // Fall back to non-preview workspace (e.g. main branch) if no preview workspace found
   if (!workspace) {
-    workspace = await findNonPreviewWorkspace(orgId, workspacePath)
+    workspace = await findNonPreviewWorkspace(orgId, repo, workspacePath)
     if (workspace) {
       logger.debug("Resolved to non-preview workspace", {
+        repo,
         workspacePath,
         workspaceId: workspace.id,
         environment: workspace.environment,

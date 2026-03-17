@@ -39,13 +39,12 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-module "aws_utils" {
-  source  = "cloudposse/utils/aws"
-  version = "1.4.0"
+module "region_codes" {
+  source = "../../../../../infra_modules/public/region_codes"
 }
 
 locals {
-  region_short = module.aws_utils.region_az_alt_code_maps.to_short[var.aws_region]
+  region_short = module.region_codes.to_short[var.aws_region]
   bucket_name  = "yaffle-state-${var.environment}-${local.region_short}"
 }
 

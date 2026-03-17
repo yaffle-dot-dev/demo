@@ -596,6 +596,14 @@ reposRoute.get(
 
           const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
 
+          // Debug logging for UI bug investigation
+          const latestRg = runGroupsData[0]
+          console.log(`[sse:environment:debug] latestRunGroup=${latestRg?.id} status=${latestRg?.status}`)
+          for (const dwr of deploymentsWithRuns) {
+            const runsInLatestRg = dwr.runs.filter((r: { runGroupId: string | null }) => r.runGroupId === latestRg?.id)
+            console.log(`[sse:environment:debug] workspace=${dwr.preview.workspacePath} totalRuns=${dwr.runs.length} runsInLatestRg=${runsInLatestRg.length}`)
+          }
+
           const elapsed = Date.now() - start
           getSseSnapshotDurationHistogram().record(elapsed, { type: "environment" })
 

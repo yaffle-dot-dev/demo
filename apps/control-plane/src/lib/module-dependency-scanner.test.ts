@@ -26,7 +26,7 @@ describe("extractDependenciesFromContent", () => {
   it("extracts single module dependency", () => {
     const content = `
 module "shared" {
-  source = "yaffle.local:6969/yaffle-dot-dev/infra--shared/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 `
     const deps = extractDependenciesFromContent(content)
@@ -36,15 +36,15 @@ module "shared" {
   it("extracts multiple module dependencies", () => {
     const content = `
 module "shared" {
-  source = "yaffle.local:6969/yaffle-dot-dev/infra--shared/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 module "production" {
-  source = "yaffle.local:6969/yaffle-dot-dev/infra--production/yaffle"
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--production/yaffle"
 }
 
 module "web" {
-  source = "yaffle.local:6969/org-name/apps--web--infra/yaffle"
+  source = "yaffle.local:6969/org-name--repo/apps--web--infra/yaffle"
 }
 `
     const deps = extractDependenciesFromContent(content)
@@ -59,7 +59,7 @@ module "vpc" {
 }
 
 module "shared" {
-  source = "yaffle.local:6969/org/infra--shared/yaffle"
+  source = "yaffle.local:6969/org--repo/infra--shared/yaffle"
 }
 
 module "s3" {
@@ -73,7 +73,7 @@ module "s3" {
   it("handles different port numbers", () => {
     const content = `
 module "shared" {
-  source = "yaffle.local:8080/org/infra--shared/yaffle"
+  source = "yaffle.local:8080/org--repo/infra--shared/yaffle"
 }
 `
     const deps = extractDependenciesFromContent(content)
@@ -94,12 +94,12 @@ resource "aws_s3_bucket" "main" {
     const content = `
 module "main" {
   count  = var.is_preview ? 0 : 1
-  source = "yaffle.local:6969/org/infra--production/yaffle"
+  source = "yaffle.local:6969/org--repo/infra--production/yaffle"
 }
 
 module "nonprod" {
   count  = var.is_preview ? 1 : 0
-  source = "yaffle.local:6969/org/infra--nonprod/yaffle"
+  source = "yaffle.local:6969/org--repo/infra--nonprod/yaffle"
 }
 `
     const deps = extractDependenciesFromContent(content)
@@ -110,7 +110,7 @@ module "nonprod" {
   it("handles nested paths", () => {
     const content = `
 module "deep" {
-  source = "yaffle.local:6969/org/a--b--c--d--e/yaffle"
+  source = "yaffle.local:6969/org--repo/a--b--c--d--e/yaffle"
 }
 `
     const deps = extractDependenciesFromContent(content)
@@ -120,16 +120,16 @@ module "deep" {
   it("handles whitespace variations", () => {
     const content = `
 module "ws1" {
-  source="yaffle.local:6969/org/infra--a/yaffle"
+  source="yaffle.local:6969/org--repo/infra--a/yaffle"
 }
 
 module "ws2" {
-  source  =  "yaffle.local:6969/org/infra--b/yaffle"
+  source  =  "yaffle.local:6969/org--repo/infra--b/yaffle"
 }
 
 module "ws3" {
   source =
-    "yaffle.local:6969/org/infra--c/yaffle"
+    "yaffle.local:6969/org--repo/infra--c/yaffle"
 }
 `
     const deps = extractDependenciesFromContent(content)

@@ -364,13 +364,14 @@ export async function findWorkspaceByPath(
 }
 
 /**
- * Find a non-preview workspace by org and workspace path.
+ * Find a non-preview workspace by org, repo, and workspace path.
  * Returns the "main" environment workspace if it exists, otherwise the first
  * active workspace that is not a preview.
  * Used for module resolution when the caller doesn't know the branch name.
  */
 export async function findNonPreviewWorkspace(
   orgId: string,
+  repo: string,
   workspacePath: string,
 ): Promise<Workspace | undefined> {
   return withDbSpan("select", "workspaces", async () => {
@@ -380,6 +381,7 @@ export async function findNonPreviewWorkspace(
       .where(
         and(
           eq(workspaces.orgId, orgId),
+          eq(workspaces.repo, repo),
           eq(workspaces.workspacePath, workspacePath),
           // Non-preview means environment is NOT "preview"
           // In SQL: environment != 'preview'
@@ -398,11 +400,12 @@ export async function findNonPreviewWorkspace(
 }
 
 /**
- * Find a preview workspace by org, workspace path, and PR number.
+ * Find a preview workspace by org, repo, workspace path, and PR number.
  * Used by the module registry for preview-aware resolution.
  */
 export async function findPreviewWorkspace(
   orgId: string,
+  repo: string,
   workspacePath: string,
   prNumber: number,
 ): Promise<Workspace | undefined> {
@@ -413,6 +416,7 @@ export async function findPreviewWorkspace(
       .where(
         and(
           eq(workspaces.orgId, orgId),
+          eq(workspaces.repo, repo),
           eq(workspaces.workspacePath, workspacePath),
           eq(workspaces.environment, "preview"),
           eq(workspaces.prNumber, prNumber),

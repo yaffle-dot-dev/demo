@@ -3,8 +3,7 @@
 # =============================================================================
 # Unified CloudFront distribution with multiple origins:
 # - Marketing site (/) - Astro static site
-# - Web app (/app/*) - SvelteKit application
-# - API (/api/*) - Control plane ALB (future)
+# - Docs site (/docs/*) - Astro/Starlight documentation
 #
 # Each origin has failover to a replica region for high availability.
 # =============================================================================
@@ -56,23 +55,6 @@ resource "aws_cloudfront_distribution" "main" {
     }
   }
 
-  # Web app origin group
-  origin_group {
-    origin_id = "web-failover"
-
-    failover_criteria {
-      status_codes = [500, 502, 503, 504, 403, 404]
-    }
-
-    member {
-      origin_id = "web-primary"
-    }
-
-    member {
-      origin_id = "web-replica"
-    }
-  }
-
   # ===========================================================================
   # ORIGINS
   # ===========================================================================
@@ -107,22 +89,6 @@ resource "aws_cloudfront_distribution" "main" {
     domain_name              = module.site_docs.replica_bucket_domain
     origin_id                = module.site_docs.replica_origin_id
     origin_access_control_id = module.site_docs.origin_access_control_id
-  }
-
-  # ---------------------------------------------------------------------------
-  # Web App Origins
-  # ---------------------------------------------------------------------------
-
-  origin {
-    domain_name              = local.web_primary_bucket_domain
-    origin_id                = "web-primary"
-    origin_access_control_id = aws_cloudfront_origin_access_control.web.id
-  }
-
-  origin {
-    domain_name              = local.web_replica_bucket_domain
-    origin_id                = "web-replica"
-    origin_access_control_id = aws_cloudfront_origin_access_control.web.id
   }
 
   # ===========================================================================
@@ -200,50 +166,6 @@ resource "aws_cloudfront_distribution" "main" {
 
     cache_policy_id          = aws_cloudfront_cache_policy.immutable.id
     origin_request_policy_id = data.aws_cloudfront_origin_request_policy.cors_s3.id
-  }
-
-  # ---------------------------------------------------------------------------
-  # Web App: /app/*
-  # ---------------------------------------------------------------------------
-
-  ordered_cache_behavior {
-    path_pattern           = "/app/*"
-    target_origin_id       = "web-failover"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
-
-    cache_policy_id          = aws_cloudfront_cache_policy.default.id
-    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.cors_s3.id
-
-    # SvelteKit SPA - handle client-side routing
-    function_association {
-      event_type   = "viewer-request"
-      function_arn = aws_cloudfront_function.web_routing.arn
-    }
-  }
-
-  # ---------------------------------------------------------------------------
-  # Web App: Immutable assets (/app/_app/*)
-  # ---------------------------------------------------------------------------
-
-  ordered_cache_behavior {
-    path_pattern           = "/app/_app/*"
-    target_origin_id       = "web-failover"
-    viewer_protocol_policy = "redirect-to-https"
-    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
-    cached_methods         = ["GET", "HEAD"]
-    compress               = true
-
-    cache_policy_id          = aws_cloudfront_cache_policy.immutable.id
-    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.cors_s3.id
-
-    # Strip /app prefix for S3
-    function_association {
-      event_type   = "viewer-request"
-      function_arn = aws_cloudfront_function.web_strip_prefix.arn
-    }
   }
 
   # ===========================================================================
@@ -358,14 +280,6 @@ data "aws_cloudfront_origin_request_policy" "cors_s3" {
 
 # Marketing and Docs OACs are managed by their respective micro_site modules
 
-resource "aws_cloudfront_origin_access_control" "web" {
-  name                              = "yaffle-web-${local.name_suffix}"
-  description                       = "OAC for yaffle web S3 buckets"
-  origin_access_control_origin_type = "s3"
-  signing_behavior                  = "always"
-  signing_protocol                  = "sigv4"
-}
-
 # =============================================================================
 # CloudFront Functions
 # =============================================================================
@@ -392,61 +306,6 @@ resource "aws_cloudfront_function" "static_routing" {
         uri += '/';
       }
       request.uri = uri + 'index.html';
-
-      return request;
-    }
-  EOF
-}
-
-# Web app: SvelteKit SPA routing (strip /app prefix, handle client routes)
-resource "aws_cloudfront_function" "web_routing" {
-  name    = "yaffle-web-routing-${local.name_suffix}"
-  runtime = "cloudfront-js-2.0"
-  comment = "Handle SPA routing for SvelteKit, strip /app prefix"
-  publish = true
-
-  code = <<-EOF
-    function handler(event) {
-      var request = event.request;
-      var uri = request.uri;
-
-      // Strip /app prefix for S3
-      if (uri.startsWith('/app')) {
-        uri = uri.substring(4) || '/';
-      }
-
-      // If the URI has a file extension, serve it directly
-      if (uri.includes('.')) {
-        request.uri = uri;
-        return request;
-      }
-
-      // For SPA routes, check for index.html
-      if (!uri.endsWith('/')) {
-        uri += '/';
-      }
-      request.uri = uri + 'index.html';
-
-      return request;
-    }
-  EOF
-}
-
-# Web app: Strip /app prefix for immutable assets
-resource "aws_cloudfront_function" "web_strip_prefix" {
-  name    = "yaffle-web-strip-prefix-${local.name_suffix}"
-  runtime = "cloudfront-js-2.0"
-  comment = "Strip /app prefix for S3 lookups"
-  publish = true
-
-  code = <<-EOF
-    function handler(event) {
-      var request = event.request;
-
-      // Strip /app prefix for S3
-      if (request.uri.startsWith('/app')) {
-        request.uri = request.uri.substring(4) || '/';
-      }
 
       return request;
     }

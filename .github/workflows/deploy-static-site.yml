@@ -55,6 +55,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
@@ -65,23 +70,38 @@ jobs:
         run: ${{ inputs.build-command }}
         working-directory: ${{ inputs.app-path }}
 
-      # Wait for site infra (S3 buckets) to be ready
-      - name: Wait for site infrastructure
-        uses: ./actions/outputs-action
-        id: site-infra
-        with:
-          workspace: ${{ inputs.site-infra-workspace }}
-          wait: true
-          wait-timeout: 600
+      # TODO: Re-enable outputs-action once control plane is deployed to api.yaffle.dev
+      # For now, skip waiting for Yaffle and use hardcoded values
+      #
+      # - name: Wait for site infrastructure
+      #   uses: ./actions/outputs-action
+      #   id: site-infra
+      #   with:
+      #     workspace: ${{ inputs.site-infra-workspace }}
+      #     wait: true
+      #     wait-timeout: 600
+      #
+      # - name: Wait for frontend infrastructure
+      #   uses: ./actions/outputs-action
+      #   id: frontend-infra
+      #   with:
+      #     workspace: ${{ inputs.frontend-infra-workspace }}
+      #     wait: true
+      #     wait-timeout: 600
 
-      # Wait for frontend infra (CloudFront) to be ready
-      - name: Wait for frontend infrastructure
-        uses: ./actions/outputs-action
+      # Temporary hardcoded values until control plane is deployed
+      - name: Set infrastructure outputs (temporary)
+        id: site-infra
+        run: |
+          echo "deploy_role_arn=arn:aws:iam::870923192739:role/yaffle-deploy-${{ inputs.site-name }}-main-use1" >> $GITHUB_OUTPUT
+          echo "primary_bucket_name=yaffle-${{ inputs.site-name }}-main-use1" >> $GITHUB_OUTPUT
+
+      - name: Set frontend outputs (temporary)
         id: frontend-infra
-        with:
-          workspace: ${{ inputs.frontend-infra-workspace }}
-          wait: true
-          wait-timeout: 600
+        run: |
+          echo "invalidation_role_arn=arn:aws:iam::870923192739:role/yaffle-deploy-invalidation-main-use1" >> $GITHUB_OUTPUT
+          echo "cloudfront_distribution_id=EWVN2QG1SE6JF" >> $GITHUB_OUTPUT
+          echo "site_url=https://yaffle.dev" >> $GITHUB_OUTPUT
 
       - name: Configure AWS credentials (S3 deploy)
         uses: aws-actions/configure-aws-credentials@v4
@@ -101,13 +121,16 @@ jobs:
               --delete
           fi
 
+      # TODO: Re-enable once CloudFront is deployed
       - name: Configure AWS credentials (CloudFront invalidation)
+        if: steps.frontend-infra.outputs.cloudfront_distribution_id != 'PLACEHOLDER'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.frontend-infra.outputs.invalidation_role_arn }}
           aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
 
       - name: Invalidate CloudFront cache
+        if: steps.frontend-infra.outputs.cloudfront_distribution_id != 'PLACEHOLDER'
         run: |
           if [ -n "${{ inputs.s3-prefix }}" ]; then
             aws cloudfront create-invalidation \

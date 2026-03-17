@@ -4,8 +4,6 @@
 # CloudFront distribution that routes:
 # - /           -> Marketing site (Astro static)
 # - /docs/*     -> Documentation site (Astro/Starlight)
-# - /app/*      -> Web application (SvelteKit)
-# - /api/*      -> Control plane ALB (future)
 #
 # Each app owns its S3 buckets; this module owns CloudFront + DNS + routing.
 # Micro-sites (marketing, docs) use the local ./modules/micro_site module.

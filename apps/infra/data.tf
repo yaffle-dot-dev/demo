@@ -21,10 +21,6 @@ module "marketing" {
   source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--marketing--infra/yaffle"
 }
 
-module "web" {
-  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--web--infra/yaffle"
-}
-
 module "docs" {
   source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--docs--infra/yaffle"
 }
@@ -43,12 +39,6 @@ locals {
   marketing_replica_bucket_domain = module.marketing.replica_bucket_regional_domain_name
   marketing_primary_bucket_arn    = module.marketing.primary_bucket_arn
   marketing_replica_bucket_arn    = module.marketing.replica_bucket_arn
-
-  # Web app buckets
-  web_primary_bucket_domain = module.web.primary_bucket_regional_domain_name
-  web_replica_bucket_domain = module.web.replica_bucket_regional_domain_name
-  web_primary_bucket_arn    = module.web.primary_bucket_arn
-  web_replica_bucket_arn    = module.web.replica_bucket_arn
 
   # Docs site buckets
   docs_primary_bucket_domain = module.docs.primary_bucket_regional_domain_name

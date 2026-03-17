@@ -48,6 +48,8 @@ app.route("/tfc", tfcRoute)
 
 // Test fixtures
 const TEST_ORG_SLUG = "tfc-test-org"
+const TEST_REPO = "test-infra"
+const TEST_NAMESPACE = `${TEST_ORG_SLUG}--${TEST_REPO}`
 const TEST_USER_ID = "test-user-tfc-integration"
 const TEST_WORKSPACE_NAME = "tfc-integration-test-workspace"
 
@@ -1243,7 +1245,7 @@ describe("Module Registry", () => {
   })
 
   test("lists module versions for a workspace", async () => {
-    // Create workspace with a workspace_path
+    // Create workspace with a workspace_path and repo
     const createRes = await app.fetch(
       authRequest(
         "POST",
@@ -1254,6 +1256,7 @@ describe("Module Registry", () => {
             type: "workspaces",
             attributes: {
               name: TEST_WORKSPACE_NAME,
+              repo: TEST_REPO,
               environment: "main",
               "workspace-path": "core-infrastructure/vpc",
             },
@@ -1307,11 +1310,11 @@ describe("Module Registry", () => {
     )
 
     // Now query the module registry
-    // Module name is workspace path with / replaced by --
+    // Namespace is {org}--{repo}, module name is workspace path with / replaced by --
     const res = await app.fetch(
       authRequest(
         "GET",
-        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/core-infrastructure--vpc/yaffle/versions`,
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/core-infrastructure--vpc/yaffle/versions`,
         testUserToken,
       ),
     )
@@ -1327,7 +1330,7 @@ describe("Module Registry", () => {
     const res = await app.fetch(
       authRequest(
         "GET",
-        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/non-existent--module/yaffle/versions`,
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/non-existent--module/yaffle/versions`,
         testUserToken,
       ),
     )
@@ -1339,7 +1342,7 @@ describe("Module Registry", () => {
     const res = await app.fetch(
       authRequest(
         "GET",
-        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/some-module/aws/versions`,
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/some-module/aws/versions`,
         testUserToken,
       ),
     )
@@ -1348,7 +1351,7 @@ describe("Module Registry", () => {
   })
 
   test("download returns X-Terraform-Get header", async () => {
-    // Create workspace with a workspace_path
+    // Create workspace with a workspace_path and repo
     const createRes = await app.fetch(
       authRequest(
         "POST",
@@ -1359,6 +1362,7 @@ describe("Module Registry", () => {
             type: "workspaces",
             attributes: {
               name: TEST_WORKSPACE_NAME,
+              repo: TEST_REPO,
               environment: "main",
               "workspace-path": "infra/networking",
             },
@@ -1415,19 +1419,19 @@ describe("Module Registry", () => {
     const res = await app.fetch(
       authRequest(
         "GET",
-        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/infra--networking/yaffle/1.0.1/download`,
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/infra--networking/yaffle/1.0.1/download`,
         testUserToken,
       ),
     )
 
     expect(res.status).toBe(204)
-    expect(res.headers.get("X-Terraform-Get")).toBe(
-      `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/infra--networking/yaffle/1.0.1/archive.tar.gz`,
-    )
+    // The X-Terraform-Get header should include a signed token, so just check the path prefix
+    const terraformGet = res.headers.get("X-Terraform-Get")
+    expect(terraformGet).toContain(`/tfc/registry/v1/modules/${TEST_NAMESPACE}/infra--networking/yaffle/1.0.1/archive.tar.gz`)
   })
 
   test("archive returns valid tar.gz with generated module", async () => {
-    // Create workspace with a workspace_path
+    // Create workspace with a workspace_path and repo
     const createRes = await app.fetch(
       authRequest(
         "POST",
@@ -1438,6 +1442,7 @@ describe("Module Registry", () => {
             type: "workspaces",
             attributes: {
               name: TEST_WORKSPACE_NAME,
+              repo: TEST_REPO,
               environment: "main",
               "workspace-path": "test/outputs",
             },
@@ -1490,13 +1495,23 @@ describe("Module Registry", () => {
       }),
     )
 
-    // Request module archive
-    const res = await app.fetch(
+    // First get the download URL to get a signed token
+    const downloadRes = await app.fetch(
       authRequest(
         "GET",
-        `/tfc/registry/v1/modules/${TEST_ORG_SLUG}/test--outputs/yaffle/1.0.1/archive.tar.gz`,
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/test--outputs/yaffle/1.0.1/download`,
         testUserToken,
       ),
+    )
+    expect(downloadRes.status).toBe(204)
+    const archiveUrl = downloadRes.headers.get("X-Terraform-Get")
+    expect(archiveUrl).toBeTruthy()
+
+    // Request module archive using the signed URL
+    const res = await app.fetch(
+      new Request(`http://localhost${archiveUrl}`, {
+        method: "GET",
+      }),
     )
 
     expect(res.status).toBe(200)
