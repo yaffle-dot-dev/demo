@@ -1,0 +1,126 @@
+name: Build Container Images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/control-plane/**"
+      - "apps/runner/**"
+      - "packages/**"
+      - "nix/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build-images.yml"
+  pull_request:
+    paths:
+      - "apps/control-plane/**"
+      - "apps/runner/**"
+      - "packages/**"
+      - "nix/**"
+      - "flake.nix"
+      - "flake.lock"
+      - ".github/workflows/build-images.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  build:
+    name: Build Images
+    runs-on: depot-ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@main
+
+      - name: Setup Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@main
+
+      - name: Determine tier
+        id: tier
+        run: |
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "tier=production" >> $GITHUB_OUTPUT
+            echo "push=true" >> $GITHUB_OUTPUT
+          else
+            echo "tier=nonprod" >> $GITHUB_OUTPUT
+            echo "push=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Configure AWS credentials
+        if: steps.tier.outputs.push == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        if: steps.tier.outputs.push == 'true'
+        id: ecr-login
+        run: |
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
+            skopeo login --username AWS --password-stdin \
+            870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
+          echo "registry=870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
+
+      - name: Build control-plane image
+        run: nix build .#control-plane-image -L
+
+      - name: Push control-plane image
+        if: steps.tier.outputs.push == 'true'
+        run: |
+          TIER="${{ steps.tier.outputs.tier }}"
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          
+          # Push with SHA tag
+          ./result/copyTo docker://${REGISTRY}/yaffle-control-plane-${TIER}:sha-${SHORT_SHA}
+          
+          # Push latest tag for main branch
+          ./result/copyTo docker://${REGISTRY}/yaffle-control-plane-${TIER}:latest
+
+      - name: Build runner image
+        run: nix build .#runner-image -L
+
+      - name: Push runner image
+        if: steps.tier.outputs.push == 'true'
+        run: |
+          TIER="${{ steps.tier.outputs.tier }}"
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          
+          # Push with SHA tag
+          ./result/copyTo docker://${REGISTRY}/yaffle-runner-${TIER}:sha-${SHORT_SHA}
+          
+          # Push latest tag for main branch
+          ./result/copyTo docker://${REGISTRY}/yaffle-runner-${TIER}:latest
+
+      - name: Summary
+        run: |
+          echo "## Container Images Built" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
+            TIER="${{ steps.tier.outputs.tier }}"
+            REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+            SHORT_SHA="${{ github.sha }}"
+            SHORT_SHA="${SHORT_SHA:0:7}"
+            echo "**Registry:** ${REGISTRY}" >> $GITHUB_STEP_SUMMARY
+            echo "**Tier:** ${TIER}" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Images Pushed" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-control-plane-${TIER}:sha-${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-control-plane-${TIER}:latest\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-runner-${TIER}:sha-${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-runner-${TIER}:latest\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "Images built but not pushed (PR build)" >> $GITHUB_STEP_SUMMARY
+          fi

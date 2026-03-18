@@ -136,7 +136,8 @@ resource "aws_iam_role_policy" "control_plane_ecs" {
         ]
         Resource = [
           aws_iam_role.ecs_execution.arn,
-          aws_iam_role.tf_runner_task.arn
+          local.runner_task_role_arn,
+          local.runner_execution_role_arn
         ]
       }
     ]
@@ -211,73 +212,7 @@ resource "aws_iam_role_policy" "control_plane_provisioning" {
 }
 
 # -----------------------------------------------------------------------------
-# TF Runner Task Role
+# TF Runner Roles
 # -----------------------------------------------------------------------------
-# Runtime permissions for terraform runner containers
-
-resource "aws_iam_role" "tf_runner_task" {
-  name = "yaffle-runner-task-${local.name_suffix}"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "ecs-tasks.amazonaws.com"
-        }
-      }
-    ]
-  })
-
-  tags = {
-    Name = "yaffle-runner-task-${local.name_suffix}"
-  }
-}
-
-# S3 access for state and workspaces
-resource "aws_iam_role_policy" "tf_runner_s3" {
-  name = "s3-access"
-  role = aws_iam_role.tf_runner_task.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-          "s3:ListBucket"
-        ]
-        Resource = [
-          local.state_bucket_arn,
-          "${local.state_bucket_arn}/*"
-        ]
-      }
-    ]
-  })
-}
-
-# Secrets Manager access for TF variable injection
-resource "aws_iam_role_policy" "tf_runner_secrets" {
-  name = "secrets-access"
-  role = aws_iam_role.tf_runner_task.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "secretsmanager:GetSecretValue"
-        ]
-        Resource = [
-          "${var.secrets_arn_prefix}/*"
-        ]
-      }
-    ]
-  })
-}
+# Runner IAM roles are managed by apps/runner/infra.
+# Referenced via module outputs in data.tf for PassRole permissions above.

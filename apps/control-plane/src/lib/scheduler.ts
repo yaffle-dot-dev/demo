@@ -91,42 +91,9 @@ export class LocalEngineSpawner implements IacEngineSpawner {
   }
 }
 
-/**
- * Production engine spawner (ECS Fargate).
- * Spawns a container instance that runs the engine.
- */
-export class EcsEngineSpawner implements IacEngineSpawner {
-  private readonly clusterArn: string
-  private readonly taskDefinition: string
-  private readonly subnets: string[]
-  private readonly securityGroups: string[]
-
-  constructor(
-    clusterArn: string,
-    taskDefinition: string,
-    subnets: string[],
-    securityGroups: string[],
-  ) {
-    this.clusterArn = clusterArn
-    this.taskDefinition = taskDefinition
-    this.subnets = subnets
-    this.securityGroups = securityGroups
-  }
-
-  async spawn(jobId: string): Promise<void> {
-    // TODO: Implement ECS task spawning
-    // This will use AWS SDK to run a Fargate task with the job ID as an env var
-    logger.info("ECS engine spawn (not yet implemented)", {
-      jobId,
-      cluster: this.clusterArn,
-      taskDefinition: this.taskDefinition,
-      subnetCount: this.subnets.length,
-      sgCount: this.securityGroups.length,
-    })
-
-    throw new Error("ECS engine spawner not yet implemented")
-  }
-}
+// EcsEngineSpawner is imported from ecs-spawner.ts
+// Re-export for convenience
+export { EcsEngineSpawner } from "./ecs-spawner.ts"
 
 export class Scheduler {
   private readonly workerId: string
@@ -380,8 +347,12 @@ let schedulerInstance: Scheduler | null = null
  * - YAFFLE_MAX_CONCURRENT_JOBS: Max total concurrent jobs (default: 50 prod, 5 dev)
  * - YAFFLE_MAX_JOBS_PER_RUN_GROUP: Max concurrent jobs per run group (default: 3)
  * - YAFFLE_ECS_CLUSTER: ECS cluster ARN (enables ECS spawner in production)
+ * - YAFFLE_ECS_TASK_DEFINITION: Runner task definition ARN
+ * - YAFFLE_ECS_SUBNETS: Comma-separated subnet IDs
+ * - YAFFLE_ECS_SECURITY_GROUPS: Comma-separated security group IDs
+ * - YAFFLE_WORKSPACES_BUCKET: S3 bucket for workspace storage
  */
-export function getScheduler(): Scheduler {
+export async function getScheduler(): Promise<Scheduler> {
   if (schedulerInstance) {
     return schedulerInstance
   }
@@ -393,12 +364,15 @@ export function getScheduler(): Scheduler {
   let spawner: IacEngineSpawner
 
   if (isProduction && useEcs) {
-    spawner = new EcsEngineSpawner(
-      process.env.YAFFLE_ECS_CLUSTER!,
-      process.env.YAFFLE_ECS_TASK_DEFINITION!,
-      (process.env.YAFFLE_ECS_SUBNETS ?? "").split(",").filter(Boolean),
-      (process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "").split(",").filter(Boolean),
-    )
+    const { EcsEngineSpawner } = await import("./ecs-spawner.ts")
+    spawner = new EcsEngineSpawner({
+      clusterArn: process.env.YAFFLE_ECS_CLUSTER!,
+      taskDefinition: process.env.YAFFLE_ECS_TASK_DEFINITION!,
+      subnets: (process.env.YAFFLE_ECS_SUBNETS ?? "").split(",").filter(Boolean),
+      securityGroups: (process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "").split(",").filter(Boolean),
+      workspacesBucket: process.env.YAFFLE_WORKSPACES_BUCKET!,
+      region: process.env.AWS_REGION ?? "us-east-1",
+    })
     logger.info("Scheduler using ECS engine spawner")
   } else {
     spawner = new LocalEngineSpawner()
@@ -436,8 +410,9 @@ export function getScheduler(): Scheduler {
 /**
  * Start the scheduler (idempotent).
  */
-export function startScheduler(): void {
-  getScheduler().start()
+export async function startScheduler(): Promise<void> {
+  const scheduler = await getScheduler()
+  scheduler.start()
 }
 
 /**

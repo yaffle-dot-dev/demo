@@ -60,6 +60,30 @@ output "ecs_instance_security_group_id" {
 }
 
 # -----------------------------------------------------------------------------
+# ECR
+# -----------------------------------------------------------------------------
+
+output "ecr_control_plane_url" {
+  value       = aws_ecr_repository.control_plane.repository_url
+  description = "ECR repository URL for control-plane images"
+}
+
+output "ecr_control_plane_arn" {
+  value       = aws_ecr_repository.control_plane.arn
+  description = "ECR repository ARN for control-plane images"
+}
+
+output "ecr_runner_url" {
+  value       = aws_ecr_repository.runner.repository_url
+  description = "ECR repository URL for runner images"
+}
+
+output "ecr_runner_arn" {
+  value       = aws_ecr_repository.runner.arn
+  description = "ECR repository ARN for runner images"
+}
+
+# -----------------------------------------------------------------------------
 # General
 # -----------------------------------------------------------------------------
 

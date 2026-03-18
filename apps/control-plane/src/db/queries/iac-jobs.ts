@@ -167,6 +167,28 @@ export async function updateJobHeartbeat(jobId: string): Promise<void> {
 }
 
 /**
+ * Update job with ECS task ARN for tracking.
+ * Used when spawning an ECS runner task.
+ */
+export async function updateJobEcsTask(
+  jobId: string,
+  taskArn: string,
+): Promise<void> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    await db
+      .update(iacJobs)
+      .set({
+        // Store task ARN in workerId field
+        // For ECS jobs, this uniquely identifies the running task
+        workerId: taskArn,
+        dispatchedAt: new Date(),
+        status: "dispatched",
+      })
+      .where(eq(iacJobs.id, jobId))
+  })
+}
+
+/**
  * Mark a job as completed with result.
  */
 export async function completeJob(

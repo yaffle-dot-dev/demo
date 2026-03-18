@@ -75,23 +75,4 @@ resource "aws_security_group" "control_plane" {
 # -----------------------------------------------------------------------------
 # TF Runner Security Group
 # -----------------------------------------------------------------------------
-
-resource "aws_security_group" "tf_runner" {
-  name        = "yaffle-runner-sg-${local.name_suffix}"
-  description = "Security group for TF runner ECS tasks"
-  vpc_id      = local.vpc_id
-
-  # No ingress - runners don't accept connections
-
-  egress {
-    description = "All outbound"
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "yaffle-runner-sg-${local.name_suffix}"
-  }
-}
+# Runner security group is managed by apps/runner/infra.

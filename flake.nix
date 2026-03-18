@@ -34,6 +34,11 @@
             src = ./.;
           };
 
+          runner = pkgs.callPackage ./nix/runner.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+          };
+
           control-plane-image = n2c.buildImage {
             name = "ghcr.io/yaffle-dot-dev/yaffle/control-plane";
             tag = "latest";
@@ -52,9 +57,42 @@
               pathsToLink = [ "/etc/ssl" ];
             };
           };
+
+          # Runner image - minimal container for isolated tofu execution
+          # Contains only: opentofu, aws-cli, curl, jq, and the entrypoint script
+          # NO access to Yaffle internals - all inputs via presigned URLs
+          runner-image = n2c.buildImage {
+            name = "ghcr.io/yaffle-dot-dev/yaffle/runner";
+            tag = "latest";
+            config = {
+              entrypoint = [ "${runner}/bin/yaffle-runner" ];
+              workingDir = "/workspace";
+              env = [
+                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+                "HOME=/tmp"
+              ];
+            };
+            copyToRoot = pkgs.buildEnv {
+              name = "root";
+              paths = [
+                pkgs.cacert
+                pkgs.opentofu
+                pkgs.awscli2
+                pkgs.curl
+                pkgs.jq
+                pkgs.gnutar
+                pkgs.gzip
+                pkgs.bash
+                pkgs.coreutils
+                runner
+              ];
+              pathsToLink = [ "/bin" "/etc/ssl" ];
+            };
+          };
         in {
-          inherit control-plane yaffle-cli;
+          inherit control-plane yaffle-cli runner;
           control-plane-image = control-plane-image;
+          runner-image = runner-image;
           default = control-plane;
           yaffle-outputs = yaffle-cli;
         }

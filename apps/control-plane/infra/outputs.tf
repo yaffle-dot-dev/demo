@@ -33,10 +33,7 @@ output "control_plane_task_role_arn" {
   description = "Control plane task IAM role ARN"
 }
 
-output "tf_runner_task_role_arn" {
-  value       = aws_iam_role.tf_runner_task.arn
-  description = "TF runner task IAM role ARN"
-}
+# tf_runner_task_role_arn moved to apps/runner/infra outputs
 
 # -----------------------------------------------------------------------------
 # Load Balancer

@@ -50,6 +50,26 @@ output "ecs_instance_security_group_id" {
   description = "Security group ID for ECS instances"
 }
 
+output "ecr_control_plane_url" {
+  value       = module.core.ecr_control_plane_url
+  description = "ECR repository URL for control-plane images"
+}
+
+output "ecr_control_plane_arn" {
+  value       = module.core.ecr_control_plane_arn
+  description = "ECR repository ARN for control-plane images"
+}
+
+output "ecr_runner_url" {
+  value       = module.core.ecr_runner_url
+  description = "ECR repository URL for runner images"
+}
+
+output "ecr_runner_arn" {
+  value       = module.core.ecr_runner_arn
+  description = "ECR repository ARN for runner images"
+}
+
 # -----------------------------------------------------------------------------
 # General
 # -----------------------------------------------------------------------------

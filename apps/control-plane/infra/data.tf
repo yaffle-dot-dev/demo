@@ -34,6 +34,15 @@ module "nonprod" {
 }
 
 # -----------------------------------------------------------------------------
+# Runner Infrastructure (ECS task definition, IAM roles)
+# -----------------------------------------------------------------------------
+
+module "runner" {
+  count  = local.is_preview ? 0 : 1
+  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--runner--infra/yaffle"
+}
+
+# -----------------------------------------------------------------------------
 # Convenience Locals
 # -----------------------------------------------------------------------------
 
@@ -54,4 +63,7 @@ locals {
   private_subnet_ids = local._core.private_subnet_ids
   ecs_cluster_arn    = local._core.ecs_cluster_arn
   ecs_cluster_name   = local._core.ecs_cluster_name
+
+  runner_task_role_arn      = module.runner.task_role_arn
+  runner_execution_role_arn = module.runner.execution_role_arn
 }

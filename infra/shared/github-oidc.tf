@@ -128,3 +128,45 @@ resource "aws_iam_role_policy" "github_actions_ci_s3" {
     ]
   })
 }
+
+# =============================================================================
+# ECR Push Policy
+# =============================================================================
+# Allows GitHub Actions to push container images to ECR.
+# Used by CI to build and push control-plane and runner images.
+# =============================================================================
+
+resource "aws_iam_role_policy" "github_actions_ci_ecr" {
+  name = "ecr-push"
+  role = aws_iam_role.github_actions_ci.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ECRAuth"
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken"
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRPush"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload"
+        ]
+        Resource = [
+          "arn:aws:ecr:*:${data.aws_caller_identity.current.account_id}:repository/yaffle-*"
+        ]
+      }
+    ]
+  })
+}

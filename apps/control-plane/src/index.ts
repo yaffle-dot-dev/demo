@@ -23,7 +23,7 @@ import { startJobWorker, stopJobWorker } from "./lib/job-worker.ts"
 await initTelemetry()
 
 // Start the IaC job scheduler
-startScheduler()
+await startScheduler()
 log.info("IaC job scheduler started")
 
 // Start the generic job worker (for org provisioning, etc.)
