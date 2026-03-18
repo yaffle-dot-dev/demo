@@ -317,10 +317,20 @@ export async function rerunPreview(previewId: string): Promise<{ rerunStarted: b
 
 /**
  * Trigger apply for a preview that has a successful plan.
- * Used for both auto-apply (timer completed) and manual approval.
+ * Used for manual approval after pause or for requireApproval workspaces.
  */
 export async function triggerApply(previewId: string): Promise<{ applyStarted: boolean; runId: string }> {
   const res = await postJson<{ data: { applyStarted: boolean; runId: string } }>(`/previews/${previewId}/apply`)
+  return res.data
+}
+
+/**
+ * Pause auto-apply for a deployment.
+ * Transitions from awaiting_apply to awaiting_approval.
+ * After pausing, the deployment requires explicit approval to apply.
+ */
+export async function pauseApply(previewId: string): Promise<{ paused: boolean; status: string; message?: string }> {
+  const res = await postJson<{ data: { paused: boolean; status: string; message?: string } }>(`/previews/${previewId}/pause`)
   return res.data
 }
 

@@ -2,7 +2,7 @@ import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
-import { findDeploymentById, listDeployments } from "../db/queries/workspace-deployments.ts"
+import { findDeploymentById, listDeployments, pauseDeployment } from "../db/queries/workspace-deployments.ts"
 import { listApprovals } from "../db/queries/approvals.ts"
 import { getLatestDependencyGraphsForOrg } from "../db/queries/run-groups.ts"
 import { logger } from "../lib/telemetry.ts"
@@ -442,6 +442,89 @@ previewsRoute.post(
 
       return c.json({ error: { code: "APPLY_FAILED", message } }, 500)
     }
+  },
+)
+
+/**
+ * POST /api/previews/:id/pause
+ *
+ * Pause auto-apply for a deployment. Transitions from awaiting_apply to awaiting_approval.
+ * After pausing, the deployment requires explicit approval to apply.
+ *
+ * This endpoint uses CAS (compare-and-swap) to handle race conditions with the
+ * server-side auto-apply scheduler. If the scheduler already transitioned the
+ * deployment to applying, this endpoint returns an error.
+ */
+previewsRoute.post(
+  "/:id/pause",
+  requireResourceAccess({ getOrgId: getPreviewOrgId }),
+  async (c) => {
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
+    if (!parseResult.success) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+    }
+    const id = parseResult.data
+
+    const auth = getAuth(c)
+    const preview = await findDeploymentById(id)
+    if (!preview) {
+      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+    }
+
+    logger.info("Pause requested", {
+      previewId: id,
+      userId: auth.userId,
+      userName: auth.name,
+      currentStatus: preview.status,
+    })
+
+    // Attempt to pause - this is atomic (CAS pattern)
+    const result = await pauseDeployment(id)
+
+    if (result.paused) {
+      return c.json({
+        data: {
+          paused: true,
+          status: "awaiting_approval",
+        },
+      })
+    }
+
+    // Pause failed - deployment was not in awaiting_apply state
+    // Could be: already paused, already applying, already applied, etc.
+    const currentPreview = await findDeploymentById(id)
+    const currentStatus = currentPreview?.status ?? preview.status
+
+    if (currentStatus === "awaiting_approval") {
+      // Already paused (maybe by another request)
+      return c.json({
+        data: {
+          paused: true,
+          status: "awaiting_approval",
+          message: "deployment was already paused",
+        },
+      })
+    }
+
+    if (currentStatus === "applying") {
+      return c.json(
+        { error: { code: "ALREADY_APPLYING", message: "apply already in progress, too late to pause" } },
+        409,
+      )
+    }
+
+    if (currentStatus === "ready") {
+      return c.json(
+        { error: { code: "ALREADY_APPLIED", message: "apply already completed" } },
+        409,
+      )
+    }
+
+    // Some other state we didn't expect
+    return c.json(
+      { error: { code: "INVALID_STATE", message: `cannot pause deployment in ${currentStatus} state` } },
+      400,
+    )
   },
 )
 

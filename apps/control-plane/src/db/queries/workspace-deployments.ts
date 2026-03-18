@@ -1,4 +1,4 @@
-import { and, arrayContains, desc, eq, gt, notInArray, sql, type SQL } from "drizzle-orm"
+import { and, arrayContains, desc, eq, gt, lt, notInArray, sql, type SQL } from "drizzle-orm"
 
 import type { PreviewStatus } from "@yaffle/shared"
 
@@ -181,6 +181,7 @@ export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<
           runGroupId: values.runGroupId,
           prNumber: values.prNumber,
           status: "pending",
+          statusChangedAt: new Date(),
           // Reset DAG tracking for new run - upstreams will be set by webhook handler,
           // completedUpstreams must start empty to properly track upstream completion
           upstreamIds: values.upstreamIds,
@@ -214,7 +215,7 @@ export async function updateDeploymentStatus(
   return withDbSpan("update", "workspace_deployments", async () => {
     const updated = await db
       .update(workspaceDeployments)
-      .set({ status })
+      .set({ status, statusChangedAt: new Date() })
       .where(eq(workspaceDeployments.id, deploymentId))
       .returning({
         orgId: workspaceDeployments.orgId,
@@ -241,7 +242,7 @@ export async function updateDeploymentHead(
   return withDbSpan("update", "workspace_deployments", async () => {
     const updated = await db
       .update(workspaceDeployments)
-      .set({ headSha, status: "pending" as PreviewStatus })
+      .set({ headSha, status: "pending" as PreviewStatus, statusChangedAt: new Date() })
       .where(eq(workspaceDeployments.id, deploymentId))
       .returning({
         orgId: workspaceDeployments.orgId,
@@ -468,7 +469,7 @@ export async function addCompletedUpstreamAtomic(
     if (deployment.status === "pending") {
       const claimed = await db
         .update(workspaceDeployments)
-        .set({ status: "planning" })
+        .set({ status: "planning", statusChangedAt: new Date() })
         .where(
           and(
             eq(workspaceDeployments.id, deploymentId),
@@ -518,7 +519,7 @@ export async function claimDestroyJobForUpstream(
     // Only one caller can win this transition
     const claimed = await db
       .update(workspaceDeployments)
-      .set({ status: "destroying" })
+      .set({ status: "destroying", statusChangedAt: new Date() })
       .where(
         and(
           eq(workspaceDeployments.id, upstreamId),
@@ -580,11 +581,13 @@ export async function markDeploymentSkipped(
   _reason: string, // Kept for logging/debugging purposes
 ): Promise<void> {
   return withDbSpan("update", "workspace_deployments", async () => {
+    const now = new Date()
     const updated = await db
       .update(workspaceDeployments)
       .set({
         status: "failed" as PreviewStatus, // "skipped" maps to "failed" status with reason
-        completedAt: new Date(),
+        statusChangedAt: now,
+        completedAt: now,
       })
       .where(eq(workspaceDeployments.id, deploymentId))
       .returning({
@@ -644,6 +647,7 @@ export async function updateDeploymentRunGroup(
       .set({
         runGroupId,
         status: "pending" as PreviewStatus,
+        statusChangedAt: new Date(),
         // Clear approval state for fresh run
         approvedAt: null,
         approvedBy: null,
@@ -688,6 +692,122 @@ export async function findReadyToExecuteDeployments(
 
     // Filter to only those where completed_upstreams contains all upstream_ids
     return allDeployments.filter(isDeploymentReady)
+  })
+}
+
+// =============================================================================
+// Auto-Apply Scheduling
+// =============================================================================
+
+/** Default delay before auto-applying (in milliseconds) */
+const AUTO_APPLY_DELAY_MS = 30_000
+
+/**
+ * Find deployments that are ready for auto-apply.
+ * These are deployments where:
+ * - status = 'awaiting_apply'
+ * - require_approval = false
+ * - status_changed_at is older than AUTO_APPLY_DELAY_MS
+ *
+ * Used by the scheduler to automatically trigger applies without UI interaction.
+ */
+export async function findDeploymentsReadyForAutoApply(): Promise<WorkspaceDeployment[]> {
+  return withDbSpan("select", "workspace_deployments", async () => {
+    const cutoff = new Date(Date.now() - AUTO_APPLY_DELAY_MS)
+    return db
+      .select()
+      .from(workspaceDeployments)
+      .where(
+        and(
+          eq(workspaceDeployments.status, "awaiting_apply"),
+          eq(workspaceDeployments.requireApproval, false),
+          lt(workspaceDeployments.statusChangedAt, cutoff),
+        ),
+      )
+  })
+}
+
+/**
+ * Pause a deployment's auto-apply countdown.
+ * Transitions from 'awaiting_apply' to 'awaiting_approval' (indefinite wait).
+ * Uses CAS pattern to handle race with scheduler auto-apply.
+ *
+ * @returns true if the pause was successful, false if the deployment was not in awaiting_apply state
+ */
+export async function pauseDeployment(
+  deploymentId: string,
+): Promise<{ paused: boolean; deployment?: WorkspaceDeployment }> {
+  return withDbSpan("update", "workspace_deployments", async () => {
+    // CAS: only transition if currently awaiting_apply
+    const result = await db
+      .update(workspaceDeployments)
+      .set({
+        status: "awaiting_approval" as PreviewStatus,
+        statusChangedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(workspaceDeployments.id, deploymentId),
+          eq(workspaceDeployments.status, "awaiting_apply"),
+        ),
+      )
+      .returning()
+
+    if (result.length > 0) {
+      const deployment = result[0]
+      events.emitDeploymentUpdate(
+        deployment.id,
+        deployment.orgId,
+        deployment.repo,
+        deployment.environmentKind as EnvironmentKind,
+        deployment.environmentName,
+      )
+      return { paused: true, deployment }
+    }
+
+    return { paused: false }
+  })
+}
+
+/**
+ * Atomically claim a deployment for auto-apply.
+ * Transitions from 'awaiting_apply' to 'applying' using CAS pattern.
+ * This prevents race conditions between scheduler auto-apply and user pause.
+ *
+ * @returns The deployment if claim was successful, undefined if already transitioned
+ */
+export async function claimDeploymentForAutoApply(
+  deploymentId: string,
+): Promise<WorkspaceDeployment | undefined> {
+  return withDbSpan("update", "workspace_deployments", async () => {
+    // CAS: only transition if still awaiting_apply
+    const result = await db
+      .update(workspaceDeployments)
+      .set({
+        status: "applying" as PreviewStatus,
+        statusChangedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(workspaceDeployments.id, deploymentId),
+          eq(workspaceDeployments.status, "awaiting_apply"),
+        ),
+      )
+      .returning()
+
+    if (result.length > 0) {
+      const deployment = result[0]
+      events.emitDeploymentUpdate(
+        deployment.id,
+        deployment.orgId,
+        deployment.repo,
+        deployment.environmentKind as EnvironmentKind,
+        deployment.environmentName,
+      )
+      return deployment
+    }
+
+    return undefined
   })
 }
 

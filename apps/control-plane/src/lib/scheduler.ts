@@ -25,6 +25,8 @@ import {
   type ConcurrencyLimits,
   type IacJob,
 } from "../db/queries/iac-jobs.ts"
+import { findDeploymentsReadyForAutoApply } from "../db/queries/workspace-deployments.ts"
+import { queueAutoApply } from "./webhook-handler.ts"
 import {
   getSchedulerActiveJobsGauge,
   getSchedulerGroupsQueuedGauge,
@@ -46,6 +48,8 @@ export interface SchedulerConfig {
   pollIntervalMs?: number
   /** How often to check for stale jobs (ms). Default: 30000 */
   staleCheckIntervalMs?: number
+  /** How often to check for auto-apply candidates (ms). Default: 5000 */
+  autoApplyPollIntervalMs?: number
   /** How long without heartbeat before a job is considered stale (ms). Default: 300000 (5 min) */
   staleThresholdMs?: number
   /** Max concurrent jobs across all run groups. Default: 50 */
@@ -103,6 +107,7 @@ export class Scheduler {
 
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private staleCheckTimer: ReturnType<typeof setInterval> | null = null
+  private autoApplyTimer: ReturnType<typeof setInterval> | null = null
   private running = false
 
   constructor(spawner: IacEngineSpawner, config: SchedulerConfig = {}) {
@@ -111,6 +116,7 @@ export class Scheduler {
     this.config = {
       pollIntervalMs: config.pollIntervalMs ?? 1000,
       staleCheckIntervalMs: config.staleCheckIntervalMs ?? 30000,
+      autoApplyPollIntervalMs: config.autoApplyPollIntervalMs ?? 5000,
       staleThresholdMs: config.staleThresholdMs ?? 5 * 60 * 1000,
       maxConcurrentJobs: config.maxConcurrentJobs ?? 50,
       maxJobsPerRunGroup: config.maxJobsPerRunGroup ?? 3,
@@ -171,9 +177,20 @@ export class Scheduler {
       })
     }, this.config.staleCheckIntervalMs)
 
+    // Start checking for auto-apply candidates
+    this.autoApplyTimer = setInterval(() => {
+      this.pollForAutoApplies().catch((err) => {
+        logger.error("Auto-apply poll failed", {
+          workerId: this.workerId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
+    }, this.config.autoApplyPollIntervalMs)
+
     // Run immediately on start
     this.pollForJobs().catch(() => {})
     this.checkStaleJobs().catch(() => {})
+    this.pollForAutoApplies().catch(() => {})
   }
 
   /**
@@ -194,6 +211,11 @@ export class Scheduler {
     if (this.staleCheckTimer) {
       clearInterval(this.staleCheckTimer)
       this.staleCheckTimer = null
+    }
+
+    if (this.autoApplyTimer) {
+      clearInterval(this.autoApplyTimer)
+      this.autoApplyTimer = null
     }
   }
 
@@ -327,6 +349,48 @@ export class Scheduler {
           workerId: this.workerId,
           jobId: job.id,
           attempts: job.attempts,
+        })
+      }
+    }
+  }
+
+  /**
+   * Poll for deployments ready for auto-apply.
+   * These are deployments in 'awaiting_apply' state that:
+   * - Don't require approval
+   * - Have been waiting for at least 30 seconds (to allow pause opportunity)
+   */
+  private async pollForAutoApplies(): Promise<void> {
+    if (!this.running) return
+
+    const deployments = await findDeploymentsReadyForAutoApply()
+
+    if (deployments.length === 0) return
+
+    logger.info("Found deployments ready for auto-apply", {
+      workerId: this.workerId,
+      count: deployments.length,
+      deploymentIds: deployments.map((d) => d.id),
+    })
+
+    // Queue apply jobs for each deployment
+    // These run through queueAutoApply which handles CAS/race conditions
+    for (const deployment of deployments) {
+      try {
+        const result = await queueAutoApply(deployment.id)
+        if (result) {
+          logger.info("Auto-apply job queued", {
+            workerId: this.workerId,
+            deploymentId: deployment.id,
+            jobId: result.jobId,
+            workspacePath: deployment.workspacePath,
+          })
+        }
+      } catch (err) {
+        logger.error("Failed to queue auto-apply", {
+          workerId: this.workerId,
+          deploymentId: deployment.id,
+          error: err instanceof Error ? err.message : String(err),
         })
       }
     }

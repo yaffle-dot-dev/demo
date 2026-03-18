@@ -328,6 +328,82 @@ export async function triggerApply(opts: {
 }
 
 /**
+ * Queue an apply job for server-side auto-apply.
+ * Used by the scheduler when a deployment has been in 'awaiting_apply' state
+ * long enough without being paused.
+ *
+ * Unlike triggerApply(), this function:
+ * - Does not record approval (no user involved)
+ * - Returns gracefully if the deployment is no longer in awaiting_apply state
+ *   (e.g., user paused it or another scheduler instance already claimed it)
+ *
+ * @returns job ID if apply was queued, null if deployment was not claimable
+ */
+export async function queueAutoApply(deploymentId: string): Promise<{ jobId: string } | null> {
+  return previewMutex.run(`apply:${deploymentId}`, async () => {
+    const preview = await findDeploymentById(deploymentId)
+    if (!preview) {
+      logger.warn("Auto-apply: deployment not found", { deploymentId })
+      return null
+    }
+
+    // Check state - if not awaiting_apply, someone else handled it (paused or applied)
+    if (preview.status !== "awaiting_apply") {
+      logger.debug("Auto-apply: deployment not in awaiting_apply state", {
+        deploymentId,
+        status: preview.status,
+      })
+      return null
+    }
+
+    // Double-check requireApproval (shouldn't be true if scheduler found it, but defensive)
+    if (preview.requireApproval) {
+      logger.warn("Auto-apply: deployment requires approval, skipping", { deploymentId })
+      return null
+    }
+
+    // Check that plan succeeded
+    const latestPlan = await findLatestRun(preview.id, "plan")
+    if (!latestPlan || latestPlan.status !== "success") {
+      logger.warn("Auto-apply: no successful plan", { deploymentId })
+      return null
+    }
+
+    // Check that apply isn't already queued/running
+    const { findPendingJobsForPreview } = await import("../db/queries/iac-jobs.ts")
+    const pendingApplyJobs = await findPendingJobsForPreview(preview.id, "apply")
+    if (pendingApplyJobs.length > 0) {
+      logger.debug("Auto-apply: apply already queued", { deploymentId })
+      return null
+    }
+
+    // Queue apply job (no approval recording - this is server-initiated)
+    const job = await createIacJob({
+      deploymentId: preview.id,
+      jobType: "apply",
+    })
+
+    logger.info("Auto-apply job queued", {
+      deploymentId: preview.id,
+      jobId: job.id,
+      workspacePath: preview.workspacePath,
+      environmentName: preview.environmentName,
+    })
+
+    // Emit event so UI sees the job queued
+    events.emitDeploymentUpdate(
+      preview.id,
+      preview.orgId,
+      preview.repo,
+      preview.environmentKind as "named" | "transient",
+      preview.environmentName,
+    )
+
+    return { jobId: job.id }
+  })
+}
+
+/**
  * Manually re-run a preview (plan only - apply requires explicit approval).
  * This allows users to re-trigger a run without pushing new commits.
  *

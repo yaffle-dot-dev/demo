@@ -130,6 +130,7 @@ export const workspaceDeployments = pgTable(
     approvedAt: timestamp("approved_at"),
     approvedBy: text("approved_by"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
+    statusChangedAt: timestamp("status_changed_at").defaultNow().notNull(),
     startedAt: timestamp("started_at"),
     completedAt: timestamp("completed_at"),
   },

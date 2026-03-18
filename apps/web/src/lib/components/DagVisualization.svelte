@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { WorkspaceWithRuns, DependencyGraph, Run, WorkspacePreview } from "$lib/api"
-  import { triggerApply } from "$lib/api"
+  import { triggerApply, pauseApply } from "$lib/api"
   import DagLayout from "./DagLayout.svelte"
   import type { DagPosition } from "./DagLayout.svelte"
 
@@ -97,9 +97,8 @@
           anyActive = true
           if (timer.remaining <= 0) {
             timer.remaining = 0
-            // Timer completed - trigger apply
+            // Timer completed - just remove it. Server handles auto-apply.
             timers.delete(path)
-            handleApply(path)
           }
         } else if (timer.remaining > 0) {
           anyActive = true
@@ -178,11 +177,48 @@
     }
   }
   
-  function togglePause(workspacePath: string) {
-    const timer = timers.get(workspacePath)
-    if (timer) {
-      timer.paused = !timer.paused
-      timers = new Map(timers)
+  // Track which workspaces are being paused (for loading state)
+  let pausingWorkspaces = $state<Set<string>>(new Set())
+  
+  /**
+   * Pause auto-apply for a workspace.
+   * Calls the server /pause endpoint to transition to awaiting_approval state.
+   * On success, marks the local timer as paused so UI shows "Approve" button.
+   */
+  async function handlePause(workspacePath: string) {
+    const ws = workspaceByPath.get(workspacePath)
+    if (!ws) {
+      console.error(`Workspace not found: ${workspacePath}`)
+      return
+    }
+    
+    const previewId = ws.preview.id
+    pausingWorkspaces.add(workspacePath)
+    pausingWorkspaces = new Set(pausingWorkspaces)
+    
+    try {
+      const result = await pauseApply(previewId)
+      console.log(`Pause result for ${workspacePath}:`, result)
+      
+      // Mark local timer as paused
+      const timer = timers.get(workspacePath)
+      if (timer) {
+        timer.paused = true
+        timers = new Map(timers)
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Pause failed"
+      console.error(`Pause failed for ${workspacePath}:`, message)
+      
+      // If the error indicates the deployment is already applying or applied,
+      // just remove the timer - the UI will update from SSE
+      if (message.includes("already") || message.includes("too late")) {
+        timers.delete(workspacePath)
+        timers = new Map(timers)
+      }
+    } finally {
+      pausingWorkspaces.delete(workspacePath)
+      pausingWorkspaces = new Set(pausingWorkspaces)
     }
   }
   
@@ -310,8 +346,9 @@
            !autoStartedTimers.has(wsPath)
   }
   
-  // Auto-apply countdown duration in seconds
-  const AUTO_APPLY_DELAY_SEC = 10
+  // Visual countdown duration in seconds (user has this much time to pause)
+  // Server auto-applies after 30s, so this gives a 10s buffer
+  const AUTO_APPLY_DELAY_SEC = 20
   
   // Auto-start timers for workspaces that are ready for apply.
   // Uses the derived workspacesReadyForAutoTimer to ensure proper reactivity tracking.
@@ -448,8 +485,8 @@
             class="timer-btn"
             role="button"
             tabindex="0"
-            onclick={(e) => { e.stopPropagation(); togglePause(wsPath) }}
-            onkeydown={(e) => e.key === "Enter" && togglePause(wsPath)}
+            onclick={(e) => { e.stopPropagation(); handlePause(wsPath) }}
+            onkeydown={(e) => e.key === "Enter" && handlePause(wsPath)}
           >
             <title>{getTimerSecondsLeft(wsPath)}s until apply starts. Click to pause.</title>
             <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="timer-btn-bg" />
