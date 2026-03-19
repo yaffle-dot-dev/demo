@@ -27,6 +27,8 @@
   },
   "dependencies": {
     "@better-auth/api-key": "^1.5.4",
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.1",
     "playwriter": "^0.0.80"
   }
 }

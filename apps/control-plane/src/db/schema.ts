@@ -4,6 +4,7 @@ import {
   index,
   integer,
   jsonb,
+  pgEnum,
   pgTable,
   text,
   timestamp,
@@ -15,6 +16,25 @@ import { uuidv7 } from "uuidv7"
 // Re-export BetterAuth tables
 export * from "./auth-schema"
 import { user } from "./auth-schema"
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+export const iacJobStatusEnum = pgEnum("iac_job_status", [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "system_error",
+  "cancelled",
+])
+
+export const iacJobTypeEnum = pgEnum("iac_job_type", [
+  "plan",
+  "apply",
+  "destroy",
+])
 
 // =============================================================================
 // Organizations (decoupled from GitHub)
@@ -249,8 +269,8 @@ export const iacJobs = pgTable(
     deploymentId: uuid("preview_id")
       .references(() => workspaceDeployments.id, { onDelete: "cascade" })
       .notNull(),
-    jobType: text("job_type").notNull(), // 'plan' | 'apply' | 'destroy'
-    status: text("status").default("queued").notNull(), // 'queued' | 'running' | 'completed' | 'failed' | 'system_error' | 'cancelled'
+    jobType: iacJobTypeEnum("job_type").notNull(),
+    status: iacJobStatusEnum("status").default("queued").notNull(),
     // Worker tracking
     workerId: text("worker_id"),
     lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),

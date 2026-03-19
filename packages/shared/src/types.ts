@@ -16,8 +16,6 @@ export type RunStatus = "pending" | "running" | "success" | "failed" | "cancelle
 
 export type RunnerMode = "saas" | "byoa"
 
-export type JobStatus = "pending" | "running" | "completed" | "failed" | "system_error"
-
 export type PullRequestAction =
   | "opened"
   | "synchronize"

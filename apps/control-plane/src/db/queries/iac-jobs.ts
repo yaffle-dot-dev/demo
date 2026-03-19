@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
-import { iacJobs, workspaceDeployments } from "../schema.ts"
+import { iacJobs, iacJobStatusEnum, iacJobTypeEnum, workspaceDeployments } from "../schema.ts"
 import {
   withDbSpan,
   logger,
@@ -15,8 +15,9 @@ import { updateDeploymentStatus } from "./workspace-deployments.ts"
 
 export type IacJob = typeof iacJobs.$inferSelect
 export type NewIacJob = typeof iacJobs.$inferInsert
-export type IacJobType = "plan" | "apply" | "destroy"
-export type IacJobStatus = "queued" | "running" | "completed" | "failed" | "system_error" | "cancelled"
+// Infer types from the enum definitions for compile-time safety
+export type IacJobType = (typeof iacJobTypeEnum.enumValues)[number]
+export type IacJobStatus = (typeof iacJobStatusEnum.enumValues)[number]
 
 /**
  * Create a new IaC job in the queue.
