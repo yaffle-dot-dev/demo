@@ -29,15 +29,6 @@ module "bootstrap" {
   aws_region       = var.aws_region
 }
 
-resource "aws_s3_bucket" "state" {
-  bucket        = "yaffle-state-${local.name_suffix}"
-  force_destroy = local.is_preview # Allow cleanup of preview buckets
-
-  tags = {
-    Name = "yaffle-state-${local.name_suffix}"
-  }
-}
-
 resource "aws_s3_bucket_versioning" "state" {
   bucket = module.bootstrap.bucket_name
 
@@ -57,15 +48,6 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
     }
     bucket_key_enabled = true
   }
-}
-
-resource "aws_s3_bucket_public_access_block" "state" {
-  bucket = module.bootstrap.bucket_name
-
-  block_public_acls       = true
-  block_public_policy     = true
-  ignore_public_acls      = true
-  restrict_public_buckets = true
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "state" {

@@ -34,7 +34,7 @@ export const organizations = pgTable("organizations", {
   provisioningStatus: text("provisioning_status").default("pending").notNull(), // 'pending' | 'provisioning' | 'active' | 'failed'
   provisioningError: text("provisioning_error"),
   provisioningAttempts: integer("provisioning_attempts").default(0).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
 // =============================================================================
@@ -50,8 +50,8 @@ export const githubInstallations = pgTable("github_installations", {
   githubOrgLogin: text("github_org_login").notNull(),
   installationId: bigint("installation_id", { mode: "number" }).unique().notNull(),
   installationStatus: text("installation_status").default("active").notNull(), // 'active' | 'suspended' | 'uninstalled'
-  installedAt: timestamp("installed_at"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  installedAt: timestamp("installed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
 // =============================================================================
@@ -70,7 +70,7 @@ export const orgMemberships = pgTable(
       .notNull(),
     role: text("role").notNull(), // 'viewer' | 'approver' | 'admin'
     source: text("source").notNull(), // 'github_self_join' | 'invite' | 'scim' | 'admin_bootstrap'
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [unique("org_memberships_org_user").on(t.orgId, t.userId)],
 )
@@ -88,7 +88,7 @@ export const connections = pgTable("connections", {
   type: text("type").notNull(),
   config: jsonb("config").notNull(),
   secretArn: text("secret_arn").notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
 // =============================================================================
@@ -127,12 +127,12 @@ export const workspaceDeployments = pgTable(
     upstreamIds: text("upstream_ids").array().default([]).notNull(),
     completedUpstreams: text("completed_upstreams").array().default([]).notNull(),
     // Approval tracking
-    approvedAt: timestamp("approved_at"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
     approvedBy: text("approved_by"),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
-    statusChangedAt: timestamp("status_changed_at").defaultNow().notNull(),
-    startedAt: timestamp("started_at"),
-    completedAt: timestamp("completed_at"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).defaultNow().notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
   },
   (t) => [
     // New unique constraint based on environment_name instead of pr_number
@@ -170,9 +170,9 @@ export const runGroups = pgTable("run_groups", {
   // Inferred dependency graph for this run group
   // Structure: { workspaces: string[], edges: [string, string][] }
   dependencyGraph: jsonb("dependency_graph"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  startedAt: timestamp("started_at"),
-  completedAt: timestamp("completed_at"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
 })
 
 // =============================================================================
@@ -197,9 +197,9 @@ export const tfRuns = pgTable("tf_runs", {
   logOutput: text("log_output"),
   outputs: jsonb("outputs"),
   errorMessage: text("error_message"),
-  startedAt: timestamp("started_at"),
-  completedAt: timestamp("completed_at"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
 // =============================================================================
@@ -216,7 +216,7 @@ export const approvals = pgTable("approvals", {
     .references(() => user.id)
     .notNull(),
   approverLogin: text("approver_login"), // Denormalized for display
-  approvedAt: timestamp("approved_at").defaultNow().notNull(),
+  approvedAt: timestamp("approved_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
 // =============================================================================
@@ -231,10 +231,10 @@ export const jobs = pgTable("jobs", {
   jobType: text("job_type").notNull(),
   payload: jsonb("payload").notNull(),
   status: text("status").default("pending").notNull(),
-  runAt: timestamp("run_at").defaultNow().notNull(),
+  runAt: timestamp("run_at", { withTimezone: true }).defaultNow().notNull(),
   lockedBy: text("locked_by"),
   attempts: integer("attempts").default(0).notNull(),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
 // =============================================================================
@@ -253,12 +253,12 @@ export const iacJobs = pgTable(
     status: text("status").default("queued").notNull(), // 'queued' | 'dispatched' | 'running' | 'completed' | 'failed' | 'cancelled'
     // Worker tracking
     workerId: text("worker_id"),
-    lastHeartbeat: timestamp("last_heartbeat"),
+    lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),
     // Timing
-    queuedAt: timestamp("queued_at").defaultNow().notNull(),
-    dispatchedAt: timestamp("dispatched_at"),
-    startedAt: timestamp("started_at"),
-    completedAt: timestamp("completed_at"),
+    queuedAt: timestamp("queued_at", { withTimezone: true }).defaultNow().notNull(),
+    dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
     // Result
     result: jsonb("result"), // Output, plan summary, errors, etc.
     errorMessage: text("error_message"),
@@ -290,7 +290,7 @@ export const repositories = pgTable(
     fullName: text("full_name").notNull(),
     defaultBranch: text("default_branch").default("main").notNull(),
     isActive: boolean("is_active").default(true).notNull(),
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [unique("repositories_github_id").on(t.githubId)],
 )
@@ -314,12 +314,12 @@ export const workspaces = pgTable(
     ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
     locked: boolean("locked").default(false).notNull(),
     lockedBy: text("locked_by"), // "user:{id}" or "run:{id}"
-    lockedAt: timestamp("locked_at"),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
     lockReason: text("lock_reason"),
     currentStateVersionId: uuid("current_state_version_id"), // FK added below
     terraformVersion: text("terraform_version"),
     status: text("status").default("active").notNull(), // "active" | "destroying" | "archived"
-    createdAt: timestamp("created_at").defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [unique("workspaces_org_name").on(t.orgId, t.name)],
 )
@@ -345,7 +345,7 @@ export const stateVersions = pgTable("state_versions", {
   resourcesProcessed: boolean("resources_processed").default(false).notNull(),
   runId: uuid("run_id").references(() => tfRuns.id),
   createdBy: text("created_by"), // user_id or "run:{id}"
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
 // =============================================================================
@@ -359,7 +359,7 @@ export const apiTokens = pgTable("api_tokens", {
     .notNull(),
   description: text("description"),
   tokenHash: text("token_hash").notNull(),
-  lastUsedAt: timestamp("last_used_at"),
-  expiresAt: timestamp("expires_at"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
