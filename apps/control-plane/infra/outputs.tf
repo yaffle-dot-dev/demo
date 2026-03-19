@@ -59,11 +59,11 @@ output "api_domain" {
 # -----------------------------------------------------------------------------
 
 output "state_bucket_name" {
-  value       = aws_s3_bucket.state.id
+  value       = module.bootstrap.bucket_name
   description = "S3 bucket for this environment's terraform state"
 }
 
 output "state_bucket_arn" {
-  value       = aws_s3_bucket.state.arn
+  value       = module.bootstrap.bucket_arn
   description = "S3 bucket ARN"
 }

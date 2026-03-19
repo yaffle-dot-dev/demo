@@ -18,12 +18,6 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
-variable "runner_image" {
-  type        = string
-  description = "Docker image for the runner container"
-  default     = "ghcr.io/yaffle-dot-dev/yaffle/runner:latest"
-}
-
 variable "runner_cpu" {
   type        = number
   description = "CPU units for runner task (256 = 0.25 vCPU)"

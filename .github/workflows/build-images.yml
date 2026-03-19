@@ -37,6 +37,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
 
@@ -70,8 +75,32 @@ jobs:
             870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           echo "registry=870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
 
+      # Build JavaScript with Bun (outside nix sandbox)
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build control-plane bundle
+        run: |
+          mkdir -p dist/control-plane/node_modules
+
+          # Bundle the control-plane
+          # --external minijinja-js: WASM module that doesn't bundle correctly
+          bun build apps/control-plane/src/index.ts \
+            --outdir dist/control-plane \
+            --target bun \
+            --external minijinja-js
+
+          # Copy runtime dependencies that can't be bundled
+          cp -r node_modules/.bun/minijinja-js@*/node_modules/minijinja-js dist/control-plane/node_modules/
+
+      # Package with nix2container
+      # --impure allows reading YAFFLE_BUNDLE_PATH env var
       - name: Build control-plane image
-        run: nix build .#control-plane-image -L
+        run: |
+          export YAFFLE_BUNDLE_PATH="${{ github.workspace }}/dist/control-plane"
+          nix build .#control-plane-image --impure -L -o result-control-plane
+          # Also build the copyToRegistry to get access to nix2container's skopeo
+          nix build .#control-plane-image.copyToRegistry --impure -o copy-control-plane
 
       - name: Push control-plane image
         if: steps.tier.outputs.push == 'true'
@@ -80,15 +109,27 @@ jobs:
           REGISTRY="${{ steps.ecr-login.outputs.registry }}"
           SHORT_SHA="${{ github.sha }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
-          
-          # Push with SHA tag
-          ./result/copyTo docker://${REGISTRY}/yaffle-control-plane-${TIER}:sha-${SHORT_SHA}
-          
-          # Push latest tag for main branch
-          ./result/copyTo docker://${REGISTRY}/yaffle-control-plane-${TIER}:latest
+
+          # Get the image JSON path
+          IMAGE_JSON=$(readlink -f result-control-plane)
+
+          # Extract and set PATH from the copyToRegistry script (includes nix2container's skopeo)
+          eval $(grep '^export PATH=' copy-control-plane/bin/copy-to-registry)
+
+          # Push with SHA tag using nix2container's skopeo (has nix transport)
+          skopeo --insecure-policy copy \
+            nix:${IMAGE_JSON} \
+            docker://${REGISTRY}/yaffle-control-plane-${TIER}:sha-${SHORT_SHA}
+
+          # Push latest tag
+          skopeo --insecure-policy copy \
+            nix:${IMAGE_JSON} \
+            docker://${REGISTRY}/yaffle-control-plane-${TIER}:latest
 
       - name: Build runner image
-        run: nix build .#runner-image -L
+        run: |
+          nix build .#runner-image -L -o result-runner
+          nix build .#runner-image.copyToRegistry -o copy-runner
 
       - name: Push runner image
         if: steps.tier.outputs.push == 'true'
@@ -97,12 +138,22 @@ jobs:
           REGISTRY="${{ steps.ecr-login.outputs.registry }}"
           SHORT_SHA="${{ github.sha }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
-          
-          # Push with SHA tag
-          ./result/copyTo docker://${REGISTRY}/yaffle-runner-${TIER}:sha-${SHORT_SHA}
-          
-          # Push latest tag for main branch
-          ./result/copyTo docker://${REGISTRY}/yaffle-runner-${TIER}:latest
+
+          # Get the image JSON path
+          IMAGE_JSON=$(readlink -f result-runner)
+
+          # Extract and set PATH from the copyToRegistry script (includes nix2container's skopeo)
+          eval $(grep '^export PATH=' copy-runner/bin/copy-to-registry)
+
+          # Push with SHA tag using nix2container's skopeo (has nix transport)
+          skopeo --insecure-policy copy \
+            nix:${IMAGE_JSON} \
+            docker://${REGISTRY}/yaffle-runner-${TIER}:sha-${SHORT_SHA}
+
+          # Push latest tag
+          skopeo --insecure-policy copy \
+            nix:${IMAGE_JSON} \
+            docker://${REGISTRY}/yaffle-runner-${TIER}:latest
 
       - name: Summary
         run: |

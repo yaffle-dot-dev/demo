@@ -157,6 +157,12 @@ export async function findPreview(
 /**
  * Upsert a deployment. On conflict (same org/repo/env/workspace), update the head SHA,
  * ref, and reset status to pending.
+ *
+ * This fully resets the deployment state for a new run, including:
+ * - Status back to pending
+ * - DAG tracking (upstreamIds, completedUpstreams)
+ * - Timing fields (startedAt, completedAt)
+ * - Approval state (approvedAt, approvedBy)
  */
 export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<WorkspaceDeployment> {
   return withDbSpan("upsert", "workspace_deployments", async () => {
@@ -186,6 +192,12 @@ export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<
           // completedUpstreams must start empty to properly track upstream completion
           upstreamIds: values.upstreamIds,
           completedUpstreams: [],
+          // Reset timing fields from previous run
+          startedAt: null,
+          completedAt: null,
+          // Reset approval state from previous run
+          approvedAt: null,
+          approvedBy: null,
         },
       })
       .returning()
@@ -601,6 +613,80 @@ export async function markDeploymentSkipped(
       const { orgId, repo, environmentKind, environmentName } = updated[0]
       events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
     }
+  })
+}
+
+/**
+ * Reset skipped/failed downstream deployments so they can be re-scheduled.
+ * 
+ * When an upstream fails, its downstreams are marked as "failed" (skipped).
+ * If the upstream is re-run and succeeds, we need to reset those downstreams
+ * to "pending" with empty completedUpstreams so they can be properly scheduled
+ * when the upstream's apply completes.
+ * 
+ * This function recursively resets all transitive downstreams that were skipped.
+ * 
+ * @returns The number of deployments that were reset
+ */
+export async function resetSkippedDownstreams(
+  upstreamId: string,
+): Promise<number> {
+  return withDbSpan("update", "workspace_deployments", async () => {
+    const downstreams = await findDownstreamDeployments(upstreamId)
+    
+    if (downstreams.length === 0) {
+      return 0
+    }
+
+    let resetCount = 0
+    const visited = new Set<string>()
+    const toProcess = [...downstreams]
+
+    while (toProcess.length > 0) {
+      const downstream = toProcess.shift()!
+
+      if (visited.has(downstream.id)) continue
+      visited.add(downstream.id)
+
+      // Only reset deployments that are in a skipped/failed state
+      // Don't reset "ready" or "destroyed" deployments
+      if (downstream.status !== "failed") {
+        continue
+      }
+
+      // Reset to pending and clear completedUpstreams
+      const updated = await db
+        .update(workspaceDeployments)
+        .set({
+          status: "pending" as PreviewStatus,
+          statusChangedAt: new Date(),
+          completedUpstreams: [],
+          completedAt: null,
+        })
+        .where(eq(workspaceDeployments.id, downstream.id))
+        .returning({
+          orgId: workspaceDeployments.orgId,
+          repo: workspaceDeployments.repo,
+          environmentKind: workspaceDeployments.environmentKind,
+          environmentName: workspaceDeployments.environmentName,
+        })
+
+      if (updated.length > 0) {
+        resetCount++
+        const { orgId, repo, environmentKind, environmentName } = updated[0]
+        events.emitDeploymentUpdate(downstream.id, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+      }
+
+      // Find transitive downstreams
+      const transitiveDownstreams = await findDownstreamDeployments(downstream.id)
+      for (const transitive of transitiveDownstreams) {
+        if (!visited.has(transitive.id)) {
+          toProcess.push(transitive)
+        }
+      }
+    }
+
+    return resetCount
   })
 }
 

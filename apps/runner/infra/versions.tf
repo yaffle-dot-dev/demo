@@ -11,15 +11,6 @@ terraform {
       version = "~> 6.0"
     }
   }
-
-  cloud {
-    hostname     = "yaffle.local:6969"
-    organization = "yaffle-dot-dev"
-
-    workspaces {
-      name = "main-main-apps-runner-infra"
-    }
-  }
 }
 
 provider "aws" {

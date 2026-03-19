@@ -38,7 +38,6 @@ module "nonprod" {
 # -----------------------------------------------------------------------------
 
 module "runner" {
-  count  = local.is_preview ? 0 : 1
   source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--runner--infra/yaffle"
 }
 
@@ -52,8 +51,8 @@ locals {
   acm_certificate_arn = module.shared.acm_certificate_validated_arn
 
   # State bucket (defined in state-storage.tf)
-  state_bucket_name = aws_s3_bucket.state.id
-  state_bucket_arn  = aws_s3_bucket.state.arn
+  state_bucket_name = module.bootstrap.bucket_name
+  state_bucket_arn  = module.bootstrap.bucket_arn
 
   # Core outputs (environment-specific) - select from whichever module is active
   _core = local.is_preview ? module.nonprod[0] : module.main[0]

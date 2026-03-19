@@ -45,7 +45,7 @@ resource "aws_ecs_task_definition" "runner" {
   container_definitions = jsonencode([
     {
       name      = "runner"
-      image     = var.runner_image
+      image     = "${local.ecr_runner_url}:latest"
       essential = true
 
       # Command is overridden at RunTask time with job-specific values

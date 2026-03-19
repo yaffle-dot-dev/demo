@@ -52,6 +52,11 @@ path = "apps/control-plane/infra"
 environments = ["*"]
 variables.secrets_arn_prefix = "arn:aws:secretsmanager:us-east-1:870923192739:secret:yaffle/main"
 
+[[workspaces]]
+path = "apps/runner/infra"
+environments = ["*"]
+variables.runner_cpu    = 512
+variables.runner_memory = 1024
 # ---------------------------------------------------------------------------
 # App S3 Buckets (owned by individual apps)
 # ---------------------------------------------------------------------------

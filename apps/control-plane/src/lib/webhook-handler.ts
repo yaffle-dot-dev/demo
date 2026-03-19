@@ -25,6 +25,7 @@ import {
   updateDeploymentStatus,
   upsertDeployment,
   recordDeploymentApproval,
+  resetSkippedDownstreams,
 } from "../db/queries/workspace-deployments.ts"
 import { createIacJob, cancelJobsForPreview, findPendingJobsForPreview } from "../db/queries/iac-jobs.ts"
 import { findLatestRun } from "../db/queries/tf-runs.ts"
@@ -409,6 +410,10 @@ export async function queueAutoApply(deploymentId: string): Promise<{ jobId: str
  *
  * The preview stays in its existing run group. We just reset status to pending
  * and queue a new plan job. The scheduler picks it up like any other job.
+ *
+ * If this workspace had downstream workspaces that were skipped due to its
+ * failure, those downstreams are reset to pending so they will be scheduled
+ * when this workspace's apply succeeds.
  */
 export async function rerunPreview(opts: {
   previewId: string
@@ -432,6 +437,17 @@ export async function rerunPreview(opts: {
 
     // Reset preview status to pending (keeps existing run group)
     await updateDeploymentStatus(preview.id, "pending")
+
+    // Reset any downstream workspaces that were skipped due to this upstream's failure.
+    // This allows them to be scheduled when this workspace's apply succeeds.
+    const resetCount = await resetSkippedDownstreams(preview.id)
+    if (resetCount > 0) {
+      logger.info("Reset skipped downstream workspaces for re-run", {
+        deploymentId: opts.previewId,
+        workspacePath: preview.workspacePath,
+        resetCount,
+      })
+    }
 
     // Queue a plan job - the scheduler will pick it up
     const job = await createIacJob({

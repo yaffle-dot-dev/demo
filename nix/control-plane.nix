@@ -1,93 +1,73 @@
-# Nix derivation for building the Yaffle control-plane
+# Nix derivation for packaging the Yaffle control-plane
 #
-# This builds the TypeScript source into a bundled JavaScript file using Bun.
-# The output is a minimal directory containing just what's needed to run the server.
+# IMPORTANT: This does NOT build the JavaScript - it only packages a pre-built bundle.
+# The JS build happens in CI using standard bun tooling, then this packages it into
+# a container image via nix2container.
 #
-# Usage in devenv.nix:
-#   let controlPlane = pkgs.callPackage ./nix/control-plane.nix { inherit pkgs; };
+# Why? Nix's sandbox blocks network access, but bun/npm need to download packages.
+# While tools like node2nix exist, they're fragile and add maintenance burden.
+# Building JS outside nix and packaging with nix is the pragmatic production approach.
+#
+# Usage:
+#   nix build .#control-plane-image  # Requires pre-built bundle at ./dist/control-plane/
 #
 { pkgs
 , lib ? pkgs.lib
-, src ? ../. # Root of the monorepo
+, bundlePath ? null  # Path to pre-built bundle directory (contains index.js + node_modules)
 }:
 
 let
-  # Filter to exclude unnecessary files (git, node_modules, dist, etc.)
-  # This is simpler and less error-prone than an allowlist
-  sourceFilter = path: type:
-    let
-      baseName = baseNameOf path;
-      relativePath = lib.removePrefix (toString src + "/") (toString path);
-    in
-    # Exclude these
-    !(
-      baseName == ".git" ||
-      baseName == ".jj" ||
-      baseName == "node_modules" ||
-      baseName == "dist" ||
-      baseName == ".devenv" ||
-      baseName == ".direnv" ||
-      baseName == "result" ||
-      baseName == ".DS_Store" ||
-      lib.hasSuffix ".log" baseName ||
-      # Exclude apps/web entirely - we only need control-plane
-      lib.hasPrefix "apps/web" relativePath
-    );
-
-  filteredSrc = lib.cleanSourceWith {
-    inherit src;
-    filter = sourceFilter;
-    name = "yaffle-control-plane-src";
-  };
-
+  # Check environment variable for bundle path (set by CI or build script)
+  envBundlePath = builtins.getEnv "YAFFLE_BUNDLE_PATH";
+  effectiveBundlePath =
+    if bundlePath != null then bundlePath
+    else if envBundlePath != "" then /. + envBundlePath
+    else null;
 in
 pkgs.stdenv.mkDerivation {
   pname = "yaffle-control-plane";
   version = "0.1.0";
 
-  src = filteredSrc;
+  # Use the pre-built bundle
+  src = if effectiveBundlePath != null
+    then effectiveBundlePath
+    else throw ''
+      yaffle-control-plane requires a pre-built JavaScript bundle.
 
-  nativeBuildInputs = [ pkgs.bun pkgs.cacert ];
+      Option 1 - Set environment variable:
+        export YAFFLE_BUNDLE_PATH=/path/to/dist/control-plane
+        nix build .#control-plane-image
 
-  # Bun needs HOME for cache
-  HOME = "/tmp";
+      Option 2 - Use the build script:
+        ./scripts/build-control-plane-image.sh
 
-  configurePhase = ''
-    runHook preConfigure
+      The bundle directory must contain:
+        - index.js (the bundled app)
+        - node_modules/minijinja-js/ (WASM dependency)
+    '';
 
-    # Install dependencies - allow lockfile updates since we filtered the source
-    # In CI, we'd use --frozen-lockfile after ensuring lockfile is committed
-    bun install
-
-    runHook postConfigure
-  '';
-
-  buildPhase = ''
-    runHook preBuild
-
-    # Build the control-plane
-    cd apps/control-plane
-    bun build src/index.ts --outdir dist --target bun
-
-    runHook postBuild
-  '';
+  # No build phase - bundle is pre-built
+  dontBuild = true;
 
   installPhase = ''
     runHook preInstall
 
-    # Create output directory structure
-    mkdir -p $out/app
+    mkdir -p $out/app $out/bin
 
-    # Copy the built bundle
-    cp -r dist/* $out/app/
+    # Copy the bundle
+    cp -r ./* $out/app/
 
-    # Create a wrapper script
-    mkdir -p $out/bin
-    cat > $out/bin/yaffle-control-plane <<EOF
+    # Create wrapper script
+    cat > $out/bin/yaffle-control-plane <<'EOF'
 #!/bin/sh
-exec ${pkgs.bun}/bin/bun run $out/app/index.js "\$@"
+cd $out/app
+exec ${pkgs.bun}/bin/bun run $out/app/index.js "$@"
 EOF
     chmod +x $out/bin/yaffle-control-plane
+
+    # Fix the path in the wrapper (nix doesn't expand $out in heredocs)
+    substituteInPlace $out/bin/yaffle-control-plane \
+      --replace-fail '$out' "$out"
 
     runHook postInstall
   '';

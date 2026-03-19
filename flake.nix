@@ -22,10 +22,13 @@
           pkgs = nixpkgs.legacyPackages.${system};
           n2c = nix2container.packages.${system}.nix2container;
 
+          # Control-plane requires a pre-built JS bundle
+          # In CI: bun install && bun build, then nix packages it
+          # Pass bundlePath via --arg or use the wrapper script
           control-plane = pkgs.callPackage ./nix/control-plane.nix {
             inherit pkgs;
             lib = pkgs.lib;
-            src = ./.;
+            # bundlePath passed via --arg in CI, or use build-control-plane.sh locally
           };
 
           yaffle-cli = pkgs.callPackage ./nix/yaffle-cli.nix {
