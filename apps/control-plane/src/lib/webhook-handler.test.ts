@@ -12,7 +12,7 @@ import type { YaffleTomlConfig } from "./config-toml.ts"
 import { sql } from "drizzle-orm"
 
 import { db } from "./db.ts"
-import { iacJobs, previews, tfRuns } from "../db/schema.ts"
+import { iacJobs, previews } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
 import { createHandler } from "./webhook-handler.ts"
 import type { Runner, RunOpts } from "./runner.ts"

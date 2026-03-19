@@ -21,7 +21,7 @@ import {
   claimQueuedJobsWithLimits,
   countActiveJobs,
   findStaleJobs,
-  requeueOrFailStaleJob,
+  failStaleJob,
   type ConcurrencyLimits,
   type IacJob,
 } from "../db/queries/iac-jobs.ts"
@@ -319,7 +319,12 @@ export class Scheduler {
   }
 
   /**
-   * Check for stale jobs (workers that died).
+   * Check for stale jobs (workers that stopped heartbeating).
+   * 
+   * We mark these as failed rather than requeuing because:
+   * 1. Terraform operations can legitimately take 10+ minutes
+   * 2. Auto-requeuing causes duplicate runs and state lock conflicts
+   * 3. It's safer to fail and let humans investigate/retry
    */
   private async checkStaleJobs(): Promise<void> {
     if (!this.running) return
@@ -328,27 +333,20 @@ export class Scheduler {
 
     if (staleJobs.length === 0) return
 
-    logger.warn("Found stale jobs", {
+    logger.warn("Found stale jobs (will mark as failed)", {
       workerId: this.workerId,
       staleJobCount: staleJobs.length,
       staleJobIds: staleJobs.map((j) => j.id),
     })
 
-    // Requeue or fail each stale job
     for (const job of staleJobs) {
-      const result = await requeueOrFailStaleJob(job.id)
+      const result = await failStaleJob(job.id)
 
-      if (result.requeued) {
-        logger.info("Requeued stale job", {
+      if (result.failed) {
+        logger.error("Marked stale job as failed", {
           workerId: this.workerId,
           jobId: job.id,
-          attempts: job.attempts,
-        })
-      } else if (result.failed) {
-        logger.error("Stale job exceeded max attempts, marked as failed", {
-          workerId: this.workerId,
-          jobId: job.id,
-          attempts: job.attempts,
+          lastHeartbeat: job.lastHeartbeat?.toISOString() ?? "never",
         })
       }
     }

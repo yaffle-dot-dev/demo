@@ -6,6 +6,8 @@
 // - skipped (no changes)
 
 export const STATUS_CONFIG: Record<string, { label: string; color: string; icon: string }> = {
+  // Workspace execution states
+  queued: { label: "Queued", color: "text-status-pending", icon: "~" },
   pending: { label: "Pending", color: "text-status-pending", icon: "~" },
   planning: { label: "Planning", color: "text-status-planning", icon: "..." },
   planned: { label: "Planned", color: "text-status-ready", icon: "✓" },
@@ -15,6 +17,11 @@ export const STATUS_CONFIG: Record<string, { label: string; color: string; icon:
   failed: { label: "Failed", color: "text-status-failed", icon: "✗" },
   destroying: { label: "Destroying", color: "text-status-destroying", icon: "..." },
   destroyed: { label: "Destroyed", color: "text-status-destroyed", icon: "✓" },
+  skipped: { label: "Skipped", color: "text-text-dim", icon: "-" },
+  // Run group aggregate states
+  in_progress: { label: "In Progress", color: "text-status-applying", icon: "..." },
+  success: { label: "Success", color: "text-status-ready", icon: "✓" },
+  mixed: { label: "Mixed", color: "text-status-failed", icon: "!" },
 }
 
 export function statusConfig(status: string): { label: string; color: string; icon: string } {

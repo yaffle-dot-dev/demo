@@ -35,8 +35,8 @@
     id: string
     name: string | null
     start: string | null
-    createdAt: string
-    expiresAt: string | null
+    createdAt: Date
+    expiresAt: Date | null
     enabled: boolean
   }
 
@@ -118,9 +118,10 @@
     keyCopied = false
   }
 
-  function formatDate(dateStr: string | null): string {
-    if (!dateStr) return "Never"
-    return new Date(dateStr).toLocaleDateString(undefined, {
+  function formatDate(date: Date | string | null): string {
+    if (!date) return "Never"
+    const d = date instanceof Date ? date : new Date(date)
+    return d.toLocaleDateString(undefined, {
       year: "numeric",
       month: "short",
       day: "numeric",

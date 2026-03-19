@@ -267,14 +267,18 @@ export async function findStaleJobs(
 }
 
 /**
- * Re-queue a stale job for retry, or mark as failed if max attempts reached.
+ * Mark a stale job as failed.
  * 
- * Uses FOR UPDATE to prevent TOCTOU race conditions where a "stale" worker
- * wakes up between our check and update.
+ * We intentionally do NOT requeue stale jobs because:
+ * 1. Terraform operations can legitimately take 10+ minutes without heartbeats
+ * 2. Auto-requeuing can cause duplicate runs and state lock conflicts
+ * 3. If a job is truly stuck, it's safer to fail and let humans investigate
+ * 
+ * Users can manually retry failed jobs via the UI "Run Again" button.
  */
-export async function requeueOrFailStaleJob(
+export async function failStaleJob(
   jobId: string,
-): Promise<{ requeued: boolean; failed: boolean }> {
+): Promise<{ failed: boolean }> {
   return withDbSpan("update", "iac_jobs", async () => {
     // Use a transaction with FOR UPDATE to lock the row and prevent races
     return db.transaction(async (tx) => {
@@ -288,7 +292,7 @@ export async function requeueOrFailStaleJob(
 
       const job = jobs[0]
       if (!job) {
-        return { requeued: false, failed: false }
+        return { failed: false }
       }
 
       // Double-check it's still stale (worker might have heartbeated while we waited for lock)
@@ -297,38 +301,21 @@ export async function requeueOrFailStaleJob(
 
       if (!isStillStale) {
         // Job is no longer stale - worker is alive
-        return { requeued: false, failed: false }
+        return { failed: false }
       }
 
-      if (job.attempts >= job.maxAttempts) {
-        // Max retries reached, mark as failed
-        await tx
-          .update(iacJobs)
-          .set({
-            status: "failed",
-            completedAt: new Date(),
-            errorMessage: `Job timed out after ${job.attempts} attempts (worker died or timed out)`,
-          })
-          .where(eq(iacJobs.id, jobId))
-
-        events.emitJobUpdate(job.id, job.deploymentId)
-        return { requeued: false, failed: true }
-      }
-
-      // Re-queue for another attempt
+      // Mark as failed - do NOT requeue to avoid duplicate runs
       await tx
         .update(iacJobs)
         .set({
-          status: "queued",
-          workerId: null,
-          dispatchedAt: null,
-          startedAt: null,
-          lastHeartbeat: null,
+          status: "failed",
+          completedAt: new Date(),
+          errorMessage: "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry.",
         })
         .where(eq(iacJobs.id, jobId))
 
       events.emitJobUpdate(job.id, job.deploymentId)
-      return { requeued: true, failed: false }
+      return { failed: true }
     })
   })
 }

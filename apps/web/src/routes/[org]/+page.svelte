@@ -13,10 +13,12 @@
   } from "$lib/api"
   import { githubTreeUrl, githubCommitUrl } from "$lib/github"
   import { usePreviewListStream, useOrgStatusStream } from "$lib/sse/index.svelte"
-  import { statusConfig, formatRelativeTime, shortSha } from "$lib/status"
+  import { formatRelativeTime, shortSha } from "$lib/status"
   import { useSession, setLastOrg } from "$lib/auth"
   import WorkspaceDag from "$lib/components/WorkspaceDag.svelte"
   import ProvisioningStatus from "$lib/components/ProvisioningStatus.svelte"
+  import RunGroupStatusBadge from "$lib/components/RunGroupStatusBadge.svelte"
+  import RefBadge from "$lib/components/RefBadge.svelte"
 
   // Org comes from URL param - always defined since this is a [org] route
   const org = $derived(page.params.org ?? "")
@@ -60,7 +62,6 @@
     ref: string
     headSha: string
     createdAt: string
-    status: string
     /** GitHub user ID of the PR author (stable identifier) */
     authorGithubId: number | null
     /** GitHub username of the PR author (for display) */
@@ -111,23 +112,6 @@
     }
   })
 
-  function groupStatus(workspaces: Preview[]): string {
-    const statuses = new Set(workspaces.map((ws) => ws.status))
-    if (statuses.has("failed")) return "failed"
-    if (
-      statuses.has("applying") ||
-      statuses.has("planning") ||
-      statuses.has("pending") ||
-      statuses.has("awaiting_approval")
-    ) {
-      return "applying"
-    }
-    if (statuses.has("destroying")) return "destroying"
-    if (statuses.has("ready")) return "ready"
-    if (statuses.has("destroyed")) return "destroyed"
-    return "pending"
-  }
-
   function groupPreviews(list: Preview[]): PreviewGroup[] {
     const map = new Map<string, PreviewGroup>()
 
@@ -139,8 +123,6 @@
           ? existing.createdAt
           : preview.createdAt
         : preview.createdAt
-
-      const status = existing ? groupStatus([...existing.workspaces, preview]) : preview.status
 
       const headSha = existing?.headSha ?? preview.headSha
       const ref = existing?.ref ?? preview.ref
@@ -154,7 +136,6 @@
         ref,
         headSha,
         createdAt,
-        status,
         authorGithubId,
         authorLogin,
         workspaces: existing ? [...existing.workspaces, preview] : [preview],
@@ -248,27 +229,13 @@
       {:else}
         <div class="mt-4 grid grid-cols-1 gap-3">
           {#each environments as env (env.repo + env.environmentName)}
-            {@const cfg = statusConfig(env.status)}
-            {@const showStatus = env.status !== "ready"}
             <div class="rounded-lg border border-border bg-surface p-3 hover:border-yaffle-500/40 transition-colors">
               <div class="flex items-start justify-between">
                 <div>
                   <div class="flex items-center gap-2">
                     <a href="{base}/{org}/{env.repo}/env/{env.environmentName}" class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
-                    <a 
-                      href={githubTreeUrl({ org, repo: env.repo }, refName(env.ref))}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded hover:text-yaffle-400 transition-colors"
-                    >
-                      {env.environmentName}
-                    </a>
-                    {#if showStatus}
-                      <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
-                        <span class="font-mono">{cfg.icon}</span>
-                        {cfg.label}
-                      </span>
-                    {/if}
+                    <RefBadge label={env.environmentName} href={githubTreeUrl({ org, repo: env.repo }, refName(env.ref))} />
+                    <RunGroupStatusBadge statuses={env.workspaces.map(w => w.status)} />
                   </div>
                   <div class="flex flex-wrap gap-4 text-xs text-text-dim mt-2">
                     <a 
@@ -345,7 +312,6 @@
         {:else}
           <div class="grid grid-cols-1 gap-4">
             {#each yourGroups as group (group.key)}
-              {@const cfg = statusConfig(group.status)}
               <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
                 <div class="flex items-start justify-between">
                   <div>
@@ -354,12 +320,7 @@
                         {group.repo}
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
-                      {#if group.status !== "ready"}
-                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
-                          <span class="font-mono">{cfg.icon}</span>
-                          {cfg.label}
-                        </span>
-                      {/if}
+                      <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
                     </div>
                     <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
                       <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
@@ -399,7 +360,6 @@
         {:else}
           <div class="grid grid-cols-1 gap-4">
             {#each otherGroups as group (group.key)}
-              {@const cfg = statusConfig(group.status)}
               <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
                 <div class="flex items-start justify-between">
                   <div>
@@ -408,12 +368,7 @@
                         {group.repo}
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
-                      {#if group.status !== "ready"}
-                        <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
-                          <span class="font-mono">{cfg.icon}</span>
-                          {cfg.label}
-                        </span>
-                      {/if}
+                      <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
                     </div>
                     <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
                       <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
@@ -449,7 +404,6 @@
       <!-- No user handle - show all PR environments without yours/others split -->
       <div class="grid grid-cols-1 gap-4">
         {#each activeGroups as group (group.key)}
-          {@const cfg = statusConfig(group.status)}
           <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
             <div class="flex items-start justify-between">
               <div>
@@ -458,12 +412,7 @@
                     {group.repo}
                   </a>
                   <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
-                  {#if group.status !== "ready"}
-                    <span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium {cfg.color} bg-surface-overlay">
-                      <span class="font-mono">{cfg.icon}</span>
-                      {cfg.label}
-                    </span>
-                  {/if}
+                  <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
                 </div>
                 <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
                       <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">

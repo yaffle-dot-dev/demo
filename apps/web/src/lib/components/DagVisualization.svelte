@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { WorkspaceWithRuns, DependencyGraph, Run, WorkspacePreview } from "$lib/api"
   import { triggerApply, pauseApply } from "$lib/api"
+  import { statusConfig } from "$lib/status"
   import DagLayout from "./DagLayout.svelte"
   import type { DagPosition } from "./DagLayout.svelte"
 
@@ -451,7 +452,6 @@
       class:blocked={isBlocked}
       class:queued={isQueued}
       class:has-changes={hasChanges(planSummary)}
-      class:waiting={readyForApply && !requiresApproval}
     />
 
     <!-- Node label (full path) -->
@@ -552,9 +552,14 @@
         </text>
       {:else if planStatus === "success"}
         <text y="28" class="node-status text-status-ready">{statusIcon("success")} No changes</text>
+      {:else if isBlocked}
+        <!-- Upstream failed - this workspace was skipped -->
+        {@const skippedCfg = statusConfig("skipped")}
+        <text y="28" class="node-status {skippedCfg.color}">{skippedCfg.icon} {skippedCfg.label}</text>
       {:else}
-        <!-- No runs yet - show "Queued" for workspaces waiting to be dispatched -->
-        <text y="28" class="node-status text-text-dim">{statusIcon("pending")} Queued</text>
+        <!-- No runs yet - workspace waiting to be dispatched -->
+        {@const queuedCfg = statusConfig("queued")}
+        <text y="28" class="node-status {queuedCfg.color}">{queuedCfg.icon} {queuedCfg.label}</text>
       {/if}
     </g>
   </g>
@@ -607,18 +612,7 @@
     stroke-width: 1.5;
   }
   
-  .node-bg.waiting {
-    stroke: var(--color-yaffle-500);
-    stroke-width: 2;
-    stroke-dasharray: 4 2;
-    animation: dash-march 0.5s linear infinite;
-  }
-  
-  @keyframes dash-march {
-    to {
-      stroke-dashoffset: -6;
-    }
-  }
+
 
   .node-label {
     font-family: var(--font-mono, monospace);

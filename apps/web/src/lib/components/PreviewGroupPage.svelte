@@ -1,10 +1,11 @@
 <script lang="ts">
   import { page } from "$app/stores"
   import { goto } from "$app/navigation"
+  import { base } from "$app/paths"
   import { untrack } from "svelte"
   import type { WorkspaceWithRuns, WorkspacePreview, Run, RunGroup } from "$lib/api"
   import { cancelRun, rerunPreview } from "$lib/api"
-  import { githubRepoUrl, githubTreeUrl, githubCommitUrl } from "$lib/github"
+  import { githubTreeUrl, githubCommitUrl } from "$lib/github"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
   import {
     getWorkspacesInRunGroup,
@@ -14,6 +15,8 @@
   import Terminal from "./Terminal.svelte"
   import PlanSummary from "./PlanSummary.svelte"
   import OutputsView from "./OutputsView.svelte"
+  import RunGroupStatusBadge from "./RunGroupStatusBadge.svelte"
+  import RefBadge from "./RefBadge.svelte"
 
   interface Props {
     type: "pr" | "env"
@@ -94,18 +97,33 @@
       return workspacesWithRuns
     }
 
-    // Build lookup for workspaces that have runs
+    // Build lookup for workspaces that have runs in this run group
     const wsWithRunsByPath = new Map(
       workspacesWithRuns.map((ws) => [ws.preview.workspacePath, ws])
+    )
+    
+    // Build lookup for all workspaces (to get actual status for those without runs in this group)
+    const allWsByPath = new Map(
+      workspaces.map((ws) => [ws.preview.workspacePath, ws])
     )
 
     // Build complete list from dependency graph
     return graph.workspaces.map((path): WorkspaceWithRuns => {
-      // If we have run data for this workspace, use it
+      // If we have run data for this workspace in this run group, use it
       const existing = wsWithRunsByPath.get(path)
       if (existing) return existing
 
-      // Otherwise, create a placeholder for workspaces without runs yet
+      // Check if workspace exists but has no runs in this run group
+      // Use its actual status from the full workspaces list
+      const fullWs = allWsByPath.get(path)
+      if (fullWs) {
+        return {
+          ...fullWs,
+          runs: [], // No runs in this run group
+        }
+      }
+
+      // Otherwise, create a placeholder for workspaces not yet created
       const placeholder: WorkspacePreview = {
         id: `placeholder-${path}`,
         workspacePath: path,
@@ -419,6 +437,70 @@
     selectedWorkspace && selectedWorkspace.runs.length === 0
   )
 
+  // Are we viewing the latest run group or a historical one?
+  const isViewingLatest = $derived(
+    viewedRunGroup?.id === runGroups[0]?.id
+  )
+
+  // Check if a workspace has any failed upstream dependencies (for skipped detection)
+  function hasFailedUpstream(wsPath: string): boolean {
+    const graph = viewedRunGroup?.dependencyGraph
+    if (!graph) return false
+
+    const deps = graph.edges
+      .filter((edge: [string, string]) => edge[0] === wsPath)
+      .map((edge: [string, string]) => edge[1])
+
+    for (const depPath of deps) {
+      const depWs = filteredWorkspaces.find((w) => w.preview.workspacePath === depPath)
+      if (!depWs) continue
+
+      const plan = depWs.runs.find((r) => r.runType === "plan")
+      const apply = depWs.runs.find((r) => r.runType === "apply")
+
+      if (plan?.status === "failed" || apply?.status === "failed") {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  // Compute workspace status from its runs in the current run group
+  // This mirrors the displayStatus logic used for individual workspace headers
+  function computeWorkspaceStatus(ws: WorkspaceWithRuns): string {
+    const plan = ws.runs.find((r) => r.runType === "plan")
+    const apply = ws.runs.find((r) => r.runType === "apply")
+    
+    // Check apply first (it's the final state)
+    if (apply?.status === "success" || apply?.status === "skipped") return "ready"
+    if (apply?.status === "running") return "applying"
+    if (apply?.status === "failed") return "failed"
+    
+    // Then check plan
+    if (plan?.status === "success") return "planned"
+    if (plan?.status === "running") return "planning"
+    if (plan?.status === "failed") return "failed"
+    if (plan?.status === "pending") return "pending"
+    
+    // No runs in this run group
+    if (ws.runs.length === 0) {
+      // For latest run group, use live preview status
+      if (isViewingLatest) return ws.preview.status
+      // For historical run groups, check if blocked by upstream failure
+      if (hasFailedUpstream(ws.preview.workspacePath)) return "ready" // skipped = success for badge
+      // Otherwise it was pending/queued at that point
+      return "pending"
+    }
+    
+    // Fallback to preview status
+    return ws.preview.status
+  }
+
+  // Workspace statuses for the run group status badge
+  // Computed from runs in the viewed run group, not from preview.status
+  const workspaceStatuses = $derived(filteredWorkspaces.map(computeWorkspaceStatus))
+
   // Build workspace name matching server-side logic
   function buildWorkspaceName(environment: string, identifier: string, workspacePath: string): string {
     const pathSlug = workspacePath.replace(/\//g, "-").replace(/[^a-z0-9-]/gi, "")
@@ -478,13 +560,9 @@ terraform {
         <div class="flex items-center gap-3 mb-1">
           <h1 class="text-lg font-semibold">
             <a 
-              href={githubRepoUrl({ org, repo })}
-              target="_blank" 
-              rel="noopener noreferrer"
-              class="hover:text-yaffle-400 transition-colors"
-            >
-              <span class="text-text-muted">{org}/</span>{repo}
-            </a>
+              href="{base}/{org}"
+              class="text-text-muted hover:text-yaffle-400 transition-colors"
+            >{org}</a><span class="text-text-muted">/</span>{repo}
           </h1>
           {#if type === "pr"}
             <a 
@@ -496,15 +574,9 @@ terraform {
               PR #{identifier}
             </a>
           {:else}
-            <a
-              href={githubTreeUrl({ org, repo }, refName(ref))}
-              target="_blank"
-              rel="noopener noreferrer"
-              class="px-2 py-0.5 bg-surface-overlay rounded text-xs text-text-muted hover:text-yaffle-400 transition-colors"
-            >
-              {identifier}
-            </a>
+            <RefBadge label={String(identifier)} href={githubTreeUrl({ org, repo }, refName(ref))} />
           {/if}
+          <RunGroupStatusBadge statuses={workspaceStatuses} />
         </div>
         <div class="flex items-center gap-3 text-sm text-text-muted">
           <a
@@ -597,7 +669,9 @@ terraform {
             : latestPlan?.status === "success" ? "planned"
             : latestPlan?.status === "running" ? "planning"
             : latestPlan?.status === "pending" ? "pending"
+            : selectedWorkspace.runs.length === 0 ? "queued"
             : selectedWorkspace.preview.status)
+          : selectedWorkspace.runs.length === 0 ? "queued"
           : selectedWorkspace.preview.status}
         {@const cfg = statusConfig(displayStatus)}
         <!-- Workspace header bar -->
