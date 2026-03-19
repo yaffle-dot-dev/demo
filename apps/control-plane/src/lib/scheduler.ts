@@ -1,24 +1,29 @@
 /**
  * IaC Job Scheduler
  *
- * Polls for queued jobs and dispatches them to IaC engine instances.
+ * Polls for queued jobs and spawns workers to execute them.
  * This is the bridge between the job queue (database) and actual compute.
  *
  * Key responsibilities:
  * 1. Poll for queued jobs periodically
- * 2. Spawn IaC engine instances for claimed jobs
- * 3. Monitor job health (detect stale/dead jobs)
- * 4. Enforce concurrency limits (global and per-run-group)
- * 5. Fair round-robin scheduling across run groups
+ * 2. Generate job tokens for spawned workers
+ * 3. Spawn worker processes (jobs stay queued until workers claim them)
+ * 4. Monitor job health (detect stale/dead jobs)
+ * 5. Enforce concurrency limits (global and per-run-group)
+ * 6. Fair round-robin scheduling across run groups
  *
  * The scheduler is stateless - all state lives in the database.
  * Multiple scheduler instances can run safely (using FOR UPDATE SKIP LOCKED).
+ *
+ * IMPORTANT: The scheduler does NOT mark jobs as dispatched anymore.
+ * Jobs go directly from "queued" to "running" when the worker claims them via API.
+ * This eliminates the "dispatched but never started" failure mode.
  */
 
 import { randomUUID } from "node:crypto"
 
 import {
-  claimQueuedJobsWithLimits,
+  findQueuedJobsForSpawning,
   countActiveJobs,
   findStaleJobs,
   failStaleJob,
@@ -27,6 +32,7 @@ import {
 } from "../db/queries/iac-jobs.ts"
 import { findDeploymentsReadyForAutoApply } from "../db/queries/workspace-deployments.ts"
 import { queueAutoApply } from "./webhook-handler.ts"
+import { generateJobTokenForJob } from "./local-spawner.ts"
 import {
   getSchedulerActiveJobsGauge,
   getSchedulerGroupsQueuedGauge,
@@ -61,43 +67,24 @@ export interface SchedulerConfig {
 export interface IacEngineSpawner {
   /**
    * Spawn an IaC engine instance for a job.
-   * The engine is responsible for:
-   * 1. Fetching job details from DB
-   * 2. Marking job as running
+   *
+   * The spawned worker is responsible for:
+   * 1. Claiming the job atomically via API (queued -> running)
+   * 2. Sending heartbeats while executing
    * 3. Executing terraform
-   * 4. Recording results
-   * 5. Notifying downstreams
-   * 6. Exiting
+   * 4. Reporting completion via API
+   * 5. Exiting
    *
    * @param jobId - The job ID to execute
+   * @param jobToken - JWT token for API authentication
    * @returns Promise that resolves when the engine is spawned (not when it completes)
    */
-  spawn(jobId: string): Promise<void>
+  spawn(jobId: string, jobToken: string): Promise<void>
 }
 
-/**
- * Local development engine spawner.
- * Imports and runs the engine inline (same process).
- */
-export class LocalEngineSpawner implements IacEngineSpawner {
-  async spawn(jobId: string): Promise<void> {
-    // Import the engine module and execute
-    // This runs in the same process for local dev
-    const { executeJob } = await import("./iac-engine.ts")
-
-    // Run async but don't await - the scheduler doesn't wait for completion
-    executeJob(jobId).catch((err) => {
-      logger.error("Local engine execution failed", {
-        jobId,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    })
-  }
-}
-
-// EcsEngineSpawner is imported from ecs-spawner.ts
-// Re-export for convenience
+// Re-export spawners
 export { EcsEngineSpawner } from "./ecs-spawner.ts"
+export { LocalChildProcessSpawner } from "./local-spawner.ts"
 
 export class Scheduler {
   private readonly workerId: string
@@ -220,16 +207,19 @@ export class Scheduler {
   }
 
   /**
-   * Poll for queued jobs and dispatch them.
-   * Respects concurrency limits and uses round-robin fairness across run groups.
+   * Poll for queued jobs and spawn workers for them.
+   *
+   * IMPORTANT: Jobs stay "queued" until workers claim them via API.
+   * The scheduler only spawns workers - it does NOT mark jobs as dispatched.
+   * This eliminates the "dispatched but never started" failure mode.
    */
   private async pollForJobs(): Promise<void> {
     if (!this.running) return
 
     const pollStart = performance.now()
 
-    // Claim jobs respecting concurrency limits
-    const result = await claimQueuedJobsWithLimits(this.limits, this.workerId)
+    // Find jobs ready for spawning (does NOT claim them)
+    const result = await findQueuedJobsForSpawning(this.limits)
 
     const pollDuration = performance.now() - pollStart
     getSchedulerPollDurationHistogram().record(pollDuration)
@@ -237,15 +227,8 @@ export class Scheduler {
     // Update gauge metrics
     const activeCount = await countActiveJobs()
     setSchedulerActiveJobsValue(activeCount)
-    setSchedulerQueuedJobsValue(result.totalQueued - result.claimed.length)
+    setSchedulerQueuedJobsValue(result.totalQueued)
     setSchedulerGroupsQueuedValue(result.groupsWithQueuedWork)
-
-    // Record poll cycle metrics (for scaling analysis)
-    getSchedulerPollGroupsQueriedHistogram().record(result.groupsQueried)
-    getSchedulerPollJobsFetchedHistogram().record(result.jobsFetched)
-    if (result.skipLockedMisses > 0) {
-      getSchedulerSkipLockedMissesCounter().add(result.skipLockedMisses)
-    }
 
     // Record blocked jobs metrics
     if (result.blockedByGlobalLimit > 0) {
@@ -271,50 +254,62 @@ export class Scheduler {
       })
     }
 
-    if (result.claimed.length === 0) return
+    if (result.jobs.length === 0) return
 
-    // Record claimed jobs metric
-    getSchedulerJobsClaimedCounter().add(result.claimed.length)
+    // Record spawned jobs metric
+    getSchedulerJobsClaimedCounter().add(result.jobs.length)
 
-    logger.info("Claimed jobs for dispatch", {
+    logger.info("Spawning workers for jobs", {
       workerId: this.workerId,
-      jobCount: result.claimed.length,
-      jobIds: result.claimed.map((j) => j.id),
+      jobCount: result.jobs.length,
+      jobIds: result.jobs.map((j) => j.id),
       totalQueued: result.totalQueued,
       groupsWithQueuedWork: result.groupsWithQueuedWork,
-      groupsQueried: result.groupsQueried,
       blockedByGlobalLimit: result.blockedByGlobalLimit,
       blockedByGroupLimit: result.blockedByGroupLimit,
     })
 
-    // Spawn engines for each job in parallel
+    // Spawn workers for each job in parallel
     await Promise.all(
-      result.claimed.map((job) => this.dispatchJob(job)),
+      result.jobs.map((job) => this.spawnWorker(job)),
     )
   }
 
   /**
-   * Dispatch a single job to an engine.
+   * Spawn a worker for a single job.
+   *
+   * The job stays "queued" - the worker will claim it via API.
+   * If spawn fails, the job remains queued for the next poll cycle.
    */
-  private async dispatchJob(job: IacJob): Promise<void> {
+  private async spawnWorker(job: IacJob): Promise<void> {
     try {
-      logger.info("Dispatching job to engine", {
+      // Generate job token for this worker
+      const jobToken = await generateJobTokenForJob(job.id)
+      if (!jobToken) {
+        logger.error("Failed to generate job token", {
+          workerId: this.workerId,
+          jobId: job.id,
+        })
+        return // Job stays queued, will be retried next poll
+      }
+
+      logger.info("Spawning worker for job", {
         workerId: this.workerId,
         jobId: job.id,
         jobType: job.jobType,
         deploymentId: job.deploymentId,
       })
 
-      await this.spawner.spawn(job.id)
+      await this.spawner.spawn(job.id, jobToken)
     } catch (err) {
-      logger.error("Failed to spawn engine for job", {
+      logger.error("Failed to spawn worker for job", {
         workerId: this.workerId,
         jobId: job.id,
         error: err instanceof Error ? err.message : String(err),
       })
 
-      // The job is in "dispatched" state but spawn failed.
-      // It will be picked up by stale job detection and requeued.
+      // Job stays "queued" - will be picked up on next poll cycle
+      // This is the key improvement: no stuck "dispatched" state
     }
   }
 
@@ -424,6 +419,7 @@ export async function getScheduler(): Promise<Scheduler> {
   const useEcs = !!process.env.YAFFLE_ECS_CLUSTER
 
   let spawner: IacEngineSpawner
+  let spawnerType: string
 
   if (isProduction && useEcs) {
     const { EcsEngineSpawner } = await import("./ecs-spawner.ts")
@@ -435,10 +431,16 @@ export async function getScheduler(): Promise<Scheduler> {
       workspacesBucket: process.env.YAFFLE_WORKSPACES_BUCKET!,
       region: process.env.AWS_REGION ?? "us-east-1",
     })
+    spawnerType = "ecs"
     logger.info("Scheduler using ECS engine spawner")
   } else {
-    spawner = new LocalEngineSpawner()
-    logger.info("Scheduler using local engine spawner")
+    // Local development: spawns detached child processes that survive CP restarts
+    const { LocalChildProcessSpawner } = await import("./local-spawner.ts")
+    spawner = new LocalChildProcessSpawner({
+      apiUrl: process.env.YAFFLE_API_URL ?? "http://localhost:3000",
+    })
+    spawnerType = "local"
+    logger.info("Scheduler using local spawner (child process)")
   }
 
   // Parse concurrency limits from environment
@@ -463,7 +465,7 @@ export async function getScheduler(): Promise<Scheduler> {
   logger.info("Scheduler configured", {
     maxConcurrentJobs,
     maxJobsPerRunGroup,
-    spawner: useEcs ? "ecs" : "local",
+    spawner: spawnerType,
   })
 
   return schedulerInstance
@@ -471,8 +473,14 @@ export async function getScheduler(): Promise<Scheduler> {
 
 /**
  * Start the scheduler (idempotent).
+ *
+ * Also runs startup recovery to fail any orphaned jobs from a previous
+ * control plane instance.
  */
 export async function startScheduler(): Promise<void> {
+  // Run startup recovery first
+  await recoverOrphanedJobs()
+
   const scheduler = await getScheduler()
   scheduler.start()
 }
@@ -484,4 +492,51 @@ export function stopScheduler(): void {
   if (schedulerInstance) {
     schedulerInstance.stop()
   }
+}
+
+/**
+ * Recover orphaned jobs on control plane startup.
+ *
+ * Jobs may be orphaned if:
+ * - The control plane crashed while jobs were running
+ * - Workers died without reporting completion
+ * - Workers can't reach the API to report completion
+ *
+ * We mark these jobs as failed rather than requeuing because:
+ * - Terraform state may be inconsistent
+ * - Auto-requeuing can cause duplicate runs
+ * - It's safer to fail and let humans investigate/retry
+ */
+async function recoverOrphanedJobs(): Promise<void> {
+  logger.info("Running startup recovery for orphaned jobs")
+
+  // Find jobs that are in "running" state with stale heartbeats
+  // These are jobs where the worker likely died
+  const staleJobs = await findStaleJobs(5 * 60 * 1000) // 5 minute threshold
+
+  if (staleJobs.length === 0) {
+    logger.info("No orphaned jobs found during startup recovery")
+    return
+  }
+
+  logger.warn("Found orphaned jobs during startup recovery", {
+    count: staleJobs.length,
+    jobIds: staleJobs.map((j) => j.id),
+  })
+
+  for (const job of staleJobs) {
+    const result = await failStaleJob(job.id)
+
+    if (result.failed) {
+      logger.info("Marked orphaned job as failed during startup recovery", {
+        jobId: job.id,
+        lastHeartbeat: job.lastHeartbeat?.toISOString() ?? "never",
+        startedAt: job.startedAt?.toISOString(),
+      })
+    }
+  }
+
+  logger.info("Startup recovery complete", {
+    failedCount: staleJobs.length,
+  })
 }

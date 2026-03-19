@@ -1,0 +1,184 @@
+/**
+ * Runner API Client
+ *
+ * HTTP client for communicating with the control plane runner API.
+ * Used by worker processes to claim jobs, send heartbeats, and report completion.
+ */
+
+export interface RunnerConfig {
+  apiUrl: string
+  jobToken: string
+  jobId: string
+}
+
+export interface JobDetails {
+  id: string
+  jobType: "plan" | "apply" | "destroy"
+  status: string
+  deploymentId: string
+  queuedAt: string
+  startedAt?: string
+}
+
+export interface DeploymentDetails {
+  id: string
+  orgId: string
+  repo: string
+  environmentKind: string
+  environmentName: string
+  prNumber: number | null
+  workspacePath: string
+  ref: string
+  headSha: string
+  stateKey: string
+  installationId: number | null
+  runGroupId: string | null
+}
+
+export interface ClaimResponse {
+  claimed: boolean
+  job?: JobDetails
+  deployment?: DeploymentDetails
+}
+
+export interface HeartbeatResponse {
+  success: boolean
+  reason?: string
+}
+
+export interface CompleteResponse {
+  success: boolean
+}
+
+export class RunnerApiClient {
+  private readonly config: RunnerConfig
+
+  constructor(config: RunnerConfig) {
+    this.config = config
+  }
+
+  private get headers(): Record<string, string> {
+    return {
+      "Authorization": `Bearer ${this.config.jobToken}`,
+      "Content-Type": "application/json",
+    }
+  }
+
+  /**
+   * Claim a job atomically.
+   * Returns job details if claimed, null if already claimed.
+   */
+  async claim(workerId: string): Promise<ClaimResponse | null> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/claim`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        jobId: this.config.jobId,
+        workerId,
+      }),
+    })
+
+    if (response.status === 409) {
+      // Job already claimed
+      return null
+    }
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to claim job: ${response.status} ${error}`)
+    }
+
+    const result = await response.json()
+    return result.data
+  }
+
+  /**
+   * Send heartbeat to indicate worker is still alive.
+   * Returns false if job is no longer in running state.
+   */
+  async heartbeat(): Promise<HeartbeatResponse> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/heartbeat`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        jobId: this.config.jobId,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to send heartbeat: ${response.status} ${error}`)
+    }
+
+    const result = await response.json()
+    return result.data
+  }
+
+  /**
+   * Report job completion with result.
+   */
+  async complete(result: Record<string, unknown>): Promise<CompleteResponse> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/complete`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        jobId: this.config.jobId,
+        status: "completed",
+        result,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to complete job: ${response.status} ${error}`)
+    }
+
+    const result_ = await response.json()
+    return result_.data
+  }
+
+  /**
+   * Report job failure with error message.
+   */
+  async fail(errorMessage: string): Promise<CompleteResponse> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/complete`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        jobId: this.config.jobId,
+        status: "failed",
+        errorMessage,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to fail job: ${response.status} ${error}`)
+    }
+
+    const result = await response.json()
+    return result.data
+  }
+
+  /**
+   * Get job details.
+   */
+  async getJob(): Promise<{ job: JobDetails; deployment: DeploymentDetails } | null> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/job/${this.config.jobId}`, {
+      method: "GET",
+      headers: this.headers,
+    })
+
+    if (response.status === 404) {
+      return null
+    }
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to get job: ${response.status} ${error}`)
+    }
+
+    const result = await response.json()
+    return result.data
+  }
+}

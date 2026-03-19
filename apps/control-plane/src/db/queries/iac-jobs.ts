@@ -8,7 +8,7 @@ import { events } from "../../lib/events.ts"
 export type IacJob = typeof iacJobs.$inferSelect
 export type NewIacJob = typeof iacJobs.$inferInsert
 export type IacJobType = "plan" | "apply" | "destroy"
-export type IacJobStatus = "queued" | "dispatched" | "running" | "completed" | "failed" | "cancelled"
+export type IacJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
 
 /**
  * Create a new IaC job in the queue.
@@ -73,102 +73,11 @@ export async function findLatestIacJob(
 }
 
 /**
- * Claim queued jobs for dispatch.
- * Uses FOR UPDATE SKIP LOCKED to safely claim jobs in a distributed environment.
- *
- * @param limit - Maximum number of jobs to claim
- * @param workerId - Unique identifier for this worker/scheduler instance
- * @returns Array of claimed jobs
- */
-export async function claimQueuedJobs(
-  limit: number,
-  workerId: string,
-): Promise<IacJob[]> {
-  return withDbSpan("update", "iac_jobs", async () => {
-    // Use a transaction with FOR UPDATE SKIP LOCKED
-    return db.transaction(async (tx) => {
-      // Find queued jobs, skipping any that are locked by other transactions
-      const queuedJobs = await tx
-        .select({ id: iacJobs.id })
-        .from(iacJobs)
-        .where(eq(iacJobs.status, "queued"))
-        .orderBy(iacJobs.queuedAt)
-        .limit(limit)
-        .for("update", { skipLocked: true })
-
-      if (queuedJobs.length === 0) {
-        return []
-      }
-
-      const jobIds = queuedJobs.map((j) => j.id)
-
-      // Mark them as dispatched
-      const dispatched = await tx
-        .update(iacJobs)
-        .set({
-          status: "dispatched",
-          workerId,
-          dispatchedAt: new Date(),
-        })
-        .where(inArray(iacJobs.id, jobIds))
-        .returning()
-
-      return dispatched
-    })
-  })
-}
-
-/**
- * Mark a job as running (called by IaC engine when it starts).
- * 
- * Only transitions from "dispatched" state to prevent marking already
- * completed/failed jobs as running.
- */
-export async function markJobRunning(
-  jobId: string,
-  workerId: string,
-): Promise<IacJob | undefined> {
-  return withDbSpan("update", "iac_jobs", async () => {
-    const rows = await db
-      .update(iacJobs)
-      .set({
-        status: "running",
-        workerId,
-        startedAt: new Date(),
-        lastHeartbeat: new Date(),
-        attempts: sql`${iacJobs.attempts} + 1`,
-      })
-      .where(
-        and(
-          eq(iacJobs.id, jobId),
-          eq(iacJobs.status, "dispatched"),
-        ),
-      )
-      .returning()
-
-    const job = rows[0]
-    if (job) {
-      events.emitJobUpdate(job.id, job.deploymentId)
-    }
-    return job
-  })
-}
-
-/**
- * Update job heartbeat (called periodically by IaC engine).
- */
-export async function updateJobHeartbeat(jobId: string): Promise<void> {
-  return withDbSpan("update", "iac_jobs", async () => {
-    await db
-      .update(iacJobs)
-      .set({ lastHeartbeat: new Date() })
-      .where(eq(iacJobs.id, jobId))
-  })
-}
-
-/**
  * Update job with ECS task ARN for tracking.
  * Used when spawning an ECS runner task.
+ *
+ * @deprecated In the new runner architecture, ECS workers claim jobs via API.
+ * This is kept for backward compatibility during migration.
  */
 export async function updateJobEcsTask(
   jobId: string,
@@ -181,8 +90,6 @@ export async function updateJobEcsTask(
         // Store task ARN in workerId field
         // For ECS jobs, this uniquely identifies the running task
         workerId: taskArn,
-        dispatchedAt: new Date(),
-        status: "dispatched",
       })
       .where(eq(iacJobs.id, jobId))
   })
@@ -241,8 +148,11 @@ export async function failJob(
 }
 
 /**
- * Find stale jobs that have been running/dispatched without a heartbeat.
+ * Find stale jobs that have been running without a heartbeat.
  * These are jobs where the worker likely died.
+ *
+ * In the new architecture, jobs go directly from "queued" to "running" when
+ * claimed by a worker. There is no more "dispatched" state.
  *
  * @param staleThresholdMs - How long without heartbeat before considered stale (default 5 min)
  */
@@ -257,9 +167,9 @@ export async function findStaleJobs(
       .from(iacJobs)
       .where(
         and(
-          inArray(iacJobs.status, ["dispatched", "running"]),
+          eq(iacJobs.status, "running"),
           // Either never had a heartbeat, or heartbeat is stale
-          sql`(${iacJobs.lastHeartbeat} IS NULL AND ${iacJobs.dispatchedAt} < ${threshold}::timestamptz)
+          sql`(${iacJobs.lastHeartbeat} IS NULL AND ${iacJobs.startedAt} < ${threshold}::timestamptz)
               OR (${iacJobs.lastHeartbeat} < ${threshold}::timestamptz)`,
         ),
       )
@@ -398,7 +308,7 @@ export async function findPendingJobsForDeployment(
   return withDbSpan("select", "iac_jobs", async () => {
     const conditions = [
       eq(iacJobs.deploymentId, deploymentId),
-      inArray(iacJobs.status, ["queued", "dispatched", "running"]),
+      inArray(iacJobs.status, ["queued", "running"]),
     ]
 
     if (jobType) {
@@ -429,7 +339,7 @@ export async function cancelJobsForDeployment(deploymentId: string): Promise<num
       .where(
         and(
           eq(iacJobs.deploymentId, deploymentId),
-          inArray(iacJobs.status, ["queued", "dispatched", "running"]),
+          inArray(iacJobs.status, ["queued", "running"]),
         ),
       )
       .returning({ id: iacJobs.id })
@@ -451,7 +361,7 @@ export const cancelJobsForPreview = cancelJobsForDeployment
 // =============================================================================
 
 /**
- * Count currently active jobs (dispatched or running).
+ * Count currently active jobs (running).
  * Used to enforce global concurrency limits.
  */
 export async function countActiveJobs(): Promise<number> {
@@ -459,7 +369,7 @@ export async function countActiveJobs(): Promise<number> {
     const result = await db
       .select({ count: sql<number>`count(*)::int` })
       .from(iacJobs)
-      .where(inArray(iacJobs.status, ["dispatched", "running"]))
+      .where(eq(iacJobs.status, "running"))
 
     return result[0]?.count ?? 0
   })
@@ -478,7 +388,7 @@ export async function countActiveJobsByRunGroup(): Promise<Map<string, number>> 
       })
       .from(iacJobs)
       .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
-      .where(inArray(iacJobs.status, ["dispatched", "running"]))
+      .where(eq(iacJobs.status, "running"))
       .groupBy(workspaceDeployments.runGroupId)
 
     const map = new Map<string, number>()
@@ -519,30 +429,152 @@ export async function getQueuedJobsByRunGroup(): Promise<Map<string, IacJob[]>> 
   })
 }
 
+// =============================================================================
+// Runner API Functions (for external worker processes)
+// =============================================================================
+
+/**
+ * Atomically claim a job for a runner.
+ * Transitions from "queued" to "running" state.
+ *
+ * This is the new pattern where workers claim jobs themselves (via API),
+ * rather than the scheduler marking them as dispatched.
+ *
+ * @returns { claimed: true, job } if successful, { claimed: false } if already claimed
+ */
+export async function claimJobForRunner(
+  jobId: string,
+  workerId: string,
+): Promise<{ claimed: boolean; job?: IacJob }> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    const rows = await db
+      .update(iacJobs)
+      .set({
+        status: "running",
+        workerId,
+        startedAt: new Date(),
+        lastHeartbeat: new Date(),
+        attempts: sql`${iacJobs.attempts} + 1`,
+      })
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          eq(iacJobs.status, "queued"), // Only claim if still queued
+        ),
+      )
+      .returning()
+
+    const job = rows[0]
+    if (job) {
+      events.emitJobUpdate(job.id, job.deploymentId)
+      return { claimed: true, job }
+    }
+    return { claimed: false }
+  })
+}
+
+/**
+ * Update heartbeat for a running job.
+ * Only succeeds if job is still in "running" state.
+ *
+ * @returns { success: true } if heartbeat updated, { success: false } if job not running
+ */
+export async function heartbeatJob(jobId: string): Promise<{ success: boolean }> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    const rows = await db
+      .update(iacJobs)
+      .set({ lastHeartbeat: new Date() })
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          eq(iacJobs.status, "running"),
+        ),
+      )
+      .returning({ id: iacJobs.id })
+
+    return { success: rows.length > 0 }
+  })
+}
+
+/**
+ * Complete a job from runner with result.
+ * Only succeeds if job is still in "running" state.
+ *
+ * @returns { success: true } if completed, { success: false } if job not running
+ */
+export async function completeJobFromRunner(
+  jobId: string,
+  result: Record<string, unknown>,
+): Promise<{ success: boolean; job?: IacJob }> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    const rows = await db
+      .update(iacJobs)
+      .set({
+        status: "completed",
+        completedAt: new Date(),
+        result,
+      })
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          eq(iacJobs.status, "running"),
+        ),
+      )
+      .returning()
+
+    const job = rows[0]
+    if (job) {
+      events.emitJobUpdate(job.id, job.deploymentId)
+      return { success: true, job }
+    }
+    return { success: false }
+  })
+}
+
+/**
+ * Fail a job from runner with error message.
+ * Only succeeds if job is still in "running" state.
+ *
+ * @returns { success: true } if failed, { success: false } if job not running
+ */
+export async function failJobFromRunner(
+  jobId: string,
+  errorMessage: string,
+): Promise<{ success: boolean; job?: IacJob }> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    const rows = await db
+      .update(iacJobs)
+      .set({
+        status: "failed",
+        completedAt: new Date(),
+        errorMessage,
+      })
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          eq(iacJobs.status, "running"),
+        ),
+      )
+      .returning()
+
+    const job = rows[0]
+    if (job) {
+      events.emitJobUpdate(job.id, job.deploymentId)
+      return { success: true, job }
+    }
+    return { success: false }
+  })
+}
+
+// =============================================================================
+// New Spawner Functions (for resilient job execution)
+// =============================================================================
+
 export interface ConcurrencyLimits {
   /** Maximum total concurrent jobs across all run groups */
   maxTotal: number
   /** Maximum concurrent jobs per run group */
   maxPerRunGroup: number
-}
-
-export interface ClaimResult {
-  /** Jobs that were claimed */
-  claimed: IacJob[]
-  /** Number of jobs that couldn't be claimed due to global limit */
-  blockedByGlobalLimit: number
-  /** Number of jobs that couldn't be claimed due to per-group limit */
-  blockedByGroupLimit: number
-  /** Total queued jobs across all groups */
-  totalQueued: number
-  /** Number of run groups with queued work */
-  groupsWithQueuedWork: number
-  /** Number of group queries executed */
-  groupsQueried: number
-  /** Total jobs fetched across all queries */
-  jobsFetched: number
-  /** Jobs skipped due to SKIP LOCKED (contention indicator) */
-  skipLockedMisses: number
 }
 
 /**
@@ -558,245 +590,195 @@ const JOB_TYPE_PRIORITY_SQL = sql<number>`
   END
 `
 
+export interface SpawnResult {
+  /** Jobs selected for spawning */
+  jobs: IacJob[]
+  /** Number of jobs that couldn't be spawned due to global limit */
+  blockedByGlobalLimit: number
+  /** Number of jobs that couldn't be spawned due to per-group limit */
+  blockedByGroupLimit: number
+  /** Total queued jobs across all groups */
+  totalQueued: number
+  /** Number of run groups with queued work */
+  groupsWithQueuedWork: number
+}
+
 /**
- * Claim queued jobs respecting concurrency limits with round-robin fairness.
+ * Find queued jobs ready for spawning, respecting concurrency limits.
+ *
+ * Jobs stay "queued" until workers claim them via API (claimJobForRunner).
+ * Returns job IDs for spawning workers.
  *
  * Algorithm:
- * 1. Count active jobs globally - if at limit, return early
+ * 1. Count active jobs (running) globally - if at limit, return early
  * 2. Get list of run_group_ids with queued work
  * 3. Count active jobs per group
- * 4. For each group with available capacity, fetch top N jobs ordered by priority
- *    using FOR UPDATE SKIP LOCKED (priority ordering happens in PostgreSQL)
+ * 4. For each group with capacity, select top N jobs ordered by priority
  * 5. Round-robin interleave results from all groups
- * 6. Jobs are already locked from step 4, just mark as dispatched
- *
- * This approach:
- * - Fixes priority inversion bug (DB orders by priority before SKIP LOCKED)
- * - Limits memory usage (only fetch maxPerGroup jobs per group)
- * - Reduces lock contention (smaller row sets locked per group)
  */
-export async function claimQueuedJobsWithLimits(
+export async function findQueuedJobsForSpawning(
   limits: ConcurrencyLimits,
-  workerId: string,
-): Promise<ClaimResult> {
-  return withDbSpan("update", "iac_jobs", async () => {
-    return db.transaction(async (tx) => {
-      // 1. Count current active jobs
-      const activeCountResult = await tx
+): Promise<SpawnResult> {
+  return withDbSpan("select", "iac_jobs", async () => {
+    // 1. Count current active jobs (only running, not dispatched anymore)
+    const activeCountResult = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(iacJobs)
+      .where(eq(iacJobs.status, "running"))
+
+    const activeTotal = activeCountResult[0]?.count ?? 0
+    let availableSlots = Math.max(0, limits.maxTotal - activeTotal)
+
+    if (availableSlots === 0) {
+      // At global limit
+      const queuedResult = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(iacJobs)
-        .where(inArray(iacJobs.status, ["dispatched", "running"]))
-
-      const activeTotal = activeCountResult[0]?.count ?? 0
-      let availableSlots = Math.max(0, limits.maxTotal - activeTotal)
-
-      if (availableSlots === 0) {
-        // At global limit - count queued for metrics
-        const queuedResult = await tx
-          .select({ count: sql<number>`count(*)::int` })
-          .from(iacJobs)
-          .where(eq(iacJobs.status, "queued"))
-
-        return {
-          claimed: [],
-          blockedByGlobalLimit: queuedResult[0]?.count ?? 0,
-          blockedByGroupLimit: 0,
-          totalQueued: queuedResult[0]?.count ?? 0,
-          groupsWithQueuedWork: 0,
-          groupsQueried: 0,
-          jobsFetched: 0,
-          skipLockedMisses: 0,
-        }
-      }
-
-      // 2. Get run groups with queued work and their queue counts
-      const groupsWithWork = await tx
-        .select({
-          runGroupId: workspaceDeployments.runGroupId,
-          queuedCount: sql<number>`count(*)::int`,
-        })
-        .from(iacJobs)
-        .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
         .where(eq(iacJobs.status, "queued"))
-        .groupBy(workspaceDeployments.runGroupId)
-
-      if (groupsWithWork.length === 0) {
-        return {
-          claimed: [],
-          blockedByGlobalLimit: 0,
-          blockedByGroupLimit: 0,
-          totalQueued: 0,
-          groupsWithQueuedWork: 0,
-          groupsQueried: 0,
-          jobsFetched: 0,
-          skipLockedMisses: 0,
-        }
-      }
-
-      const totalQueued = groupsWithWork.reduce((sum, g) => sum + g.queuedCount, 0)
-      const groupsWithQueuedWork = groupsWithWork.length
-
-      // 3. Count active jobs per run group
-      const activeByGroupResult = await tx
-        .select({
-          runGroupId: workspaceDeployments.runGroupId,
-          count: sql<number>`count(*)::int`,
-        })
-        .from(iacJobs)
-        .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
-        .where(inArray(iacJobs.status, ["dispatched", "running"]))
-        .groupBy(workspaceDeployments.runGroupId)
-
-      const activeByGroup = new Map<string, number>()
-      for (const row of activeByGroupResult) {
-        activeByGroup.set(row.runGroupId ?? "no-group", row.count)
-      }
-
-      // 4. For each group, fetch top N jobs ordered by priority
-      // Query groups sequentially to reduce connection pressure
-      const jobsByGroup = new Map<string, IacJob[]>()
-      let groupsQueried = 0
-      let totalJobsFetched = 0
-      let skipLockedMisses = 0
-      let blockedByGroupLimit = 0
-
-      for (const { runGroupId, queuedCount } of groupsWithWork) {
-        const groupKey = runGroupId ?? "no-group"
-        const currentActive = activeByGroup.get(groupKey) ?? 0
-        const groupCapacity = Math.max(0, limits.maxPerRunGroup - currentActive)
-
-        if (groupCapacity === 0) {
-          // Group is at capacity
-          blockedByGroupLimit += queuedCount
-          continue
-        }
-
-        // Fetch top N jobs for this group, ordered by priority (in DB!)
-        groupsQueried++
-        const groupJobs = await tx
-          .select()
-          .from(iacJobs)
-          .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
-          .where(
-            and(
-              eq(iacJobs.status, "queued"),
-              runGroupId
-                ? eq(workspaceDeployments.runGroupId, runGroupId)
-                : sql`${workspaceDeployments.runGroupId} IS NULL`,
-            ),
-          )
-          .orderBy(JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
-          .limit(groupCapacity)
-          .for("update", { skipLocked: true })
-
-        // Extract just the iac_jobs part (the join returns both tables)
-        const jobs: IacJob[] = groupJobs.map((row) => row.iac_jobs)
-        totalJobsFetched += jobs.length
-
-        // Track SKIP LOCKED misses: we asked for groupCapacity but got fewer
-        // This indicates contention (another scheduler locked some rows)
-        const expectedJobs = Math.min(groupCapacity, queuedCount)
-        if (jobs.length < expectedJobs) {
-          skipLockedMisses += expectedJobs - jobs.length
-        }
-
-        if (jobs.length > 0) {
-          jobsByGroup.set(groupKey, jobs)
-        }
-
-        // Track remaining jobs as blocked by group limit
-        if (queuedCount > groupCapacity) {
-          blockedByGroupLimit += queuedCount - groupCapacity
-        }
-      }
-
-      if (jobsByGroup.size === 0) {
-        return {
-          claimed: [],
-          blockedByGlobalLimit: 0,
-          blockedByGroupLimit,
-          totalQueued,
-          groupsWithQueuedWork,
-          groupsQueried,
-          jobsFetched: totalJobsFetched,
-          skipLockedMisses,
-        }
-      }
-
-      // 5. Round-robin interleave jobs from all groups
-      const toClaim: string[] = []
-      let blockedByGlobalLimit = 0
-
-      const groupIds = Array.from(jobsByGroup.keys())
-      const groupIndices = new Map<string, number>()
-      for (const gid of groupIds) {
-        groupIndices.set(gid, 0)
-      }
-
-      let madeProgress = true
-      while (madeProgress && toClaim.length < availableSlots) {
-        madeProgress = false
-
-        for (const groupId of groupIds) {
-          if (toClaim.length >= availableSlots) {
-            // Count remaining fetched jobs as blocked by global limit
-            for (const gid of groupIds) {
-              const jobs = jobsByGroup.get(gid)!
-              const idx = groupIndices.get(gid)!
-              blockedByGlobalLimit += jobs.length - idx
-            }
-            break
-          }
-
-          const jobs = jobsByGroup.get(groupId)!
-          const idx = groupIndices.get(groupId)!
-
-          if (idx >= jobs.length) {
-            continue // No more jobs fetched for this group
-          }
-
-          // Claim this job
-          toClaim.push(jobs[idx].id)
-          groupIndices.set(groupId, idx + 1)
-          madeProgress = true
-        }
-      }
-
-      if (toClaim.length === 0) {
-        return {
-          claimed: [],
-          blockedByGlobalLimit,
-          blockedByGroupLimit,
-          totalQueued,
-          groupsWithQueuedWork,
-          groupsQueried,
-          jobsFetched: totalJobsFetched,
-          skipLockedMisses,
-        }
-      }
-
-      // 6. Mark claimed jobs as dispatched
-      // Jobs are already locked from step 4, so this is safe
-      const claimed = await tx
-        .update(iacJobs)
-        .set({
-          status: "dispatched",
-          workerId,
-          dispatchedAt: new Date(),
-        })
-        .where(inArray(iacJobs.id, toClaim))
-        .returning()
 
       return {
-        claimed,
-        blockedByGlobalLimit,
+        jobs: [],
+        blockedByGlobalLimit: queuedResult[0]?.count ?? 0,
+        blockedByGroupLimit: 0,
+        totalQueued: queuedResult[0]?.count ?? 0,
+        groupsWithQueuedWork: 0,
+      }
+    }
+
+    // 2. Get run groups with queued work
+    const groupsWithWork = await db
+      .select({
+        runGroupId: workspaceDeployments.runGroupId,
+        queuedCount: sql<number>`count(*)::int`,
+      })
+      .from(iacJobs)
+      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
+      .where(eq(iacJobs.status, "queued"))
+      .groupBy(workspaceDeployments.runGroupId)
+
+    if (groupsWithWork.length === 0) {
+      return {
+        jobs: [],
+        blockedByGlobalLimit: 0,
+        blockedByGroupLimit: 0,
+        totalQueued: 0,
+        groupsWithQueuedWork: 0,
+      }
+    }
+
+    const totalQueued = groupsWithWork.reduce((sum, g) => sum + g.queuedCount, 0)
+    const groupsWithQueuedWork = groupsWithWork.length
+
+    // 3. Count active jobs per run group
+    const activeByGroupResult = await db
+      .select({
+        runGroupId: workspaceDeployments.runGroupId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(iacJobs)
+      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
+      .where(eq(iacJobs.status, "running"))
+      .groupBy(workspaceDeployments.runGroupId)
+
+    const activeByGroup = new Map<string, number>()
+    for (const row of activeByGroupResult) {
+      activeByGroup.set(row.runGroupId ?? "no-group", row.count)
+    }
+
+    // 4. For each group, fetch top N jobs ordered by priority
+    const jobsByGroup = new Map<string, IacJob[]>()
+    let blockedByGroupLimit = 0
+
+    for (const { runGroupId, queuedCount } of groupsWithWork) {
+      const groupKey = runGroupId ?? "no-group"
+      const currentActive = activeByGroup.get(groupKey) ?? 0
+      const groupCapacity = Math.max(0, limits.maxPerRunGroup - currentActive)
+
+      if (groupCapacity === 0) {
+        blockedByGroupLimit += queuedCount
+        continue
+      }
+
+      const groupJobs = await db
+        .select()
+        .from(iacJobs)
+        .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
+        .where(
+          and(
+            eq(iacJobs.status, "queued"),
+            runGroupId
+              ? eq(workspaceDeployments.runGroupId, runGroupId)
+              : sql`${workspaceDeployments.runGroupId} IS NULL`,
+          ),
+        )
+        .orderBy(JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
+        .limit(groupCapacity)
+
+      const jobs: IacJob[] = groupJobs.map((row) => row.iac_jobs)
+
+      if (jobs.length > 0) {
+        jobsByGroup.set(groupKey, jobs)
+      }
+
+      if (queuedCount > groupCapacity) {
+        blockedByGroupLimit += queuedCount - groupCapacity
+      }
+    }
+
+    if (jobsByGroup.size === 0) {
+      return {
+        jobs: [],
+        blockedByGlobalLimit: 0,
         blockedByGroupLimit,
         totalQueued,
         groupsWithQueuedWork,
-        groupsQueried,
-        jobsFetched: totalJobsFetched,
-        skipLockedMisses,
       }
-    })
+    }
+
+    // 5. Round-robin interleave jobs from all groups
+    const selected: IacJob[] = []
+    let blockedByGlobalLimit = 0
+
+    const groupIds = Array.from(jobsByGroup.keys())
+    const groupIndices = new Map<string, number>()
+    for (const gid of groupIds) {
+      groupIndices.set(gid, 0)
+    }
+
+    let madeProgress = true
+    while (madeProgress && selected.length < availableSlots) {
+      madeProgress = false
+
+      for (const groupId of groupIds) {
+        if (selected.length >= availableSlots) {
+          // Count remaining fetched jobs as blocked
+          for (const gid of groupIds) {
+            const jobs = jobsByGroup.get(gid)!
+            const idx = groupIndices.get(gid)!
+            blockedByGlobalLimit += jobs.length - idx
+          }
+          break
+        }
+
+        const jobs = jobsByGroup.get(groupId)!
+        const idx = groupIndices.get(groupId)!
+
+        if (idx >= jobs.length) {
+          continue
+        }
+
+        selected.push(jobs[idx])
+        groupIndices.set(groupId, idx + 1)
+        madeProgress = true
+      }
+    }
+
+    return {
+      jobs: selected,
+      blockedByGlobalLimit,
+      blockedByGroupLimit,
+      totalQueued,
+      groupsWithQueuedWork,
+    }
   })
 }

@@ -250,7 +250,7 @@ export const iacJobs = pgTable(
       .references(() => workspaceDeployments.id, { onDelete: "cascade" })
       .notNull(),
     jobType: text("job_type").notNull(), // 'plan' | 'apply' | 'destroy'
-    status: text("status").default("queued").notNull(), // 'queued' | 'dispatched' | 'running' | 'completed' | 'failed' | 'cancelled'
+    status: text("status").default("queued").notNull(), // 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
     // Worker tracking
     workerId: text("worker_id"),
     lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),

@@ -378,11 +378,11 @@ export function getSchedulerJobsBlockedCounter(): typeof _schedulerJobsBlockedCo
 
 let _schedulerActiveJobsGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
 let _schedulerActiveJobsValue = 0
-/** Observable gauge: current number of active (dispatched + running) jobs. */
+/** Observable gauge: current number of active (running) jobs. */
 export function getSchedulerActiveJobsGauge(): typeof _schedulerActiveJobsGauge & {} {
   if (!_schedulerActiveJobsGauge) {
     _schedulerActiveJobsGauge = getMeter().createObservableGauge("yaffle.scheduler.jobs.active", {
-      description: "Current number of active jobs (dispatched + running)",
+      description: "Current number of active jobs (running)",
     })
     _schedulerActiveJobsGauge.addCallback((result) => {
       result.observe(_schedulerActiveJobsValue)

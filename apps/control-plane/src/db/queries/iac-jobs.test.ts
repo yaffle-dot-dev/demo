@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 
 /**
- * Tests for the job priority sorting logic used in claimQueuedJobsWithLimits.
+ * Tests for the job priority sorting logic used in findQueuedJobsForSpawning.
  *
  * The actual database integration is tested via the scheduler integration tests.
  * These unit tests verify the sorting algorithm in isolation.
@@ -122,7 +122,7 @@ describe("iac-jobs priority sorting", () => {
 
 describe("round-robin with group-local priority", () => {
   /**
-   * Simulates the round-robin scheduling algorithm from claimQueuedJobsWithLimits,
+   * Simulates the round-robin scheduling algorithm from findQueuedJobsForSpawning,
    * where each group's jobs are sorted by priority before round-robin selection.
    */
   function simulateRoundRobinClaim(
