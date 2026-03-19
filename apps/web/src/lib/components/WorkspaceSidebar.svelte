@@ -18,7 +18,7 @@
     return run?.status ?? null
   }
 
-  // Standard icons: ✓ ok, ✗ fail, ~ pending, ... in progress, - skipped
+  // Standard icons: ✓ ok, ✗ fail, ~ pending, ... in progress, - skipped, ⚠ system error
   function statusIcon(status: string | null): string {
     if (!status) return "~"
     switch (status) {
@@ -26,6 +26,7 @@
       case "running": return "..."
       case "pending": return "~"
       case "failed": return "✗"
+      case "system_error": return "⚠"
       case "cancelled": return "✗"
       case "skipped": return "-"
       default: return "~"
@@ -39,6 +40,7 @@
       case "running": return "text-status-applying"
       case "pending": return "text-status-pending"
       case "failed": return "text-status-failed"
+      case "system_error": return "text-status-system-error"
       case "cancelled": return "text-text-dim"
       case "skipped": return "text-text-muted"
       default: return "text-text-muted"

@@ -69,6 +69,7 @@
   --color-status-applying: #8bc431;
   --color-status-ready: #6da323;
   --color-status-failed: #fa2d2d;
+  --color-status-system-error: #ff9b9b; /* Lighter red - distinguishes from user failures */
   --color-status-destroying: #ff6161;
   --color-status-destroyed: #787870;
 

@@ -6,6 +6,7 @@ export type PreviewStatus =
   | "awaiting_approval"
   | "ready"
   | "failed"
+  | "system_error"
   | "destroying"
   | "destroyed"
 
@@ -15,7 +16,7 @@ export type RunStatus = "pending" | "running" | "success" | "failed" | "cancelle
 
 export type RunnerMode = "saas" | "byoa"
 
-export type JobStatus = "pending" | "running" | "completed" | "failed"
+export type JobStatus = "pending" | "running" | "completed" | "failed" | "system_error"
 
 export type PullRequestAction =
   | "opened"

@@ -15,6 +15,7 @@ export const STATUS_CONFIG: Record<string, { label: string; color: string; icon:
   awaiting_approval: { label: "Awaiting approval", color: "text-status-planning", icon: "?" },
   ready: { label: "Ready", color: "text-status-ready", icon: "✓" },
   failed: { label: "Failed", color: "text-status-failed", icon: "✗" },
+  system_error: { label: "System Error", color: "text-status-system-error", icon: "⚠" },
   destroying: { label: "Destroying", color: "text-status-destroying", icon: "..." },
   destroyed: { label: "Destroyed", color: "text-status-destroyed", icon: "✓" },
   skipped: { label: "Skipped", color: "text-text-dim", icon: "-" },

@@ -373,6 +373,7 @@
       case "pending": return "○"
       case "waiting": return "◐"
       case "failed": return "✗"
+      case "system_error": return "⚠"
       case "cancelled": return "✗"
       case "skipped": return "-"
       default: return "~"

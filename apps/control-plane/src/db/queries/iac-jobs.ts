@@ -11,11 +11,12 @@ import {
   getJobStateTransitionsCounter,
 } from "../../lib/telemetry.ts"
 import { events } from "../../lib/events.ts"
+import { updateDeploymentStatus } from "./workspace-deployments.ts"
 
 export type IacJob = typeof iacJobs.$inferSelect
 export type NewIacJob = typeof iacJobs.$inferInsert
 export type IacJobType = "plan" | "apply" | "destroy"
-export type IacJobStatus = "queued" | "running" | "completed" | "failed" | "cancelled"
+export type IacJobStatus = "queued" | "running" | "completed" | "failed" | "system_error" | "cancelled"
 
 /**
  * Create a new IaC job in the queue.
@@ -192,17 +193,22 @@ export async function findStaleJobs(
         and(
           eq(iacJobs.status, "running"),
           // Either never had a heartbeat, or heartbeat is stale
-          sql`(${iacJobs.lastHeartbeat} IS NULL AND ${iacJobs.startedAt} < ${threshold}::timestamptz)
-              OR (${iacJobs.lastHeartbeat} < ${threshold}::timestamptz)`,
+          // Note: extra parens needed to ensure OR doesn't escape the AND
+          sql`((${iacJobs.lastHeartbeat} IS NULL AND ${iacJobs.startedAt} < ${threshold}::timestamptz)
+              OR (${iacJobs.lastHeartbeat} < ${threshold}::timestamptz))`,
         ),
       )
   })
 }
 
 /**
- * Mark a stale job as failed.
+ * Mark a stale job as system_error.
  * 
- * We intentionally do NOT requeue stale jobs because:
+ * System errors are distinct from user-caused failures (bad terraform config).
+ * They represent Yaffle infrastructure issues (worker crash, stale timeout, etc.)
+ * and may be automatically retried.
+ * 
+ * We intentionally do NOT auto-requeue stale jobs because:
  * 1. Terraform operations can legitimately take 10+ minutes without heartbeats
  * 2. Auto-requeuing can cause duplicate runs and state lock conflicts
  * 3. If a job is truly stuck, it's safer to fail and let humans investigate
@@ -228,6 +234,11 @@ export async function failStaleJob(
         return { failed: false }
       }
 
+      // Only fail jobs that are still running - skip if already completed/failed
+      if (job.status !== "running") {
+        return { failed: false }
+      }
+
       // Double-check it's still stale (worker might have heartbeated while we waited for lock)
       const isStillStale = !job.lastHeartbeat ||
         (Date.now() - job.lastHeartbeat.getTime()) > 5 * 60 * 1000
@@ -237,12 +248,12 @@ export async function failStaleJob(
         return { failed: false }
       }
 
-      // Mark as failed - do NOT requeue to avoid duplicate runs
+      // Mark as system_error - distinct from user-caused failures
       const completedAt = new Date()
       await tx
         .update(iacJobs)
         .set({
-          status: "failed",
+          status: "system_error",
           completedAt,
           errorMessage: "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry.",
         })
@@ -259,8 +270,8 @@ export async function failStaleJob(
 
       // Record metrics
       getJobStateTransitionsCounter().add(1, {
-        from_state: "running",
-        to_state: "failed",
+        from_state: job.status,
+        to_state: "system_error",
         job_type: job.jobType,
         reason: "stale_timeout",
       })
@@ -269,8 +280,8 @@ export async function failStaleJob(
       logger.error("job.stale_timeout", {
         "job.id": job.id,
         "job.type": job.jobType,
-        "job.status": "failed",
-        "job.status.previous": "running",
+        "job.status": "system_error",
+        "job.status.previous": job.status,
         "deployment.id": job.deploymentId,
         "worker.id": job.workerId ?? "unknown",
         "duration.stale_ms": staleDurationMs,
@@ -279,6 +290,19 @@ export async function failStaleJob(
 
       return { failed: true }
     })
+  }).then(async (result) => {
+    // Update deployment status outside the transaction to avoid circular import issues
+    if (result.failed) {
+      const job = await db
+        .select({ deploymentId: iacJobs.deploymentId })
+        .from(iacJobs)
+        .where(eq(iacJobs.id, jobId))
+        .limit(1)
+      if (job[0]) {
+        await updateDeploymentStatus(job[0].deploymentId, "system_error")
+      }
+    }
+    return result
   })
 }
 

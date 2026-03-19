@@ -25,6 +25,7 @@
 
     // Terminal states
     const hasFailed = statusSet.has("failed")
+    const hasSystemError = statusSet.has("system_error")
     const terminalSuccessStatuses = ["ready", "destroyed", "planned", "skipped"]
     const hasSuccess = terminalSuccessStatuses.some((s) => statusSet.has(s))
 
@@ -32,6 +33,8 @@
     if (hasActive) return "in_progress"
 
     // All done - determine outcome
+    // System errors are retriable infrastructure issues, distinct from user failures
+    if (hasSystemError) return "system_error"
     if (hasFailed && hasSuccess) return "mixed"
     if (hasFailed) return "failed"
     if (hasSuccess && !hasWaiting) return "success"
