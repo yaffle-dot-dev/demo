@@ -203,6 +203,21 @@ export async function updateRunGroupDependencyGraph(
 }
 
 /**
+ * Update the workspace S3 key for a run group.
+ */
+export async function updateRunGroupWorkspaceS3Key(
+  runGroupId: string,
+  workspaceS3Key: string,
+): Promise<void> {
+  return withDbSpan("update", "run_groups", async () => {
+    await db
+      .update(runGroups)
+      .set({ workspaceS3Key })
+      .where(eq(runGroups.id, runGroupId))
+  })
+}
+
+/**
  * Compute the aggregate status for a run group based on its runs.
  * Call this when any run in the group completes.
  */
@@ -218,8 +233,10 @@ export async function recomputeRunGroupStatus(runGroupId: string): Promise<void>
 
     const statuses = runs.map((r) => r.status)
     const allPending = statuses.every((s) => s === "pending")
-    const allSuccess = statuses.every((s) => s === "success")
-    const allComplete = statuses.every((s) => s === "success" || s === "failed" || s === "cancelled")
+    const allSuccess = statuses.every((s) => s === "success" || s === "skipped")
+    const allComplete = statuses.every((s) =>
+      s === "success" || s === "failed" || s === "cancelled" || s === "skipped"
+    )
     const anyRunning = statuses.some((s) => s === "running")
     const anyFailed = statuses.some((s) => s === "failed")
 

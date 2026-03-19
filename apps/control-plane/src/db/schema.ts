@@ -190,6 +190,9 @@ export const runGroups = pgTable("run_groups", {
   // Inferred dependency graph for this run group
   // Structure: { workspaces: string[], edges: [string, string][] }
   dependencyGraph: jsonb("dependency_graph"),
+  // S3 key for cached workspace tarball: {org}/{repo}/{sha}/workspace.tar.gz
+  // Uploaded during webhook processing, downloaded by runners
+  workspaceS3Key: text("workspace_s3_key"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),

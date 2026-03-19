@@ -211,10 +211,11 @@
             '';
 
             # Environment variables
-            YAFFLE_TF_BINARY = "${pkgs.opentofu}/bin/tofu";
-            YAFFLE_STATE_BUCKET = "yaffle-state-main-use1";
-            SMEE_URL = "https://smee.io/AMHdVEIzSjKsXVkb";
-            YAFFLE_AUTH_MODE = "required";
+             YAFFLE_TF_BINARY = "${pkgs.opentofu}/bin/tofu";
+             YAFFLE_STATE_BUCKET = "yaffle-state-main-use1";
+             YAFFLE_WORKSPACE_CACHE_BUCKET = "yaffle-workspace-cache-main-use1";
+             SMEE_URL = "https://smee.io/AMHdVEIzSjKsXVkb";
+             YAFFLE_AUTH_MODE = "required";
             YAFFLE_AUTH_ISSUER = "https://yaffle.local:6969";
             YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
             VITE_YAFFLE_AUTH_ISSUER = "https://yaffle.local:6969";

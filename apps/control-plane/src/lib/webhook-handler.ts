@@ -29,7 +29,7 @@ import {
 } from "../db/queries/workspace-deployments.ts"
 import { createIacJob, cancelJobsForPreview, findPendingJobsForPreview } from "../db/queries/iac-jobs.ts"
 import { findLatestRun } from "../db/queries/tf-runs.ts"
-import { createRunGroup, updateRunGroupDependencyGraph, type RunGroupTrigger } from "../db/queries/run-groups.ts"
+import { createRunGroup, updateRunGroupDependencyGraph, updateRunGroupWorkspaceS3Key, type RunGroupTrigger } from "../db/queries/run-groups.ts"
 import { events } from "./events.ts"
 import {
   createCheckRun,
@@ -63,6 +63,7 @@ import {
 import { scanAllWorkspaceDependencies } from "./module-dependency-scanner.ts"
 import { buildGraphFromInferred, type SerializableDependencyGraph } from "./dependency-graph.ts"
 import { prepareWorkspace, cleanupWorkspace } from "./workspace.ts"
+import { createWorkspaceCache } from "./workspace-cache.ts"
 
 const CHECK_NAME = "Yaffle / terraform"
 
@@ -119,6 +120,8 @@ interface DependencyScanResult {
   graph: SerializableDependencyGraph
   /** Workspace paths in topological execution order */
   executionOrder: string[]
+  /** S3 key for cached workspace (if uploaded) */
+  workspaceS3Key?: string
 }
 
 /**
@@ -127,13 +130,17 @@ interface DependencyScanResult {
  * Clones the repo, scans all workspace directories for Yaffle module references,
  * builds a dependency graph, and returns the topological execution order.
  *
+ * Also uploads the workspace to S3 cache for later use by runners.
+ *
  * @param ctx - Webhook context with repo info
+ * @param orgSlug - Organization slug for S3 key
  * @param workspacePaths - List of workspace paths from config
  * @param installationToken - GitHub token for cloning
- * @returns Dependency graph and execution order
+ * @returns Dependency graph, execution order, and workspace S3 key
  */
 async function scanDependencies(
   ctx: WebhookContext,
+  orgSlug: string,
   workspacePaths: string[],
   installationToken?: string,
 ): Promise<DependencyScanResult> {
@@ -144,6 +151,7 @@ async function scanDependencies(
 
     // Clone repo to scan for dependencies
     let repoDir: string | undefined
+    let workspaceS3Key: string | undefined
     try {
       repoDir = await prepareWorkspace({
         owner: ctx.owner,
@@ -182,6 +190,29 @@ async function scanDependencies(
         }
       }
 
+      // Upload workspace to S3 cache for runners
+      try {
+        const cache = createWorkspaceCache()
+        workspaceS3Key = await cache.upload(orgSlug, ctx.repo, ctx.headSha, repoDir)
+        logger.info("Workspace uploaded to S3 cache", {
+          "workspace.s3_key": workspaceS3Key,
+          "workspace.org": orgSlug,
+          "workspace.repo": ctx.repo,
+          "workspace.sha": ctx.headSha.slice(0, 7),
+        })
+        span.setAttributes({
+          "yaffle.workspace_s3_key": workspaceS3Key,
+        })
+      } catch (err) {
+        // Log but don't fail - runners can fall back to git clone
+        logger.warn("Failed to upload workspace to S3 cache", {
+          error: err instanceof Error ? err.message : String(err),
+          "workspace.org": orgSlug,
+          "workspace.repo": ctx.repo,
+          "workspace.sha": ctx.headSha.slice(0, 7),
+        })
+      }
+
       logger.info("Dependency scan complete", {
         "yaffle.execution_order": filteredOrder,
         "yaffle.edge_count": inferredGraph.edges.length,
@@ -195,6 +226,7 @@ async function scanDependencies(
       return {
         graph: graph.toSerializable(),
         executionOrder: filteredOrder,
+        workspaceS3Key,
       }
     } finally {
       if (repoDir) {
@@ -621,12 +653,17 @@ async function handlePrOpenedOrUpdated(
   let dependencyGraph: SerializableDependencyGraph
 
   try {
-    const scanResult = await scanDependencies(ctx, workspacePaths, installationToken)
+    const scanResult = await scanDependencies(ctx, org.slug, workspacePaths, installationToken)
     executionOrder = scanResult.executionOrder
     dependencyGraph = scanResult.graph
 
     // Store the dependency graph in the run group for UI
     await updateRunGroupDependencyGraph(runGroup.id, dependencyGraph)
+
+    // Store the workspace S3 key in the run group for runners
+    if (scanResult.workspaceS3Key) {
+      await updateRunGroupWorkspaceS3Key(runGroup.id, scanResult.workspaceS3Key)
+    }
 
     logger.info("Execution order determined", {
       ...attrs,
@@ -1009,12 +1046,17 @@ async function handlePushEvent(
   let dependencyGraph: SerializableDependencyGraph
 
   try {
-    const scanResult = await scanDependencies(ctx, activeWorkspacePaths, installationToken)
+    const scanResult = await scanDependencies(ctx, org.slug, activeWorkspacePaths, installationToken)
     executionOrder = scanResult.executionOrder
     dependencyGraph = scanResult.graph
 
     // Store the dependency graph in the run group for UI
     await updateRunGroupDependencyGraph(runGroup.id, dependencyGraph)
+
+    // Store the workspace S3 key in the run group for runners
+    if (scanResult.workspaceS3Key) {
+      await updateRunGroupWorkspaceS3Key(runGroup.id, scanResult.workspaceS3Key)
+    }
 
     logger.info("Execution order determined", {
       ...attrs,

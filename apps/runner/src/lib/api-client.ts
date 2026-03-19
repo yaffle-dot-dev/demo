@@ -38,7 +38,25 @@ export interface DeploymentDetails {
 export interface ClaimResponse {
   claimed: boolean
   job?: JobDetails
+  runId?: string  // tf_run ID for log streaming
   deployment?: DeploymentDetails
+}
+
+export interface ExecutionContext {
+  workspaceUrl: string
+  command: "plan" | "apply" | "destroy"
+  workspacePath: string
+  variables: Record<string, string | boolean | number>
+  backendConfig?: {
+    hostname: string
+    organization: string
+    workspaceName: string
+  }
+  tfcToken?: string
+}
+
+export interface LogsResponse {
+  success: boolean
 }
 
 export interface HeartbeatResponse {
@@ -117,12 +135,13 @@ export class RunnerApiClient {
   /**
    * Report job completion with result.
    */
-  async complete(result: Record<string, unknown>): Promise<CompleteResponse> {
+  async complete(runId: string, result: Record<string, unknown>): Promise<CompleteResponse> {
     const response = await fetch(`${this.config.apiUrl}/api/runner/complete`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify({
         jobId: this.config.jobId,
+        runId,
         status: "completed",
         result,
       }),
@@ -140,12 +159,13 @@ export class RunnerApiClient {
   /**
    * Report job failure with error message.
    */
-  async fail(errorMessage: string): Promise<CompleteResponse> {
+  async fail(runId: string, errorMessage: string): Promise<CompleteResponse> {
     const response = await fetch(`${this.config.apiUrl}/api/runner/complete`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify({
         jobId: this.config.jobId,
+        runId,
         status: "failed",
         errorMessage,
       }),
@@ -176,6 +196,52 @@ export class RunnerApiClient {
     if (!response.ok) {
       const error = await response.text()
       throw new Error(`Failed to get job: ${response.status} ${error}`)
+    }
+
+    const result = await response.json()
+    return result.data
+  }
+
+  /**
+   * Get execution context for the job.
+   * Returns workspace URL, variables, backend config, etc.
+   */
+  async getContext(): Promise<ExecutionContext> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/job/${this.config.jobId}/context`, {
+      method: "GET",
+      headers: this.headers,
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to get job context: ${response.status} ${error}`)
+    }
+
+    const result = await response.json()
+    return result.data
+  }
+
+  /**
+   * Send log chunk to control plane.
+   * @param runId - The tf_run ID returned from claim
+   * @param chunk - Log text
+   * @param source - "stdout" or "stderr"
+   */
+  async sendLogs(runId: string, chunk: string, source: "stdout" | "stderr" = "stdout"): Promise<LogsResponse> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/logs`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        jobId: this.config.jobId,
+        runId,
+        chunk,
+        source,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to send logs: ${response.status} ${error}`)
     }
 
     const result = await response.json()

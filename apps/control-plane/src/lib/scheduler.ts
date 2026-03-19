@@ -423,13 +423,24 @@ export async function getScheduler(): Promise<Scheduler> {
 
   if (isProduction && useEcs) {
     const { EcsEngineSpawner } = await import("./ecs-spawner.ts")
+
+    const clusterArn = process.env.YAFFLE_ECS_CLUSTER
+    const taskDefinition = process.env.YAFFLE_ECS_TASK_DEFINITION
+    const subnets = (process.env.YAFFLE_ECS_SUBNETS ?? "").split(",").filter(Boolean)
+    const securityGroups = (process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "").split(",").filter(Boolean)
+    const apiUrl = process.env.YAFFLE_API_URL
+
+    if (!clusterArn || !taskDefinition || subnets.length === 0 || securityGroups.length === 0 || !apiUrl) {
+      throw new Error("Missing ECS spawner configuration (cluster/task/subnets/sg/apiUrl)")
+    }
+
     spawner = new EcsEngineSpawner({
-      clusterArn: process.env.YAFFLE_ECS_CLUSTER!,
-      taskDefinition: process.env.YAFFLE_ECS_TASK_DEFINITION!,
-      subnets: (process.env.YAFFLE_ECS_SUBNETS ?? "").split(",").filter(Boolean),
-      securityGroups: (process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "").split(",").filter(Boolean),
-      workspacesBucket: process.env.YAFFLE_WORKSPACES_BUCKET!,
+      clusterArn,
+      taskDefinition,
+      subnets,
+      securityGroups,
       region: process.env.AWS_REGION ?? "us-east-1",
+      apiUrl,
     })
     spawnerType = "ecs"
     logger.info("Scheduler using ECS engine spawner")

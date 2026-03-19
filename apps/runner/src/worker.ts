@@ -4,11 +4,14 @@
  *
  * A standalone worker process that:
  * 1. Claims a job atomically via API
- * 2. Sends heartbeats while executing
- * 3. Executes the terraform job
- * 4. Reports completion via API
+ * 2. Fetches execution context from API
+ * 3. Downloads workspace from S3
+ * 4. Executes terraform via shell
+ * 5. Streams logs to control plane via API
+ * 6. Reports completion via API
  *
  * This worker survives control plane restarts because it runs as a detached process.
+ * It has NO database access - all communication is via the Runner API.
  *
  * Environment variables:
  * - YAFFLE_JOB_ID: The job ID to execute (required)
@@ -20,6 +23,8 @@ import { randomUUID } from "node:crypto"
 
 import { RunnerApiClient } from "./lib/api-client.ts"
 import { HeartbeatSupervisor } from "./lib/supervisor.ts"
+import { downloadWorkspace, cleanupWorkspace } from "./lib/workspace.ts"
+import { executeTerraform } from "./lib/executor.ts"
 
 // Required environment variables
 const JOB_ID = process.env.YAFFLE_JOB_ID
@@ -76,10 +81,16 @@ async function main(): Promise<void> {
     process.exit(0)
   }
 
+  const runId = claimResult.runId
+  if (!runId) {
+    error("Claim succeeded but no runId returned")
+    process.exit(1)
+  }
+
   log("Job claimed successfully", {
     jobType: claimResult.job?.jobType,
     deploymentId: claimResult.job?.deploymentId,
-    workspacePath: claimResult.deployment?.workspacePath,
+    runId,
   })
 
   // 2. Start heartbeat supervisor
@@ -93,17 +104,78 @@ async function main(): Promise<void> {
 
   supervisor.start()
 
-  try {
-    // 3. Execute job
-    // For local development, we import and use the existing iac-engine code
-    // This keeps all the terraform execution logic in one place
-    const result = await executeJobWork(JOB_ID)
+  // Buffer for batching log sends
+  let logBuffer = ""
+  let logFlushTimer: Timer | null = null
+  const LOG_FLUSH_INTERVAL = 100 // ms
 
-    // 4. Report completion
+  const flushLogs = async (): Promise<void> => {
+    if (!logBuffer) return
+    const chunk = logBuffer
+    logBuffer = ""
+
+    try {
+      await apiClient.sendLogs(runId, chunk)
+    } catch (err) {
+      // Log locally but don't fail - logs are best-effort
+      error("Failed to send logs", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  const queueLog = (chunk: string, source: "stdout" | "stderr"): void => {
+    const formatted = source === "stderr" ? `[stderr] ${chunk}` : chunk
+    logBuffer += formatted
+
+    // Set up periodic flushing
+    if (!logFlushTimer) {
+      logFlushTimer = setTimeout(async () => {
+        logFlushTimer = null
+        await flushLogs()
+      }, LOG_FLUSH_INTERVAL)
+    }
+  }
+
+  let workDir: string | undefined
+
+  try {
+    // 3. Fetch execution context
+    log("Fetching execution context...")
+    const context = await apiClient.getContext()
+
+    log("Execution context received", {
+      command: context.command,
+      workspacePath: context.workspacePath,
+      hasBackendConfig: !!context.backendConfig,
+      variableCount: Object.keys(context.variables).length,
+    })
+
+    // 4. Download workspace from S3
+    log("Downloading workspace...")
+    workDir = await downloadWorkspace(context.workspaceUrl, context.workspacePath)
+    log("Workspace downloaded", { workDir })
+
+    // 5. Execute terraform
+    log(`Executing tofu ${context.command}...`)
+    const result = await executeTerraform({
+      workDir,
+      context,
+      onOutput: queueLog,
+    })
+
+    // Flush any remaining logs
+    if (logFlushTimer) {
+      clearTimeout(logFlushTimer)
+      logFlushTimer = null
+    }
+    await flushLogs()
+
+    // 6. Report completion
     log("Reporting completion...")
 
     if (result.success) {
-      await apiClient.complete({
+      await apiClient.complete(runId, {
         output: result.output,
         planSummary: result.planSummary,
         planJson: result.planJson,
@@ -112,15 +184,22 @@ async function main(): Promise<void> {
       })
       log("Job completed successfully", { durationMs: result.durationMs })
     } else {
-      await apiClient.fail(result.errorMessage ?? "Unknown error")
+      await apiClient.fail(runId, result.errorMessage ?? "Unknown error")
       log("Job failed", { error: result.errorMessage })
     }
   } catch (err) {
     const errorMessage = err instanceof Error ? err.message : String(err)
     error("Job execution threw exception", { error: errorMessage })
 
+    // Flush any remaining logs
+    if (logFlushTimer) {
+      clearTimeout(logFlushTimer)
+      logFlushTimer = null
+    }
+    await flushLogs()
+
     try {
-      await apiClient.fail(errorMessage)
+      await apiClient.fail(runId, errorMessage)
     } catch (reportErr) {
       error("Failed to report error to API", {
         error: reportErr instanceof Error ? reportErr.message : String(reportErr),
@@ -128,39 +207,24 @@ async function main(): Promise<void> {
     }
 
     supervisor.stop()
+
+    // Clean up workspace
+    if (workDir) {
+      await cleanupWorkspace(workDir)
+    }
+
     process.exit(1)
   }
 
   supervisor.stop()
+
+  // Clean up workspace
+  if (workDir) {
+    await cleanupWorkspace(workDir)
+  }
+
   log("Worker exiting normally")
   process.exit(0)
-}
-
-interface TerraformResult {
-  success: boolean
-  command: "plan" | "apply" | "destroy"
-  output: string
-  planSummary?: string
-  planJson?: unknown
-  outputs?: Record<string, unknown>
-  errorMessage?: string
-  durationMs: number
-}
-
-/**
- * Execute the actual terraform work for a job.
- *
- * For local development, this imports and uses the existing control plane code.
- * For ECS, this would be replaced with shell-based execution.
- */
-async function executeJobWork(jobId: string): Promise<TerraformResult> {
-  // Import the control plane's iac-engine module
-  // This keeps all terraform execution logic in one place
-  const { executeJobStandalone } = await import(
-    "../../control-plane/src/lib/iac-engine-standalone.ts"
-  )
-
-  return executeJobStandalone(jobId)
 }
 
 // Run main
