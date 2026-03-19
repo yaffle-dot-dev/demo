@@ -1,5 +1,4 @@
 export { default as Terminal } from "./Terminal.svelte"
 export { default as PlanSummary } from "./PlanSummary.svelte"
 export { default as OutputsView } from "./OutputsView.svelte"
-export { default as WorkspaceSidebar } from "./WorkspaceSidebar.svelte"
 export { default as PreviewGroupPage } from "./PreviewGroupPage.svelte"

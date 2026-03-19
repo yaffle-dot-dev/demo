@@ -80,7 +80,7 @@ graph TB
         subgraph "Shared Components"
             PGP["PreviewGroupPage.svelte<br/>(pinning, tabs, inline new-run badge)"]
             TERM["Terminal.svelte"]
-            SIDE["WorkspaceSidebar.svelte"]
+            SIDE["DagVisualization.svelte.svelte"]
             OUT["OutputsView.svelte"]
         end
 
