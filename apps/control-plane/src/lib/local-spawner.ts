@@ -78,7 +78,11 @@ export class LocalChildProcessSpawner implements IacEngineSpawner {
       logger.error("Worker spawn error", { jobId, error: err.message })
     })
     child.on("exit", (code, signal) => {
-      logger.info("Worker exited", { jobId, code, signal })
+      logger.info("Worker exited", {
+        "job.id": jobId,
+        "worker.exit_code": code ?? undefined,
+        "worker.signal": signal ?? undefined,
+      })
     })
 
     // Unref so we don't wait for the child

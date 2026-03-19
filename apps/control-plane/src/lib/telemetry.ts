@@ -150,6 +150,11 @@ function resetMeter(): void {
   _provisioningDurationHistogram = null
   _provisioningFailuresCounter = null
   _provisioningPermanentFailuresCounter = null
+  // Job lifecycle metrics
+  _jobQueueWaitHistogram = null
+  _jobRunDurationHistogram = null
+  _jobHeartbeatsCounter = null
+  _jobStateTransitionsCounter = null
 }
 
 let _webhookReceivedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
@@ -533,6 +538,56 @@ export function getProvisioningPermanentFailuresCounter(): typeof _provisioningP
     })
   }
   return _provisioningPermanentFailuresCounter
+}
+
+// ---------------------------------------------------------------------------
+// Job lifecycle metrics
+// ---------------------------------------------------------------------------
+
+let _jobQueueWaitHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: time from job creation (queued) to claim (running) in ms. */
+export function getJobQueueWaitHistogram(): typeof _jobQueueWaitHistogram & {} {
+  if (!_jobQueueWaitHistogram) {
+    _jobQueueWaitHistogram = getMeter().createHistogram("yaffle.job.queue_wait", {
+      description: "Time from job creation to worker claim in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _jobQueueWaitHistogram
+}
+
+let _jobRunDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: time from job start to completion in ms. */
+export function getJobRunDurationHistogram(): typeof _jobRunDurationHistogram & {} {
+  if (!_jobRunDurationHistogram) {
+    _jobRunDurationHistogram = getMeter().createHistogram("yaffle.job.run_duration", {
+      description: "Time from job start to completion in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _jobRunDurationHistogram
+}
+
+let _jobHeartbeatsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: successful job heartbeats. */
+export function getJobHeartbeatsCounter(): typeof _jobHeartbeatsCounter & {} {
+  if (!_jobHeartbeatsCounter) {
+    _jobHeartbeatsCounter = getMeter().createCounter("yaffle.job.heartbeats", {
+      description: "Successful job heartbeat count",
+    })
+  }
+  return _jobHeartbeatsCounter
+}
+
+let _jobStateTransitionsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: job state transitions, by from_state and to_state. */
+export function getJobStateTransitionsCounter(): typeof _jobStateTransitionsCounter & {} {
+  if (!_jobStateTransitionsCounter) {
+    _jobStateTransitionsCounter = getMeter().createCounter("yaffle.job.state_transitions", {
+      description: "Job state transition count",
+    })
+  }
+  return _jobStateTransitionsCounter
 }
 
 // ---------------------------------------------------------------------------

@@ -112,10 +112,3 @@ processes:
     depends_on:
       postgres:
         condition: process_healthy
-    readiness_probe:
-      http_get:
-        host: 127.0.0.1
-        port: 5111
-      initial_delay_seconds: 3
-      period_seconds: 10
-      failure_threshold: 3

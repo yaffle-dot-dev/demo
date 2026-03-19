@@ -1,4 +1,5 @@
 import { Hono } from "hono"
+import { SpanKind } from "@opentelemetry/api"
 
 import type {
   PullRequestAction,
@@ -8,7 +9,7 @@ import type {
 } from "@yaffle/shared"
 
 import { getEnv } from "../lib/env.ts"
-import { logger, getWebhookReceivedCounter } from "../lib/telemetry.ts"
+import { logger, getWebhookReceivedCounter, withSpan, SpanStatusCode } from "../lib/telemetry.ts"
 import { verifyWebhookSignature } from "../lib/webhook-verify.ts"
 import { handleWebhookEvent } from "../lib/webhook-handler.ts"
 import {
@@ -132,14 +133,41 @@ webhooksRoute.post("/github", async (c) => {
       defaultBranch: payload.repository.default_branch,
     }
 
-    handleWebhookEvent(context).catch((err) => {
-      logger.error(`error handling PR event for ${context.owner}/${context.repo}#${context.prNumber}`, {
-        "yaffle.owner": context.owner,
-        "yaffle.repo": context.repo,
-        "yaffle.pr_number": context.prNumber,
-        "error": err instanceof Error ? err.message : String(err),
-      })
-    })
+    // Fire-and-forget but wrapped in a span for trace context propagation
+    // All logs emitted during handling will have trace_id set
+    withSpan(
+      `webhook.process.pull_request.${action}`,
+      async (span) => {
+        span.setAttributes({
+          "webhook.delivery_id": deliveryId ?? "unknown",
+          "webhook.event": "pull_request",
+          "webhook.action": action,
+          "git.repository": `${context.owner}/${context.repo}`,
+          "git.commit.sha": headSha,
+          "pr.number": prNumber,
+        })
+        try {
+          await handleWebhookEvent(context)
+          logger.info("webhook processing completed", {
+            "webhook.delivery_id": deliveryId ?? "unknown",
+            "webhook.event": "pull_request",
+            "webhook.action": action,
+            "pr.number": prNumber,
+          })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
+          span.recordException(err instanceof Error ? err : new Error(String(err)))
+          logger.error(`error handling PR event for ${context.owner}/${context.repo}#${context.prNumber}`, {
+            "webhook.delivery_id": deliveryId ?? "unknown",
+            "yaffle.owner": context.owner,
+            "yaffle.repo": context.repo,
+            "yaffle.pr_number": context.prNumber,
+            "error": err instanceof Error ? err.message : String(err),
+          })
+        }
+      },
+      { kind: SpanKind.CONSUMER },
+    )
 
     return c.json({ data: { received: true } })
   }
@@ -196,14 +224,40 @@ webhooksRoute.post("/github", async (c) => {
       defaultBranch: payload.repository.default_branch,
     }
 
-    handleWebhookEvent(context).catch((err) => {
-      logger.error(`error handling push event for ${context.owner}/${context.repo}@${context.ref}`, {
-        "yaffle.owner": context.owner,
-        "yaffle.repo": context.repo,
-        "yaffle.ref": context.ref,
-        "error": err instanceof Error ? err.message : String(err),
-      })
-    })
+    // Fire-and-forget but wrapped in a span for trace context propagation
+    withSpan(
+      "webhook.process.push",
+      async (span) => {
+        span.setAttributes({
+          "webhook.delivery_id": deliveryId ?? "unknown",
+          "webhook.event": "push",
+          "git.repository": `${context.owner}/${context.repo}`,
+          "git.commit.sha": afterSha,
+          "git.ref": ref,
+          "git.ref.type": refType,
+          "git.ref.name": refName,
+        })
+        try {
+          await handleWebhookEvent(context)
+          logger.info("webhook processing completed", {
+            "webhook.delivery_id": deliveryId ?? "unknown",
+            "webhook.event": "push",
+            "git.ref": ref,
+          })
+        } catch (err) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
+          span.recordException(err instanceof Error ? err : new Error(String(err)))
+          logger.error(`error handling push event for ${context.owner}/${context.repo}@${context.ref}`, {
+            "webhook.delivery_id": deliveryId ?? "unknown",
+            "yaffle.owner": context.owner,
+            "yaffle.repo": context.repo,
+            "yaffle.ref": context.ref,
+            "error": err instanceof Error ? err.message : String(err),
+          })
+        }
+      },
+      { kind: SpanKind.CONSUMER },
+    )
 
     return c.json({ data: { received: true } })
   }

@@ -108,9 +108,9 @@ runnerRoute.post("/claim", async (c) => {
 
   // Verify job token matches the job being claimed
   if (auth.jobToken.job_id !== jobId) {
-    logger.warn("Job token mismatch on claim", {
-      tokenJobId: auth.jobToken.job_id,
-      requestedJobId: jobId,
+    logger.warn("runner.claim.token_mismatch", {
+      "job.id.token": auth.jobToken.job_id,
+      "job.id.requested": jobId,
     })
     return c.json(
       { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
@@ -123,19 +123,18 @@ runnerRoute.post("/claim", async (c) => {
 
   if (!result.claimed) {
     // Job was already claimed or doesn't exist
-    logger.info("Job claim failed - already claimed or invalid", { jobId, workerId })
+    logger.info("runner.claim.conflict", {
+      "job.id": jobId,
+      "worker.id": workerId,
+    })
     return c.json(
       { error: { code: "CONFLICT", message: "Job already claimed or not in queued state" } },
       409,
     )
   }
 
-  logger.info("Job claimed by runner", {
-    jobId,
-    workerId,
-    jobType: result.job!.jobType,
-    deploymentId: result.job!.deploymentId,
-  })
+  // Note: lifecycle log "job.claimed" is emitted by claimJobForRunner()
+  // This is just an API-level acknowledgement
 
   // Emit events for real-time UI updates (job now running)
   events.emitJobUpdate(jobId, result.job!.deploymentId)
@@ -209,7 +208,10 @@ runnerRoute.post("/heartbeat", async (c) => {
 
   if (!result.success) {
     // Job is no longer in running state (completed, failed, or reclaimed)
-    logger.warn("Heartbeat failed - job no longer running", { jobId })
+    logger.warn("runner.heartbeat.rejected", {
+      "job.id": jobId,
+      "reason": "job_not_running",
+    })
     return c.json({
       data: { success: false, reason: "Job is no longer in running state" },
     })
@@ -267,19 +269,19 @@ runnerRoute.post("/complete", async (c) => {
   }
 
   if (!success) {
-    logger.warn("Job completion failed - job not in expected state", { jobId, status })
+    logger.warn("runner.complete.conflict", {
+      "job.id": jobId,
+      "job.status.requested": status,
+      "reason": "job_not_running",
+    })
     return c.json(
       { error: { code: "CONFLICT", message: "Job is not in running state" } },
       409,
     )
   }
 
-  logger.info("Job completed by runner", {
-    jobId,
-    status,
-    hasResult: !!result,
-    hasError: !!errorMessage,
-  })
+  // Note: lifecycle log "job.completed" or "job.failed" is emitted by the DB functions
+  // This is just an API-level acknowledgement
 
   // Emit events for real-time UI updates
   // The worker runs in a separate process, so we need to emit from the CP

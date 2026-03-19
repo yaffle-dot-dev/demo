@@ -2,7 +2,14 @@ import { and, eq, inArray, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { iacJobs, workspaceDeployments } from "../schema.ts"
-import { withDbSpan } from "../../lib/telemetry.ts"
+import {
+  withDbSpan,
+  logger,
+  getJobQueueWaitHistogram,
+  getJobRunDurationHistogram,
+  getJobHeartbeatsCounter,
+  getJobStateTransitionsCounter,
+} from "../../lib/telemetry.ts"
 import { events } from "../../lib/events.ts"
 
 export type IacJob = typeof iacJobs.$inferSelect
@@ -36,6 +43,22 @@ export async function createIacJob(values: {
 
     const job = rows[0]
     events.emitJobUpdate(job.id, job.deploymentId)
+
+    // Record state transition metric
+    getJobStateTransitionsCounter().add(1, {
+      from_state: "none",
+      to_state: "queued",
+      job_type: job.jobType,
+    })
+
+    // Lifecycle log: job created
+    logger.info("job.created", {
+      "job.id": job.id,
+      "job.type": job.jobType,
+      "job.status": "queued",
+      "deployment.id": job.deploymentId,
+    })
+
     return job
   })
 }
@@ -215,16 +238,45 @@ export async function failStaleJob(
       }
 
       // Mark as failed - do NOT requeue to avoid duplicate runs
+      const completedAt = new Date()
       await tx
         .update(iacJobs)
         .set({
           status: "failed",
-          completedAt: new Date(),
+          completedAt,
           errorMessage: "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry.",
         })
         .where(eq(iacJobs.id, jobId))
 
       events.emitJobUpdate(job.id, job.deploymentId)
+
+      // Calculate how long since last heartbeat
+      const staleDurationMs = job.lastHeartbeat
+        ? completedAt.getTime() - job.lastHeartbeat.getTime()
+        : job.startedAt
+          ? completedAt.getTime() - job.startedAt.getTime()
+          : 0
+
+      // Record metrics
+      getJobStateTransitionsCounter().add(1, {
+        from_state: "running",
+        to_state: "failed",
+        job_type: job.jobType,
+        reason: "stale_timeout",
+      })
+
+      // Lifecycle log: job failed due to stale heartbeat
+      logger.error("job.stale_timeout", {
+        "job.id": job.id,
+        "job.type": job.jobType,
+        "job.status": "failed",
+        "job.status.previous": "running",
+        "deployment.id": job.deploymentId,
+        "worker.id": job.workerId ?? "unknown",
+        "duration.stale_ms": staleDurationMs,
+        "job.last_heartbeat": job.lastHeartbeat?.toISOString() ?? "never",
+      })
+
       return { failed: true }
     })
   })
@@ -342,11 +394,26 @@ export async function cancelJobsForDeployment(deploymentId: string): Promise<num
           inArray(iacJobs.status, ["queued", "running"]),
         ),
       )
-      .returning({ id: iacJobs.id })
+      .returning({ id: iacJobs.id, jobType: iacJobs.jobType, status: iacJobs.status })
 
-    // Emit updates for each cancelled job
+    // Emit updates and log for each cancelled job
     for (const job of result) {
       events.emitJobUpdate(job.id, deploymentId)
+
+      // Record state transition metric
+      getJobStateTransitionsCounter().add(1, {
+        from_state: job.status,
+        to_state: "cancelled",
+        job_type: job.jobType,
+      })
+
+      // Lifecycle log: job cancelled
+      logger.info("job.cancelled", {
+        "job.id": job.id,
+        "job.type": job.jobType,
+        "job.status": "cancelled",
+        "deployment.id": deploymentId,
+      })
     }
 
     return result.length
@@ -445,7 +512,7 @@ export async function getQueuedJobsByRunGroup(): Promise<Map<string, IacJob[]>> 
 export async function claimJobForRunner(
   jobId: string,
   workerId: string,
-): Promise<{ claimed: boolean; job?: IacJob }> {
+): Promise<{ claimed: boolean; job?: IacJob; queueWaitMs?: number }> {
   return withDbSpan("update", "iac_jobs", async () => {
     const rows = await db
       .update(iacJobs)
@@ -467,7 +534,33 @@ export async function claimJobForRunner(
     const job = rows[0]
     if (job) {
       events.emitJobUpdate(job.id, job.deploymentId)
-      return { claimed: true, job }
+
+      // Calculate queue wait time
+      const queueWaitMs = job.startedAt && job.queuedAt
+        ? job.startedAt.getTime() - job.queuedAt.getTime()
+        : 0
+
+      // Record metrics
+      getJobQueueWaitHistogram().record(queueWaitMs, { job_type: job.jobType })
+      getJobStateTransitionsCounter().add(1, {
+        from_state: "queued",
+        to_state: "running",
+        job_type: job.jobType,
+      })
+
+      // Lifecycle log: job claimed (queued -> running)
+      logger.info("job.claimed", {
+        "job.id": job.id,
+        "job.type": job.jobType,
+        "job.status": "running",
+        "job.status.previous": "queued",
+        "deployment.id": job.deploymentId,
+        "worker.id": workerId,
+        "duration.queue_wait_ms": queueWaitMs,
+        "job.attempts": job.attempts,
+      })
+
+      return { claimed: true, job, queueWaitMs }
     }
     return { claimed: false }
   })
@@ -492,6 +585,11 @@ export async function heartbeatJob(jobId: string): Promise<{ success: boolean }>
       )
       .returning({ id: iacJobs.id })
 
+    if (rows.length > 0) {
+      // Record heartbeat metric (success only)
+      getJobHeartbeatsCounter().add(1)
+    }
+
     return { success: rows.length > 0 }
   })
 }
@@ -505,7 +603,7 @@ export async function heartbeatJob(jobId: string): Promise<{ success: boolean }>
 export async function completeJobFromRunner(
   jobId: string,
   result: Record<string, unknown>,
-): Promise<{ success: boolean; job?: IacJob }> {
+): Promise<{ success: boolean; job?: IacJob; runDurationMs?: number }> {
   return withDbSpan("update", "iac_jobs", async () => {
     const rows = await db
       .update(iacJobs)
@@ -525,7 +623,35 @@ export async function completeJobFromRunner(
     const job = rows[0]
     if (job) {
       events.emitJobUpdate(job.id, job.deploymentId)
-      return { success: true, job }
+
+      // Calculate run duration
+      const runDurationMs = job.completedAt && job.startedAt
+        ? job.completedAt.getTime() - job.startedAt.getTime()
+        : 0
+
+      // Record metrics
+      getJobRunDurationHistogram().record(runDurationMs, {
+        job_type: job.jobType,
+        status: "completed",
+      })
+      getJobStateTransitionsCounter().add(1, {
+        from_state: "running",
+        to_state: "completed",
+        job_type: job.jobType,
+      })
+
+      // Lifecycle log: job completed (running -> completed)
+      logger.info("job.completed", {
+        "job.id": job.id,
+        "job.type": job.jobType,
+        "job.status": "completed",
+        "job.status.previous": "running",
+        "deployment.id": job.deploymentId,
+        "worker.id": job.workerId ?? "unknown",
+        "duration.run_ms": runDurationMs,
+      })
+
+      return { success: true, job, runDurationMs }
     }
     return { success: false }
   })
@@ -540,7 +666,7 @@ export async function completeJobFromRunner(
 export async function failJobFromRunner(
   jobId: string,
   errorMessage: string,
-): Promise<{ success: boolean; job?: IacJob }> {
+): Promise<{ success: boolean; job?: IacJob; runDurationMs?: number }> {
   return withDbSpan("update", "iac_jobs", async () => {
     const rows = await db
       .update(iacJobs)
@@ -560,7 +686,36 @@ export async function failJobFromRunner(
     const job = rows[0]
     if (job) {
       events.emitJobUpdate(job.id, job.deploymentId)
-      return { success: true, job }
+
+      // Calculate run duration
+      const runDurationMs = job.completedAt && job.startedAt
+        ? job.completedAt.getTime() - job.startedAt.getTime()
+        : 0
+
+      // Record metrics
+      getJobRunDurationHistogram().record(runDurationMs, {
+        job_type: job.jobType,
+        status: "failed",
+      })
+      getJobStateTransitionsCounter().add(1, {
+        from_state: "running",
+        to_state: "failed",
+        job_type: job.jobType,
+      })
+
+      // Lifecycle log: job failed (running -> failed)
+      logger.error("job.failed", {
+        "job.id": job.id,
+        "job.type": job.jobType,
+        "job.status": "failed",
+        "job.status.previous": "running",
+        "deployment.id": job.deploymentId,
+        "worker.id": job.workerId ?? "unknown",
+        "duration.run_ms": runDurationMs,
+        "error.message": errorMessage,
+      })
+
+      return { success: true, job, runDurationMs }
     }
     return { success: false }
   })
