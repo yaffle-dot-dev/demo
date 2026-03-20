@@ -1,3 +1,7 @@
+import { migrate } from "drizzle-orm/postgres-js/migrator"
+import { drizzle } from "drizzle-orm/postgres-js"
+import postgres from "postgres"
+
 /**
  * Test setup - runs before all tests via bunfig.toml preload.
  *
@@ -7,6 +11,22 @@
 
 const TEST_DB_NAME = "yaffle_test"
 const DEV_DB_NAME = "yaffle_dev"
+
+if (!process.env.BETTER_AUTH_URL) {
+  process.env.BETTER_AUTH_URL = "https://yaffle.local:6969"
+}
+
+if (!process.env.TRUSTED_ORIGINS) {
+  process.env.TRUSTED_ORIGINS = "https://yaffle.local:6969,http://yaffle.local:5173,http://yaffle.local:3000"
+}
+
+if (!process.env.BETTER_AUTH_SECRET) {
+  process.env.BETTER_AUTH_SECRET = "test-better-auth-secret"
+}
+
+if (!process.env.YAFFLE_TF_BINARY) {
+  process.env.YAFFLE_TF_BINARY = "tofu"
+}
 
 // Get current DATABASE_URL or use default
 const currentUrl = process.env.DATABASE_URL ?? `postgresql://yaffle@localhost:5432/${DEV_DB_NAME}`
@@ -31,3 +51,23 @@ if (finalUrl.includes(DEV_DB_NAME)) {
 }
 
 console.log(`[test-setup] Using database: ${finalUrl.replace(/\/\/[^@]+@/, "//***@")}`)
+
+const testDbClient = postgres(finalUrl, {
+  max: 1,
+  idle_timeout: 5,
+  connect_timeout: 10,
+})
+
+await migrate(drizzle(testDbClient), {
+  migrationsFolder: new URL("../../drizzle", import.meta.url).pathname,
+})
+
+await testDbClient.end()
+
+// Import lazily after DATABASE_URL has been forced to a test DB.
+// This module imports the shared db singleton at module-load time.
+const { ensureDefaultProviderCredentialSignatures } = await import(
+  "../db/queries/provider-credential-signatures.ts"
+)
+
+await ensureDefaultProviderCredentialSignatures()

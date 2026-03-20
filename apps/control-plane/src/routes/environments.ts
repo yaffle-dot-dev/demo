@@ -4,7 +4,9 @@ import { z } from "zod"
 
 import { listDeployments } from "../db/queries/workspace-deployments.ts"
 import { findLatestRun } from "../db/queries/tf-runs.ts"
+import { findLatestJobForDeployment } from "../db/queries/iac-jobs.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
+import { getConnectionReadinessForDeployment } from "../lib/execution-credentials.ts"
 
 const listQuerySchema = z.object({
   org: z.string().min(1),
@@ -18,6 +20,11 @@ interface EnvironmentWorkspace {
   previewId: string
   workspacePath: string
   status: string
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
+  missingProviders: string[]
+  conflictProviders: string[]
+  matchedConnections: Array<{ id: string; name: string; provider: string }>
+  blockedReason: string | null
   headSha: string
   lastRunId: string | null
   lastRunType: string | null
@@ -140,11 +147,18 @@ async function fetchEnvironments(
 
     const latestApply = await findLatestRun(preview.id, "apply")
     const latestRun = latestApply ?? (await findLatestRun(preview.id))
+    const latestJob = await findLatestJobForDeployment(preview.id)
+    const connectionReadiness = await getConnectionReadinessForDeployment(preview)
 
     const workspace: EnvironmentWorkspace = {
       previewId: preview.id,
       workspacePath: preview.workspacePath,
       status: preview.status,
+      connectionStatus: connectionReadiness.status,
+      missingProviders: connectionReadiness.missingProviders,
+      conflictProviders: connectionReadiness.conflictProviders,
+      matchedConnections: connectionReadiness.matchedConnections,
+      blockedReason: latestJob?.blockedReason ?? null,
       headSha: preview.headSha,
       lastRunId: latestRun?.id ?? null,
       lastRunType: latestRun?.runType ?? null,

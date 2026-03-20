@@ -17,6 +17,7 @@
   import OutputsView from "./OutputsView.svelte"
   import RunGroupStatusBadge from "./RunGroupStatusBadge.svelte"
   import RefBadge from "./RefBadge.svelte"
+  import ConnectionBlockedBadge from "./ConnectionBlockedBadge.svelte"
 
   interface Props {
     type: "pr" | "env"
@@ -38,6 +39,8 @@
     latestHeadSha?: string | null
     /** Callback to unpin and switch to latest run group */
     onSwitchToLatest?: () => void
+    /** Whether current user can manage org connections */
+    canManageConnections?: boolean
   }
   
   /** Extract display name from a full ref (e.g., "refs/heads/main" -> "main") */
@@ -63,6 +66,7 @@
   const hasNewerRunGroup = $derived(props.hasNewerRunGroup ?? false)
   const latestHeadSha = $derived(props.latestHeadSha ?? null)
   const onSwitchToLatest = $derived(props.onSwitchToLatest ?? null)
+  const canManageConnections = $derived(props.canManageConnections ?? false)
 
   // Get the run group we're viewing
   const viewedRunGroup = $derived.by((): RunGroup | null => {
@@ -128,6 +132,11 @@
         id: `placeholder-${path}`,
         workspacePath: path,
         status: "pending",
+        connectionStatus: "not_required",
+        missingProviders: [],
+        conflictProviders: [],
+        matchedConnections: [],
+        blockedReason: null,
         stateKey: "",
         mode: "preview",
         requireApproval: false,
@@ -244,6 +253,20 @@
   const selectedWorkspace = $derived(
     filteredWorkspaces.find((w) => w.preview.workspacePath === selectedPath)
   )
+
+  const missingConnectionBlockedWorkspaces = $derived(
+    filteredWorkspaces.filter((workspace) => workspace.preview.connectionStatus === "missing"),
+  )
+
+  const missingConnectionProviders = $derived.by((): string[] => {
+    const providers = new Set<string>()
+    for (const workspace of missingConnectionBlockedWorkspaces) {
+      for (const provider of workspace.preview.missingProviders) {
+        providers.add(provider)
+      }
+    }
+    return [...providers].sort()
+  })
 
   // Tab state
   type TabId = "plan" | "apply" | "outputs"
@@ -577,6 +600,14 @@ terraform {
             <RefBadge label={String(identifier)} href={githubTreeUrl({ org, repo }, refName(ref))} />
           {/if}
           <RunGroupStatusBadge statuses={workspaceStatuses} />
+          {#if missingConnectionBlockedWorkspaces.length > 0}
+            <ConnectionBlockedBadge
+              {org}
+              blockedCount={missingConnectionBlockedWorkspaces.length}
+              providers={missingConnectionProviders}
+              {canManageConnections}
+            />
+          {/if}
         </div>
         <div class="flex items-center gap-3 text-sm text-text-muted">
           <a
@@ -697,14 +728,26 @@ terraform {
                   {/if}
                 </button>
               </div>
-              <div class="flex items-center gap-2 mt-1">
-                <span class="text-xs {cfg.color}">{cfg.icon} {cfg.label}</span>
+        <div class="flex items-center gap-2 mt-1">
+          {#if selectedWorkspace.preview.connectionStatus !== "missing" && selectedWorkspace.preview.connectionStatus !== "conflict"}
+            <span class="text-xs {cfg.color}">{cfg.icon} {cfg.label}</span>
+          {/if}
                 {#if selectedWorkspace.preview.requireApproval}
                   <span class="text-xs text-status-planning px-1.5 py-0.5 bg-status-planning/10 rounded">
                     requires approval
                   </span>
                 {/if}
               </div>
+              {#if selectedWorkspace.preview.blockedReason}
+                <div class="mt-2 text-xs text-text-dim">
+                  {selectedWorkspace.preview.blockedReason}
+                </div>
+              {/if}
+              {#if selectedWorkspace.preview.matchedConnections.length > 0}
+                <div class="mt-2 text-xs text-text-dim">
+                  Using {selectedWorkspace.preview.matchedConnections.map((connection: { name: string }) => connection.name).join(", ")}
+                </div>
+              {/if}
             </div>
             <div class="flex items-center gap-2">
               {#if runningRun}
@@ -762,8 +805,8 @@ terraform {
               {#if rerunError}
                 <span class="text-xs text-status-failed">{rerunError}</span>
               {/if}
-            </div>
-          </div>
+        </div>
+      </div>
         </div>
 
         {#if isQueuedWorkspace}

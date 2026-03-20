@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte"
+  import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import { authClient, useSession } from "$lib/auth"
 
   const session = useSession()
@@ -183,8 +184,11 @@
 
       <div class="bg-surface-raised border border-border rounded-lg overflow-hidden">
         {#if loading}
-          <div class="p-8 text-center text-text-dim">
-            Loading...
+          <div class="p-6">
+            <AsyncLoader
+              title="Loading API keys"
+              message="Fetching your CLI and CI authentication keys."
+            />
           </div>
         {:else if apiKeys.length === 0}
           <div class="p-8 text-center text-text-dim">
@@ -233,9 +237,11 @@
       </div>
     </section>
   {:else}
-    <div class="text-center py-12 text-text-muted">
-      Loading...
-    </div>
+    <AsyncLoader
+      variant="page"
+      title="Loading settings"
+      message="Preparing your user settings and authentication data."
+    />
   {/if}
 </div>
 

@@ -6,6 +6,7 @@ if (!API_URL) {
   throw new Error("YAFFLE_PUBLIC_API_URL must be configured")
 }
 
+
 export const handle: Handle = async ({ event, resolve }) => {
   // Proxy /api requests to the backend API server
   // This includes /api/auth/* for BetterAuth endpoints

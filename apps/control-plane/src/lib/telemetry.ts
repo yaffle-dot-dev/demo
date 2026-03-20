@@ -145,6 +145,11 @@ function resetMeter(): void {
   _schedulerPollGroupsQueried = null
   _schedulerPollJobsFetched = null
   _schedulerSkipLockedMisses = null
+  // Connection requirements metrics
+  _connectionRequirementsDuration = null
+  _connectionRequirementsDeploymentsScanned = null
+  _connectionRequirementsProvidersScanned = null
+  _connectionRequirementsProviderCache = null
   // Provisioning metrics
   _provisioningAttemptsCounter = null
   _provisioningDurationHistogram = null
@@ -489,6 +494,55 @@ export function getSchedulerSkipLockedMissesCounter(): typeof _schedulerSkipLock
     })
   }
   return _schedulerSkipLockedMisses
+}
+
+// ---------------------------------------------------------------------------
+// Connections requirements metrics
+// ---------------------------------------------------------------------------
+
+let _connectionRequirementsDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: connection requirement discovery duration in ms. */
+export function getConnectionRequirementsDurationHistogram(): typeof _connectionRequirementsDuration & {} {
+  if (!_connectionRequirementsDuration) {
+    _connectionRequirementsDuration = getMeter().createHistogram("yaffle.connections.requirements.duration", {
+      description: "Connection requirement discovery duration in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _connectionRequirementsDuration
+}
+
+let _connectionRequirementsDeploymentsScanned: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: number of deployments scanned during requirement discovery. */
+export function getConnectionRequirementsDeploymentsScannedHistogram(): typeof _connectionRequirementsDeploymentsScanned & {} {
+  if (!_connectionRequirementsDeploymentsScanned) {
+    _connectionRequirementsDeploymentsScanned = getMeter().createHistogram("yaffle.connections.requirements.deployments_scanned", {
+      description: "Deployments scanned during connection requirement discovery",
+    })
+  }
+  return _connectionRequirementsDeploymentsScanned
+}
+
+let _connectionRequirementsProvidersScanned: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: number of providers scanned during requirement discovery. */
+export function getConnectionRequirementsProvidersScannedHistogram(): typeof _connectionRequirementsProvidersScanned & {} {
+  if (!_connectionRequirementsProvidersScanned) {
+    _connectionRequirementsProvidersScanned = getMeter().createHistogram("yaffle.connections.requirements.providers_scanned", {
+      description: "Providers scanned during connection requirement discovery",
+    })
+  }
+  return _connectionRequirementsProvidersScanned
+}
+
+let _connectionRequirementsProviderCache: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: provider requirement cache outcomes (hit/miss/expired/evict). */
+export function getConnectionRequirementsProviderCacheCounter(): typeof _connectionRequirementsProviderCache & {} {
+  if (!_connectionRequirementsProviderCache) {
+    _connectionRequirementsProviderCache = getMeter().createCounter("yaffle.connections.requirements.provider_cache", {
+      description: "Provider requirement cache outcomes",
+    })
+  }
+  return _connectionRequirementsProviderCache
 }
 
 // ---------------------------------------------------------------------------

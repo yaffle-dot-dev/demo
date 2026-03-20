@@ -47,6 +47,7 @@ export interface ExecutionContext {
   command: "plan" | "apply" | "destroy"
   workspacePath: string
   variables: Record<string, string | boolean | number>
+  executionEnv?: Record<string, string>
   backendConfig?: {
     hostname: string
     organization: string

@@ -50,6 +50,84 @@ Yaffle's value proposition is safe, incremental infrastructure delivery from 0 t
 - **Secrets:** AWS Secrets Manager
 - **VCS:** Git + Jujutsu (jj) colocated
 
+## Security Requirements
+
+Security is a core product requirement for Yaffle, not a polish pass. Future
+changes MUST follow security best practices, especially for multi-tenant
+isolation.
+
+### Non-Negotiable Rules
+
+- **Tenant isolation is mandatory.** Never ship a code path that allows a user,
+  token, job, workspace, preview, run, state object, connection, or webhook
+  action to cross org boundaries without an explicit, reviewed authorization
+  check.
+- **Every authenticated route must enforce authorization.** Authentication alone
+  is never enough. Any route that accepts org IDs, slugs, workspace IDs, run IDs,
+  state version IDs, connection IDs, or similar resource identifiers must verify
+  the caller is authorized for the owning org/resource.
+- **Deny by default.** If authorization context is missing, ambiguous, or cannot
+  be proven, fail closed.
+- **No fail-open security behavior in production.** Missing secrets, missing auth
+  config, missing webhook secrets, or missing token scope configuration must
+  reject requests rather than silently bypass checks.
+- **Least privilege everywhere.** Tokens, IAM roles, runners, and internal
+  services must only receive the minimum permissions they need. Do not introduce
+  broad `*` scopes or shared credentials when narrower scoping is possible.
+- **No secrets in logs, code, or persistent artifacts.** Never log tokens,
+  session cookies, Authorization headers, connection secrets, presigned URLs, or
+  Terraform state contents. Never commit secrets to the repo.
+- **Prefer short-lived credentials.** Prefer expiring, scoped, auditable
+  credentials over long-lived static secrets.
+- **Security-sensitive changes require tests.** Any change touching auth,
+  org membership, token issuance, state access, runners, webhooks, connections,
+  or secrets must include positive and negative security test coverage.
+
+### OWASP and Multi-Tenant Expectations
+
+- **Broken access control:** Always check org/resource ownership on reads,
+  writes, streaming endpoints, and background job callbacks.
+- **Authentication failures:** Tokens must be scoped, expiring where practical,
+  and never accepted through weaker transports unless explicitly designed for
+  that purpose.
+- **Security misconfiguration:** Production paths must fail closed. Dev-only
+  bypasses must be explicit, narrowly scoped, and loudly documented in code.
+- **Sensitive data exposure:** Treat Terraform state, outputs, connection
+  secrets, OAuth tokens, API keys, and session material as highly sensitive.
+- **DoS and abuse resistance:** Public endpoints should enforce request-size
+  limits, rate limiting where appropriate, and avoid unbounded in-memory body
+  buffering.
+
+### Implementation Guidance
+
+- Reuse shared authorization middleware/helpers instead of duplicating ad hoc
+  checks in handlers.
+- Validate both identity and tenancy for resource-by-ID endpoints.
+- Use typed role checks for privileged actions like approvals, connection
+  management, token management, and force-unlock behavior.
+- Add audit logs for sensitive actions, but redact secrets and capability tokens.
+- When introducing new external callbacks or upload URLs, treat them as bearer
+  capabilities: make them unpredictable, short-lived, one-time-use where
+  possible, and never casually log them.
+- Schema and API changes should preserve defense in depth: database scoping,
+  application authz, and infrastructure isolation should all align.
+
+### Required Security Review Triggers
+
+Perform an explicit security review whenever a change touches:
+
+- auth/session/token code
+- org membership or role logic
+- TFC-compatible workspace/state APIs
+- webhooks or OAuth flows
+- runner authentication or job tokens
+- connection secrets or credential resolution
+- state storage, outputs, or module registry downloads
+- new public endpoints, SSE auth, file uploads, or presigned/capability URLs
+
+If a change affects any of the above, call out the tenant-isolation and authz
+impact in the PR description.
+
 ## Repository Structure
 
 ```

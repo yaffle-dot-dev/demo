@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull, or } from "drizzle-orm"
+import { and, desc, eq, inArray, isNull, or } from "drizzle-orm"
 
 import type { RunStatus } from "@yaffle/shared"
 
@@ -52,6 +52,24 @@ export async function findRunGroupById(runGroupId: string): Promise<RunGroup | u
       .where(eq(runGroups.id, runGroupId))
       .limit(1)
     return rows[0]
+  })
+}
+
+/**
+ * Batch-load run groups by ID.
+ */
+export async function findRunGroupsByIds(runGroupIds: string[]): Promise<Map<string, RunGroup>> {
+  if (runGroupIds.length === 0) {
+    return new Map()
+  }
+
+  return withDbSpan("select", "run_groups", async () => {
+    const rows = await db
+      .select()
+      .from(runGroups)
+      .where(inArray(runGroups.id, runGroupIds))
+
+    return new Map(rows.map((row) => [row.id, row]))
   })
 }
 

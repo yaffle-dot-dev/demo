@@ -39,17 +39,18 @@ caddy trust
 
 This requires sudo and adds the CA to your system keychain.
 
-## 1Password CLI
+## 1Password Environments (.env destination)
 
-Secrets are managed via secretspec with 1Password as the backend:
+Yaffle local development expects secrets via a mounted `.env` file from
+1Password Environments.
 
-```bash
-# Sign in to 1Password
-op signin
+1. In 1Password desktop app, enable the Developer experience.
+2. Create/open your Yaffle environment.
+3. Add a Local `.env` destination mounted at `env/dev/secrets.1password.env`.
+4. Populate variables in `env/dev/secrets.1password.env`.
+5. Keep 1Password unlocked while running local dev services.
 
-# Configure secretspec
-secretspec config init
-```
+No extra wrapper is required for local dev once the mounted file is configured.
 
 ## Nix
 

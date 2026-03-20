@@ -48,7 +48,7 @@ processes:
       failure_threshold: 3
 
   web:
-    command: "./scripts/with-env.sh env/dev/base.env -- bun run dev:web"
+    command: "bunx @dotenvx/dotenvx run -o -f env/dev/base.env -- bun run dev:web"
     log_location: .dev/logs/web.log
     readiness_probe:
       exec:
@@ -83,7 +83,7 @@ processes:
 
   smee:
     command: |
-      ./scripts/with-env.sh env/dev/base.env -- bash -lc 'npx smee-client --url "$SMEE_URL" --target http://localhost:3000/api/webhooks/github'
+      bunx @dotenvx/dotenvx run -o -f env/dev/base.env -- bash -lc 'npx smee-client --url "$SMEE_URL" --target http://localhost:3000/api/webhooks/github'
     log_location: .dev/logs/smee.log
     depends_on:
       caddy:

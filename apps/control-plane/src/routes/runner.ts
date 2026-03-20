@@ -45,6 +45,7 @@ import {
   notifyDestroyComplete,
   notifyDownstreams,
 } from "../lib/deployment-side-effects.ts"
+import { resolveExecutionCredentialsForDeployment } from "../lib/execution-credentials.ts"
 
 function getRunnerReachableTfcHost(): string {
   const runnerTfcHost = process.env.YAFFLE_RUNNER_TFC_API_HOST
@@ -659,6 +660,25 @@ runnerRoute.get("/job/:jobId/context", async (c) => {
   // TFC backend setup
   let backendConfig: { hostname: string; organization: string; workspaceName: string } | undefined
   let tfcToken: string | undefined
+  let executionEnv: Record<string, string> = {}
+
+  const credentialResolution = await resolveExecutionCredentialsForDeployment(deployment)
+  if (!credentialResolution.ok) {
+    const parts: string[] = []
+    if (credentialResolution.missingProviders.length > 0) {
+      parts.push(`missing connections for: ${credentialResolution.missingProviders.join(", ")}`)
+    }
+    if (credentialResolution.conflictProviders.length > 0) {
+      parts.push(`conflicting connections for: ${credentialResolution.conflictProviders.join(", ")}`)
+    }
+
+    return c.json(
+      { error: { code: "CONNECTIONS_NOT_READY", message: parts.join("; ") } },
+      409,
+    )
+  }
+
+  executionEnv = credentialResolution.env
 
   if (useTfcBackend()) {
     const tfcWorkspace = isPr
@@ -694,6 +714,7 @@ runnerRoute.get("/job/:jobId/context", async (c) => {
       command: job.jobType as "plan" | "apply" | "destroy",
       workspacePath: deployment.workspacePath,
       variables,
+      executionEnv,
       backendConfig,
       tfcToken,
     },

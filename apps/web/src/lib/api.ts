@@ -77,6 +77,11 @@ export interface EnvironmentWorkspace {
   previewId: string
   workspacePath: string
   status: string
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
+  missingProviders: string[]
+  conflictProviders: string[]
+  matchedConnections: Array<{ id: string; name: string; provider: string }>
+  blockedReason: string | null
   headSha: string
   lastRunId: string | null
   lastRunType: string | null
@@ -103,11 +108,41 @@ export interface OrgInfo {
   source: string
 }
 
+export interface OrgConnection {
+  id: string
+  name: string
+  type: string
+  providerType: string | null
+  credentialProviderType: string | null
+  config: unknown
+  secretStore: string | null
+  secretPath: string | null
+  secretArn: string
+  lastValidatedAt: string | null
+  lastValidationError: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface OrgConnectionDetail {
+  id: string
+  name: string
+  providerType: string | null
+  credentialProviderType: string | null
+  config: Record<string, unknown>
+  secret: unknown
+}
+
 // Compact preview shape for grouped views (less fields than full Preview)
 export interface WorkspacePreview {
   id: string
   workspacePath: string
   status: string
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
+  missingProviders: string[]
+  conflictProviders: string[]
+  matchedConnections: Array<{ id: string; name: string; provider: string }>
+  blockedReason: string | null
   stateKey: string
   mode: string
   requireApproval: boolean
@@ -244,6 +279,14 @@ export async function listEnvironments(params: {
 
 export async function listOrgs(): Promise<DetailResponse<OrgInfo[]>> {
   return fetchJson("/orgs")
+}
+
+export async function listOrgConnections(org: string): Promise<DetailResponse<OrgConnection[]>> {
+  return fetchJson(`/orgs/${org}/connections`)
+}
+
+export async function getOrgConnection(org: string, connectionId: string): Promise<DetailResponse<OrgConnectionDetail>> {
+  return fetchJson(`/orgs/${org}/connections/${connectionId}`)
 }
 
 export interface CurrentUser {

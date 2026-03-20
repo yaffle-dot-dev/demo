@@ -2,6 +2,7 @@
   import { onMount } from "svelte"
   import { goto } from "$app/navigation"
   import { base } from "$app/paths"
+  import AsyncLoader from "$lib/components/AsyncLoader.svelte"
 
   let error = $state("")
   let status = $state("Completing sign-in...")
@@ -38,7 +39,10 @@
         <a href="{base}/" class="mt-4 inline-block text-yaffle-400 hover:underline">Return home</a>
       </div>
     {:else}
-      <p>{status}</p>
+      <AsyncLoader
+        title="Completing sign-in"
+        message={status}
+      />
     {/if}
   </div>
 </div>

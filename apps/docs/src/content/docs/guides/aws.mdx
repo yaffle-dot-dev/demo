@@ -1,171 +1,204 @@
 ---
 title: AWS Setup
-description: Connect your AWS account to Yaffle
+description: Set up IAM access for Yaffle with Terraform, CloudFormation, or AWS CLI.
 ---
 
-import { Aside, Steps, Code } from '@astrojs/starlight/components';
+import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
-Yaffle uses IAM role assumption to access your AWS account. No long-lived credentials are stored. You deploy a small bootstrap module that creates the necessary IAM role, then Yaffle assumes that role to run OpenTofu.
+# Set up IAM access for Yaffle
+
+Create one IAM role in your AWS account, then paste that role ARN in Yaffle.
 
 ## Quick start
 
 <Steps>
-1. **Deploy the bootstrap module** in your AWS account:
+1. **In Yaffle, open AWS Connection Setup and copy Step 1 values:**
+   - `Yaffle principal ARN`
+   - `External ID`
+   - `Suggested role name` (editable)
 
-   ```hcl title="yaffle-bootstrap.tf"
-   module "yaffle" {
-     source  = "yaffle.dev/yaffle-bootstrap/aws"
-     version = "~> 1.0"
+2. **Create the IAM role in AWS using one method:**
+   - Terraform (Recommended)
+   - CloudFormation
+   - AWS CLI
 
-     # Your Yaffle organization ID (from Settings)
-     organization_id = "org_abc123"
-   }
+3. **Copy the resulting role ARN** from your method output.
 
-   output "role_arn" {
-     value = module.yaffle.role_arn
-   }
-   ```
-
-2. **Apply the module**:
-
-   ```bash
-   tofu init
-   tofu apply
-   ```
-
-3. **Add the connection** in Yaffle: **Settings > Connections > Add AWS**
-
-   Paste the `role_arn` output from step 2.
+4. **Paste role ARN in Yaffle Step 3** and save the connection.
 </Steps>
 
-That's it. Yaffle can now run OpenTofu in your account.
+---
 
-## What the bootstrap module creates
+## Step 2. Set up IAM access for Yaffle
 
-The module creates a single IAM role with a trust policy allowing Yaffle to assume it:
+<Tabs>
+  <TabItem label="Terraform (Recommended)">
+    Use a small local-state bootstrap stack for first-time setup.
 
-```hcl
-# Created by yaffle-bootstrap module
-resource "aws_iam_role" "yaffle" {
-  name = "YaffleRunner"
+    Create `yaffle-bootstrap.tf`:
 
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        AWS = "arn:aws:iam::${var.yaffle_account_id}:root"
-      }
-      Action = "sts:AssumeRole"
-      Condition = {
-        StringEquals = {
-          "sts:ExternalId" = var.organization_id
+    ```hcl title="yaffle-bootstrap.tf"
+    module "yaffle_bootstrap" {
+      source = "git::https://github.com/yaffle-dot-dev/yaffle.git//infra_modules/public/bootstrap-yaffle/aws?ref=main"
+
+      yaffle_principal_arn = "<paste-from-yaffle-step-1>"
+      external_id          = "<paste-from-yaffle-step-1>"
+      role_name            = "<paste-or-customize-role-name>"
+      environment          = "main"
+    }
+
+    output "yaffle_role_arn" {
+      value = module.yaffle_bootstrap.role_arn
+    }
+    ```
+
+    Apply:
+
+    ```bash
+    tofu init
+    tofu apply
+    ```
+
+    This bootstrap is intentionally local-state oriented. You can move/import into your
+    long-lived state management later if desired.
+
+    Get role ARN:
+
+    ```bash
+    tofu output -raw yaffle_role_arn
+    ```
+  </TabItem>
+
+  <TabItem label="CloudFormation">
+    Create `yaffle-bootstrap.yaml`:
+
+    ```yaml title="yaffle-bootstrap.yaml"
+    AWSTemplateFormatVersion: "2010-09-09"
+    Description: "Yaffle bootstrap role"
+
+    Parameters:
+      YafflePrincipalArn:
+        Type: String
+      ExternalId:
+        Type: String
+      RoleName:
+        Type: String
+
+    Resources:
+      YaffleRole:
+        Type: AWS::IAM::Role
+        Properties:
+          RoleName: !Ref RoleName
+          AssumeRolePolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Principal:
+                  AWS: !Ref YafflePrincipalArn
+                Action: "sts:AssumeRole"
+                Condition:
+                  StringEquals:
+                    "sts:ExternalId": !Ref ExternalId
+
+      YaffleAdminAccess:
+        Type: AWS::IAM::ManagedPolicy
+        Properties:
+          Description: "Default broad permissions for Yaffle"
+          Roles:
+            - !Ref YaffleRole
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "*"
+                Resource: "*"
+
+    Outputs:
+      RoleArn:
+        Value: !GetAtt YaffleRole.Arn
+    ```
+
+    Deploy:
+
+    ```bash
+    aws cloudformation deploy \
+      --stack-name yaffle-bootstrap \
+      --template-file yaffle-bootstrap.yaml \
+      --parameter-overrides \
+        YafflePrincipalArn=<paste-from-yaffle-step-1> \
+        ExternalId=<paste-from-yaffle-step-1> \
+        RoleName=<paste-or-customize-role-name>
+    ```
+
+    Get role ARN:
+
+    ```bash
+    aws cloudformation describe-stacks \
+      --stack-name yaffle-bootstrap \
+      --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" \
+      --output text
+    ```
+  </TabItem>
+
+  <TabItem label="AWS CLI">
+    Create trust policy and role:
+
+    ```bash
+    cat > trust-policy.json <<'EOF'
+    {
+      "Version": "2012-10-17",
+      "Statement": [
+        {
+          "Effect": "Allow",
+          "Principal": {
+            "AWS": "<paste-yaffle-principal-arn>"
+          },
+          "Action": "sts:AssumeRole",
+          "Condition": {
+            "StringEquals": {
+              "sts:ExternalId": "<paste-external-id>"
+            }
+          }
         }
-      }
-    }]
-  })
-}
-```
+      ]
+    }
+    EOF
 
-By default, the role has `AdministratorAccess`. You can scope this down.
+    aws iam create-role \
+      --role-name <paste-or-customize-role-name> \
+      --assume-role-policy-document file://trust-policy.json
 
-## Scoping permissions
+    aws iam attach-role-policy \
+      --role-name <paste-or-customize-role-name> \
+      --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+    ```
 
-For production, restrict what Yaffle can do:
+    Get role ARN:
 
-```hcl title="yaffle-bootstrap.tf"
-module "yaffle" {
-  source  = "yaffle.dev/yaffle-bootstrap/aws"
-  version = "~> 1.0"
+    ```bash
+    aws iam get-role \
+      --role-name <paste-or-customize-role-name> \
+      --query 'Role.Arn' \
+      --output text
+    ```
+  </TabItem>
+</Tabs>
 
-  organization_id = "org_abc123"
+---
 
-  # Use a custom policy instead of AdministratorAccess
-  attach_admin_policy = false
-  policy_arns = [
-    aws_iam_policy.yaffle_custom.arn
-  ]
-}
+## What gets created
 
-resource "aws_iam_policy" "yaffle_custom" {
-  name = "YaffleCustomPolicy"
+Default bootstrap creates one role with:
 
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid    = "ManageS3"
-        Effect = "Allow"
-        Action = ["s3:*"]
-        Resource = [
-          "arn:aws:s3:::myapp-*",
-          "arn:aws:s3:::myapp-*/*"
-        ]
-      },
-      {
-        Sid    = "ManageRDS"
-        Effect = "Allow"
-        Action = ["rds:*"]
-        Resource = "arn:aws:rds:*:*:db:myapp-*"
-      }
-    ]
-  })
-}
-```
+- Trust policy for your **Yaffle principal ARN**
+- Required `ExternalId` condition
+- `AdministratorAccess` permissions
 
 <Aside type="tip">
-Start with broad permissions, then use IAM Access Analyzer to scope down based on actual usage.
+This default is intentional for a fast, reliable Terraform runner setup.
 </Aside>
 
-## Separate accounts for preview vs production
+## Optional policy customization
 
-Use different AWS accounts for isolation:
-
-```toml title="yaffle.toml"
-[[workspaces]]
-path = "infra"
-environments = ["production"]
-connection = "aws-production"
-
-[[workspaces]]
-path = "infra"
-environments = ["staging", "preview"]
-connection = "aws-nonprod"
-```
-
-Deploy the bootstrap module in each account, then add both connections in Yaffle.
-
-Benefits:
-- **Complete isolation** - preview resources can't affect production
-- **Separate billing** - track preview costs independently
-- **Easy cleanup** - nuke the entire preview account if needed
-
-## Multiple regions
-
-The bootstrap module creates a role, not region-specific resources. Your OpenTofu configures which regions to use:
-
-```hcl
-provider "aws" {
-  region = var.aws_region
-}
-```
-
-Yaffle passes the assumed role credentials to your OpenTofu, which works in any region.
-
-## Troubleshooting
-
-**"Access Denied" when assuming role**
-
-- Verify the `organization_id` matches your Yaffle org
-- Check the role ARN is correct in Yaffle connection settings
-- Ensure the bootstrap module was applied successfully
-
-**"Role does not exist"**
-
-- Run `terraform apply` on the bootstrap module
-- Check the AWS account ID matches where you deployed
-
-**Permission errors during plan/apply**
-
-- The role exists but lacks permissions for what your OpenTofu creates
-- Add the necessary IAM permissions to the role (see "Scoping permissions")
+If your org requires least privilege, you can customize policy attachments.
+Keep in mind Yaffle still needs all permissions required by your Terraform resources.

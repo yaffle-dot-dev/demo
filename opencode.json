@@ -21,11 +21,6 @@
       "type": "remote",
       "enabled": true,
       "url": "https://mcp.axiom.co/mcp",
-    },
-    "devenv": {
-      "type": "remote",
-      "enabled": true,
-      "url": "http://localhost:8080",
     }
   }
 }

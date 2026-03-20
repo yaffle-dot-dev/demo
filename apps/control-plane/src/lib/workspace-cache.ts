@@ -10,7 +10,7 @@
  * since the workspace contents are deterministic for a given SHA.
  */
 
-import { readFile, rm } from "node:fs/promises"
+import { mkdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -202,6 +202,43 @@ export class WorkspaceCache {
   ): Promise<string> {
     const key = this.buildKey(org, repo, sha)
     return this.getDownloadUrl(key, expiresIn)
+  }
+
+  async extractWorkspaceToTemp(s3Key: string): Promise<string> {
+    const outputDir = join(tmpdir(), `yaffle-ws-cache-${Date.now()}`)
+    const tarballPath = join(tmpdir(), `yaffle-ws-cache-${Date.now()}.tar.gz`)
+
+    await mkdir(outputDir, { recursive: true })
+
+    const object = await this.s3.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: s3Key,
+    }))
+
+    const bytes = await object.Body?.transformToByteArray()
+    if (!bytes) {
+      throw new Error(`Failed to read workspace cache object: ${s3Key}`)
+    }
+
+    await Bun.write(tarballPath, bytes)
+
+    const extract = Bun.spawnSync([
+      "tar",
+      "-xzf",
+      tarballPath,
+      "-C",
+      outputDir,
+    ], {
+      stderr: "pipe",
+      stdout: "pipe",
+    })
+
+    if (extract.exitCode !== 0) {
+      throw new Error(`Failed to extract workspace cache ${s3Key}: ${extract.stderr.toString()}`)
+    }
+
+    await rm(tarballPath, { force: true })
+    return outputDir
   }
 
   private isNotFoundError(err: unknown): boolean {

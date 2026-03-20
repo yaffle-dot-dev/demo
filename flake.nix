@@ -137,6 +137,20 @@
       devShells = forEachSystem (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          dotenvx = pkgs.buildNpmPackage rec {
+            pname = "dotenvx";
+            version = "1.51.2";
+
+            src = pkgs.fetchFromGitHub {
+              owner = "dotenvx";
+              repo = "dotenvx";
+              tag = "v${version}";
+              hash = "sha256-WafhFmph85r377VOFJBjXU8T/GbIrgXQ2RzcVb7GETw=";
+            };
+
+            npmDepsHash = "sha256-YVODU+0e9T/x9RkAEiHdQ1JxFlgwsrdyzx0ZIgmy9Fw=";
+            dontNpmBuild = true;
+          };
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
@@ -161,6 +175,7 @@
 
               # Dev tooling
               opencode
+              dotenvx
               caddy
               process-compose
               watchexec
@@ -189,7 +204,7 @@
               echo "  psql             $(psql --version)"
               echo "  jj               $(jj --version)"
               echo "  secretspec       $(secretspec --version)"
-              echo "  process-compose  $(process-compose --version)"
+              echo "  process-compose  $(process-compose version | head -1)"
               echo ""
                echo "commands:"
                 echo "  ./scripts/dev-init.sh      - first-time setup (postgres init)"

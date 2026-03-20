@@ -27,6 +27,9 @@ import {
   countActiveJobs,
   findStaleJobs,
   failStaleJob,
+  getJobWithContext,
+  markJobBlocked,
+  clearJobBlocked,
   type ConcurrencyLimits,
   type IacJob,
 } from "../db/queries/iac-jobs.ts"
@@ -48,6 +51,7 @@ import {
   setSchedulerGroupsQueuedValue,
   setSchedulerQueuedJobsValue,
 } from "./telemetry.ts"
+import { resolveExecutionCredentialsForDeployment } from "./execution-credentials.ts"
 
 export interface SchedulerConfig {
   /** How often to poll for new jobs (ms). Default: 1000 */
@@ -99,6 +103,7 @@ export class Scheduler {
   private autoApplyTimer: ReturnType<typeof setInterval> | null = null
   private running = false
   private readonly recentSpawnAttempts = new Map<string, number>()
+  private readonly blockedJobs = new Map<string, number>()
 
   constructor(spawner: IacEngineSpawner, config: SchedulerConfig = {}) {
     this.workerId = `scheduler-${randomUUID().slice(0, 8)}`
@@ -229,6 +234,7 @@ export class Scheduler {
     getSchedulerPollDurationHistogram().record(pollDuration)
 
     this.pruneRecentSpawnAttempts()
+    this.pruneBlockedJobs()
 
     // Update gauge metrics
     const activeCount = await countActiveJobs()
@@ -260,7 +266,7 @@ export class Scheduler {
       })
     }
 
-    const jobsToSpawn = result.jobs.filter((job) => this.shouldAttemptSpawn(job.id))
+    const jobsToSpawn = await this.filterSpawnableJobs(result.jobs)
 
     if (jobsToSpawn.length === 0) return
 
@@ -332,11 +338,68 @@ export class Scheduler {
     return (Date.now() - lastAttemptAt) >= this.config.spawnBackoffMs
   }
 
+  private async filterSpawnableJobs(jobs: IacJob[]): Promise<IacJob[]> {
+    const allowed: IacJob[] = []
+
+    for (const job of jobs) {
+      if (!this.shouldAttemptSpawn(job.id)) {
+        continue
+      }
+
+      const blockedUntil = this.blockedJobs.get(job.id)
+      if (blockedUntil && blockedUntil > Date.now()) {
+        continue
+      }
+
+      const jobContext = await getJobWithContext(job.id)
+      if (!jobContext?.deployment) {
+        continue
+      }
+
+      const resolution = await resolveExecutionCredentialsForDeployment(jobContext.deployment)
+      if (!resolution.ok) {
+        const parts: string[] = []
+        if (resolution.missingProviders.length > 0) {
+          parts.push(`Missing connections: ${resolution.missingProviders.join(", ")}`)
+        }
+        if (resolution.conflictProviders.length > 0) {
+          parts.push(`Conflicting connections: ${resolution.conflictProviders.join(", ")}`)
+        }
+        const reason = parts.join("; ")
+
+        this.blockedJobs.set(job.id, Date.now() + 30_000)
+        await markJobBlocked(job.id, reason)
+        logger.info("Job remains queued waiting for connections", {
+          jobId: job.id,
+          deploymentId: job.deploymentId,
+          missingProviders: resolution.missingProviders,
+          conflictProviders: resolution.conflictProviders,
+        })
+        continue
+      }
+
+      await clearJobBlocked(job.id)
+
+      allowed.push(job)
+    }
+
+    return allowed
+  }
+
   private pruneRecentSpawnAttempts(): void {
     const cutoff = Date.now() - (this.config.spawnBackoffMs * 10)
     for (const [jobId, timestamp] of this.recentSpawnAttempts.entries()) {
       if (timestamp < cutoff) {
         this.recentSpawnAttempts.delete(jobId)
+      }
+    }
+  }
+
+  private pruneBlockedJobs(): void {
+    const now = Date.now()
+    for (const [jobId, blockedUntil] of this.blockedJobs.entries()) {
+      if (blockedUntil <= now) {
+        this.blockedJobs.delete(jobId)
       }
     }
   }

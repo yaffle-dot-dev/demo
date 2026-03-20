@@ -42,6 +42,8 @@ export async function createIacJob(values: {
         deploymentId,
         jobType: values.jobType,
         status: "queued",
+        blockedAt: null,
+        blockedReason: null,
       })
       .returning()
 
@@ -64,6 +66,33 @@ export async function createIacJob(values: {
     })
 
     return job
+  })
+}
+
+export async function markJobBlocked(
+  jobId: string,
+  reason: string,
+): Promise<void> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    await db
+      .update(iacJobs)
+      .set({
+        blockedAt: new Date(),
+        blockedReason: reason,
+      })
+      .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "queued")))
+  })
+}
+
+export async function clearJobBlocked(jobId: string): Promise<void> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    await db
+      .update(iacJobs)
+      .set({
+        blockedAt: null,
+        blockedReason: null,
+      })
+      .where(eq(iacJobs.id, jobId))
   })
 }
 
@@ -93,6 +122,20 @@ export async function findLatestIacJob(
       .select()
       .from(iacJobs)
       .where(and(eq(iacJobs.deploymentId, deploymentId), eq(iacJobs.jobType, jobType)))
+      .orderBy(sql`${iacJobs.queuedAt} DESC`)
+      .limit(1)
+    return rows[0]
+  })
+}
+
+export async function findLatestJobForDeployment(
+  deploymentId: string,
+): Promise<IacJob | undefined> {
+  return withDbSpan("select", "iac_jobs", async () => {
+    const rows = await db
+      .select()
+      .from(iacJobs)
+      .where(eq(iacJobs.deploymentId, deploymentId))
       .orderBy(sql`${iacJobs.queuedAt} DESC`)
       .limit(1)
     return rows[0]

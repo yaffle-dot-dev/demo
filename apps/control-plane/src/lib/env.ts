@@ -27,8 +27,8 @@ export interface AppEnv {
 
 /**
  * Normalize a PEM key that may have been flattened to a single line.
- * 1Password can't store newlines in password fields, so secretspec
- * gives us something like:
+ * Some secret injectors/store backends can't preserve multiline PEM values
+ * and provide something like:
  *   "-----BEGIN RSA PRIVATE KEY----- MIIEp... -----END RSA PRIVATE KEY-----"
  * We need to restore the proper PEM line breaks.
  */
@@ -60,8 +60,7 @@ function loadPrivateKey(): string {
   const keyEnv = process.env.GITHUB_APP_PRIVATE_KEY
   if (!keyEnv) return ""
 
-  // secretspec with as_path = true writes the secret to a temp file
-  // and sets the env var to the file path
+  // Some secret tools may set env vars to a file path containing the PEM.
   try {
     const contents = readFileSync(keyEnv, "utf-8").trim()
     if (contents.includes("-----BEGIN")) {

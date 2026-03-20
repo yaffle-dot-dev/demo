@@ -92,6 +92,27 @@ export async function listDeployments(
   })
 }
 
+export async function listLatestDeploymentsForOrg(orgId: string): Promise<WorkspaceDeployment[]> {
+  return withDbSpan("select", "workspace_deployments", async () => {
+    return db
+      .selectDistinctOn(
+        [
+          workspaceDeployments.repo,
+          workspaceDeployments.environmentName,
+          workspaceDeployments.workspacePath,
+        ],
+      )
+      .from(workspaceDeployments)
+      .where(eq(workspaceDeployments.orgId, orgId))
+      .orderBy(
+        workspaceDeployments.repo,
+        workspaceDeployments.environmentName,
+        workspaceDeployments.workspacePath,
+        desc(workspaceDeployments.createdAt),
+      )
+  })
+}
+
 
 
 /**
@@ -896,5 +917,3 @@ export async function claimDeploymentForAutoApply(
     return undefined
   })
 }
-
-

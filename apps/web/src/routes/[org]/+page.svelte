@@ -7,6 +7,7 @@
   import {
     listEnvironments,
     getMe,
+    listOrgs,
     type EnvironmentGroup,
     type Preview,
     type DependencyGraph,
@@ -19,6 +20,8 @@
   import ProvisioningStatus from "$lib/components/ProvisioningStatus.svelte"
   import RunGroupStatusBadge from "$lib/components/RunGroupStatusBadge.svelte"
   import RefBadge from "$lib/components/RefBadge.svelte"
+  import AsyncLoader from "$lib/components/AsyncLoader.svelte"
+  import ConnectionBlockedBadge from "$lib/components/ConnectionBlockedBadge.svelte"
 
   // Org comes from URL param - always defined since this is a [org] route
   const org = $derived(page.params.org ?? "")
@@ -30,6 +33,7 @@
   
   // Current user's GitHub ID for matching "your" PR environments
   let myGithubId = $state<number | null>(null)
+  let canManageConnections = $state(false)
 
   // BetterAuth session store
   const session = useSession()
@@ -80,12 +84,15 @@
     error = ""
     try {
       // Fetch user's GitHub ID and environments in parallel
-      const [meRes, envRes] = await Promise.all([
+      const [meRes, envRes, orgsRes] = await Promise.all([
         getMe(),
         listEnvironments({ org }),
+        listOrgs(),
       ])
       myGithubId = meRes.data.githubId
       environments = envRes.data
+      const orgRole = orgsRes.data.find((item) => item.slug === org)?.role ?? ""
+      canManageConnections = orgRole === "admin"
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
       environments = []
@@ -172,6 +179,40 @@
     return stream.dependencyGraphs[key] ?? null
   }
 
+  function countConnectionBlockedWorkspaces(env: EnvironmentGroup): number {
+    return env.workspaces.filter(
+      (workspace) => workspace.connectionStatus === "missing",
+    ).length
+  }
+
+  function listMissingProviders(env: EnvironmentGroup): string {
+    const providers = new Set<string>()
+    for (const workspace of env.workspaces) {
+      for (const provider of workspace.missingProviders) {
+        providers.add(provider)
+      }
+    }
+    return [...providers].sort().join(", ")
+  }
+
+  function missingProvidersForEnv(env: EnvironmentGroup): string[] {
+    const providers = listMissingProviders(env)
+    if (!providers) {
+      return []
+    }
+    return providers.split(", ").filter(Boolean)
+  }
+
+  function listUsedConnections(env: EnvironmentGroup): string {
+    const names = new Set<string>()
+    for (const workspace of env.workspaces) {
+      for (const connection of workspace.matchedConnections) {
+        names.add(connection.name)
+      }
+    }
+    return [...names].sort().join(", ")
+  }
+
   let hasLoaded = false
 
   onMount(() => {
@@ -224,7 +265,14 @@
         </div>
       </div>
 
-      {#if environments.length === 0}
+      {#if loading}
+        <div class="mt-4">
+          <AsyncLoader
+            title="Loading environments"
+            message="Fetching latest workspace status and dependency graphs."
+          />
+        </div>
+      {:else if environments.length === 0}
         <div class="text-text-dim text-sm py-6">No environments yet.</div>
       {:else}
         <div class="mt-4 grid grid-cols-1 gap-3">
@@ -236,6 +284,14 @@
                     <a href="{base}/{org}/{env.repo}/env/{env.environmentName}" class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
                     <RefBadge label={env.environmentName} href={githubTreeUrl({ org, repo: env.repo }, refName(env.ref))} />
                     <RunGroupStatusBadge statuses={env.workspaces.map(w => w.status)} />
+                    {#if countConnectionBlockedWorkspaces(env) > 0}
+                      <ConnectionBlockedBadge
+                        {org}
+                        blockedCount={countConnectionBlockedWorkspaces(env)}
+                        providers={missingProvidersForEnv(env)}
+                        {canManageConnections}
+                      />
+                    {/if}
                   </div>
                   <div class="flex flex-wrap gap-4 text-xs text-text-dim mt-2">
                     <a 
@@ -248,6 +304,11 @@
                     </a>
                     <span>{formatRelativeTime(env.updatedAt)}</span>
                   </div>
+                  {#if listUsedConnections(env)}
+                    <div class="mt-2 text-xs text-text-dim">
+                      Using: {listUsedConnections(env)}
+                    </div>
+                  {/if}
                 </div>
               </div>
               <div class="mt-3">
@@ -295,7 +356,10 @@
 
   <!-- Loading -->
   {#if loading}
-    <div class="text-text-muted text-sm">Loading...</div>
+    <AsyncLoader
+      title="Loading transient environments"
+      message="Pulling active PR run groups and workspace updates."
+    />
   {:else if activeGroups.length === 0}
     <div class="text-text-dim text-sm py-10 text-center">
       No active PR environments.

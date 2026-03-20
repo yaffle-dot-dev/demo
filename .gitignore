@@ -1,5 +1,6 @@
 **/.env
 **/.env.*
+env/dev/secrets*.env
 
 # Dev state (process-compose, postgres data)
 .dev/

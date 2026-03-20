@@ -21,6 +21,7 @@ import {
   CreateRoleCommand,
   DeleteRoleCommand,
   GetRoleCommand,
+  UpdateAssumeRolePolicyCommand,
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
   IAMClient,
@@ -91,6 +92,9 @@ function getConfig(): { region: string; stateBucket: string; controlPlaneRoleArn
   if (!controlPlaneRoleArn) {
     throw new Error("YAFFLE_CONTROL_PLANE_ROLE_ARN environment variable required")
   }
+  if (!/^arn:aws(-[a-z]+)?:iam::\d{12}:role\/.+$/.test(controlPlaneRoleArn)) {
+    throw new Error("YAFFLE_CONTROL_PLANE_ROLE_ARN must be an IAM role ARN (not root)")
+  }
 
   return { region, stateBucket, controlPlaneRoleArn }
 }
@@ -123,6 +127,103 @@ export interface ProvisioningResult {
   iamRoleArn: string
 }
 
+const ORG_BROKER_POLICY_NAME = "customer-assume-access"
+
+function orgBrokerRoleName(orgId: string): string {
+  return `yaffle-org-broker-${orgId}`
+}
+
+function buildOrgBrokerPolicy(params: {
+  orgSlug: string
+  kmsKeyArn: string
+  customerRoleArns: string[]
+}): string {
+  const { orgSlug, kmsKeyArn, customerRoleArns } = params
+  const normalizedRoleArns = [...new Set(customerRoleArns.map((value) => value.trim()).filter(Boolean))].sort()
+
+  return JSON.stringify({
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Sid: "OrgScopedConnectionSecretAccess",
+        Effect: "Allow",
+        Action: [
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:PutParameter",
+          "ssm:DeleteParameter",
+        ],
+        Resource: `arn:aws:ssm:${getConfig().region}:*:parameter/yaffle/org/${orgSlug}/connections/*`,
+      },
+      {
+        Sid: "OrgKmsUsage",
+        Effect: "Allow",
+        Action: [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+        ],
+        Resource: kmsKeyArn,
+      },
+      ...(normalizedRoleArns.length === 0
+        ? [
+          {
+            Sid: "DenyAllAssumeRole",
+            Effect: "Deny",
+            Action: "sts:AssumeRole",
+            Resource: "*",
+          },
+        ]
+        : [
+          {
+            Sid: "AssumeCustomerRoles",
+            Effect: "Allow",
+            Action: "sts:AssumeRole",
+            Resource: normalizedRoleArns,
+          },
+        ]),
+    ],
+  })
+}
+
+/**
+ * Update the per-org broker role policy with the exact customer role allowlist.
+ */
+export async function syncOrgBrokerRoleAssumeTargets(
+  orgId: string,
+  orgSlug: string,
+  orgBrokerRoleArn: string,
+  kmsKeyArn: string,
+  customerRoleArns: string[],
+): Promise<void> {
+  if (process.env.NODE_ENV === "test") {
+    return
+  }
+
+  if (!/^arn:aws(-[a-z]+)?:iam::\d{12}:role\/.+$/.test(orgBrokerRoleArn)) {
+    throw new Error("Organization broker role ARN is not valid")
+  }
+
+  for (const arn of customerRoleArns) {
+    if (!/^arn:aws(-[a-z]+)?:iam::\d{12}:role\/.+$/.test(arn)) {
+      throw new Error(`Invalid customer role ARN: ${arn}`)
+    }
+  }
+
+  const config = getConfig()
+  const iam = getIamClient(config.region)
+
+  await iam.send(new PutRolePolicyCommand({
+    RoleName: orgBrokerRoleName(orgId),
+    PolicyName: ORG_BROKER_POLICY_NAME,
+    PolicyDocument: buildOrgBrokerPolicy({
+      orgSlug,
+      kmsKeyArn,
+      customerRoleArns,
+    }),
+  }))
+}
+
 // =============================================================================
 // KMS Key Provisioning
 // =============================================================================
@@ -135,7 +236,7 @@ interface KmsKeyResult {
 async function createOrgKmsKey(
   orgId: string,
   controlPlaneRoleArn: string,
-  orgRunnerRoleArn: string,
+  orgBrokerRoleArn: string,
 ): Promise<KmsKeyResult> {
   const config = getConfig()
   const kms = getKmsClient(config.region)
@@ -180,7 +281,7 @@ async function createOrgKmsKey(
     }))
   }
 
-  // Set key policy - control plane can manage, org runner can encrypt/decrypt
+  // Set key policy - control plane can manage, org broker can use data key ops.
   const keyPolicy = JSON.stringify({
     Version: "2012-10-17",
     Statement: [
@@ -192,9 +293,9 @@ async function createOrgKmsKey(
         Resource: "*",
       },
       {
-        Sid: "OrgRunnerUsage",
+        Sid: "YaffleOrgBrokerUsage",
         Effect: "Allow",
-        Principal: { AWS: orgRunnerRoleArn },
+        Principal: { AWS: orgBrokerRoleArn },
         Action: [
           "kms:Encrypt",
           "kms:Decrypt",
@@ -241,6 +342,55 @@ async function createOrgKmsKey(
   return { keyArn, keyAlias }
 }
 
+export async function syncOrgKmsKeyPolicy(
+  orgId: string,
+  kmsKeyArn: string,
+  orgBrokerRoleArn: string,
+): Promise<void> {
+  if (process.env.NODE_ENV === "test") {
+    return
+  }
+
+  const config = getConfig()
+  const kms = getKmsClient(config.region)
+
+  const keyPolicy = JSON.stringify({
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Sid: "YaffleControlPlaneAdmin",
+        Effect: "Allow",
+        Principal: { AWS: config.controlPlaneRoleArn },
+        Action: "kms:*",
+        Resource: "*",
+      },
+      {
+        Sid: "YaffleOrgBrokerUsage",
+        Effect: "Allow",
+        Principal: { AWS: orgBrokerRoleArn },
+        Action: [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:GenerateDataKey",
+        ],
+        Resource: "*",
+      },
+    ],
+  })
+
+  await kms.send(new PutKeyPolicyCommand({
+    KeyId: kmsKeyArn,
+    PolicyName: "default",
+    Policy: keyPolicy,
+  }))
+
+  logger.info("Synced org KMS key policy", {
+    orgId,
+    kmsKeyArn,
+    orgBrokerRoleArn,
+  })
+}
+
 // =============================================================================
 // IAM Role Provisioning
 // =============================================================================
@@ -249,19 +399,12 @@ async function createOrgIamRole(orgId: string): Promise<string> {
   const config = getConfig()
   const iam = getIamClient(config.region)
 
-  const roleName = `yaffle-runner-org-${orgId}`
+  const roleName = orgBrokerRoleName(orgId)
 
-  // Trust policy - allow ECS tasks and control plane to assume
+  // Trust policy - only control-plane base role can assume org broker role
   const trustPolicy = JSON.stringify({
     Version: "2012-10-17",
     Statement: [
-      {
-        Effect: "Allow",
-        Principal: {
-          Service: "ecs-tasks.amazonaws.com",
-        },
-        Action: "sts:AssumeRole",
-      },
       {
         Effect: "Allow",
         Principal: {
@@ -285,7 +428,7 @@ async function createOrgIamRole(orgId: string): Promise<string> {
     const createResponse = await iam.send(new CreateRoleCommand({
       RoleName: roleName,
       AssumeRolePolicyDocument: trustPolicy,
-      Description: `Yaffle runner role for org ${orgId}`,
+      Description: `Yaffle org broker role for org ${orgId}`,
       Tags: [
         { Key: "Project", Value: "yaffle" },
         { Key: "OrgId", Value: orgId },
@@ -318,38 +461,11 @@ async function createOrgIamRole(orgId: string): Promise<string> {
     }
   }
 
-  // Initial inline policy - S3 access only (KMS access added after key creation)
-  const inlinePolicy = JSON.stringify({
-    Version: "2012-10-17",
-    Statement: [
-      {
-        Sid: "S3StateAccess",
-        Effect: "Allow",
-        Action: [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-        ],
-        Resource: `arn:aws:s3:::${config.stateBucket}/org-${orgId}/*`,
-      },
-      {
-        Sid: "S3ListAccess",
-        Effect: "Allow",
-        Action: "s3:ListBucket",
-        Resource: `arn:aws:s3:::${config.stateBucket}`,
-        Condition: {
-          StringLike: {
-            "s3:prefix": [`org-${orgId}/*`],
-          },
-        },
-      },
-    ],
-  })
-
-  await iam.send(new PutRolePolicyCommand({
+  // Reconcile trust policy even when role already existed, so drift (e.g. root principal)
+  // is corrected during migration/backfill runs.
+  await iam.send(new UpdateAssumeRolePolicyCommand({
     RoleName: roleName,
-    PolicyName: "state-access",
-    PolicyDocument: inlinePolicy,
+    PolicyDocument: trustPolicy,
   }))
 
   logger.info("Created IAM role for org", {
@@ -362,67 +478,10 @@ async function createOrgIamRole(orgId: string): Promise<string> {
 }
 
 /**
- * Update org IAM role to include KMS key access.
- * Called after KMS key is created so we have the actual key ARN.
+ * Ensure the org broker role exists and return its ARN.
  */
-async function updateOrgIamRoleWithKmsAccess(
-  orgId: string,
-  kmsKeyArn: string,
-): Promise<void> {
-  const config = getConfig()
-  const iam = getIamClient(config.region)
-
-  const roleName = `yaffle-runner-org-${orgId}`
-
-  // Full policy - S3 access + KMS access
-  const inlinePolicy = JSON.stringify({
-    Version: "2012-10-17",
-    Statement: [
-      {
-        Sid: "S3StateAccess",
-        Effect: "Allow",
-        Action: [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:DeleteObject",
-        ],
-        Resource: `arn:aws:s3:::${config.stateBucket}/org-${orgId}/*`,
-      },
-      {
-        Sid: "S3ListAccess",
-        Effect: "Allow",
-        Action: "s3:ListBucket",
-        Resource: `arn:aws:s3:::${config.stateBucket}`,
-        Condition: {
-          StringLike: {
-            "s3:prefix": [`org-${orgId}/*`],
-          },
-        },
-      },
-      {
-        Sid: "KMSAccess",
-        Effect: "Allow",
-        Action: [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:GenerateDataKey",
-        ],
-        Resource: kmsKeyArn,
-      },
-    ],
-  })
-
-  await iam.send(new PutRolePolicyCommand({
-    RoleName: roleName,
-    PolicyName: "state-access",
-    PolicyDocument: inlinePolicy,
-  }))
-
-  logger.info("Updated IAM role with KMS access", {
-    orgId,
-    roleName,
-    kmsKeyArn,
-  })
+export async function ensureOrgBrokerRole(orgId: string): Promise<string> {
+  return createOrgIamRole(orgId)
 }
 
 // =============================================================================
@@ -433,27 +492,24 @@ async function updateOrgIamRoleWithKmsAccess(
  * Provision AWS resources for a new organization.
  *
  * Creates (in order):
- * 1. IAM role `yaffle-runner-org-{uuid}` (must exist before KMS key policy references it)
+ * 1. IAM org broker role `yaffle-org-broker-{uuid}`
  * 2. KMS key with alias `alias/yaffle-org-{uuid}`
- * 3. Updates IAM role with KMS key access policy
  */
 export async function provisionOrgResources(
   orgId: string,
-  _orgSlug: string, // Reserved for future use (tags, descriptions)
+  orgSlug: string,
 ): Promise<ProvisioningResult> {
   const config = getConfig()
 
   logger.info("Starting org provisioning", { orgId })
 
-  // Create IAM role first (so we can reference it in KMS key policy)
-  // Initially created without KMS access - we'll add that after key creation
+  // Create IAM broker role first.
   const iamRoleArn = await createOrgIamRole(orgId)
 
-  // Create KMS key (now we have the real IAM role ARN to use in policy)
+  // Create KMS key (control plane role is key admin).
   const { keyArn, keyAlias } = await createOrgKmsKey(orgId, config.controlPlaneRoleArn, iamRoleArn)
 
-  // Update IAM role with KMS key access
-  await updateOrgIamRoleWithKmsAccess(orgId, keyArn)
+  await syncOrgBrokerRoleAssumeTargets(orgId, orgSlug, iamRoleArn, keyArn, [])
 
   logger.info("Org provisioning complete", {
     orgId,
@@ -523,13 +579,13 @@ export async function deprovisionOrgResources(
 
   // Delete IAM role
   if (iamRoleArn) {
-    const roleName = `yaffle-runner-org-${orgId}`
+    const roleName = orgBrokerRoleName(orgId)
 
     // First delete inline policies
     try {
       await iam.send(new DeleteRolePolicyCommand({
         RoleName: roleName,
-        PolicyName: "state-access",
+        PolicyName: ORG_BROKER_POLICY_NAME,
       }))
     } catch (err) {
       logger.warn("Failed to delete IAM role policy (may not exist)", {

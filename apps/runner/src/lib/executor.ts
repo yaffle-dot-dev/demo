@@ -39,6 +39,11 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
   try {
     // Configure backend
     const backendEnv = await configureBackend(workDir, context)
+    const executionEnv = context.executionEnv ?? {}
+    const combinedEnv = {
+      ...executionEnv,
+      ...backendEnv,
+    }
 
     // Configure variables
     await configureVariables(workDir, context)
@@ -48,7 +53,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       workDir,
       ["tofu", "init", "-input=false"],
       onOutput,
-      backendEnv,
+      combinedEnv,
     )
     if (!initResult.success) {
       return {
@@ -72,7 +77,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
           workDir,
           ["tofu", "plan", "-input=false", "-out=tfplan"],
           onOutput,
-          backendEnv,
+          combinedEnv,
         )
 
         if (result.success) {
@@ -81,7 +86,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
             workDir,
             ["tofu", "show", "-json", "tfplan"],
             undefined, // Don't stream this output
-            backendEnv,
+            combinedEnv,
           )
           if (showResult.success) {
             try {
@@ -102,7 +107,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
           workDir,
           ["tofu", "apply", "-input=false", "-auto-approve"],
           onOutput,
-          backendEnv,
+          combinedEnv,
         )
 
         if (result.success) {
@@ -111,7 +116,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
             workDir,
             ["tofu", "output", "-json"],
             undefined,
-            backendEnv,
+            combinedEnv,
           )
           if (outputResult.success) {
             try {
@@ -129,7 +134,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
           workDir,
           ["tofu", "destroy", "-input=false", "-auto-approve"],
           onOutput,
-          backendEnv,
+          combinedEnv,
         )
         break
       }

@@ -105,11 +105,38 @@ export const connections = pgTable("connections", {
     .references(() => organizations.id)
     .notNull(),
   name: text("name").notNull(),
+  providerType: text("provider_type"),
+  credentialProviderType: text("credential_provider_type"),
   type: text("type").notNull(),
   config: jsonb("config").notNull(),
+  secretStore: text("secret_store"),
+  secretPath: text("secret_path"),
   secretArn: text("secret_arn").notNull(),
+  lastValidatedAt: timestamp("last_validated_at", { withTimezone: true }),
+  lastValidationError: text("last_validation_error"),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 })
+
+// =============================================================================
+// Provider Credential Signatures (runtime-editable provider env var mapping)
+// =============================================================================
+
+export const providerCredentialSignatures = pgTable("provider_credential_signatures", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  providerType: text("provider_type").notNull().unique(),
+  displayName: text("display_name").notNull(),
+  suggestedCredentialProviderType: text("suggested_credential_provider_type").notNull(),
+  exactEnvVars: text("exact_env_vars").array().notNull().default([]),
+  prefixEnvVars: text("prefix_env_vars").array().notNull().default([]),
+  isActive: boolean("is_active").notNull().default(true),
+  source: text("source").notNull().default("system"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("provider_credential_signatures_provider_type_idx").on(t.providerType),
+  index("provider_credential_signatures_is_active_idx").on(t.isActive),
+])
 
 // =============================================================================
 // Workspace Deployments (formerly "previews")
@@ -281,9 +308,11 @@ export const iacJobs = pgTable(
     queuedAt: timestamp("queued_at", { withTimezone: true }).defaultNow().notNull(),
     dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
+    blockedAt: timestamp("blocked_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     // Result
     result: jsonb("result"), // Output, plan summary, errors, etc.
+    blockedReason: text("blocked_reason"),
     errorMessage: text("error_message"),
     // Retry tracking
     attempts: integer("attempts").default(0).notNull(),

@@ -1,9 +1,13 @@
 <script lang="ts">
+  import { browser } from "$app/environment"
+  import { onMount } from "svelte"
   import { page } from "$app/stores"
   import { usePreviewStream } from "$lib/sse/index.svelte"
   import { getLatestRunGroup } from "$lib/sse/types"
   import { githubRepoUrl, githubPullUrl } from "$lib/github"
+  import { listOrgs } from "$lib/api"
   import type { EnvironmentPreviewGroup } from "$lib/api"
+  import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import PreviewGroupPage from "$lib/components/PreviewGroupPage.svelte"
 
   // Reactive params
@@ -46,6 +50,24 @@
       ? `PR #${displayData.prNumber} - ${repo} - Yaffle`
       : `${environmentName} - ${repo} - Yaffle`
   )
+
+  let canManageConnections = $state(false)
+
+  onMount(() => {
+    if (!browser) {
+      return
+    }
+
+    void (async () => {
+      try {
+        const orgsRes = await listOrgs()
+        const orgRole = orgsRes.data.find((item) => item.slug === org)?.role ?? ""
+        canManageConnections = orgRole === "admin"
+      } catch {
+        canManageConnections = false
+      }
+    })()
+  })
 </script>
 
 <svelte:head>
@@ -53,9 +75,11 @@
 </svelte:head>
 
 {#if stream.connectionState === "connecting" && !displayData}
-  <div class="flex items-center justify-center h-full text-text-muted">
-    Loading...
-  </div>
+  <AsyncLoader
+    variant="page"
+    title="Loading environment"
+    message="Connecting to live run updates and dependency graph data."
+  />
 {:else if displayData}
   <PreviewGroupPage
     type={displayType}
@@ -73,6 +97,7 @@
     hasNewerRunGroup={stream.hasNewerRunGroup}
     latestHeadSha={latestRunGroupSha}
     onSwitchToLatest={stream.switchToLatest}
+    {canManageConnections}
   />
 {:else}
   <div class="flex items-center justify-center h-full text-text-dim">

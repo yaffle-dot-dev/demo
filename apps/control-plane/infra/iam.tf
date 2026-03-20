@@ -166,7 +166,7 @@ resource "aws_iam_role_policy" "control_plane_secrets" {
   })
 }
 
-# Org provisioning: create per-org KMS keys and IAM roles
+# Org provisioning: create per-org KMS keys and org broker roles
 resource "aws_iam_role_policy" "control_plane_provisioning" {
   name = "org-provisioning"
   role = aws_iam_role.control_plane_task.id
@@ -189,23 +189,24 @@ resource "aws_iam_role_policy" "control_plane_provisioning" {
         Resource = "*"
       },
       {
-        Sid    = "IAMOrgRoles"
+        Sid    = "IAMOrgBrokerRoles"
         Effect = "Allow"
         Action = [
           "iam:CreateRole",
           "iam:DeleteRole",
           "iam:PutRolePolicy",
+          "iam:GetRolePolicy",
           "iam:DeleteRolePolicy",
           "iam:TagRole",
           "iam:GetRole"
         ]
-        Resource = "arn:aws:iam::*:role/yaffle-runner-org-*"
+        Resource = "arn:aws:iam::*:role/yaffle-org-broker-*"
       },
       {
-        Sid      = "AssumeOrgRoles"
+        Sid      = "AssumeOrgBrokerRoles"
         Effect   = "Allow"
         Action   = "sts:AssumeRole"
-        Resource = "arn:aws:iam::*:role/yaffle-runner-org-*"
+        Resource = "arn:aws:iam::*:role/yaffle-org-broker-*"
       }
     ]
   })
