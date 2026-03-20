@@ -45,6 +45,28 @@ resource "aws_iam_role_policy_attachment" "runner_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+resource "aws_iam_role_policy" "runner_execution_tailscale_secret" {
+  count = var.tailscale_enabled && local.tailscale_runner_authkey_secret_arn != null ? 1 : 0
+
+  name = "tailscale-secret-access"
+  role = aws_iam_role.runner_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+        ]
+        Resource = [
+          local.tailscale_runner_authkey_secret_arn,
+        ]
+      },
+    ]
+  })
+}
+
 # -----------------------------------------------------------------------------
 # Runner Task Role
 # -----------------------------------------------------------------------------

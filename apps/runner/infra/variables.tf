@@ -30,6 +30,24 @@ variable "runner_memory" {
   default     = 1024
 }
 
+variable "tailscale_enabled" {
+  type        = bool
+  description = "Enable Tailscale sidecar for ECS runner to reach local control plane"
+  default     = true
+}
+
+variable "tailscale_hostname" {
+  type        = string
+  description = "Hostname for runner nodes in the tailnet"
+  default     = "yaffle-runner"
+}
+
+variable "tailscale_tags" {
+  type        = list(string)
+  description = "Advertised Tailscale tags for runner nodes"
+  default     = ["tag:ecs-runner"]
+}
+
 # -----------------------------------------------------------------------------
 # Naming
 # -----------------------------------------------------------------------------
