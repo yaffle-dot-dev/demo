@@ -62,13 +62,13 @@
           };
 
           # Runner image - minimal container for isolated tofu execution
-          # Contains only: opentofu, aws-cli, curl, jq, and the entrypoint script
-          # NO access to Yaffle internals - all inputs via presigned URLs
+          # Contains OpenTofu, Bun, and the TypeScript worker runtime.
+          # NO access to Yaffle internals - all inputs flow through the Runner API.
           runner-image = n2c.buildImage {
             name = "ghcr.io/yaffle-dot-dev/yaffle/runner";
             tag = "latest";
             config = {
-              entrypoint = [ "${runner}/bin/yaffle-runner" ];
+              entrypoint = [ "${pkgs.bun}/bin/bun" "${runner}/app/src/worker.ts" ];
               workingDir = "/workspace";
               env = [
                 "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
@@ -87,9 +87,10 @@
                 pkgs.gzip
                 pkgs.bash
                 pkgs.coreutils
+                pkgs.bun
                 runner
               ];
-              pathsToLink = [ "/bin" "/etc/ssl" ];
+              pathsToLink = [ "/bin" "/etc/ssl" "/app" ];
             };
           };
         in {
