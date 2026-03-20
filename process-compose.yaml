@@ -33,7 +33,7 @@ processes:
       failure_threshold: 5
 
   control-plane:
-    command: "op signin 2>/dev/null || true && secretspec run -- bun run dev:control-plane"
+    command: "./scripts/dev-control-plane.sh"
     log_location: .dev/logs/control-plane.log
     depends_on:
       postgres:
@@ -48,7 +48,7 @@ processes:
       failure_threshold: 3
 
   web:
-    command: "bun run dev:web"
+    command: "./scripts/with-env.sh env/dev/base.env -- bun run dev:web"
     log_location: .dev/logs/web.log
     readiness_probe:
       exec:
@@ -82,7 +82,8 @@ processes:
       failure_threshold: 3
 
   smee:
-    command: "npx smee-client --url $SMEE_URL --target http://localhost:3000/api/webhooks/github"
+    command: |
+      ./scripts/with-env.sh env/dev/base.env -- bash -lc 'npx smee-client --url "$SMEE_URL" --target http://localhost:3000/api/webhooks/github'
     log_location: .dev/logs/smee.log
     depends_on:
       caddy:

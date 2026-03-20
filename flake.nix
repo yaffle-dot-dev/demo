@@ -191,13 +191,14 @@
               echo "  secretspec       $(secretspec --version)"
               echo "  process-compose  $(process-compose --version)"
               echo ""
-              echo "commands:"
-              echo "  ./scripts/dev-init.sh      - first-time setup (postgres init)"
-              echo "  process-compose up         - start all services"
-              echo "  process-compose up -t=false - start without TUI"
-              echo "  process-compose down       - stop all services"
-              echo "  bun install                - install dependencies"
-              echo "  bun test                   - run tests"
+               echo "commands:"
+                echo "  ./scripts/dev-init.sh      - first-time setup (postgres init)"
+                echo "  process-compose up         - start all services"
+                echo "  process-compose up -t=false - start without TUI"
+                echo "  process-compose down       - stop all services"
+                echo "  YAFFLE_DEV_RUNNER_MODE=ecs process-compose up -t=false - restart CP in ECS mode"
+                echo "  bun install                - install dependencies"
+                echo "  bun test                   - run tests"
               echo ""
               echo "logs:"
               echo "  tail -f .dev/logs/control-plane.log"
@@ -211,21 +212,8 @@
               echo ""
             '';
 
-            # Environment variables
-             YAFFLE_TF_BINARY = "${pkgs.opentofu}/bin/tofu";
-             YAFFLE_STATE_BUCKET = "yaffle-state-main-use1";
-             YAFFLE_WORKSPACE_CACHE_BUCKET = "yaffle-workspace-cache-main-use1";
-             SMEE_URL = "https://smee.io/AMHdVEIzSjKsXVkb";
-             YAFFLE_AUTH_MODE = "required";
-            YAFFLE_AUTH_ISSUER = "https://yaffle.local:6969";
-            YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
-            VITE_YAFFLE_AUTH_ISSUER = "https://yaffle.local:6969";
-            VITE_YAFFLE_AUTH_CLIENT_ID = "yaffle-web";
-            YAFFLE_TFC_API_HOST = "yaffle.local:6969";
-            YAFFLE_CONTROL_PLANE_ROLE_ARN = "arn:aws:iam::870923192739:root";
-            BETTER_AUTH_URL = "https://yaffle.local:6969";
-            TRUSTED_ORIGINS = "https://yaffle.local:6969,http://yaffle.local:5173,http://yaffle.local:3000";
-            YAFFLE_ENV = "development";
+            # Stable shell defaults. Runtime app config is loaded from env/dev/*.env.
+            YAFFLE_DEV_RUNNER_MODE = "local";
           };
         }
       );

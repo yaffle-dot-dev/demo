@@ -22,7 +22,7 @@ import { logger } from "./telemetry.ts"
  * Configuration for the local spawner.
  */
 export interface LocalSpawnerConfig {
-  /** API URL for runners to connect to. Default: http://localhost:3000 */
+  /** API URL for runners to connect to */
   apiUrl?: string
 }
 
@@ -41,7 +41,15 @@ export class LocalChildProcessSpawner implements IacEngineSpawner {
   private readonly apiUrl: string
 
   constructor(config: LocalSpawnerConfig = {}) {
-    this.apiUrl = config.apiUrl ?? process.env.YAFFLE_API_URL ?? "http://localhost:3000"
+    const apiUrl = config.apiUrl
+      ?? process.env.YAFFLE_RUNNER_API_URL
+      ?? process.env.YAFFLE_API_URL
+
+    if (!apiUrl) {
+      throw new Error("YAFFLE_RUNNER_API_URL must be configured")
+    }
+
+    this.apiUrl = apiUrl
   }
 
   async spawn(jobId: string, jobToken: string): Promise<void> {

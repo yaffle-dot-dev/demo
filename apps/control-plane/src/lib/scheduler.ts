@@ -62,6 +62,8 @@ export interface SchedulerConfig {
   maxConcurrentJobs?: number
   /** Max concurrent jobs per run group. Default: 3 */
   maxJobsPerRunGroup?: number
+  /** Minimum time between spawn attempts for the same queued job in ms. Default: 120000 */
+  spawnBackoffMs?: number
 }
 
 export interface IacEngineSpawner {
@@ -96,6 +98,7 @@ export class Scheduler {
   private staleCheckTimer: ReturnType<typeof setInterval> | null = null
   private autoApplyTimer: ReturnType<typeof setInterval> | null = null
   private running = false
+  private readonly recentSpawnAttempts = new Map<string, number>()
 
   constructor(spawner: IacEngineSpawner, config: SchedulerConfig = {}) {
     this.workerId = `scheduler-${randomUUID().slice(0, 8)}`
@@ -107,6 +110,7 @@ export class Scheduler {
       staleThresholdMs: config.staleThresholdMs ?? 5 * 60 * 1000,
       maxConcurrentJobs: config.maxConcurrentJobs ?? 50,
       maxJobsPerRunGroup: config.maxJobsPerRunGroup ?? 3,
+      spawnBackoffMs: config.spawnBackoffMs ?? 2 * 60 * 1000,
     }
     this.limits = {
       maxTotal: this.config.maxConcurrentJobs,
@@ -224,6 +228,8 @@ export class Scheduler {
     const pollDuration = performance.now() - pollStart
     getSchedulerPollDurationHistogram().record(pollDuration)
 
+    this.pruneRecentSpawnAttempts()
+
     // Update gauge metrics
     const activeCount = await countActiveJobs()
     setSchedulerActiveJobsValue(activeCount)
@@ -254,15 +260,17 @@ export class Scheduler {
       })
     }
 
-    if (result.jobs.length === 0) return
+    const jobsToSpawn = result.jobs.filter((job) => this.shouldAttemptSpawn(job.id))
+
+    if (jobsToSpawn.length === 0) return
 
     // Record spawned jobs metric
-    getSchedulerJobsClaimedCounter().add(result.jobs.length)
+    getSchedulerJobsClaimedCounter().add(jobsToSpawn.length)
 
     logger.info("Spawning workers for jobs", {
       workerId: this.workerId,
-      jobCount: result.jobs.length,
-      jobIds: result.jobs.map((j) => j.id),
+      jobCount: jobsToSpawn.length,
+      jobIds: jobsToSpawn.map((j) => j.id),
       totalQueued: result.totalQueued,
       groupsWithQueuedWork: result.groupsWithQueuedWork,
       blockedByGlobalLimit: result.blockedByGlobalLimit,
@@ -271,7 +279,7 @@ export class Scheduler {
 
     // Spawn workers for each job in parallel
     await Promise.all(
-      result.jobs.map((job) => this.spawnWorker(job)),
+      jobsToSpawn.map((job) => this.spawnWorker(job)),
     )
   }
 
@@ -283,6 +291,8 @@ export class Scheduler {
    */
   private async spawnWorker(job: IacJob): Promise<void> {
     try {
+      this.recentSpawnAttempts.set(job.id, Date.now())
+
       // Generate job token for this worker
       const jobToken = await generateJobTokenForJob(job.id)
       if (!jobToken) {
@@ -310,6 +320,24 @@ export class Scheduler {
 
       // Job stays "queued" - will be picked up on next poll cycle
       // This is the key improvement: no stuck "dispatched" state
+    }
+  }
+
+  private shouldAttemptSpawn(jobId: string): boolean {
+    const lastAttemptAt = this.recentSpawnAttempts.get(jobId)
+    if (!lastAttemptAt) {
+      return true
+    }
+
+    return (Date.now() - lastAttemptAt) >= this.config.spawnBackoffMs
+  }
+
+  private pruneRecentSpawnAttempts(): void {
+    const cutoff = Date.now() - (this.config.spawnBackoffMs * 10)
+    for (const [jobId, timestamp] of this.recentSpawnAttempts.entries()) {
+      if (timestamp < cutoff) {
+        this.recentSpawnAttempts.delete(jobId)
+      }
     }
   }
 
@@ -403,11 +431,11 @@ let schedulerInstance: Scheduler | null = null
  * Configuration via environment variables:
  * - YAFFLE_MAX_CONCURRENT_JOBS: Max total concurrent jobs (default: 50 prod, 5 dev)
  * - YAFFLE_MAX_JOBS_PER_RUN_GROUP: Max concurrent jobs per run group (default: 3)
- * - YAFFLE_ECS_CLUSTER: ECS cluster ARN (enables ECS spawner in production)
+ * - YAFFLE_ECS_CLUSTER: ECS cluster ARN
  * - YAFFLE_ECS_TASK_DEFINITION: Runner task definition ARN
  * - YAFFLE_ECS_SUBNETS: Comma-separated subnet IDs
  * - YAFFLE_ECS_SECURITY_GROUPS: Comma-separated security group IDs
- * - YAFFLE_WORKSPACES_BUCKET: S3 bucket for workspace storage
+ * - YAFFLE_USE_ECS_RUNNER: Set to "true" to force ECS spawner in development
  */
 export async function getScheduler(): Promise<Scheduler> {
   if (schedulerInstance) {
@@ -417,18 +445,19 @@ export async function getScheduler(): Promise<Scheduler> {
   // Determine which spawner to use based on environment
   const isProduction = process.env.NODE_ENV === "production"
   const useEcs = !!process.env.YAFFLE_ECS_CLUSTER
+  const forceEcs = process.env.YAFFLE_USE_ECS_RUNNER === "true"
 
   let spawner: IacEngineSpawner
   let spawnerType: string
 
-  if (isProduction && useEcs) {
+  if ((isProduction || forceEcs) && useEcs) {
     const { EcsEngineSpawner } = await import("./ecs-spawner.ts")
 
     const clusterArn = process.env.YAFFLE_ECS_CLUSTER
     const taskDefinition = process.env.YAFFLE_ECS_TASK_DEFINITION
     const subnets = (process.env.YAFFLE_ECS_SUBNETS ?? "").split(",").filter(Boolean)
     const securityGroups = (process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "").split(",").filter(Boolean)
-    const apiUrl = process.env.YAFFLE_API_URL
+    const apiUrl = process.env.YAFFLE_RUNNER_API_URL ?? process.env.YAFFLE_API_URL
 
     if (!clusterArn || !taskDefinition || subnets.length === 0 || securityGroups.length === 0 || !apiUrl) {
       throw new Error("Missing ECS spawner configuration (cluster/task/subnets/sg/apiUrl)")
@@ -446,9 +475,14 @@ export async function getScheduler(): Promise<Scheduler> {
     logger.info("Scheduler using ECS engine spawner")
   } else {
     // Local development: spawns detached child processes that survive CP restarts
+    const apiUrl = process.env.YAFFLE_RUNNER_API_URL ?? process.env.YAFFLE_API_URL
+    if (!apiUrl) {
+      throw new Error("YAFFLE_RUNNER_API_URL must be configured")
+    }
+
     const { LocalChildProcessSpawner } = await import("./local-spawner.ts")
     spawner = new LocalChildProcessSpawner({
-      apiUrl: process.env.YAFFLE_API_URL ?? "http://localhost:3000",
+      apiUrl,
     })
     spawnerType = "local"
     logger.info("Scheduler using local spawner (child process)")

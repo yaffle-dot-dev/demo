@@ -173,7 +173,7 @@ export function createEcsSpawner(): EcsEngineSpawner {
   const subnets = process.env.YAFFLE_RUNNER_SUBNETS?.split(",") ?? []
   const securityGroups = process.env.YAFFLE_RUNNER_SECURITY_GROUPS?.split(",") ?? []
   const region = process.env.AWS_REGION ?? "us-east-1"
-  const apiUrl = process.env.YAFFLE_API_URL
+  const apiUrl = process.env.YAFFLE_RUNNER_API_URL ?? process.env.YAFFLE_API_URL
 
   if (!clusterArn) {
     throw new Error("YAFFLE_ECS_CLUSTER_ARN not configured")
@@ -188,7 +188,7 @@ export function createEcsSpawner(): EcsEngineSpawner {
     throw new Error("YAFFLE_RUNNER_SECURITY_GROUPS not configured")
   }
   if (!apiUrl) {
-    throw new Error("YAFFLE_API_URL not configured")
+    throw new Error("YAFFLE_RUNNER_API_URL not configured")
   }
 
   return new EcsEngineSpawner({

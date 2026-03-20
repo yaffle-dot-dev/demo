@@ -21,7 +21,7 @@
 
 # Tailscale MagicDNS domain - Caddy automatically fetches HTTPS certs from Tailscale
 # Access from any device on your tailnet at https://yaffle.tail66f312.ts.net
-yaffle.tail66f312.ts.net {
+https://yaffle.tail66f312.ts.net:6969 {
 	# Log all requests for debugging
 	log {
 		output stdout

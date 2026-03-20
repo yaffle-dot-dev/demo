@@ -1,6 +1,10 @@
 import type { Handle } from "@sveltejs/kit"
 
-const API_URL = process.env.YAFFLE_API_URL || "http://localhost:3000"
+const API_URL = process.env.YAFFLE_PUBLIC_API_URL || process.env.YAFFLE_API_URL
+
+if (!API_URL) {
+  throw new Error("YAFFLE_PUBLIC_API_URL must be configured")
+}
 
 export const handle: Handle = async ({ event, resolve }) => {
   // Proxy /api requests to the backend API server

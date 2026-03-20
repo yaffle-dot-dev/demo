@@ -40,6 +40,26 @@ import { useTfcBackend } from "../lib/tfc-backend.ts"
 import { ensurePreviewWorkspace, ensureNamedWorkspace } from "../lib/workspace-service.ts"
 import { generateRunToken, getTfcApiHost } from "../lib/run-token.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
+import {
+  cascadeFailure,
+  notifyDestroyComplete,
+  notifyDownstreams,
+} from "../lib/deployment-side-effects.ts"
+
+function getRunnerReachableTfcHost(): string {
+  const runnerTfcHost = process.env.YAFFLE_RUNNER_TFC_API_HOST
+  if (runnerTfcHost) {
+    return runnerTfcHost
+  }
+
+  const runnerApiUrl = process.env.YAFFLE_RUNNER_API_URL
+  if (runnerApiUrl) {
+    const url = new URL(runnerApiUrl)
+    return url.host
+  }
+
+  return getTfcApiHost()
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -392,11 +412,15 @@ runnerRoute.post("/complete", async (c) => {
             status: "skipped",
           })
           events.emitRunUpdate(skippedApply.id, deployment.id)
+
+          await notifyDownstreams(deployment.id, "apply")
         }
       } else if (jobType === "apply") {
         await updateDeploymentStatus(deployment.id, "ready")
+        await notifyDownstreams(deployment.id, "apply")
       } else if (jobType === "destroy") {
         await updateDeploymentStatus(deployment.id, "destroyed")
+        await notifyDestroyComplete(deployment.id)
       }
     }
   } else {
@@ -409,6 +433,7 @@ runnerRoute.post("/complete", async (c) => {
         errorMessage: errorMessage ?? "Unknown error",
       })
       await updateDeploymentStatus(deployment.id, "failed")
+      await cascadeFailure(deployment.id)
     }
   }
 
@@ -656,7 +681,7 @@ runnerRoute.get("/job/:jobId/context", async (c) => {
         })
 
     backendConfig = {
-      hostname: getTfcApiHost(),
+      hostname: getRunnerReachableTfcHost(),
       organization: org.slug,
       workspaceName: tfcWorkspace.name,
     }

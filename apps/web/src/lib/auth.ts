@@ -13,7 +13,7 @@ function getApiUrl(): string {
   if (typeof window !== "undefined") {
     return window.location.origin
   }
-  return "http://localhost:3000"
+  throw new Error("VITE_YAFFLE_API_URL must be configured for server-side auth usage")
 }
 
 // Create the BetterAuth client

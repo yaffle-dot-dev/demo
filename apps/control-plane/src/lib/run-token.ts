@@ -106,8 +106,11 @@ export function buildTfTokenEnvName(hostname: string): string {
 
 /**
  * Get the TFC API host from environment.
- * Defaults to localhost:3000 for development.
  */
 export function getTfcApiHost(): string {
-  return process.env.YAFFLE_TFC_API_HOST ?? "localhost:3000"
+  const host = process.env.YAFFLE_TFC_API_HOST
+  if (!host) {
+    throw new Error("YAFFLE_TFC_API_HOST must be configured")
+  }
+  return host
 }

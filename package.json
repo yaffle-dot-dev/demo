@@ -23,6 +23,7 @@
     "yaffle-cli": "bun run packages/cli/src/main.ts"
   },
   "devDependencies": {
+    "@dotenvx/dotenvx": "^1.57.0",
     "bun-types": "^1.3.10"
   },
   "dependencies": {

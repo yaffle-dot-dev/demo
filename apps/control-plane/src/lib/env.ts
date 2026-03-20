@@ -94,7 +94,7 @@ export function getEnv(): AppEnv {
     yaffleEnv: process.env.YAFFLE_ENV ?? "development",
     authMode: (process.env.YAFFLE_AUTH_MODE === "dev" ? "dev" : "required") as "dev" | "required",
     betterAuthSecret: process.env.BETTER_AUTH_SECRET ?? "",
-    betterAuthUrl: process.env.BETTER_AUTH_URL ?? "http://localhost:3000",
+    betterAuthUrl: process.env.BETTER_AUTH_URL ?? "",
     trustedOrigins: process.env.TRUSTED_ORIGINS ?? "",
     githubOauthClientId: process.env.GITHUB_OAUTH_CLIENT_ID ?? "",
     githubOauthClientSecret: process.env.GITHUB_OAUTH_CLIENT_SECRET ?? "",

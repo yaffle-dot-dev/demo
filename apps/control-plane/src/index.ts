@@ -111,6 +111,7 @@ process.on("SIGINT", async () => {
 
 export default {
   port,
+  hostname: "0.0.0.0",
   fetch: app.fetch,
   // Disable Bun's default 10s idle timeout — SSE connections can be idle
   // for extended periods between events. Our own 30s heartbeat keeps

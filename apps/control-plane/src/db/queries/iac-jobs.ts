@@ -1,7 +1,7 @@
-import { and, eq, inArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
-import { iacJobs, iacJobStatusEnum, iacJobTypeEnum, workspaceDeployments } from "../schema.ts"
+import { iacJobs, iacJobStatusEnum, iacJobTypeEnum, tfRuns, workspaceDeployments } from "../schema.ts"
 import {
   withDbSpan,
   logger,
@@ -12,6 +12,8 @@ import {
 } from "../../lib/telemetry.ts"
 import { events } from "../../lib/events.ts"
 import { updateDeploymentStatus } from "./workspace-deployments.ts"
+import { updateRunStatus } from "./tf-runs.ts"
+import { cascadeFailure } from "../../lib/deployment-side-effects.ts"
 
 export type IacJob = typeof iacJobs.$inferSelect
 export type NewIacJob = typeof iacJobs.$inferInsert
@@ -300,7 +302,29 @@ export async function failStaleJob(
         .where(eq(iacJobs.id, jobId))
         .limit(1)
       if (job[0]) {
+        const errorMessage = "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry."
+
+        const latestRunningRun = await db
+          .select({ id: tfRuns.id })
+          .from(tfRuns)
+          .where(
+            and(
+              eq(tfRuns.deploymentId, job[0].deploymentId),
+              eq(tfRuns.status, "running"),
+            ),
+          )
+          .orderBy(desc(tfRuns.createdAt))
+          .limit(1)
+
+        if (latestRunningRun[0]) {
+          await updateRunStatus(latestRunningRun[0].id, job[0].deploymentId, "failed", {
+            completedAt: new Date(),
+            errorMessage,
+          })
+        }
+
         await updateDeploymentStatus(job[0].deploymentId, "system_error")
+        await cascadeFailure(job[0].deploymentId)
       }
     }
     return result

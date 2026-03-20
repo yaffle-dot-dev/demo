@@ -9,16 +9,25 @@ const env = getEnv()
 // Trusted origins for OAuth callbacks
 // In dev: frontend runs on :5173, API on :3000
 // In prod: both on same domain
+if (!env.betterAuthUrl) {
+  throw new Error("BETTER_AUTH_URL must be configured")
+}
+
 const trustedOrigins = env.trustedOrigins
-  ? env.trustedOrigins.split(",").map((o) => o.trim())
-  : ["http://localhost:5173", "http://localhost:3000"]
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean)
+
+if (trustedOrigins.length === 0) {
+  throw new Error("TRUSTED_ORIGINS must be configured")
+}
 
 export const auth = betterAuth({
   database: drizzleAdapter(db, {
     provider: "pg",
   }),
   basePath: "/api/auth",
-  baseURL: env.betterAuthUrl || "http://localhost:3000",
+  baseURL: env.betterAuthUrl,
   secret: env.betterAuthSecret,
   trustedOrigins,
   emailAndPassword: {

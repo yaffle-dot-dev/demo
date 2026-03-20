@@ -83,8 +83,21 @@ interface JsonApiStateVersion {
   }
 }
 
+function getRequestOrigin(c: { req: { url: string; header: (name: string) => string | undefined } }): string {
+  const forwardedProto = c.req.header("x-forwarded-proto")
+  const forwardedHost = c.req.header("x-forwarded-host")
+
+  if (forwardedProto && forwardedHost) {
+    return `${forwardedProto}://${forwardedHost}`
+  }
+
+  const url = new URL(c.req.url)
+  return url.origin
+}
+
 function toJsonApiStateVersion(
   sv: StateVersion,
+  origin: string,
   options: { includeUploadUrl?: boolean; includeDownloadUrl?: boolean } = {},
 ): JsonApiStateVersion {
   const result: JsonApiStateVersion = {
@@ -108,18 +121,15 @@ function toJsonApiStateVersion(
   }
 
   if (options.includeUploadUrl && sv.status === "pending") {
-    // Must be absolute URL for terraform to use it
-    const host = process.env.YAFFLE_TFC_API_HOST ?? "localhost:6969"
-    result.attributes["hosted-state-upload-url"] = `https://${host}/tfc/api/v2/state-versions/${sv.id}/upload`
+    result.attributes["hosted-state-upload-url"] = `${origin}/tfc/api/v2/state-versions/${sv.id}/upload`
     // JSON state upload URL - go-tfe uploads JSON state in parallel with raw state
-    result.attributes["hosted-json-state-upload-url"] = `https://${host}/tfc/api/v2/state-versions/${sv.id}/upload-json`
+    result.attributes["hosted-json-state-upload-url"] = `${origin}/tfc/api/v2/state-versions/${sv.id}/upload-json`
   }
 
   if (options.includeDownloadUrl && sv.status === "finalized") {
-    const host = process.env.YAFFLE_TFC_API_HOST ?? "localhost:6969"
-    result.attributes["hosted-state-download-url"] = `https://${host}/tfc/api/v2/state-versions/${sv.id}/download`
+    result.attributes["hosted-state-download-url"] = `${origin}/tfc/api/v2/state-versions/${sv.id}/download`
     // JSON state download URL
-    result.attributes["hosted-json-state-download-url"] = `https://${host}/tfc/api/v2/state-versions/${sv.id}/download-json`
+    result.attributes["hosted-json-state-download-url"] = `${origin}/tfc/api/v2/state-versions/${sv.id}/download-json`
   }
 
   return result
@@ -248,7 +258,7 @@ stateVersionsRoute.post(
       createdBy: expectedLocker,
     })
 
-    const response = toJsonApiStateVersion(sv, { includeUploadUrl: true })
+    const response = toJsonApiStateVersion(sv, getRequestOrigin(c), { includeUploadUrl: true })
     
     log.info("State version created (pending upload)", {
       stateVersionId: sv.id,
@@ -290,7 +300,7 @@ stateVersionsRoute.get(
       return c.json({ errors: [{ status: "404", title: "No state version found" }] }, 404)
     }
 
-    return c.json({ data: toJsonApiStateVersion(sv, { includeDownloadUrl: true }) })
+    return c.json({ data: toJsonApiStateVersion(sv, getRequestOrigin(c), { includeDownloadUrl: true }) })
   },
 )
 
@@ -416,7 +426,7 @@ stateVersionsRoute.get(
     })
 
     return c.json({
-      data: items.map((sv) => toJsonApiStateVersion(sv, { includeDownloadUrl: true })),
+      data: items.map((sv) => toJsonApiStateVersion(sv, getRequestOrigin(c), { includeDownloadUrl: true })),
       meta: {
         pagination: {
           "next-page": nextCursor,
@@ -451,7 +461,7 @@ stateVersionsRoute.get(
     })
 
     return c.json({
-      data: toJsonApiStateVersion(sv, {
+      data: toJsonApiStateVersion(sv, getRequestOrigin(c), {
         includeUploadUrl: sv.status === "pending",
         includeDownloadUrl: sv.status === "finalized",
       }),
