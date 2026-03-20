@@ -77,8 +77,8 @@ resource "aws_acm_certificate_validation" "main" {
 locals {
   # Map base domains to their ACM domain_validation_options key
   cert_domain_mapping = {
-    (var.domain)            = var.domain                 # yaffle.dev -> yaffle.dev (shared with *.yaffle.dev)
-    "preview.${var.domain}" = "*.preview.${var.domain}"  # preview.yaffle.dev -> *.preview.yaffle.dev
+    (var.domain)            = var.domain                # yaffle.dev -> yaffle.dev (shared with *.yaffle.dev)
+    "preview.${var.domain}" = "*.preview.${var.domain}" # preview.yaffle.dev -> *.preview.yaffle.dev
   }
 
   cert_domains = toset(keys(local.cert_domain_mapping))
@@ -241,22 +241,22 @@ locals {
     # Autodiscover
     "_autodiscover._tcp" = { priority = 0, weight = 1, port = 443, target = "autodiscover.fastmail.com" }
     # CalDAV
-    "_caldav._tcp"       = { priority = 0, weight = 0, port = 0, target = "." }
-    "_caldavs._tcp"      = { priority = 0, weight = 1, port = 443, target = "d5923151.caldav.fastmail.com" }
+    "_caldav._tcp"  = { priority = 0, weight = 0, port = 0, target = "." }
+    "_caldavs._tcp" = { priority = 0, weight = 1, port = 443, target = "d5923151.caldav.fastmail.com" }
     # CardDAV
-    "_carddav._tcp"      = { priority = 0, weight = 0, port = 0, target = "." }
-    "_carddavs._tcp"     = { priority = 0, weight = 1, port = 443, target = "d5923151.carddav.fastmail.com" }
+    "_carddav._tcp"  = { priority = 0, weight = 0, port = 0, target = "." }
+    "_carddavs._tcp" = { priority = 0, weight = 1, port = 443, target = "d5923151.carddav.fastmail.com" }
     # IMAP
-    "_imap._tcp"         = { priority = 0, weight = 0, port = 0, target = "." }
-    "_imaps._tcp"        = { priority = 0, weight = 1, port = 993, target = "imap.fastmail.com" }
+    "_imap._tcp"  = { priority = 0, weight = 0, port = 0, target = "." }
+    "_imaps._tcp" = { priority = 0, weight = 1, port = 993, target = "imap.fastmail.com" }
     # JMAP
-    "_jmap._tcp"         = { priority = 0, weight = 1, port = 443, target = "api.fastmail.com" }
+    "_jmap._tcp" = { priority = 0, weight = 1, port = 443, target = "api.fastmail.com" }
     # POP3
-    "_pop3._tcp"         = { priority = 0, weight = 0, port = 0, target = "." }
-    "_pop3s._tcp"        = { priority = 10, weight = 1, port = 995, target = "pop.fastmail.com" }
+    "_pop3._tcp"  = { priority = 0, weight = 0, port = 0, target = "." }
+    "_pop3s._tcp" = { priority = 10, weight = 1, port = 995, target = "pop.fastmail.com" }
     # SMTP Submission
-    "_submission._tcp"   = { priority = 0, weight = 0, port = 0, target = "." }
-    "_submissions._tcp"  = { priority = 0, weight = 1, port = 465, target = "smtp.fastmail.com" }
+    "_submission._tcp"  = { priority = 0, weight = 0, port = 0, target = "." }
+    "_submissions._tcp" = { priority = 0, weight = 1, port = 465, target = "smtp.fastmail.com" }
   }
 }
 

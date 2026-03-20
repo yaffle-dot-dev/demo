@@ -21,3 +21,9 @@ variable "cloudflare_zone_id" {
   type        = string
   description = "Cloudflare zone ID for yaffle.dev (dual DNS setup)"
 }
+
+variable "tailscale_runner_tags" {
+  type        = list(string)
+  description = "Tags allowed for ECS runner Tailscale nodes"
+  default     = ["tag:ecs-runner"]
+}

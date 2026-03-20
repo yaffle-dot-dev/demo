@@ -47,3 +47,17 @@ output "acm_certificate_validated_arn" {
   value       = aws_acm_certificate_validation.main.certificate_arn
   description = "ARN of the validated ACM certificate (use this for ALB listeners)"
 }
+
+# -----------------------------------------------------------------------------
+# Tailscale
+# -----------------------------------------------------------------------------
+
+output "tailscale_runner_authkey_secret_arn" {
+  value       = aws_secretsmanager_secret.tailscale_runner_authkey.arn
+  description = "Secrets Manager ARN for the ECS runner Tailscale auth secret"
+}
+
+output "tailscale_runner_oauth_client_id" {
+  value       = tailscale_oauth_client.ecs_runner.id
+  description = "Tailscale OAuth client ID for ECS runners"
+}

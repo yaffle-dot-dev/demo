@@ -20,6 +20,10 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 5.0"
     }
+    tailscale = {
+      source  = "tailscale/tailscale"
+      version = "~> 0.21"
+    }
   }
 
   # Backend is injected by Yaffle via backend_override.tf
@@ -40,3 +44,8 @@ provider "aws" {
 # Cloudflare provider for dual DNS setup
 # Authenticates via CLOUDFLARE_API_TOKEN env var
 provider "cloudflare" {}
+
+# Tailscale provider for shared singleton credentials.
+# Auth via TAILSCALE_API_KEY or provider-supported OAuth env vars such as
+# TAILSCALE_OAUTH_CLIENT_ID / TAILSCALE_OAUTH_CLIENT_SECRET.
+provider "tailscale" {}
