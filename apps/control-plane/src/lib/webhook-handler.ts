@@ -134,6 +134,7 @@ interface DependencyScanResult {
  *
  * @param ctx - Webhook context with repo info
  * @param orgSlug - Organization slug for S3 key
+ * @param orgId - Organization ID for resource tagging
  * @param workspacePaths - List of workspace paths from config
  * @param installationToken - GitHub token for cloning
  * @returns Dependency graph, execution order, and workspace S3 key
@@ -141,6 +142,7 @@ interface DependencyScanResult {
 async function scanDependencies(
   ctx: WebhookContext,
   orgSlug: string,
+  orgId: string,
   workspacePaths: string[],
   installationToken?: string,
 ): Promise<DependencyScanResult> {
@@ -193,7 +195,7 @@ async function scanDependencies(
       // Upload workspace to S3 cache for runners
       try {
         const cache = createWorkspaceCache()
-        workspaceS3Key = await cache.upload(orgSlug, ctx.repo, ctx.headSha, repoDir)
+        workspaceS3Key = await cache.upload(orgSlug, orgId, ctx.repo, ctx.headSha, repoDir)
         logger.info("Workspace uploaded to S3 cache", {
           "workspace.s3_key": workspaceS3Key,
           "workspace.org": orgSlug,
@@ -653,7 +655,7 @@ async function handlePrOpenedOrUpdated(
   let dependencyGraph: SerializableDependencyGraph
 
   try {
-    const scanResult = await scanDependencies(ctx, org.slug, workspacePaths, installationToken)
+    const scanResult = await scanDependencies(ctx, org.slug, org.id, workspacePaths, installationToken)
     executionOrder = scanResult.executionOrder
     dependencyGraph = scanResult.graph
 
@@ -1046,7 +1048,7 @@ async function handlePushEvent(
   let dependencyGraph: SerializableDependencyGraph
 
   try {
-    const scanResult = await scanDependencies(ctx, org.slug, activeWorkspacePaths, installationToken)
+    const scanResult = await scanDependencies(ctx, org.slug, org.id, activeWorkspacePaths, installationToken)
     executionOrder = scanResult.executionOrder
     dependencyGraph = scanResult.graph
 

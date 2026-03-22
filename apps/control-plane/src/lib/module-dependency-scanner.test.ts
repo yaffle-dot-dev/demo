@@ -80,6 +80,56 @@ module "shared" {
     expect(deps).toEqual(["infra/shared"])
   })
 
+  it("handles tailscale hostnames", () => {
+    const content = `
+module "shared" {
+  source = "yaffle.tail66f312.ts.net:6969/org--repo/infra--shared/yaffle"
+}
+`
+    const deps = extractDependenciesFromContent(content)
+    expect(deps).toEqual(["infra/shared"])
+  })
+
+  it("handles production hostname without explicit port", () => {
+    const content = `
+module "shared" {
+  source = "yaffle.dev/org--repo/infra--shared/yaffle"
+}
+`
+    const deps = extractDependenciesFromContent(content)
+    expect(deps).toEqual(["infra/shared"])
+  })
+
+  it("ignores non-allowlisted hosts", () => {
+    const content = `
+module "shared" {
+  source = "evil.example.com/org--repo/infra--shared/yaffle"
+}
+`
+    const deps = extractDependenciesFromContent(content)
+    expect(deps).toEqual([])
+  })
+
+  it("supports env override for allowed hosts", () => {
+    const original = process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS
+    process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS = "custom.example.com"
+
+    const content = `
+module "shared" {
+  source = "custom.example.com/org--repo/infra--shared/yaffle"
+}
+`
+    const deps = extractDependenciesFromContent(content)
+
+    if (original === undefined) {
+      delete process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS
+    } else {
+      process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS = original
+    }
+
+    expect(deps).toEqual(["infra/shared"])
+  })
+
   it("returns empty array for no dependencies", () => {
     const content = `
 resource "aws_s3_bucket" "main" {

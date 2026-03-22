@@ -73,6 +73,75 @@ async function resolveConnectionProviderType(payload: z.infer<typeof createConne
   return payload.providerType.toLowerCase()
 }
 
+type CloudflareTokenValidationError = {
+  code: string
+  message: string
+  status: 400 | 502 | 503
+}
+
+async function validateCloudflareApiToken(
+  resolvedProviderType: string,
+  envVars: Array<{ key: string; value: string }>,
+): Promise<CloudflareTokenValidationError | null> {
+  if (resolvedProviderType !== "cloudflare") {
+    return null
+  }
+
+  const token = envVars.find((entry) => entry.key === "CLOUDFLARE_API_TOKEN")?.value
+  if (!token) {
+    return null
+  }
+
+  let response: Response
+  try {
+    response = await fetch("https://api.cloudflare.com/client/v4/user/tokens/verify", {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+  } catch {
+    return {
+      code: "CLOUDFLARE_TOKEN_VERIFY_UNAVAILABLE",
+      message: "Could not reach Cloudflare to validate API token",
+      status: 502,
+    }
+  }
+
+  let body: unknown = null
+  try {
+    body = await response.json()
+  } catch {
+    body = null
+  }
+
+  if (response.ok && typeof body === "object" && body !== null && "success" in body && (body as { success: unknown }).success === true) {
+    return null
+  }
+
+  if (response.status === 401 || response.status === 403) {
+    return {
+      code: "CLOUDFLARE_TOKEN_INVALID",
+      message: "Cloudflare API token is invalid or unauthorized",
+      status: 400,
+    }
+  }
+
+  if (response.status === 429) {
+    return {
+      code: "CLOUDFLARE_TOKEN_VERIFY_RATE_LIMITED",
+      message: "Cloudflare token verification was rate limited. Please retry.",
+      status: 503,
+    }
+  }
+
+  return {
+    code: "CLOUDFLARE_TOKEN_VERIFY_FAILED",
+    message: "Cloudflare token verification failed",
+    status: 502,
+  }
+}
+
 async function getOrgBrokerCredentials(org: {
   id: string
   iamRoleArn: string | null
@@ -726,6 +795,19 @@ orgsRoute.post("/:slug/connections", async (c) => {
   let type: string
 
   if (payload.credentialProviderType === "envvar") {
+    const cloudflareTokenError = await validateCloudflareApiToken(resolvedProviderType, payload.envVars)
+    if (cloudflareTokenError) {
+      return c.json(
+        {
+          error: {
+            code: cloudflareTokenError.code,
+            message: cloudflareTokenError.message,
+          },
+        },
+        cloudflareTokenError.status,
+      )
+    }
+
     if (!org.iamRoleArn) {
       return c.json(
         {
@@ -739,7 +821,7 @@ orgsRoute.post("/:slug/connections", async (c) => {
     }
 
     const brokerCredentials = await getOrgBrokerCredentials(org)
-    const stored = await storeConnectionSecret(slug, connectionId, org.kmsKeyArn, {
+    const stored = await storeConnectionSecret(org.id, slug, connectionId, org.kmsKeyArn, {
       envVars: payload.envVars,
     }, {
       credentials: brokerCredentials,
@@ -912,6 +994,19 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
   let config: Record<string, unknown>
 
   if (payload.credentialProviderType === "envvar") {
+    const cloudflareTokenError = await validateCloudflareApiToken(resolvedProviderType, payload.envVars)
+    if (cloudflareTokenError) {
+      return c.json(
+        {
+          error: {
+            code: cloudflareTokenError.code,
+            message: cloudflareTokenError.message,
+          },
+        },
+        cloudflareTokenError.status,
+      )
+    }
+
     if (!org.kmsKeyArn) {
       return c.json(
         {
@@ -937,7 +1032,7 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
     }
 
     const brokerCredentials = await getOrgBrokerCredentials(org)
-    const stored = await storeConnectionSecret(slug, existing.id, org.kmsKeyArn, {
+    const stored = await storeConnectionSecret(org.id, slug, existing.id, org.kmsKeyArn, {
       envVars: payload.envVars,
     }, {
       credentials: brokerCredentials,

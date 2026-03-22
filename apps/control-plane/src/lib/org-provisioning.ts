@@ -16,6 +16,7 @@ import {
   ScheduleKeyDeletionCommand,
   KMSClient,
   PutKeyPolicyCommand,
+  TagResourceCommand,
 } from "@aws-sdk/client-kms"
 import {
   CreateRoleCommand,
@@ -25,7 +26,9 @@ import {
   PutRolePolicyCommand,
   DeleteRolePolicyCommand,
   IAMClient,
+  TagRoleCommand,
 } from "@aws-sdk/client-iam"
+import { buildOrgResourceTags, toIamTags, toKmsTags } from "./aws-tags.ts"
 import { logger } from "./telemetry.ts"
 
 // =============================================================================
@@ -151,6 +154,7 @@ function buildOrgBrokerPolicy(params: {
           "ssm:GetParameter",
           "ssm:GetParameters",
           "ssm:PutParameter",
+          "ssm:AddTagsToResource",
           "ssm:DeleteParameter",
         ],
         Resource: `arn:aws:ssm:${getConfig().region}:*:parameter/yaffle/org/${orgSlug}/connections/*`,
@@ -242,6 +246,10 @@ async function createOrgKmsKey(
   const kms = getKmsClient(config.region)
 
   const keyAlias = `alias/yaffle-org-${orgId}`
+  const orgResourceTags = toKmsTags(buildOrgResourceTags(
+    { orgId },
+    { resourceClass: "kms-key" },
+  ))
 
   // Check if key already exists (from a previous attempt)
   let keyArn: string | undefined
@@ -263,10 +271,7 @@ async function createOrgKmsKey(
   if (!keyArn) {
     const createResponse = await kms.send(new CreateKeyCommand({
       Description: `Yaffle state encryption key for org ${orgId}`,
-      Tags: [
-        { TagKey: "Project", TagValue: "yaffle" },
-        { TagKey: "OrgId", TagValue: orgId },
-      ],
+      Tags: orgResourceTags,
     }))
 
     keyArn = createResponse.KeyMetadata?.Arn
@@ -280,6 +285,11 @@ async function createOrgKmsKey(
       TargetKeyId: keyArn,
     }))
   }
+
+  await kms.send(new TagResourceCommand({
+    KeyId: keyArn,
+    Tags: orgResourceTags,
+  }))
 
   // Set key policy - control plane can manage, org broker can use data key ops.
   const keyPolicy = JSON.stringify({
@@ -400,6 +410,10 @@ async function createOrgIamRole(orgId: string): Promise<string> {
   const iam = getIamClient(config.region)
 
   const roleName = orgBrokerRoleName(orgId)
+  const orgResourceTags = toIamTags(buildOrgResourceTags(
+    { orgId },
+    { resourceClass: "iam-role" },
+  ))
 
   // Trust policy - only control-plane base role can assume org broker role
   const trustPolicy = JSON.stringify({
@@ -429,10 +443,7 @@ async function createOrgIamRole(orgId: string): Promise<string> {
       RoleName: roleName,
       AssumeRolePolicyDocument: trustPolicy,
       Description: `Yaffle org broker role for org ${orgId}`,
-      Tags: [
-        { Key: "Project", Value: "yaffle" },
-        { Key: "OrgId", Value: orgId },
-      ],
+      Tags: orgResourceTags,
     }))
     roleArn = createResponse.Role?.Arn ?? ""
     if (!roleArn) {
@@ -466,6 +477,11 @@ async function createOrgIamRole(orgId: string): Promise<string> {
   await iam.send(new UpdateAssumeRolePolicyCommand({
     RoleName: roleName,
     PolicyDocument: trustPolicy,
+  }))
+
+  await iam.send(new TagRoleCommand({
+    RoleName: roleName,
+    Tags: orgResourceTags,
   }))
 
   logger.info("Created IAM role for org", {

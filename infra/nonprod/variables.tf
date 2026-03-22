@@ -10,6 +10,12 @@ variable "environment" {
   default     = "nonprod"
 }
 
+variable "environment_kind" {
+  type        = string
+  description = "Environment kind (passed by Yaffle, unused in nonprod)"
+  default     = "production"
+}
+
 variable "instance_types" {
   type        = list(string)
   description = "EC2 instance types for ECS cluster (multiple for spot diversity)"

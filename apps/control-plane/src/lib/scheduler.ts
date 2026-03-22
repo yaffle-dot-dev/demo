@@ -104,6 +104,8 @@ export class Scheduler {
   private running = false
   private readonly recentSpawnAttempts = new Map<string, number>()
   private readonly blockedJobs = new Map<string, number>()
+  private lastGlobalLimitLogAtMs = 0
+  private lastGroupLimitLogAtMs = 0
 
   constructor(spawner: IacEngineSpawner, config: SchedulerConfig = {}) {
     this.workerId = `scheduler-${randomUUID().slice(0, 8)}`
@@ -247,23 +249,31 @@ export class Scheduler {
       getSchedulerJobsBlockedCounter().add(result.blockedByGlobalLimit, {
         reason: "global_limit",
       })
-      logger.info("Jobs blocked by global concurrency limit", {
-        workerId: this.workerId,
-        blocked: result.blockedByGlobalLimit,
-        activeJobs: activeCount,
-        maxConcurrent: this.limits.maxTotal,
-      })
+      const now = Date.now()
+      if (now - this.lastGlobalLimitLogAtMs >= 30000) {
+        this.lastGlobalLimitLogAtMs = now
+        logger.info("Jobs blocked by global concurrency limit", {
+          workerId: this.workerId,
+          blocked: result.blockedByGlobalLimit,
+          activeJobs: activeCount,
+          maxConcurrent: this.limits.maxTotal,
+        })
+      }
     }
 
     if (result.blockedByGroupLimit > 0) {
       getSchedulerJobsBlockedCounter().add(result.blockedByGroupLimit, {
         reason: "group_limit",
       })
-      logger.info("Jobs blocked by per-group concurrency limit", {
-        workerId: this.workerId,
-        blocked: result.blockedByGroupLimit,
-        maxPerGroup: this.limits.maxPerRunGroup,
-      })
+      const now = Date.now()
+      if (now - this.lastGroupLimitLogAtMs >= 30000) {
+        this.lastGroupLimitLogAtMs = now
+        logger.info("Jobs blocked by per-group concurrency limit", {
+          workerId: this.workerId,
+          blocked: result.blockedByGroupLimit,
+          maxPerGroup: this.limits.maxPerRunGroup,
+        })
+      }
     }
 
     const jobsToSpawn = await this.filterSpawnableJobs(result.jobs)
@@ -485,7 +495,23 @@ export class Scheduler {
 // Singleton scheduler instance
 // =============================================================================
 
-let schedulerInstance: Scheduler | null = null
+type SchedulerGlobalState = {
+  schedulerInstance: Scheduler | null
+}
+
+function getSchedulerGlobalState(): SchedulerGlobalState {
+  const globalKey = "__yaffle_scheduler_state"
+  const globalRef = globalThis as Record<string, unknown>
+  if (!globalRef[globalKey]) {
+    globalRef[globalKey] = {
+      schedulerInstance: null,
+    } as SchedulerGlobalState
+  }
+
+  return globalRef[globalKey] as SchedulerGlobalState
+}
+
+const schedulerState = getSchedulerGlobalState()
 
 /**
  * Get or create the scheduler instance.
@@ -501,8 +527,8 @@ let schedulerInstance: Scheduler | null = null
  * - YAFFLE_USE_ECS_RUNNER: Set to "true" to force ECS spawner in development
  */
 export async function getScheduler(): Promise<Scheduler> {
-  if (schedulerInstance) {
-    return schedulerInstance
+  if (schedulerState.schedulerInstance) {
+    return schedulerState.schedulerInstance
   }
 
   // Determine which spawner to use based on environment
@@ -562,7 +588,7 @@ export async function getScheduler(): Promise<Scheduler> {
     10,
   )
 
-  schedulerInstance = new Scheduler(spawner, {
+  schedulerState.schedulerInstance = new Scheduler(spawner, {
     // Faster polling in dev, slower in prod
     pollIntervalMs: isProduction ? 2000 : 500,
     staleCheckIntervalMs: isProduction ? 60000 : 30000,
@@ -576,7 +602,7 @@ export async function getScheduler(): Promise<Scheduler> {
     spawner: spawnerType,
   })
 
-  return schedulerInstance
+  return schedulerState.schedulerInstance
 }
 
 /**
@@ -597,8 +623,8 @@ export async function startScheduler(): Promise<void> {
  * Stop the scheduler.
  */
 export function stopScheduler(): void {
-  if (schedulerInstance) {
-    schedulerInstance.stop()
+  if (schedulerState.schedulerInstance) {
+    schedulerState.schedulerInstance.stop()
   }
 }
 

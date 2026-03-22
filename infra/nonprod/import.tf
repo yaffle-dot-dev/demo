@@ -65,25 +65,25 @@ import {
 import {
   for_each = local.import_main
   to       = module.core.aws_route_table_association.public[0]
-  id       = "rtbassoc-044e2e137c0c1540b"
+  id       = "subnet-0685a1152b6a8c91e/rtb-0b19954d65458bd08"
 }
 
 import {
   for_each = local.import_main
   to       = module.core.aws_route_table_association.public[1]
-  id       = "rtbassoc-0da7bbd5d048a90f8"
+  id       = "subnet-0a3d6409c562f49d8/rtb-0b19954d65458bd08"
 }
 
 import {
   for_each = local.import_main
   to       = module.core.aws_route_table_association.private[0]
-  id       = "rtbassoc-0ba1703cbd3847e36"
+  id       = "subnet-0b9e4aa7ded90404f/rtb-0d143df2ef720b4f1"
 }
 
 import {
   for_each = local.import_main
   to       = module.core.aws_route_table_association.private[1]
-  id       = "rtbassoc-0a2e4613c738f0903"
+  id       = "subnet-03493f7df484e11a6/rtb-0d143df2ef720b4f1"
 }
 
 import {
@@ -131,7 +131,7 @@ import {
 import {
   for_each = local.import_main
   to       = module.core.aws_ecs_cluster.main
-  id       = "arn:aws:ecs:us-east-1:870923192739:cluster/yaffle-cluster-nonprod-main-use1"
+  id       = "yaffle-cluster-nonprod-main-use1"
 }
 
 import {

@@ -1,5 +1,5 @@
-import { readdir, readFile } from "node:fs/promises"
-import { join } from "node:path"
+import { readdir, readFile, stat } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
 
 import { cleanupWorkspace } from "./workspace.ts"
 import { createWorkspaceCache } from "./workspace-cache.ts"
@@ -27,6 +27,7 @@ export interface ProviderRequirementDeployment {
 
 const PROVIDER_BLOCK_PATTERN = /provider\s+"([^"]+)"/g
 const REQUIRED_PROVIDER_PATTERN = /(\w+)\s*=\s*\{[^}]*source\s*=\s*"([^"]+)"/gms
+const MODULE_SOURCE_PATTERN = /source\s*=\s*"([^"]+)"/g
 
 const NO_CREDENTIAL_PROVIDERS = new Set([
   "null",
@@ -119,9 +120,30 @@ async function findTerraformFiles(dir: string): Promise<string[]> {
   return files
 }
 
-async function extractProviders(workspaceDir: string): Promise<string[]> {
-  const tfFiles = await findTerraformFiles(workspaceDir)
-  const providers = new Set<string>()
+function isLocalModuleSource(source: string): boolean {
+  if (source.startsWith("./") || source.startsWith("../") || source.startsWith("/")) {
+    return true
+  }
+
+  if (source.startsWith("git::") || source.includes("://")) {
+    return false
+  }
+
+  return false
+}
+
+async function extractProvidersFromDir(
+  rootDir: string,
+  providers: Set<string>,
+  visitedDirs: Set<string>,
+): Promise<void> {
+  const resolvedRoot = resolve(rootDir)
+  if (visitedDirs.has(resolvedRoot)) {
+    return
+  }
+  visitedDirs.add(resolvedRoot)
+
+  const tfFiles = await findTerraformFiles(resolvedRoot)
 
   for (const tfFile of tfFiles) {
     const content = await readFile(tfFile, "utf8")
@@ -140,8 +162,32 @@ async function extractProviders(workspaceDir: string): Promise<string[]> {
       const sourceName = source.split("/").pop() ?? localName
       providers.add(sourceName)
     }
-  }
 
+    MODULE_SOURCE_PATTERN.lastIndex = 0
+    let sourceMatch: RegExpExecArray | null
+    while ((sourceMatch = MODULE_SOURCE_PATTERN.exec(content)) !== null) {
+      const source = sourceMatch[1]
+      if (!isLocalModuleSource(source)) {
+        continue
+      }
+
+      const modulePath = resolve(dirname(tfFile), source)
+      try {
+        const stats = await stat(modulePath)
+        if (stats.isDirectory()) {
+          await extractProvidersFromDir(modulePath, providers, visitedDirs)
+        }
+      } catch {
+        continue
+      }
+    }
+  }
+}
+
+async function extractProviders(workspaceDir: string): Promise<string[]> {
+  const providers = new Set<string>()
+  const visitedDirs = new Set<string>()
+  await extractProvidersFromDir(workspaceDir, providers, visitedDirs)
   return [...providers].filter((provider) => !NO_CREDENTIAL_PROVIDERS.has(provider)).sort()
 }
 

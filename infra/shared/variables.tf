@@ -17,6 +17,12 @@ variable "environment" {
   description = "Environment name (unused in shared, but passed by Yaffle)"
 }
 
+variable "environment_kind" {
+  type        = string
+  description = "Environment kind (unused in shared, but passed by Yaffle)"
+  default     = "production"
+}
+
 variable "cloudflare_zone_id" {
   type        = string
   description = "Cloudflare zone ID for yaffle.dev (dual DNS setup)"

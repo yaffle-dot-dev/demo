@@ -611,7 +611,7 @@ stateUploadRoute.put(
 
     // Upload to S3, validating MD5 and using org's KMS key
     try {
-      const { size, md5 } = await uploadState(sv.s3Key, content, sv.md5, kmsKeyArn)
+      const { size, md5 } = await uploadState(sv.s3Key, content, sv.md5, kmsKeyArn, ws.orgId)
 
       // Verify MD5 matches what was declared at creation
       if (md5 !== sv.md5) {

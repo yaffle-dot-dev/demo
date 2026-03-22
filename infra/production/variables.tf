@@ -9,6 +9,12 @@ variable "environment" {
   description = "Environment name (branch name, e.g. 'main')"
 }
 
+variable "environment_kind" {
+  type        = string
+  description = "Environment kind (passed by Yaffle, unused in production)"
+  default     = "production"
+}
+
 variable "instance_type" {
   type        = string
   description = "EC2 instance type for ECS cluster"

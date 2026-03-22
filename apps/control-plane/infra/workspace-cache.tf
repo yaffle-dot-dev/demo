@@ -93,6 +93,7 @@ resource "aws_iam_role_policy" "control_plane_workspace_cache" {
         Action = [
           "s3:GetObject",
           "s3:PutObject",
+          "s3:PutObjectTagging",
           "s3:DeleteObject",
           "s3:ListBucket"
         ]

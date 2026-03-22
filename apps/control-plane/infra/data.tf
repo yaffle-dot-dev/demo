@@ -15,7 +15,7 @@
 # -----------------------------------------------------------------------------
 
 module "shared" {
-  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
+  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 # -----------------------------------------------------------------------------
@@ -25,12 +25,12 @@ module "shared" {
 
 module "main" {
   count  = local.is_preview ? 0 : 1
-  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--production/yaffle"
+  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--production/yaffle"
 }
 
 module "nonprod" {
   count  = local.is_preview ? 1 : 0
-  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--nonprod/yaffle"
+  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--nonprod/yaffle"
 }
 
 # -----------------------------------------------------------------------------
@@ -38,7 +38,7 @@ module "nonprod" {
 # -----------------------------------------------------------------------------
 
 module "runner" {
-  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/apps--runner--infra/yaffle"
+  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/apps--runner--infra/yaffle"
 }
 
 # -----------------------------------------------------------------------------

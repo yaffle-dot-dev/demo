@@ -149,6 +149,8 @@ async function main(): Promise<void> {
       workspacePath: context.workspacePath,
       hasBackendConfig: !!context.backendConfig,
       variableCount: Object.keys(context.variables).length,
+      executionEnvVarCount: Object.keys(context.executionEnv ?? {}).length,
+      executionEnvVarKeys: Object.keys(context.executionEnv ?? {}).sort(),
     })
 
     // 4. Download workspace from S3

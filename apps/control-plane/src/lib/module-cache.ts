@@ -5,6 +5,7 @@ import {
   NoSuchKey,
 } from "@aws-sdk/client-s3"
 
+import { buildOrgResourceTags, toS3ObjectTagging } from "./aws-tags.ts"
 import { logger } from "./telemetry.ts"
 import { getTfcS3Config, isS3Configured } from "./s3-state.ts"
 
@@ -128,6 +129,7 @@ export async function cacheModule(
   workspaceId: string,
   serial: number,
   archive: Uint8Array,
+  orgId: string,
 ): Promise<void> {
   const s3Key = buildModuleS3Key(workspaceId, serial)
 
@@ -150,6 +152,10 @@ export async function cacheModule(
       Key: s3Key,
       Body: archive,
       ContentType: "application/gzip",
+      Tagging: toS3ObjectTagging(buildOrgResourceTags(
+        { orgId },
+        { resourceClass: "module" },
+      )),
       // Cache for 1 year - modules are immutable once generated
       CacheControl: "max-age=31536000, immutable",
     }),
@@ -169,6 +175,7 @@ export async function cacheModule(
 export async function getOrGenerateModule(
   workspaceId: string,
   serial: number,
+  orgId: string,
   generate: () => Promise<Uint8Array>,
 ): Promise<Uint8Array> {
   // Try cache first
@@ -181,7 +188,7 @@ export async function getOrGenerateModule(
   const archive = await generate()
 
   // Cache for next time (fire and forget)
-  cacheModule(workspaceId, serial, archive).catch((err) => {
+  cacheModule(workspaceId, serial, archive, orgId).catch((err) => {
     logger.warn("Failed to cache module", {
       "module.workspaceId": workspaceId,
       "module.serial": serial,

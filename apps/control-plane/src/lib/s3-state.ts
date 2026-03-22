@@ -7,6 +7,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 import { createHash } from "node:crypto"
 
+import { buildOrgResourceTags, toS3ObjectTagging } from "./aws-tags.ts"
 import { logger } from "./telemetry.ts"
 
 // =============================================================================
@@ -92,6 +93,7 @@ export async function uploadState(
   content: Uint8Array,
   expectedMd5?: string,
   kmsKeyArn?: string,
+  orgId?: string,
 ): Promise<{ size: number; md5: string }> {
   // Calculate MD5 of content
   const actualMd5 = createHash("md5").update(content).digest("hex")
@@ -131,6 +133,13 @@ export async function uploadState(
   if (kmsKeyArn) {
     putParams.ServerSideEncryption = "aws:kms"
     putParams.SSEKMSKeyId = kmsKeyArn
+  }
+
+  if (orgId) {
+    putParams.Tagging = toS3ObjectTagging(buildOrgResourceTags(
+      { orgId },
+      { resourceClass: "state" },
+    ))
   }
 
   await client.send(new PutObjectCommand(putParams))

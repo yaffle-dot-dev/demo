@@ -47,5 +47,5 @@ import {
 import {
   for_each = local.import_main
   to       = aws_ecs_task_definition.runner
-  id       = "yaffle-runner-main-use1"
+  id       = "arn:aws:ecs:us-east-1:870923192739:task-definition/yaffle-runner-main-use1:3"
 }

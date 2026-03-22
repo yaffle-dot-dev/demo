@@ -124,6 +124,16 @@ describe("org connections routes", () => {
   })
 
   test("infers provider type from env var credentials", async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = Object.assign(
+      async () =>
+        new Response(JSON.stringify({ success: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      { preconnect: originalFetch.preconnect },
+    ) as typeof fetch
+
     const res = await req("/api/orgs/connections-test-org/connections", {
       method: "POST",
       headers: {
@@ -139,9 +149,44 @@ describe("org connections routes", () => {
       }),
     })
 
+    globalThis.fetch = originalFetch
+
     expect(res.status).toBe(201)
     const body = await res.json()
     expect(body.data.providerType).toBe("cloudflare")
+  })
+
+  test("rejects invalid cloudflare api token", async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = Object.assign(
+      async () =>
+        new Response(JSON.stringify({ success: false }), {
+          status: 401,
+          headers: { "content-type": "application/json" },
+        }),
+      { preconnect: originalFetch.preconnect },
+    ) as typeof fetch
+
+    const res = await req("/api/orgs/connections-test-org/connections", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "cloudflare invalid",
+        providerType: "cloudflare",
+        credentialProviderType: "envvar",
+        environmentScope: [],
+        workspaceScope: [],
+        envVars: [{ key: "CLOUDFLARE_API_TOKEN", value: "invalid" }],
+      }),
+    })
+
+    globalThis.fetch = originalFetch
+
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.error.code).toBe("CLOUDFLARE_TOKEN_INVALID")
   })
 
   test("rejects invalid iam role arn syntax", async () => {

@@ -20,7 +20,7 @@ case "$MODE" in
     ;;
 esac
 
-RUN_CONTROL_PLANE_CMD='./scripts/assume-control-plane-role.sh -- bun run dev:control-plane'
+RUN_CONTROL_PLANE_CMD='./scripts/run-with-assumed-role-refresh.sh -- bun run dev:control-plane'
 
 DOTENV_ARGS=(
   -f "$ROOT_DIR/env/dev/base.env"

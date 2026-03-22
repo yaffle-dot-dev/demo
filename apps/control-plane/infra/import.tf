@@ -155,11 +155,11 @@ import {
 import {
   for_each = local.import_main
   to       = aws_ecs_task_definition.control_plane
-  id       = "yaffle-cp-main-use1"
+  id       = "arn:aws:ecs:us-east-1:870923192739:task-definition/yaffle-cp-main-use1:3"
 }
 
 import {
   for_each = local.import_main
   to       = aws_ecs_service.control_plane
-  id       = "arn:aws:ecs:us-east-1:870923192739:service/yaffle-cluster-production-main-use1/yaffle-cp-main-use1"
+  id       = "yaffle-cluster-production-main-use1/yaffle-cp-main-use1"
 }

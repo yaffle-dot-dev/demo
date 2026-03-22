@@ -95,6 +95,7 @@ resource "aws_iam_role_policy" "control_plane_s3" {
         Action = [
           "s3:GetObject",
           "s3:PutObject",
+          "s3:PutObjectTagging",
           "s3:DeleteObject",
           "s3:ListBucket"
         ]
@@ -120,7 +121,8 @@ resource "aws_iam_role_policy" "control_plane_ecs" {
         Action = [
           "ecs:RunTask",
           "ecs:DescribeTasks",
-          "ecs:StopTask"
+          "ecs:StopTask",
+          "ecs:TagResource"
         ]
         Resource = "*"
         Condition = {
@@ -194,6 +196,7 @@ resource "aws_iam_role_policy" "control_plane_provisioning" {
         Action = [
           "iam:CreateRole",
           "iam:DeleteRole",
+          "iam:UpdateAssumeRolePolicy",
           "iam:PutRolePolicy",
           "iam:GetRolePolicy",
           "iam:DeleteRolePolicy",

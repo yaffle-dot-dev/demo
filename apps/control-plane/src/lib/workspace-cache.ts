@@ -22,6 +22,7 @@ import {
 } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
+import { buildOrgResourceTags, toS3ObjectTagging } from "./aws-tags.ts"
 import { logger } from "./telemetry.ts"
 
 /**
@@ -92,25 +93,27 @@ export class WorkspaceCache {
   /**
    * Upload a workspace to the cache.
    *
-   * @param org - Organization slug
+   * @param orgSlug - Organization slug (used in cache key)
+   * @param orgId - Organization ID (used for object tagging)
    * @param repo - Repository name (without org prefix)
    * @param sha - Git commit SHA
    * @param workDir - Local directory containing the cloned workspace
    * @returns S3 key for the uploaded workspace
    */
   async upload(
-    org: string,
+    orgSlug: string,
+    orgId: string,
     repo: string,
     sha: string,
     workDir: string,
   ): Promise<string> {
-    const key = this.buildKey(org, repo, sha)
+    const key = this.buildKey(orgSlug, repo, sha)
 
     // Check if already cached
-    const cached = await this.exists(org, repo, sha)
+    const cached = await this.exists(orgSlug, repo, sha)
     if (cached) {
       logger.info("Workspace already cached, skipping upload", {
-        org,
+        org: orgSlug,
         repo,
         sha: sha.slice(0, 7),
         key,
@@ -122,7 +125,7 @@ export class WorkspaceCache {
     const tarballPath = join(tmpdir(), `yaffle-ws-${sha.slice(0, 7)}.tar.gz`)
 
     logger.info("Creating workspace tarball", {
-      org,
+      org: orgSlug,
       repo,
       sha: sha.slice(0, 7),
       workDir,
@@ -142,7 +145,7 @@ export class WorkspaceCache {
     const tarballData = await readFile(tarballPath)
 
     logger.info("Uploading workspace to S3", {
-      org,
+      org: orgSlug,
       repo,
       sha: sha.slice(0, 7),
       bucket: this.bucket,
@@ -156,6 +159,10 @@ export class WorkspaceCache {
         Key: key,
         Body: tarballData,
         ContentType: "application/gzip",
+        Tagging: toS3ObjectTagging(buildOrgResourceTags(
+          { orgId, orgSlug },
+          { resourceClass: "workspace-cache" },
+        )),
       }),
     )
 
@@ -163,7 +170,7 @@ export class WorkspaceCache {
     await rm(tarballPath, { force: true })
 
     logger.info("Workspace cached successfully", {
-      org,
+      org: orgSlug,
       repo,
       sha: sha.slice(0, 7),
       key,

@@ -1,4 +1,12 @@
-import { DeleteParameterCommand, GetParameterCommand, PutParameterCommand, SSMClient } from "@aws-sdk/client-ssm"
+import {
+  AddTagsToResourceCommand,
+  DeleteParameterCommand,
+  GetParameterCommand,
+  PutParameterCommand,
+  SSMClient,
+} from "@aws-sdk/client-ssm"
+
+import { buildOrgResourceTags, toSsmTags } from "./aws-tags.ts"
 
 const region = process.env.AWS_REGION ?? "us-east-1"
 const testSecretStore = new Map<string, string>()
@@ -27,6 +35,7 @@ export interface StoredConnectionSecret {
 }
 
 export async function storeConnectionSecret(
+  orgId: string,
   orgSlug: string,
   connectionId: string,
   kmsKeyArn: string,
@@ -36,6 +45,10 @@ export async function storeConnectionSecret(
   },
 ): Promise<StoredConnectionSecret> {
   const path = `/yaffle/org/${orgSlug}/connections/${connectionId}/secret`
+  const tags = toSsmTags(buildOrgResourceTags(
+    { orgId, orgSlug },
+    { resourceClass: "connection-secret" },
+  ))
 
   if (isTestEnv()) {
     testSecretStore.set(path, JSON.stringify(value))
@@ -54,6 +67,12 @@ export async function storeConnectionSecret(
     Value: JSON.stringify(value),
     KeyId: kmsKeyArn,
     Overwrite: true,
+  }))
+
+  await ssm.send(new AddTagsToResourceCommand({
+    ResourceType: "Parameter",
+    ResourceId: path,
+    Tags: tags,
   }))
 
   const result = await ssm.send(new GetParameterCommand({ Name: path, WithDecryption: false }))

@@ -5,7 +5,7 @@
  * between workspaces based on Yaffle registry module sources.
  *
  * Module sources follow the pattern:
- *   source = "yaffle.local:PORT/ORG--REPO/WORKSPACE--PATH/yaffle"
+ *   source = "HOST[:PORT]/ORG--REPO/WORKSPACE--PATH/yaffle"
  *
  * Where:
  * - ORG--REPO is the namespace (e.g., `yaffle-dot-dev--yaffle`)
@@ -39,19 +39,65 @@ export interface InferredDependencyGraph {
 }
 
 /**
- * Pattern to match Yaffle registry module sources.
- *
- * Captures:
- * - Group 1: The workspace path portion (with -- separators)
- *
- * Examples matched:
- * - source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
- * - source = "yaffle.local:6969/org-name--repo/apps--web--infra/yaffle"
- *
- * The namespace format is "{org}--{repo}" but we only need the workspace path.
+ * Pattern to match Terraform module source values.
  */
-const YAFFLE_MODULE_SOURCE_PATTERN =
-  /source\s*=\s*"yaffle\.local:\d+\/[^/]+--[^/]+\/([^/]+)\/yaffle"/g
+const MODULE_SOURCE_PATTERN = /source\s*=\s*"([^"]+)"/g
+
+const DEFAULT_ALLOWED_MODULE_HOSTS = ["yaffle.dev", "yaffle.local", ".ts.net"]
+
+function getAllowedModuleHosts(): string[] {
+  const fromEnv = process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS
+  if (!fromEnv) {
+    return DEFAULT_ALLOWED_MODULE_HOSTS
+  }
+
+  const parsed = fromEnv
+    .split(",")
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => entry.length > 0)
+
+  return parsed.length > 0 ? parsed : DEFAULT_ALLOWED_MODULE_HOSTS
+}
+
+function isAllowedModuleHost(host: string, allowedHosts: string[]): boolean {
+  const normalizedHost = host.toLowerCase()
+
+  return allowedHosts.some((allowedHost) => {
+    if (allowedHost.startsWith(".")) {
+      const suffix = allowedHost.slice(1)
+      return normalizedHost === suffix || normalizedHost.endsWith(allowedHost)
+    }
+
+    return normalizedHost === allowedHost
+  })
+}
+
+function parseYaffleModuleWorkspacePath(source: string, allowedHosts: string[]): string | null {
+  if (source.includes("://")) {
+    return null
+  }
+
+  const parts = source.split("/")
+  if (parts.length !== 4) {
+    return null
+  }
+
+  const [hostWithOptionalPort, namespace, moduleName, provider] = parts
+  if (provider !== "yaffle") {
+    return null
+  }
+
+  if (!namespace.includes("--")) {
+    return null
+  }
+
+  const host = hostWithOptionalPort.split(":")[0]
+  if (!isAllowedModuleHost(host, allowedHosts)) {
+    return null
+  }
+
+  return moduleNameToWorkspacePath(moduleName)
+}
 
 /**
  * Convert a module name back to a workspace path.
@@ -83,14 +129,19 @@ export function workspacePathToModuleName(workspacePath: string): string {
  */
 export function extractDependenciesFromContent(content: string): string[] {
   const dependencies: string[] = []
+  const allowedHosts = getAllowedModuleHosts()
   let match: RegExpExecArray | null
 
   // Reset regex state
-  YAFFLE_MODULE_SOURCE_PATTERN.lastIndex = 0
+  MODULE_SOURCE_PATTERN.lastIndex = 0
 
-  while ((match = YAFFLE_MODULE_SOURCE_PATTERN.exec(content)) !== null) {
-    const moduleName = match[1]
-    const workspacePath = moduleNameToWorkspacePath(moduleName)
+  while ((match = MODULE_SOURCE_PATTERN.exec(content)) !== null) {
+    const source = match[1]
+    const workspacePath = parseYaffleModuleWorkspacePath(source, allowedHosts)
+    if (!workspacePath) {
+      continue
+    }
+
     dependencies.push(workspacePath)
   }
 

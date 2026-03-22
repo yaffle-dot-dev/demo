@@ -537,6 +537,7 @@ registryRoute.get(
     const archive = await getOrGenerateModule(
       workspace.id,
       stateVersion.serial,
+      org.id,
       async () => generateShimModule({
         workspacePath,
         serial: stateVersion.serial,

@@ -29,23 +29,45 @@ const DEFAULT_CONFIG: Required<JobWorkerConfig> = {
   pollIntervalMs: 5000,
 }
 
-let pollInterval: ReturnType<typeof setInterval> | undefined
-let workerId: string | undefined
+type JobWorkerState = {
+  pollInterval: ReturnType<typeof setInterval> | undefined
+  workerId: string | undefined
+}
+
+function getJobWorkerState(): JobWorkerState {
+  const globalKey = "__yaffle_job_worker_state"
+  const globalRef = globalThis as Record<string, unknown>
+  if (!globalRef[globalKey]) {
+    globalRef[globalKey] = {
+      pollInterval: undefined,
+      workerId: undefined,
+    } as JobWorkerState
+  }
+
+  return globalRef[globalKey] as JobWorkerState
+}
+
+const state = getJobWorkerState()
 
 /**
  * Start the job worker.
  */
 export function startJobWorker(config: JobWorkerConfig = {}): void {
-  const cfg = { ...DEFAULT_CONFIG, ...config }
-  workerId = `job-worker-${randomUUID().slice(0, 8)}`
+  if (state.pollInterval) {
+    logger.warn("Job worker already running", { workerId: state.workerId })
+    return
+  }
 
-  logger.info("Starting job worker", { workerId, pollIntervalMs: cfg.pollIntervalMs })
+  const cfg = { ...DEFAULT_CONFIG, ...config }
+  state.workerId = `job-worker-${randomUUID().slice(0, 8)}`
+
+  logger.info("Starting job worker", { workerId: state.workerId, pollIntervalMs: cfg.pollIntervalMs })
 
   // Start polling
-  pollInterval = setInterval(() => {
+  state.pollInterval = setInterval(() => {
     pollAndProcess().catch((err) => {
       logger.error("Job worker poll error", {
-        workerId,
+        workerId: state.workerId,
         error: err instanceof Error ? err.message : String(err),
       })
     })
@@ -54,7 +76,7 @@ export function startJobWorker(config: JobWorkerConfig = {}): void {
   // Also poll immediately on start
   pollAndProcess().catch((err) => {
     logger.error("Job worker initial poll error", {
-      workerId,
+      workerId: state.workerId,
       error: err instanceof Error ? err.message : String(err),
     })
   })
@@ -64,28 +86,28 @@ export function startJobWorker(config: JobWorkerConfig = {}): void {
  * Stop the job worker.
  */
 export function stopJobWorker(): void {
-  if (pollInterval) {
-    clearInterval(pollInterval)
-    pollInterval = undefined
+  if (state.pollInterval) {
+    clearInterval(state.pollInterval)
+    state.pollInterval = undefined
   }
-  logger.info("Job worker stopped", { workerId })
-  workerId = undefined
+  logger.info("Job worker stopped", { workerId: state.workerId })
+  state.workerId = undefined
 }
 
 /**
  * Poll for a job and process it.
  */
 async function pollAndProcess(): Promise<void> {
-  if (!workerId) return
+  if (!state.workerId) return
 
   // Try to claim a job
-  const job = await claimJob(workerId, ["org_provision"])
+  const job = await claimJob(state.workerId, ["org_provision"])
   if (!job) return
 
   logger.info("Job claimed", {
     jobId: job.id,
     jobType: job.jobType,
-    workerId,
+    workerId: state.workerId,
     attempt: job.attempts,
   })
 

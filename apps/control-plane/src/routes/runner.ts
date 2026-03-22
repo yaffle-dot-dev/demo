@@ -680,6 +680,14 @@ runnerRoute.get("/job/:jobId/context", async (c) => {
 
   executionEnv = credentialResolution.env
 
+  logger.info("runner.context.execution_env", {
+    jobId,
+    deploymentId: deployment.id,
+    workspacePath: deployment.workspacePath,
+    executionEnvVarCount: Object.keys(executionEnv).length,
+    executionEnvVarKeys: Object.keys(executionEnv).sort(),
+  })
+
   if (useTfcBackend()) {
     const tfcWorkspace = isPr
       ? await ensurePreviewWorkspace({

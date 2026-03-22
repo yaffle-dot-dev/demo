@@ -1,5 +1,5 @@
 module "shared" {
-  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
+  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 module "static_site" {
