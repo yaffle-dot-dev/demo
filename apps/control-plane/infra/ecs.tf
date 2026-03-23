@@ -55,11 +55,11 @@ resource "aws_ecs_task_definition" "control_plane" {
       ]
 
       secrets = [
-        { name = "DATABASE_URL", valueFrom = "${var.secrets_arn_prefix}/database-url" },
-        { name = "GITHUB_APP_ID", valueFrom = "${var.secrets_arn_prefix}/github-app-id" },
-        { name = "GITHUB_APP_PRIVATE_KEY", valueFrom = "${var.secrets_arn_prefix}/github-app-private-key" },
-        { name = "GITHUB_WEBHOOK_SECRET", valueFrom = "${var.secrets_arn_prefix}/github-webhook-secret" },
-        { name = "BETTER_AUTH_SECRET", valueFrom = "${var.secrets_arn_prefix}/better-auth-secret" },
+        { name = "DATABASE_URL", valueFrom = "${local.secrets_arn_prefix}/database-url" },
+        { name = "GITHUB_APP_ID", valueFrom = "${local.secrets_arn_prefix}/github-app-id" },
+        { name = "GITHUB_APP_PRIVATE_KEY", valueFrom = "${local.secrets_arn_prefix}/github-app-private-key" },
+        { name = "GITHUB_WEBHOOK_SECRET", valueFrom = "${local.secrets_arn_prefix}/github-webhook-secret" },
+        { name = "BETTER_AUTH_SECRET", valueFrom = "${local.secrets_arn_prefix}/better-auth-secret" },
       ]
 
       logConfiguration = {

@@ -47,7 +47,10 @@ variable "control_plane_image" {
 variable "secrets_arn_prefix" {
   type        = string
   description = "ARN prefix for Secrets Manager secrets (e.g., 'arn:aws:secretsmanager:us-east-1:123456789:secret:yaffle')"
+  default     = ""
 }
+
+data "aws_caller_identity" "current" {}
 
 module "naming" {
   source      = "../../../infra_modules/public/naming"
@@ -68,6 +71,7 @@ locals {
   replica_name_suffix = module.naming_replica.suffix
 
   is_preview = var.environment_kind == "transient"
+  secrets_arn_prefix = var.secrets_arn_prefix != "" ? var.secrets_arn_prefix : "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:yaffle/${var.environment}"
 
   # API domain: api.yaffle.dev for production, api-{env}.preview.yaffle.dev for previews
   # Uses hyphen (not dot) to stay within *.preview.yaffle.dev wildcard cert coverage

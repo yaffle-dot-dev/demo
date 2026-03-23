@@ -49,7 +49,7 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = [
-          "${var.secrets_arn_prefix}/*"
+          "${local.secrets_arn_prefix}/*"
         ]
       }
     ]
@@ -161,7 +161,7 @@ resource "aws_iam_role_policy" "control_plane_secrets" {
           "secretsmanager:DescribeSecret"
         ]
         Resource = [
-          "${var.secrets_arn_prefix}/*"
+          "${local.secrets_arn_prefix}/*"
         ]
       }
     ]
