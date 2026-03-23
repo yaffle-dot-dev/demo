@@ -44,16 +44,6 @@ function normalizeEnvVarToken(token: string): string {
   return token.toUpperCase().replace(/[^A-Z0-9_]/g, "")
 }
 
-function sanitizeAgentName(providerType: string): string {
-  return providerType
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "")
-}
-
 function hasCredentialHint(token: string): boolean {
   return AUTH_HINT_PATTERN.test(token)
 }
@@ -430,8 +420,8 @@ export async function discoverProviderCredentials(params: {
   maxDocs: number
   githubToken?: string
 }): Promise<ProviderDiscoveryRunResult> {
-  const normalizedProviderType = sanitizeAgentName(params.providerType)
-  if (!normalizedProviderType) {
+  const requestedProviderType = normalizeProviderType(params.providerType)
+  if (!requestedProviderType) {
     return {
       status: "failed",
       confidence: "low",
@@ -445,12 +435,12 @@ export async function discoverProviderCredentials(params: {
   const sources: DiscoverySource[] = []
   const aggregate = new Map<string, { score: number; occurrences: number }>()
 
-  const candidate = await resolveProviderCandidate(normalizedProviderType, params.timeoutMs)
+  const candidate = await resolveProviderCandidate(requestedProviderType, params.timeoutMs)
   if (!candidate) {
     return {
       status: "inconclusive",
       confidence: "low",
-      displayName: normalizedProviderType,
+      displayName: requestedProviderType,
       exactEnvVars: [],
       prefixEnvVars: [],
       sources,
@@ -459,6 +449,7 @@ export async function discoverProviderCredentials(params: {
   }
 
   const details = await fetchProviderDetails(candidate, params.timeoutMs)
+  const credentialProviderType = normalizeProviderType(details.name)
   sources.push({
     kind: "terraform_registry",
     url: `${TERRAFORM_REGISTRY_BASE_URL}/providers/${details.namespace}/${details.name}/latest/docs`,
@@ -485,7 +476,7 @@ export async function discoverProviderCredentials(params: {
     for (const document of documents) {
       const extracted = extractCandidateEnvVarsFromText({
         text: document.text,
-        providerType: normalizedProviderType,
+        providerType: credentialProviderType,
       })
 
       for (const [token, score] of extracted.entries()) {
@@ -512,7 +503,7 @@ export async function discoverProviderCredentials(params: {
     .slice(0, 25)
 
   const prefixEnvVars = inferPrefixEnvVars({
-    providerType: normalizedProviderType,
+    providerType: credentialProviderType,
     exactEnvVars,
   })
 

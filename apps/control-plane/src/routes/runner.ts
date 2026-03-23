@@ -27,6 +27,11 @@ import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 import { findRunGroupById } from "../db/queries/run-groups.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
 import { createTfRun, appendRunLog, updateRunStatus } from "../db/queries/tf-runs.ts"
+import {
+  buildWorkspaceName,
+  findWorkspaceByName,
+  forceUnlockWorkspace,
+} from "../db/queries/workspaces.ts"
 import { events } from "../lib/events.ts"
 import {
   type EnvironmentKind,
@@ -61,6 +66,35 @@ type RunnerVariables = {
 }
 
 export const runnerRoute = new Hono<{ Variables: RunnerVariables }>()
+
+async function releaseWorkspaceLockForDeployment(deployment: {
+  orgId: string
+  repo: string
+  environmentName: string
+  ref: string
+  workspacePath: string
+  id: string
+}): Promise<void> {
+  const workspaceName = buildWorkspaceName(
+    deployment.repo,
+    deployment.environmentName,
+    deployment.ref,
+    deployment.workspacePath,
+  )
+
+  const workspace = await findWorkspaceByName(deployment.orgId, workspaceName)
+  if (!workspace?.locked) {
+    return
+  }
+
+  await forceUnlockWorkspace(workspace.id)
+  logger.info("runner.workspace_force_unlocked", {
+    "deployment.id": deployment.id,
+    "workspace.id": workspace.id,
+    "workspace.name": workspace.name,
+    "workspace.locked_by": workspace.lockedBy ?? "unknown",
+  })
+}
 
 /**
  * Extract Bearer token from Authorization header.
@@ -409,6 +443,8 @@ runnerRoute.post("/complete", async (c) => {
         await updateDeploymentStatus(deployment.id, "destroyed")
         await notifyDestroyComplete(deployment.id)
       }
+
+      await releaseWorkspaceLockForDeployment(deployment)
     }
   } else {
     const failResult = await failJobFromRunner(jobId, errorMessage ?? "Unknown error")
@@ -421,6 +457,7 @@ runnerRoute.post("/complete", async (c) => {
       })
       await updateDeploymentStatus(deployment.id, "failed")
       await cascadeFailure(deployment.id)
+      await releaseWorkspaceLockForDeployment(deployment)
     }
   }
 

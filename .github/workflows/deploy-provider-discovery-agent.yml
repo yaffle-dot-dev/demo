@@ -76,6 +76,8 @@ jobs:
         run: bun run --filter=@yaffle/provider-discovery-agent typecheck
 
       - name: Run provider discovery agent tests
+        env:
+          YAFFLE_SKIP_TEST_DB_SETUP: "true"
         run: bun test apps/provider-discovery-agent/src/provider-research.test.ts apps/provider-discovery-agent/src/signing.test.ts
 
       - name: Wait for provider discovery infrastructure
@@ -98,6 +100,13 @@ jobs:
           main = "src/index.ts"
           compatibility_date = "2026-03-23"
           compatibility_flags = ["nodejs_compat"]
+
+          [observability]
+          enabled = true
+
+          [observability.logs]
+          enabled = true
+          invocation_logs = true
 
           [[durable_objects.bindings]]
           name = "ProviderDiscoveryAgent"
@@ -176,6 +185,38 @@ jobs:
 
             sleep 10
           done
+
+      - name: Smoke test real provider discovery
+        env:
+          WORKER_URL: ${{ steps.infra.outputs.worker_url }}
+          AGENT_TOKEN: ${{ env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN }}
+        run: |
+          DISCOVERY_PROVIDER="hashicorp/tfe"
+
+          echo "Dispatching real discovery for ${DISCOVERY_PROVIDER}"
+
+          curl --fail --silent --show-error \
+            -X POST "${WORKER_URL}/discover/direct" \
+            -H "Authorization: Bearer ${AGENT_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "$(jq -n \
+              --arg requestId "00000000-0000-0000-0000-000000000001" \
+              --arg providerType "$DISCOVERY_PROVIDER" \
+              '{
+                requestId: $requestId,
+                providerType: $providerType,
+                callbackUrl: "https://example.invalid/callback",
+                callbackAuth: { mode: "hmac-sha256" },
+                callbackTtlSeconds: 600
+              }')" > /tmp/provider-discovery-dispatch.json
+
+          cat /tmp/provider-discovery-dispatch.json | jq '.'
+
+          jq -e '.data.status == "succeeded"' /tmp/provider-discovery-dispatch.json >/dev/null
+          jq -e '.data.exactEnvVars | index("TFE_TOKEN")' /tmp/provider-discovery-dispatch.json >/dev/null
+          jq -e '.data.prefixEnvVars | index("TFE_")' /tmp/provider-discovery-dispatch.json >/dev/null
+
+          echo "Provider discovery smoke test passed"
 
       - name: Summary
         run: |

@@ -2,6 +2,26 @@ import { migrate } from "drizzle-orm/postgres-js/migrator"
 import { drizzle } from "drizzle-orm/postgres-js"
 import postgres from "postgres"
 
+if (process.env.YAFFLE_SKIP_TEST_DB_SETUP === "true") {
+  if (!process.env.BETTER_AUTH_URL) {
+    process.env.BETTER_AUTH_URL = "https://yaffle.local:6969"
+  }
+
+  if (!process.env.TRUSTED_ORIGINS) {
+    process.env.TRUSTED_ORIGINS = "https://yaffle.local:6969,http://yaffle.local:5173,http://yaffle.local:3000"
+  }
+
+  if (!process.env.BETTER_AUTH_SECRET) {
+    process.env.BETTER_AUTH_SECRET = "test-better-auth-secret"
+  }
+
+  if (!process.env.YAFFLE_TF_BINARY) {
+    process.env.YAFFLE_TF_BINARY = "tofu"
+  }
+
+  console.log("[test-setup] Skipping database setup")
+} else {
+
 /**
  * Test setup - runs before all tests via bunfig.toml preload.
  *
@@ -115,3 +135,4 @@ const { ensureDefaultProviderCredentialSignatures } = await import(
 )
 
 await ensureDefaultProviderCredentialSignatures()
+}

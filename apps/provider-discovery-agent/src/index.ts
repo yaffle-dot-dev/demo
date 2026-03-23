@@ -1,5 +1,6 @@
 import { routeAgentRequest } from "agents"
 
+import { discoverProviderCredentials } from "./provider-research"
 import { ProviderDiscoveryAgent, type Env } from "./provider-discovery-agent"
 import { timingSafeEqual } from "./signing"
 import {
@@ -70,22 +71,67 @@ function badRequest(message: string, details?: unknown): Response {
   )
 }
 
+async function runDirectDiscovery(request: Request, env: Env): Promise<Response> {
+  let body: unknown
+  try {
+    body = await request.json()
+  } catch {
+    return badRequest("Request body must be valid JSON")
+  }
+
+  const parsed = discoveryDispatchRequestSchema.safeParse(body)
+  if (!parsed.success) {
+    return badRequest("Invalid discovery request payload", parsed.error.issues)
+  }
+
+  try {
+    const result = await discoverProviderCredentials({
+      providerType: parsed.data.providerType,
+      timeoutMs: Number(env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS ?? "8000"),
+      maxDocs: Number(env.YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS ?? "24"),
+      githubToken: env.GITHUB_TOKEN,
+    })
+
+    return Response.json({ data: result }, { status: 200 })
+  } catch (error) {
+    return Response.json(
+      {
+        error: {
+          code: "DISCOVERY_DIRECT_FAILED",
+          message: error instanceof Error ? error.message : String(error),
+        },
+      },
+      { status: 500 },
+    )
+  }
+}
+
 export { ProviderDiscoveryAgent }
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    const agentResponse = await routeAgentRequest(request, env)
-    if (agentResponse) {
-      return agentResponse
-    }
-
     const url = new URL(request.url)
 
     if (request.method === "GET" && url.pathname === "/health") {
       return Response.json({ data: { ok: true } })
     }
 
-    if (request.method !== "POST" || url.pathname !== "/discover") {
+    if (request.method === "POST" && url.pathname === "/discover/direct") {
+      const token = extractBearerToken(request)
+      const expectedToken = env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN ?? ""
+      if (!token || !expectedToken || !timingSafeEqual(token, expectedToken)) {
+        return unauthorized()
+      }
+
+      return runDirectDiscovery(request, env)
+    }
+
+    const agentResponse = await routeAgentRequest(request, env)
+    if (agentResponse) {
+      return agentResponse
+    }
+
+    if (request.method !== "POST" || (url.pathname !== "/discover" && url.pathname !== "/discover/direct")) {
       return Response.json({ error: { code: "NOT_FOUND", message: "Not found" } }, { status: 404 })
     }
 
