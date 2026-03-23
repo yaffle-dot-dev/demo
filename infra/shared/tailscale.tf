@@ -1,12 +1,6 @@
 # =============================================================================
 # Tailscale - Shared Runner Credentials
 # =============================================================================
-# True singleton resources for ECS runner connectivity back to local/dev control
-# planes over Tailscale.
-#
-# These live in shared infra because they are tailnet-global trust credentials,
-# similar in spirit to DNS and GitHub OIDC.
-# =============================================================================
 
 data "tailscale_acl" "current" {}
 
@@ -16,8 +10,15 @@ locals {
   tailscale_runner_tag_owners = {
     for tag in var.tailscale_runner_tags : tag => ["autogroup:admin"]
   }
+  tailscale_github_actions_tag_owners = {
+    for tag in var.tailscale_github_actions_tags : tag => ["autogroup:admin"]
+  }
   tailscale_merged_policy = merge(local.tailscale_current_policy, {
-    tagOwners = merge(local.tailscale_current_tag_owners, local.tailscale_runner_tag_owners)
+    tagOwners = merge(
+      local.tailscale_current_tag_owners,
+      local.tailscale_runner_tag_owners,
+      local.tailscale_github_actions_tag_owners,
+    )
   })
 }
 
@@ -32,6 +33,14 @@ resource "tailscale_oauth_client" "ecs_runner" {
   description = "yaffle ecs runner"
   scopes      = ["auth_keys"]
   tags        = var.tailscale_runner_tags
+}
+
+resource "tailscale_oauth_client" "github_actions" {
+  depends_on = [tailscale_acl.policy]
+
+  description = "yaffle github actions"
+  scopes      = ["auth_keys"]
+  tags        = var.tailscale_github_actions_tags
 }
 
 resource "aws_secretsmanager_secret" "tailscale_runner_authkey" {
@@ -50,5 +59,24 @@ resource "aws_secretsmanager_secret_version" "tailscale_runner_authkey" {
   secret_string = jsonencode({
     authkey   = tailscale_oauth_client.ecs_runner.key
     client_id = tailscale_oauth_client.ecs_runner.id
+  })
+}
+
+resource "aws_secretsmanager_secret" "tailscale_github_actions_oauth" {
+  name        = "yaffle/shared/tailscale/github-actions-oauth"
+  description = "Tailscale OAuth client secret for GitHub Actions ephemeral CI nodes"
+
+  tags = {
+    Name      = "yaffle-shared-tailscale-github-actions-oauth"
+    ManagedBy = "terraform"
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "tailscale_github_actions_oauth" {
+  secret_id = aws_secretsmanager_secret.tailscale_github_actions_oauth.id
+
+  secret_string = jsonencode({
+    oauth_client_id = tailscale_oauth_client.github_actions.id
+    oauth_secret    = tailscale_oauth_client.github_actions.key
   })
 }

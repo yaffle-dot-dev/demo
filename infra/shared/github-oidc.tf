@@ -170,3 +170,52 @@ resource "aws_iam_role_policy" "github_actions_ci_ecr" {
     ]
   })
 }
+
+resource "aws_iam_role_policy" "github_actions_ci_tailscale" {
+  name = "tailscale-bootstrap"
+  role = aws_iam_role.github_actions_ci.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadTailscaleBootstrapSecret"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+        ]
+        Resource = [
+          aws_secretsmanager_secret.tailscale_github_actions_oauth.arn,
+        ]
+      },
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "github_actions_ci_runtime_secrets" {
+  name = "runtime-secrets"
+  role = aws_iam_role.github_actions_ci.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ReadCloudflareAndWorkerSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/shared/cloudflare/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/*/provider-discovery-agent/*",
+        ]
+      },
+      {
+        Sid      = "ListSecretsForResolution"
+        Effect   = "Allow"
+        Action   = ["secretsmanager:ListSecrets"]
+        Resource = "*"
+      },
+    ]
+  })
+}

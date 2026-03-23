@@ -38,29 +38,15 @@ import { renderVariables, TemplateError, type TemplateContext } from "../lib/tem
 import { fetchFileContent } from "../lib/github.ts"
 import { useTfcBackend } from "../lib/tfc-backend.ts"
 import { ensurePreviewWorkspace, ensureNamedWorkspace } from "../lib/workspace-service.ts"
-import { generateRunToken, getTfcApiHost } from "../lib/run-token.ts"
+import { generateRunToken } from "../lib/run-token.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
+import { getRunnerReachableTfcHost } from "../lib/tfc-host.ts"
 import {
   cascadeFailure,
   notifyDestroyComplete,
   notifyDownstreams,
 } from "../lib/deployment-side-effects.ts"
 import { resolveExecutionCredentialsForDeployment } from "../lib/execution-credentials.ts"
-
-function getRunnerReachableTfcHost(): string {
-  const runnerTfcHost = process.env.YAFFLE_RUNNER_TFC_API_HOST
-  if (runnerTfcHost) {
-    return runnerTfcHost
-  }
-
-  const runnerApiUrl = process.env.YAFFLE_RUNNER_API_URL
-  if (runnerApiUrl) {
-    const url = new URL(runnerApiUrl)
-    return url.host
-  }
-
-  return getTfcApiHost()
-}
 
 // ---------------------------------------------------------------------------
 // Types

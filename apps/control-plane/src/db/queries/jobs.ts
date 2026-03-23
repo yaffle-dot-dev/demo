@@ -151,3 +151,28 @@ export async function findPendingJobsByType(
       )
   })
 }
+
+export async function findActiveProviderDiscoveryJob(
+  orgId: string,
+  providerType: string,
+): Promise<Job | undefined> {
+  const normalizedProviderType = providerType.trim().toLowerCase()
+  if (!normalizedProviderType) {
+    return undefined
+  }
+
+  return withDbSpan("select", "jobs", async () => {
+    const rows = await db
+      .select()
+      .from(jobs)
+      .where(and(
+        eq(jobs.orgId, orgId),
+        eq(jobs.jobType, "provider_discovery"),
+        inArray(jobs.status, ["pending", "running"]),
+        sql`${jobs.payload} ->> 'providerType' = ${normalizedProviderType}`,
+      ))
+      .limit(1)
+
+    return rows[0]
+  })
+}

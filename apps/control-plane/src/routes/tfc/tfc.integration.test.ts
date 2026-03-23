@@ -464,6 +464,87 @@ describe("Authentication", () => {
 
     expect(res.status).toBe(200)
   })
+
+  test("run tokens include state download scope by default", async () => {
+    const statePayload = JSON.stringify({
+      version: 4,
+      terraform_version: "1.7.0",
+      serial: 1,
+      lineage: "12345678-1234-1234-1234-123456789012",
+      outputs: {
+        example: { value: "hello", type: "string" },
+      },
+      resources: [],
+    })
+
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    expect(createRes.status).toBe(201)
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const createStateVersionRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: md5(statePayload),
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+    const stateVersionBody = await createStateVersionRes.json()
+    const stateVersionId = stateVersionBody.data.id
+    const uploadPath = new URL(stateVersionBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: statePayload,
+      }),
+    )
+
+    const runToken = await generateRunToken("test-run-download", testWorkspaceId!, testOrgId)
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/state-versions/${stateVersionId}/download`,
+        runToken,
+      ),
+    )
+
+    expect([200, 302]).toContain(res.status)
+  })
 })
 
 // =============================================================================

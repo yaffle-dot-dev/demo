@@ -32,14 +32,20 @@ function getJwtSecret(): Uint8Array {
  * @param runId - The run ID
  * @param workspaceId - The workspace ID this token is scoped to
  * @param orgId - The organization ID
- * @param scopes - Permission scopes (default: workspace:read, state:read, state:write, workspace:lock)
+ * @param scopes - Permission scopes (default: workspace:read, state:read, state:write, state:download, workspace:lock)
  * @param ttlHours - Token TTL in hours (default: 4)
  */
 export async function generateRunToken(
   runId: string,
   workspaceId: string,
   orgId: string,
-  scopes: string[] = ["workspace:read", "state:read", "state:write", "workspace:lock"],
+  scopes: string[] = [
+    "workspace:read",
+    "state:read",
+    "state:write",
+    "state:download",
+    "workspace:lock",
+  ],
   ttlHours: number = 4,
 ): Promise<string> {
   const secret = getJwtSecret()

@@ -33,7 +33,7 @@ import {
   readRequestBodyBytes,
   RequestBodyTooLargeError,
 } from "../../lib/request-protection.ts"
-import { getPublicOrigin } from "../../lib/public-origin.ts"
+import { getRunnerReachableTfcHost } from "../../lib/tfc-host.ts"
 
 // Hono context variables for TFC auth
 type TfcVariables = {
@@ -147,7 +147,16 @@ interface JsonApiStateVersion {
 }
 
 function getRequestOrigin(c: { req: { url: string; header: (name: string) => string | undefined } }): string {
-  return getPublicOrigin(c.req.url)
+  const configuredHost = getRunnerReachableTfcHost()
+  if (configuredHost) {
+    const requestUrl = new URL(c.req.url)
+    const scheme = configuredHost.startsWith("localhost") || configuredHost.startsWith("127.0.0.1")
+      ? requestUrl.protocol.replace(/:$/, "")
+      : "https"
+    return `${scheme}://${configuredHost}`
+  }
+
+  return new URL(c.req.url).origin
 }
 
 function toJsonApiStateVersion(

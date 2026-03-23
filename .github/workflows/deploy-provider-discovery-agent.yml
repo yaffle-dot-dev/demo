@@ -1,0 +1,184 @@
+name: Deploy Provider Discovery Agent
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/provider-discovery-agent/**"
+      - "infra/shared/**"
+      - "actions/outputs-action/**"
+      - ".github/workflows/deploy-provider-discovery-agent.yml"
+  pull_request:
+    paths:
+      - "apps/provider-discovery-agent/**"
+      - "infra/shared/**"
+      - "actions/outputs-action/**"
+      - ".github/workflows/deploy-provider-discovery-agent.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  YAFFLE_GITHUB_ACTIONS_CI_ROLE_ARN: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
+  TAILSCALE_GITHUB_ACTIONS_SECRET_ID: yaffle/shared/tailscale/github-actions-oauth
+
+jobs:
+  deploy:
+    name: Deploy provider discovery agent
+    runs-on: depot-ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Configure AWS credentials (bootstrap)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.YAFFLE_GITHUB_ACTIONS_CI_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Fetch Tailscale GitHub Actions OAuth credentials
+        id: tailscale-bootstrap
+        run: |
+          SECRET_JSON=$(aws secretsmanager get-secret-value \
+            --secret-id "${TAILSCALE_GITHUB_ACTIONS_SECRET_ID}" \
+            --query SecretString \
+            --output text)
+
+          echo "oauth-client-id=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_client_id')" >> "$GITHUB_OUTPUT"
+          echo "oauth-secret=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_secret')" >> "$GITHUB_OUTPUT"
+
+      - name: Connect GitHub Actions runner to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ steps.tailscale-bootstrap.outputs.oauth-client-id }}
+          oauth-secret: ${{ steps.tailscale-bootstrap.outputs.oauth-secret }}
+          tags: tag:github-actions-ci
+          ping: ${{ vars.YAFFLE_TAILSCALE_PING_TARGET != '' && vars.YAFFLE_TAILSCALE_PING_TARGET || '' }}
+          version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck provider discovery agent
+        run: bun run --filter=@yaffle/provider-discovery-agent typecheck
+
+      - name: Run provider discovery agent tests
+        run: bun test apps/provider-discovery-agent/src/provider-research.test.ts apps/provider-discovery-agent/src/signing.test.ts
+
+      - name: Wait for provider discovery infrastructure
+        uses: ./actions/outputs-action
+        id: infra
+        with:
+          api-url: ${{ vars.YAFFLE_API_URL != '' && vars.YAFFLE_API_URL || 'https://api.yaffle.dev' }}
+          workspace: apps/provider-discovery-agent/infra
+          wait: true
+          wait-timeout: 600
+
+      - name: Generate Wrangler deploy config
+        working-directory: apps/provider-discovery-agent
+        env:
+          WORKER_NAME: ${{ steps.infra.outputs.worker_name }}
+          WORKER_ROUTE_PATTERN: ${{ steps.infra.outputs.worker_route_pattern }}
+        run: |
+          cat > wrangler.ci.toml <<EOF
+          name = "${WORKER_NAME}"
+          main = "src/index.ts"
+          compatibility_date = "2026-03-23"
+          compatibility_flags = ["nodejs_compat"]
+
+          [[durable_objects.bindings]]
+          name = "ProviderDiscoveryAgent"
+          class_name = "ProviderDiscoveryAgent"
+
+          [[migrations]]
+          tag = "v1"
+          new_sqlite_classes = ["ProviderDiscoveryAgent"]
+
+          [[routes]]
+          pattern = "${WORKER_ROUTE_PATTERN}"
+          zone_name = "yaffle.dev"
+
+          [vars]
+          YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS = "8000"
+          YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS = "24"
+          EOF
+
+      - name: Load deploy and runtime secrets from Secrets Manager
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            CLOUDFLARE_ACCOUNT_ID, ${{ steps.infra.outputs.cloudflare_account_id_secret_id }}
+            CLOUDFLARE_API_TOKEN, ${{ steps.infra.outputs.cloudflare_api_token_secret_id }}
+            YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN, ${{ steps.infra.outputs.agent_token_secret_id }}
+            YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET, ${{ steps.infra.outputs.callback_secret_secret_id }}
+          parse-json-secrets: false
+
+      - name: Load optional GitHub research token from Secrets Manager
+        continue-on-error: true
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            GITHUB_TOKEN, ${{ steps.infra.outputs.github_token_secret_id }}
+          parse-json-secrets: false
+
+      - name: Upload worker runtime secrets
+        working-directory: apps/provider-discovery-agent
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+          YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN: ${{ env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN }}
+          YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET: ${{ env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET }}
+          GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+        run: |
+          jq -n \
+            --arg agentToken "$YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN" \
+            --arg callbackSecret "$YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET" \
+            --arg githubToken "$GITHUB_TOKEN" \
+            '{
+              YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN: $agentToken,
+              YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET: $callbackSecret,
+              GITHUB_TOKEN: $githubToken
+            }' > wrangler.secrets.json
+
+          bunx wrangler secret bulk wrangler.secrets.json --config wrangler.ci.toml
+
+      - name: Deploy worker
+        working-directory: apps/provider-discovery-agent
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
+        run: bunx wrangler deploy --config wrangler.ci.toml
+
+      - name: Smoke test worker health endpoint
+        run: |
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error "${{ steps.infra.outputs.worker_url }}/health"; then
+              exit 0
+            fi
+
+            if [ "$attempt" -eq 12 ]; then
+              echo "Worker health check failed after retries" >&2
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+      - name: Summary
+        run: |
+          echo "## Provider discovery agent deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Environment:** ${{ steps.infra.outputs.environment }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Worker:** ${{ steps.infra.outputs.worker_name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "**URL:** ${{ steps.infra.outputs.worker_url }}" >> "$GITHUB_STEP_SUMMARY"

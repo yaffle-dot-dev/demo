@@ -18,6 +18,7 @@ import {
   calculateBackoffMs,
   type OrgProvisionPayload,
 } from "../jobs/org-provision.ts"
+import { handleProviderDiscoveryJob } from "../jobs/provider-discovery.ts"
 import { logger } from "./telemetry.ts"
 
 export interface JobWorkerConfig {
@@ -101,7 +102,7 @@ async function pollAndProcess(): Promise<void> {
   if (!state.workerId) return
 
   // Try to claim a job
-  const job = await claimJob(state.workerId, ["org_provision"])
+  const job = await claimJob(state.workerId, ["org_provision", "provider_discovery"])
   if (!job) return
 
   logger.info("Job claimed", {
@@ -147,6 +148,9 @@ async function processJob(job: Job): Promise<void> {
   switch (job.jobType) {
     case "org_provision":
       await handleOrgProvisionJob(job.payload as OrgProvisionPayload)
+      break
+    case "provider_discovery":
+      await handleProviderDiscoveryJob(job)
       break
     default:
       throw new Error(`Unknown job type: ${job.jobType}`)

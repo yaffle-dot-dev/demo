@@ -50,6 +50,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "AWS_REGION", value = var.aws_region },
         { name = "STATE_BUCKET", value = local.state_bucket_name },
         { name = "ECS_CLUSTER", value = local.ecs_cluster_name },
+        { name = "YAFFLE_RUNNER_API_URL", value = var.runner_api_url },
+        { name = "YAFFLE_RUNNER_TFC_API_HOST", value = var.runner_tfc_api_host },
       ]
 
       secrets = [

@@ -20,6 +20,21 @@ output "domain" {
   description = "Base domain"
 }
 
+output "cloudflare_zone_id" {
+  value       = var.cloudflare_zone_id
+  description = "Cloudflare zone ID for the primary domain"
+}
+
+output "cloudflare_account_id_secret_arn" {
+  value       = aws_secretsmanager_secret.cloudflare_account_id.arn
+  description = "Secrets Manager ARN for the Cloudflare account ID"
+}
+
+output "cloudflare_api_token_secret_arn" {
+  value       = aws_secretsmanager_secret.cloudflare_api_token.arn
+  description = "Secrets Manager ARN for the Cloudflare API token"
+}
+
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC
 # -----------------------------------------------------------------------------
@@ -60,4 +75,14 @@ output "tailscale_runner_authkey_secret_arn" {
 output "tailscale_runner_oauth_client_id" {
   value       = tailscale_oauth_client.ecs_runner.id
   description = "Tailscale OAuth client ID for ECS runners"
+}
+
+output "tailscale_github_actions_oauth_client_id" {
+  value       = tailscale_oauth_client.github_actions.id
+  description = "Tailscale OAuth client ID for GitHub Actions ephemeral CI nodes"
+}
+
+output "tailscale_github_actions_oauth_secret_arn" {
+  value       = aws_secretsmanager_secret.tailscale_github_actions_oauth.arn
+  description = "Secrets Manager ARN for the GitHub Actions Tailscale OAuth credentials"
 }

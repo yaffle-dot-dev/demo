@@ -26,6 +26,18 @@ variable "domain" {
   default     = "yaffle.dev"
 }
 
+variable "runner_api_url" {
+  type        = string
+  description = "Runner-reachable control plane API URL for ECS/local runners"
+  default     = ""
+}
+
+variable "runner_tfc_api_host" {
+  type        = string
+  description = "Runner-reachable TFC-compatible API host used for backend state URLs"
+  default     = ""
+}
+
 variable "control_plane_image" {
   type        = string
   description = "Docker image for the control plane container"

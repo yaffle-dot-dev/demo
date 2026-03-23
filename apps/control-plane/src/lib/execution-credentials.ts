@@ -12,6 +12,8 @@ import {
   getRequiredProvidersForDeployment,
   type ProviderRequirementDeployment,
 } from "./provider-requirements.ts"
+import { queueUnknownProviderDiscovery } from "./provider-discovery.ts"
+import { logger } from "./telemetry.ts"
 
 export type ExecutionCredentialResolution = {
   ok: true
@@ -145,6 +147,22 @@ export async function resolveExecutionCredentialsForDeploymentWithDeps(
   }
 
   if (missingProviders.length > 0 || conflictProviders.length > 0) {
+    if (missingProviders.length > 0) {
+      await queueUnknownProviderDiscovery({
+        orgId: deployment.orgId,
+        providers: missingProviders,
+        repo: deployment.repo,
+        environment: deployment.environmentName,
+        workspacePath: deployment.workspacePath,
+      }).catch((error) => {
+        logger.warn("provider_discovery.queue_failed", {
+          orgId: deployment.orgId,
+          workspacePath: deployment.workspacePath,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      })
+    }
+
     return {
       ok: false,
       missingProviders,
@@ -207,6 +225,22 @@ export async function getConnectionReadinessForDeploymentWithDeps(
         provider,
       })
     }
+  }
+
+  if (missingProviders.length > 0) {
+    await queueUnknownProviderDiscovery({
+      orgId: deployment.orgId,
+      providers: missingProviders,
+      repo: deployment.repo,
+      environment: deployment.environmentName,
+      workspacePath: deployment.workspacePath,
+    }).catch((error) => {
+      logger.warn("provider_discovery.queue_failed", {
+        orgId: deployment.orgId,
+        workspacePath: deployment.workspacePath,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
   }
 
   return {

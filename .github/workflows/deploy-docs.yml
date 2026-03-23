@@ -26,3 +26,6 @@ jobs:
       app-path: apps/docs
       site-infra-workspace: apps/docs/infra
       s3-prefix: docs
+      yaffle-api-url: ${{ vars.YAFFLE_API_URL }}
+      tailscale-ping-target: ${{ vars.YAFFLE_TAILSCALE_PING_TARGET }}
+    secrets: inherit

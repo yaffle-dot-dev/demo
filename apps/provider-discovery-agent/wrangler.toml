@@ -1,0 +1,16 @@
+name = "yaffle-provider-discovery-agent"
+main = "src/index.ts"
+compatibility_date = "2026-03-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[durable_objects.bindings]]
+name = "ProviderDiscoveryAgent"
+class_name = "ProviderDiscoveryAgent"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProviderDiscoveryAgent"]
+
+[vars]
+YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS = "8000"
+YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS = "24"

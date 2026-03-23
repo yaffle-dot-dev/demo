@@ -33,3 +33,9 @@ variable "tailscale_runner_tags" {
   description = "Tags allowed for ECS runner Tailscale nodes"
   default     = ["tag:ecs-runner"]
 }
+
+variable "tailscale_github_actions_tags" {
+  type        = list(string)
+  description = "Tags allowed for GitHub Actions ephemeral Tailscale nodes"
+  default     = ["tag:github-actions-ci"]
+}

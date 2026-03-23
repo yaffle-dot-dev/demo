@@ -16,6 +16,7 @@ import { healthRoute } from "./routes/health.ts"
 import { wellKnownRoute } from "./routes/well-known.ts"
 import { runnerRoute } from "./routes/runner.ts"
 import { tfcRoute, stateUploadRoute } from "./routes/tfc/index.ts"
+import { providerDiscoveryRoute } from "./routes/provider-discovery.ts"
 import { auth } from "./lib/better-auth.ts"
 import { startScheduler, stopScheduler } from "./lib/scheduler.ts"
 import { startJobWorker, stopJobWorker } from "./lib/job-worker.ts"
@@ -130,6 +131,7 @@ app.route("/api/orgs", reposRoute) // Nested under /api/orgs for /:org/repos/...
 app.route("/api", dependenciesRoute) // Dependency graph API (/api/orgs/:org/dependencies/*)
 app.route("/api/users", authApiRoute) // Custom user endpoints (e.g., /api/users/me)
 app.route("/api/runner", runnerRoute) // Runner worker API (claim, heartbeat, complete)
+app.route("/api/internal/provider-discovery", providerDiscoveryRoute)
 app.route("/api", healthRoute)
 
 const port = Number(process.env.PORT ?? 3000)
