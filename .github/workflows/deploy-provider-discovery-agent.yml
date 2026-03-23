@@ -23,6 +23,8 @@ env:
   AWS_REGION: us-east-1
   YAFFLE_GITHUB_ACTIONS_CI_ROLE_ARN: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
   TAILSCALE_GITHUB_ACTIONS_SECRET_ID: yaffle/shared/tailscale/github-actions-oauth
+  DEFAULT_YAFFLE_API_URL: http://yaffle.tail66f312.ts.net:3000
+  DEFAULT_TAILSCALE_PING_TARGET: yaffle.tail66f312.ts.net
 
 jobs:
   deploy:
@@ -64,7 +66,7 @@ jobs:
           oauth-client-id: ${{ steps.tailscale-bootstrap.outputs.oauth-client-id }}
           oauth-secret: ${{ steps.tailscale-bootstrap.outputs.oauth-secret }}
           tags: tag:github-actions-ci
-          ping: ${{ vars.YAFFLE_TAILSCALE_PING_TARGET != '' && vars.YAFFLE_TAILSCALE_PING_TARGET || '' }}
+          ping: ${{ vars.YAFFLE_TAILSCALE_PING_TARGET != '' && vars.YAFFLE_TAILSCALE_PING_TARGET || env.DEFAULT_TAILSCALE_PING_TARGET }}
           version: latest
 
       - name: Install dependencies
@@ -80,7 +82,7 @@ jobs:
         uses: ./actions/outputs-action
         id: infra
         with:
-          api-url: ${{ vars.YAFFLE_API_URL != '' && vars.YAFFLE_API_URL || 'https://api.yaffle.dev' }}
+          api-url: ${{ vars.YAFFLE_API_URL != '' && vars.YAFFLE_API_URL || env.DEFAULT_YAFFLE_API_URL }}
           workspace: apps/provider-discovery-agent/infra
           wait: true
           wait-timeout: 600

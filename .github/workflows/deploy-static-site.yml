@@ -56,6 +56,8 @@ env:
   AWS_REGION: us-east-1
   YAFFLE_GITHUB_ACTIONS_CI_ROLE_ARN: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
   TAILSCALE_GITHUB_ACTIONS_SECRET_ID: yaffle/shared/tailscale/github-actions-oauth
+  DEFAULT_YAFFLE_API_URL: http://yaffle.tail66f312.ts.net:3000
+  DEFAULT_TAILSCALE_PING_TARGET: yaffle.tail66f312.ts.net
 
 jobs:
   deploy:
@@ -79,14 +81,14 @@ jobs:
         uses: oven-sh/setup-bun@v2
 
       - name: Configure AWS credentials (bootstrap)
-        if: inputs.tailscale-ping-target != ''
+        if: inputs.tailscale-ping-target != '' || env.DEFAULT_TAILSCALE_PING_TARGET != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.YAFFLE_GITHUB_ACTIONS_CI_ROLE_ARN }}
           aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
 
       - name: Fetch Tailscale GitHub Actions OAuth credentials
-        if: inputs.tailscale-ping-target != ''
+        if: inputs.tailscale-ping-target != '' || env.DEFAULT_TAILSCALE_PING_TARGET != ''
         id: tailscale-bootstrap
         run: |
           SECRET_JSON=$(aws secretsmanager get-secret-value \
@@ -98,13 +100,13 @@ jobs:
           echo "oauth-secret=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_secret')" >> "$GITHUB_OUTPUT"
 
       - name: Connect GitHub Actions runner to Tailscale
-        if: inputs.tailscale-ping-target != ''
+        if: inputs.tailscale-ping-target != '' || env.DEFAULT_TAILSCALE_PING_TARGET != ''
         uses: tailscale/github-action@v4
         with:
           oauth-client-id: ${{ steps.tailscale-bootstrap.outputs.oauth-client-id }}
           oauth-secret: ${{ steps.tailscale-bootstrap.outputs.oauth-secret }}
           tags: tag:github-actions-ci
-          ping: ${{ inputs.tailscale-ping-target }}
+          ping: ${{ inputs.tailscale-ping-target != '' && inputs.tailscale-ping-target || env.DEFAULT_TAILSCALE_PING_TARGET }}
           version: latest
 
       - name: Install dependencies
@@ -118,7 +120,7 @@ jobs:
         id: site-infra
         uses: ./actions/outputs-action
         with:
-          api-url: ${{ inputs.yaffle-api-url != '' && inputs.yaffle-api-url || 'https://api.yaffle.dev' }}
+          api-url: ${{ inputs.yaffle-api-url != '' && inputs.yaffle-api-url || env.DEFAULT_YAFFLE_API_URL }}
           workspace: ${{ inputs.site-infra-workspace }}
           wait: true
           wait-timeout: 600
@@ -127,7 +129,7 @@ jobs:
         id: frontend-infra
         uses: ./actions/outputs-action
         with:
-          api-url: ${{ inputs.yaffle-api-url != '' && inputs.yaffle-api-url || 'https://api.yaffle.dev' }}
+          api-url: ${{ inputs.yaffle-api-url != '' && inputs.yaffle-api-url || env.DEFAULT_YAFFLE_API_URL }}
           workspace: ${{ inputs.frontend-infra-workspace }}
           wait: true
           wait-timeout: 600

@@ -49,6 +49,7 @@ bun run --filter=@yaffle/provider-discovery-agent deploy
 - Preview and production deploys fetch infra outputs from Yaffle before running `wrangler deploy`
 - GitHub Actions connects to the tailnet first when `vars.YAFFLE_API_URL` points at a tailnet control plane
 - Worker deploy secrets are loaded from AWS Secrets Manager via the GitHub Actions CI role
+- If those repo variables are unset, workflows fall back to `http://yaffle.tail66f312.ts.net:3000`
 
 Expected GitHub repository configuration:
 
