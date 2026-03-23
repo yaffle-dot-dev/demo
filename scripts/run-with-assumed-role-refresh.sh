@@ -28,13 +28,29 @@ ASSUME_DURATION_SECONDS="${YAFFLE_ASSUME_DURATION_SECONDS:-3600}"
 RESTART_GRACE_SECONDS="${YAFFLE_ASSUME_RESTART_GRACE_SECONDS:-20}"
 
 child_pid=""
+sleep_pid=""
 
 cleanup() {
+  if [ -n "$sleep_pid" ] && kill -0 "$sleep_pid" 2>/dev/null; then
+    kill -TERM "$sleep_pid" 2>/dev/null || true
+    wait "$sleep_pid" 2>/dev/null || true
+  fi
+
   if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
-    kill -TERM "$child_pid" 2>/dev/null || true
+    child_pgid="$(ps -o pgid= "$child_pid" 2>/dev/null | tr -d ' ')"
+    if [ -n "$child_pgid" ]; then
+      kill -TERM "-$child_pgid" 2>/dev/null || true
+    else
+      kill -TERM "$child_pid" 2>/dev/null || true
+    fi
     sleep "$RESTART_GRACE_SECONDS"
+
     if kill -0 "$child_pid" 2>/dev/null; then
-      kill -KILL "$child_pid" 2>/dev/null || true
+      if [ -n "$child_pgid" ]; then
+        kill -KILL "-$child_pgid" 2>/dev/null || true
+      else
+        kill -KILL "$child_pid" 2>/dev/null || true
+      fi
     fi
     wait "$child_pid" 2>/dev/null || true
   fi
@@ -126,10 +142,20 @@ while true; do
   fi
 
   echo "Refreshing assumed role credentials; restarting child process..." >&2
-  kill -TERM "$child_pid" 2>/dev/null || true
+  child_pgid="$(ps -o pgid= "$child_pid" 2>/dev/null | tr -d ' ')"
+  if [ -n "$child_pgid" ]; then
+    kill -TERM "-$child_pgid" 2>/dev/null || true
+  else
+    kill -TERM "$child_pid" 2>/dev/null || true
+  fi
   sleep "$RESTART_GRACE_SECONDS"
+
   if kill -0 "$child_pid" 2>/dev/null; then
-    kill -KILL "$child_pid" 2>/dev/null || true
+    if [ -n "$child_pgid" ]; then
+      kill -KILL "-$child_pgid" 2>/dev/null || true
+    else
+      kill -KILL "$child_pid" 2>/dev/null || true
+    fi
   fi
   wait "$child_pid" 2>/dev/null || true
   kill "$sleep_pid" 2>/dev/null || true

@@ -13,6 +13,51 @@ export interface ListApiTokensOptions {
   cursor?: string
 }
 
+export const DEFAULT_TFC_TOKEN_TTL_DAYS = 30
+
+export const TFC_SCOPES = {
+  workspaceRead: "workspace:read",
+  workspaceWrite: "workspace:write",
+  workspaceLock: "workspace:lock",
+  stateRead: "state:read",
+  stateWrite: "state:write",
+  stateDownload: "state:download",
+  adminForceUnlock: "admin:force_unlock",
+} as const
+
+export type TfcTokenRole = "viewer" | "approver" | "admin"
+
+export function getDefaultTfcScopesForRole(role: TfcTokenRole): string[] {
+  if (role === "viewer") {
+    return [TFC_SCOPES.workspaceRead, TFC_SCOPES.stateRead, TFC_SCOPES.stateDownload]
+  }
+
+  if (role === "approver") {
+    return [
+      TFC_SCOPES.workspaceRead,
+      TFC_SCOPES.workspaceWrite,
+      TFC_SCOPES.workspaceLock,
+      TFC_SCOPES.stateRead,
+      TFC_SCOPES.stateWrite,
+      TFC_SCOPES.stateDownload,
+    ]
+  }
+
+  return [
+    TFC_SCOPES.workspaceRead,
+    TFC_SCOPES.workspaceWrite,
+    TFC_SCOPES.workspaceLock,
+    TFC_SCOPES.stateRead,
+    TFC_SCOPES.stateWrite,
+    TFC_SCOPES.stateDownload,
+    TFC_SCOPES.adminForceUnlock,
+  ]
+}
+
+export function getDefaultTfcTokenExpiry(now: Date = new Date()): Date {
+  return new Date(now.getTime() + DEFAULT_TFC_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000)
+}
+
 /**
  * Hash a token for storage. We use SHA-256 for fast lookups.
  * Note: bcrypt is more secure for passwords, but for API tokens
@@ -87,7 +132,10 @@ export async function listApiTokens(
       .select({
         id: apiTokens.id,
         userId: apiTokens.userId,
+        orgId: apiTokens.orgId,
         description: apiTokens.description,
+        scopes: apiTokens.scopes,
+        createdByFlow: apiTokens.createdByFlow,
         lastUsedAt: apiTokens.lastUsedAt,
         expiresAt: apiTokens.expiresAt,
         createdAt: apiTokens.createdAt,

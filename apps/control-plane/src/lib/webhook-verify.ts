@@ -19,9 +19,12 @@ export async function verifyWebhookSignature(
   }
 
   if (!secret) {
-    // In development without secrets configured, skip verification
-    logger.warn("GITHUB_WEBHOOK_SECRET not set, skipping webhook signature verification")
-    return
+    if (process.env.YAFFLE_ALLOW_INSECURE_WEBHOOKS === "true") {
+      logger.warn("insecure webhook verification bypass enabled")
+      return
+    }
+
+    throw new WebhookVerificationError("webhook secret not configured")
   }
 
   const encoder = new TextEncoder()

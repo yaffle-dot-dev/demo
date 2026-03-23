@@ -1,7 +1,7 @@
 import { getEnv } from "./env.ts"
 import { auth, type Session } from "./better-auth.ts"
 import { db } from "./db.ts"
-import { user } from "../db/auth-schema.ts"
+import { apikey, user } from "../db/auth-schema.ts"
 import { eq } from "drizzle-orm"
 import {
   logger,
@@ -18,7 +18,20 @@ export interface AuthContext {
   image: string | null
   orgId: string
   role: string
+  apiKeyId?: string
+  apiKeyMetadata?: ApiKeyMetadata | null
+  apiKeyPermissions?: ApiKeyPermissions | null
 }
+
+export interface ApiKeyMetadata {
+  orgId?: string
+  orgSlug?: string
+  orgName?: string
+  access?: "read" | "write"
+  createdByFlow?: string
+}
+
+export type ApiKeyPermissions = Record<string, string[]>
 
 export class AuthError extends Error {
   constructor(
@@ -70,13 +83,28 @@ async function getSession(headers: Headers): Promise<Session | null> {
 /**
  * Verify API key and return user info.
  */
-async function verifyApiKey(apiKey: string): Promise<AuthContext | null> {
+function parseJsonObject<T>(value: unknown): T | null {
+  if (!value) return null
+  if (typeof value === "object") return value as T
+  if (typeof value !== "string") return null
+
+  try {
+    return JSON.parse(value) as T
+  } catch {
+    return null
+  }
+}
+
+async function verifyApiKey(
+  apiKey: string,
+  permissions?: ApiKeyPermissions,
+): Promise<AuthContext | null> {
   const start = Date.now()
 
   return withSpan("auth.verifyApiKey", async (span) => {
     try {
       const result = await auth.api.verifyApiKey({
-        body: { key: apiKey },
+        body: { key: apiKey, permissions },
       })
 
       if (!result.valid || !result.key) {
@@ -91,6 +119,16 @@ async function verifyApiKey(apiKey: string): Promise<AuthContext | null> {
         .select()
         .from(user)
         .where(eq(user.id, result.key.referenceId))
+        .limit(1)
+
+      const [storedApiKey] = await db
+        .select({
+          id: apikey.id,
+          metadata: apikey.metadata,
+          permissions: apikey.permissions,
+        })
+        .from(apikey)
+        .where(eq(apikey.id, result.key.id))
         .limit(1)
 
       if (!foundUser) {
@@ -116,6 +154,9 @@ async function verifyApiKey(apiKey: string): Promise<AuthContext | null> {
         image: foundUser.image ?? null,
         orgId: "",
         role: "",
+        apiKeyId: storedApiKey?.id,
+        apiKeyMetadata: parseJsonObject<ApiKeyMetadata>(storedApiKey?.metadata),
+        apiKeyPermissions: parseJsonObject<ApiKeyPermissions>(storedApiKey?.permissions),
       }
     } catch (err) {
       span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
@@ -128,8 +169,10 @@ async function verifyApiKey(apiKey: string): Promise<AuthContext | null> {
 }
 
 interface RequireAuthOptions {
-  /** Token passed via query param (for SSE endpoints that can't use headers) */
+  /** API key passed via query param for SSE-style endpoints */
   token?: string
+  /** Required Better Auth API key permissions */
+  apiKeyPermissions?: ApiKeyPermissions
 }
 
 /**
@@ -148,7 +191,7 @@ function extractBearerToken(headers: Headers): string | null {
  * Supports:
  * - Session cookies (web app)
  * - Bearer token with API key (CLI/API)
- * - Query param token (SSE endpoints)
+ * - Query param API key (legacy SSE endpoints only)
  * - Dev mode headers (testing)
  */
 export async function requireAuth(
@@ -167,62 +210,26 @@ export async function requireAuth(
       
       // Check if it looks like an API key (has prefix)
       if (bearerToken.startsWith("yfl_")) {
-        const authContext = await verifyApiKey(bearerToken)
+        const authContext = await verifyApiKey(bearerToken, options.apiKeyPermissions)
         if (authContext) {
           getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "apikey" })
           getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "apikey" })
           return authContext
         }
       }
-      
-      // Try as session token
-      const cookieHeaders = new Headers(headers)
-      cookieHeaders.set("cookie", `better-auth.session_token=${bearerToken}`)
-      
-      const session = await getSession(cookieHeaders)
-      if (session) {
-        getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "bearer_session" })
-        getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "bearer_session" })
-        return {
-          userId: session.user.id,
-          email: session.user.email,
-          name: session.user.name,
-          image: session.user.image ?? null,
-          orgId: "",
-          role: "",
-        }
-      }
     }
 
-    // 2. For SSE endpoints, token might be passed as query param
+    // 2. For SSE endpoints, a legacy API key might be passed as query param.
+    // Session tokens are intentionally NOT accepted via query string.
     if (options.token) {
       span.setAttributes({ "auth.method": "query_param" })
-      
-      // Check if it's an API key
+
       if (options.token.startsWith("yfl_")) {
-        const authContext = await verifyApiKey(options.token)
+        const authContext = await verifyApiKey(options.token, options.apiKeyPermissions)
         if (authContext) {
           getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "query_apikey" })
           getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "query_apikey" })
           return authContext
-        }
-      }
-      
-      // Try as session token
-      const cookieHeaders = new Headers(headers)
-      cookieHeaders.set("cookie", `better-auth.session_token=${options.token}`)
-      
-      const session = await getSession(cookieHeaders)
-      if (session) {
-        getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "query_param" })
-        getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "query_param" })
-        return {
-          userId: session.user.id,
-          email: session.user.email,
-          name: session.user.name,
-          image: session.user.image ?? null,
-          orgId: "",
-          role: "",
         }
       }
     }

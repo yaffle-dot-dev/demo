@@ -4,7 +4,20 @@ import { createHash, randomBytes } from "node:crypto"
 
 import { logger as log } from "../../lib/telemetry.ts"
 import { auth } from "../../lib/better-auth.ts"
-import { createApiToken, generateToken } from "../../db/queries/api-tokens.ts"
+import {
+  createApiToken,
+  generateToken,
+  getDefaultTfcScopesForRole,
+  getDefaultTfcTokenExpiry,
+  type TfcTokenRole,
+} from "../../db/queries/api-tokens.ts"
+import { listUserOrgs } from "../../db/queries/users.ts"
+import {
+  enforceRateLimit,
+  readRequestBodyText,
+  RequestBodyTooLargeError,
+} from "../../lib/request-protection.ts"
+import { buildPublicUrl } from "../../lib/public-origin.ts"
 
 /**
  * OAuth endpoints for Terraform CLI login.
@@ -19,10 +32,27 @@ import { createApiToken, generateToken } from "../../db/queries/api-tokens.ts"
  */
 export const oauthCliRoute = new Hono()
 
+const OAUTH_AUTHORIZE_RATE_LIMIT = {
+  bucket: "oauth-authorize",
+  limit: 30,
+  windowMs: 60_000,
+} as const
+
+const OAUTH_TOKEN_RATE_LIMIT = {
+  bucket: "oauth-token",
+  limit: 20,
+  windowMs: 60_000,
+} as const
+
+const OAUTH_TOKEN_MAX_BYTES = 16 * 1024
+
 // In-memory store for pending authorization codes
 // In production, consider Redis for multi-instance deployments
 interface PendingAuth {
   userId: string
+  orgId: string
+  orgSlug: string
+  scopes: string[]
   codeChallenge: string
   codeChallengeMethod: string
   redirectUri: string
@@ -52,6 +82,7 @@ const authorizeQuerySchema = z.object({
   code_challenge: z.string().min(43).max(128),
   code_challenge_method: z.literal("S256"),
   state: z.string().optional(),
+  organization: z.string().min(1).optional(),
 })
 
 const tokenBodySchema = z.object({
@@ -62,6 +93,92 @@ const tokenBodySchema = z.object({
   client_id: z.literal("terraform-cli"),
 })
 
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+}
+
+function renderOrgSelectionPage(currentRequestUrl: URL, orgs: Array<{
+  id: string
+  name: string
+  slug: string
+  role: string
+}>): string {
+  const orgLinks = orgs
+    .map((org) => {
+      const authorizeUrl = new URL(currentRequestUrl.toString())
+      authorizeUrl.searchParams.set("organization", org.slug)
+      return `
+        <a class="org-link" href="${authorizeUrl.toString()}">
+          <span class="org-name">${escapeHtml(org.name)}</span>
+          <span class="org-meta">${escapeHtml(org.slug)} - ${escapeHtml(org.role)}</span>
+        </a>`
+    })
+    .join("")
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Choose an organization</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --bg: #09090b;
+      --panel: #18181b;
+      --border: #3f3f46;
+      --text: #fafafa;
+      --muted: #a1a1aa;
+      --accent: #36a9fa;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      background: radial-gradient(circle at top, #111827, var(--bg) 45%);
+      color: var(--text);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+    }
+    .panel {
+      width: min(34rem, calc(100vw - 2rem));
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+    }
+    h1 { margin: 0 0 0.5rem; font-size: 1rem; }
+    p { margin: 0 0 1rem; color: var(--muted); font-size: 0.85rem; }
+    .org-list { display: grid; gap: 0.75rem; }
+    .org-link {
+      display: block;
+      padding: 0.9rem 1rem;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      color: inherit;
+      text-decoration: none;
+      background: rgba(255, 255, 255, 0.02);
+    }
+    .org-link:hover { border-color: var(--accent); transform: translateY(-1px); }
+    .org-name { display: block; margin-bottom: 0.25rem; }
+    .org-meta { color: var(--muted); font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <h1>Choose the Yaffle organization for this Terraform token</h1>
+    <p>The token will be scoped to one organization and expire automatically.</p>
+    <div class="org-list">${orgLinks}</div>
+  </div>
+</body>
+</html>`
+}
+
 /**
  * GET /tfc/oauth/authorize
  *
@@ -69,6 +186,11 @@ const tokenBodySchema = z.object({
  * then redirects to CLI's localhost callback with an authorization code.
  */
 oauthCliRoute.get("/authorize", async (c) => {
+  const rateLimitResponse = enforceRateLimit(c, OAUTH_AUTHORIZE_RATE_LIMIT)
+  if (rateLimitResponse) {
+    return rateLimitResponse
+  }
+
   // Parse and validate query parameters
   const queryParams = Object.fromEntries(new URL(c.req.url).searchParams)
   const parseResult = authorizeQuerySchema.safeParse(queryParams)
@@ -111,7 +233,8 @@ oauthCliRoute.get("/authorize", async (c) => {
     // Not authenticated - auto-redirect to GitHub OAuth
     // BetterAuth requires POST with JSON, so we use a minimal page that auto-submits
     // Ensure we use HTTPS for the callback (Caddy terminates TLS)
-    const currentUrl = c.req.url.replace(/^http:/, "https:")
+    const currentRequestUrl = new URL(c.req.url)
+    const currentUrl = buildPublicUrl(c.req.url, `${currentRequestUrl.pathname}${currentRequestUrl.search}`)
     const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -149,12 +272,44 @@ oauthCliRoute.get("/authorize", async (c) => {
     return c.html(html)
   }
 
+  const userOrgs = await listUserOrgs(session.user.id)
+  if (userOrgs.length === 0) {
+    return c.html(
+      "<p style=\"font-family:monospace;padding:24px\">No Yaffle organizations available for this account.</p>",
+      403,
+    )
+  }
+
+  let selectedOrg = query.organization
+    ? userOrgs.find((org) => org.slug === query.organization)
+    : undefined
+
+  if (!selectedOrg) {
+    if (userOrgs.length === 1) {
+      selectedOrg = userOrgs[0]
+    } else if (!query.organization) {
+      return c.html(renderOrgSelectionPage(new URL(c.req.url), userOrgs))
+    }
+  }
+
+  if (!selectedOrg) {
+    return c.json(
+      { error: "invalid_request", error_description: "organization must be one of your Yaffle orgs" },
+      400,
+    )
+  }
+
+  const scopes = getDefaultTfcScopesForRole(selectedOrg.role as TfcTokenRole)
+
   // User is authenticated - generate authorization code
   const code = randomBytes(32).toString("base64url")
   const expiresAt = Date.now() + 5 * 60 * 1000 // 5 minutes
 
   pendingAuths.set(code, {
     userId: session.user.id,
+    orgId: selectedOrg.id,
+    orgSlug: selectedOrg.slug,
+    scopes,
     codeChallenge: query.code_challenge,
     codeChallengeMethod: query.code_challenge_method,
     redirectUri: query.redirect_uri,
@@ -163,6 +318,8 @@ oauthCliRoute.get("/authorize", async (c) => {
 
   log.info("OAuth authorization code issued", {
     userId: session.user.id,
+    orgId: selectedOrg.id,
+    orgSlug: selectedOrg.slug,
     redirectUri: query.redirect_uri,
   })
 
@@ -289,17 +446,48 @@ oauthCliRoute.get("/authorize", async (c) => {
  * Validates PKCE code_verifier against stored code_challenge.
  */
 oauthCliRoute.post("/token", async (c) => {
+  const rateLimitResponse = enforceRateLimit(c, OAUTH_TOKEN_RATE_LIMIT)
+  if (rateLimitResponse) {
+    return rateLimitResponse
+  }
+
   // Parse form body
   const contentType = c.req.header("content-type") || ""
   let bodyData: Record<string, string>
 
   if (contentType.includes("application/x-www-form-urlencoded")) {
-    const formData = await c.req.parseBody()
-    bodyData = Object.fromEntries(
-      Object.entries(formData).map(([k, v]) => [k, String(v)]),
-    )
+    try {
+      const rawBody = await readRequestBodyText(c.req.raw, OAUTH_TOKEN_MAX_BYTES)
+      const formData = new URLSearchParams(rawBody)
+      bodyData = Object.fromEntries(formData.entries())
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) {
+        return c.json(
+          { error: "invalid_request", error_description: "request body too large" },
+          413,
+        )
+      }
+      throw err
+    }
   } else if (contentType.includes("application/json")) {
-    bodyData = await c.req.json()
+    try {
+      const rawBody = await readRequestBodyText(c.req.raw, OAUTH_TOKEN_MAX_BYTES)
+      bodyData = JSON.parse(rawBody)
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) {
+        return c.json(
+          { error: "invalid_request", error_description: "request body too large" },
+          413,
+        )
+      }
+      if (err instanceof SyntaxError) {
+        return c.json(
+          { error: "invalid_request", error_description: "Malformed JSON body" },
+          400,
+        )
+      }
+      throw err
+    }
   } else {
     return c.json({ error: "invalid_request", error_description: "Invalid content type" }, 400)
   }
@@ -352,13 +540,19 @@ oauthCliRoute.post("/token", async (c) => {
   // Store in database
   await createApiToken({
     userId: pending.userId,
+    orgId: pending.orgId,
+    scopes: pending.scopes,
+    createdByFlow: "terraform_login",
     tokenHash: hash,
-    description: "terraform login",
-    // No expiration for CLI tokens by default
-    // Users can manage tokens via UI later
+    description: `terraform login (${pending.orgSlug})`,
+    expiresAt: getDefaultTfcTokenExpiry(),
   })
 
-  log.info("API token issued via terraform login", { userId: pending.userId })
+  log.info("API token issued via terraform login", {
+    userId: pending.userId,
+    orgId: pending.orgId,
+    orgSlug: pending.orgSlug,
+  })
 
   // Return token in OAuth format
   return c.json({

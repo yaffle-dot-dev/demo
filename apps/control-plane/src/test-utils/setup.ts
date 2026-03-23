@@ -12,6 +12,48 @@ import postgres from "postgres"
 const TEST_DB_NAME = "yaffle_test"
 const DEV_DB_NAME = "yaffle_dev"
 
+function quoteIdentifier(value: string): string {
+  return `"${value.replaceAll("\"", "\"\"")}"`
+}
+
+function buildAdminDatabaseUrl(databaseUrl: string): string {
+  const url = new URL(databaseUrl)
+  url.pathname = "/postgres"
+  return url.toString()
+}
+
+async function ensureDatabaseExists(databaseUrl: string): Promise<void> {
+  const targetUrl = new URL(databaseUrl)
+  const dbName = targetUrl.pathname.replace(/^\//, "")
+
+  if (!dbName) {
+    throw new Error("DATABASE_URL must include a database name")
+  }
+
+  const adminClient = postgres(buildAdminDatabaseUrl(databaseUrl), {
+    max: 1,
+    idle_timeout: 5,
+    connect_timeout: 10,
+  })
+
+  try {
+    const result = await adminClient<{ exists: boolean }[]>`
+      SELECT EXISTS(
+        SELECT 1
+        FROM pg_database
+        WHERE datname = ${dbName}
+      ) AS exists
+    `
+
+    if (!result[0]?.exists) {
+      console.log(`[test-setup] Creating missing test database: ${dbName}`)
+      await adminClient.unsafe(`CREATE DATABASE ${quoteIdentifier(dbName)}`)
+    }
+  } finally {
+    await adminClient.end()
+  }
+}
+
 if (!process.env.BETTER_AUTH_URL) {
   process.env.BETTER_AUTH_URL = "https://yaffle.local:6969"
 }
@@ -51,6 +93,8 @@ if (finalUrl.includes(DEV_DB_NAME)) {
 }
 
 console.log(`[test-setup] Using database: ${finalUrl.replace(/\/\/[^@]+@/, "//***@")}`)
+
+await ensureDatabaseExists(finalUrl)
 
 const testDbClient = postgres(finalUrl, {
   max: 1,

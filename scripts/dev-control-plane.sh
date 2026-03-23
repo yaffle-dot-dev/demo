@@ -4,6 +4,34 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODE="${YAFFLE_DEV_RUNNER_MODE:-ecs}"
 SECRETS_ENV_FILE="${YAFFLE_DEV_SECRETS_ENV_FILE:-env/dev/secrets.1password.env}"
+LOCK_DIR="$ROOT_DIR/.dev/locks/control-plane.lock"
+LOCK_PID_FILE="$LOCK_DIR/pid"
+
+mkdir -p "$ROOT_DIR/.dev/locks"
+
+if mkdir "$LOCK_DIR" 2>/dev/null; then
+  printf "%s\n" "$$" > "$LOCK_PID_FILE"
+else
+  existing_pid=""
+  if [ -f "$LOCK_PID_FILE" ]; then
+    existing_pid="$(cat "$LOCK_PID_FILE" 2>/dev/null || true)"
+  fi
+
+  if [ -n "$existing_pid" ] && kill -0 "$existing_pid" 2>/dev/null; then
+    echo "control-plane launcher already running (pid: $existing_pid)" >&2
+    exit 1
+  fi
+
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR"
+  printf "%s\n" "$$" > "$LOCK_PID_FILE"
+fi
+
+cleanup_lock() {
+  rm -rf "$LOCK_DIR"
+}
+
+trap cleanup_lock EXIT INT TERM
 
 case "$MODE" in
   local)
@@ -20,8 +48,6 @@ case "$MODE" in
     ;;
 esac
 
-RUN_CONTROL_PLANE_CMD='./scripts/run-with-assumed-role-refresh.sh -- bun run dev:control-plane'
-
 DOTENV_ARGS=(
   -f "$ROOT_DIR/env/dev/base.env"
   -f "$ROOT_DIR/$MODE_ENV"
@@ -33,5 +59,6 @@ else
   echo "Warning: secrets env file not found at $SECRETS_ENV_FILE (continuing without it)" >&2
 fi
 
-exec bunx @dotenvx/dotenvx run -o "${DOTENV_ARGS[@]}" -- \
-  bash -lc "export YAFFLE_USE_ECS_RUNNER=${USE_ECS_RUNNER}; ${RUN_CONTROL_PLANE_CMD}"
+bunx @dotenvx/dotenvx run -o "${DOTENV_ARGS[@]}" -- \
+  env "YAFFLE_USE_ECS_RUNNER=${USE_ECS_RUNNER}" \
+  ./scripts/run-with-assumed-role-refresh.sh -- bun run dev:control-plane

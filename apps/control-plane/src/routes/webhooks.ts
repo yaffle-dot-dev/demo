@@ -9,6 +9,11 @@ import type {
 } from "@yaffle/shared"
 
 import { getEnv } from "../lib/env.ts"
+import {
+  enforceRateLimit,
+  readRequestBodyText,
+  RequestBodyTooLargeError,
+} from "../lib/request-protection.ts"
 import { logger, getWebhookReceivedCounter, withSpan, SpanStatusCode } from "../lib/telemetry.ts"
 import { verifyWebhookSignature } from "../lib/webhook-verify.ts"
 import { handleWebhookEvent } from "../lib/webhook-handler.ts"
@@ -26,6 +31,13 @@ import {
 import { ensureUser, ensureMembership } from "../db/queries/users.ts"
 
 export const webhooksRoute = new Hono()
+
+const GITHUB_WEBHOOK_MAX_BYTES = 1_000_000
+const GITHUB_WEBHOOK_RATE_LIMIT = {
+  bucket: "github-webhook",
+  limit: 60,
+  windowMs: 60_000,
+} as const
 
 const SUPPORTED_PR_ACTIONS: PullRequestAction[] = [
   "opened",
@@ -62,11 +74,27 @@ function markPrEventProcessed(repo: string, prNumber: number, action: string, sh
 }
 
 webhooksRoute.post("/github", async (c) => {
+  const rateLimitResponse = enforceRateLimit(c, GITHUB_WEBHOOK_RATE_LIMIT)
+  if (rateLimitResponse) {
+    return rateLimitResponse
+  }
+
   const event = c.req.header("x-github-event")
   const signature = c.req.header("x-hub-signature-256")
   const deliveryId = c.req.header("x-github-delivery")
 
-  const body = await c.req.text()
+  let body: string
+  try {
+    body = await readRequestBodyText(c.req.raw, GITHUB_WEBHOOK_MAX_BYTES)
+  } catch (err) {
+    if (err instanceof RequestBodyTooLargeError) {
+      return c.json(
+        { error: { code: "PAYLOAD_TOO_LARGE", message: "webhook payload too large" } },
+        413,
+      )
+    }
+    throw err
+  }
 
   // Verify signature
   try {

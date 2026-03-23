@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte"
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
-  import { authClient, useSession } from "$lib/auth"
+  import { useSession } from "$lib/auth"
 
   const session = useSession()
   const user = $derived($session.data?.user)
@@ -15,9 +15,13 @@
   let showCreateModal = $state(false)
   let newKeyName = $state("")
   let newKeyExpiration = $state("90") // days
+  let newKeyOrgId = $state("")
+  let newKeyAccess = $state<"read" | "write">("read")
   let creating = $state(false)
   let newlyCreatedKey = $state<string | null>(null)
+  let newlyCreatedSummary = $state<{ access: string; orgName: string; expiresAt: string | null } | null>(null)
   let keyCopied = $state(false)
+  let orgs = $state<UserOrg[]>([])
 
   // Expiration options (in days)
   const expirationOptions = [
@@ -26,7 +30,19 @@
     { value: "90", label: "90 days" },
     { value: "180", label: "180 days" },
     { value: "365", label: "1 year" },
-    { value: "never", label: "Never" },
+  ]
+
+  const accessOptions = [
+    {
+      value: "read",
+      label: "Read-only",
+      description: "List previews, stream status, and fetch outputs.",
+    },
+    {
+      value: "write",
+      label: "Read + write",
+      description: "Includes preview actions like rerun, pause, and apply.",
+    },
   ]
 
   // Delete confirmation
@@ -39,18 +55,32 @@
     createdAt: Date
     expiresAt: Date | null
     enabled: boolean
+    access: "read" | "write"
+    orgId: string | null
+    orgSlug: string | null
+    orgName: string | null
+  }
+
+  interface UserOrg {
+    id: string
+    slug: string
+    name: string
+    role: string
   }
 
   async function loadApiKeys() {
     loading = true
     error = null
     try {
-      const res = await authClient.apiKey.list()
-      if (res.error) {
-        error = res.error.message ?? "Failed to load API keys"
+      const res = await fetch("/api/users/api-keys", {
+        credentials: "include",
+      })
+      const body = await res.json()
+      if (!res.ok) {
+        error = body.error?.message ?? "Failed to load API keys"
         apiKeys = []
       } else {
-        apiKeys = res.data?.apiKeys ?? []
+        apiKeys = body.data ?? []
       }
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to load API keys"
@@ -60,26 +90,56 @@
     }
   }
 
+  async function loadOrgs() {
+    try {
+      const res = await fetch("/api/orgs", { credentials: "include" })
+      const body = await res.json()
+      if (!res.ok) {
+        throw new Error(body.error?.message ?? "Failed to load organizations")
+      }
+      orgs = body.data ?? []
+      if (!newKeyOrgId && orgs.length > 0) {
+        newKeyOrgId = orgs[0].id
+      }
+    } catch (e) {
+      error = e instanceof Error ? e.message : "Failed to load organizations"
+      orgs = []
+    }
+  }
+
   async function createApiKey() {
-    if (!newKeyName.trim()) return
+    if (!newKeyName.trim() || !newKeyOrgId) return
     creating = true
     error = null
     try {
-      // Calculate expiration in seconds
-      const expiresIn = newKeyExpiration === "never" 
-        ? undefined 
-        : parseInt(newKeyExpiration) * 24 * 60 * 60
+      const expiresIn = parseInt(newKeyExpiration) * 24 * 60 * 60
 
-      const res = await authClient.apiKey.create({
-        name: newKeyName.trim(),
-        expiresIn,
+      const res = await fetch("/api/users/api-keys", {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: newKeyName.trim(),
+          orgId: newKeyOrgId,
+          access: newKeyAccess,
+          expiresIn,
+        }),
       })
-      if (res.error) {
-        error = res.error.message ?? "Failed to create API key"
-      } else if (res.data?.key) {
-        newlyCreatedKey = res.data.key
+      const body = await res.json()
+      if (!res.ok) {
+        error = body.error?.message ?? "Failed to create API key"
+      } else if (body.data?.key) {
+        newlyCreatedKey = body.data.key
+        newlyCreatedSummary = {
+          access: body.data.access,
+          orgName: body.data.orgName,
+          expiresAt: body.data.expiresAt,
+        }
         newKeyName = ""
         newKeyExpiration = "90"
+        newKeyAccess = "read"
         await loadApiKeys()
       }
     } catch (e) {
@@ -93,9 +153,13 @@
     deletingKeyId = keyId
     error = null
     try {
-      const res = await authClient.apiKey.delete({ keyId })
-      if (res.error) {
-        error = res.error.message ?? "Failed to delete API key"
+      const res = await fetch(`/api/users/api-keys/${keyId}`, {
+        method: "DELETE",
+        credentials: "include",
+      })
+      const body = await res.json()
+      if (!res.ok) {
+        error = body.error?.message ?? "Failed to delete API key"
       } else {
         await loadApiKeys()
       }
@@ -115,7 +179,9 @@
   function closeCreateModal() {
     showCreateModal = false
     newlyCreatedKey = null
+    newlyCreatedSummary = null
     newKeyName = ""
+    newKeyAccess = "read"
     keyCopied = false
   }
 
@@ -131,6 +197,7 @@
 
   onMount(() => {
     loadApiKeys()
+    loadOrgs()
   })
 </script>
 
@@ -202,6 +269,8 @@
                 <th class="px-4 py-2">Key</th>
                 <th class="px-4 py-2">Created</th>
                 <th class="px-4 py-2">Expires</th>
+                <th class="px-4 py-2">Access</th>
+                <th class="px-4 py-2">Org</th>
                 <th class="px-4 py-2"></th>
               </tr>
             </thead>
@@ -219,6 +288,12 @@
                   </td>
                   <td class="px-4 py-3 text-sm text-text-muted">
                     {formatDate(key.expiresAt)}
+                  </td>
+                  <td class="px-4 py-3 text-sm text-text-muted">
+                    {key.access === "write" ? "Read + write" : "Read-only"}
+                  </td>
+                  <td class="px-4 py-3 text-sm text-text-muted">
+                    {key.orgName ?? key.orgSlug ?? "Unknown org"}
                   </td>
                   <td class="px-4 py-3 text-right">
                     <button
@@ -284,8 +359,14 @@
           </div>
 
           <div class="bg-yellow-500/10 border border-yellow-500/30 rounded p-3 text-sm text-yellow-400">
-            Store this key securely. Use it with the Yaffle CLI:
+            <div>Store this key securely. Use it with the Yaffle CLI:</div>
             <code class="block mt-2 font-mono text-xs">yaffle login</code>
+            {#if newlyCreatedSummary}
+              <div class="mt-3 text-yellow-300">
+                Scope: {newlyCreatedSummary.access === "write" ? "Read + write" : "Read-only"} for {newlyCreatedSummary.orgName}.<br />
+                Expires: {formatDate(newlyCreatedSummary.expiresAt)}
+              </div>
+            {/if}
           </div>
 
           <div class="flex justify-end">
@@ -303,8 +384,23 @@
           <div>
             <h3 class="text-lg font-semibold text-text">Create API Key</h3>
             <p class="text-sm text-text-muted mt-1">
-              Create an API key for CLI or CI access.
+              Create an org-scoped API key for CLI or CI access.
             </p>
+          </div>
+
+          <div>
+            <label for="keyOrg" class="block text-sm font-medium text-text mb-1">
+              Organization
+            </label>
+            <select
+              id="keyOrg"
+              bind:value={newKeyOrgId}
+              class="w-full px-3 py-2 bg-surface border border-border rounded text-text focus:outline-none focus:ring-2 focus:ring-yaffle-500/50 focus:border-yaffle-500"
+            >
+              {#each orgs as org}
+                <option value={org.id}>{org.name} ({org.slug})</option>
+              {/each}
+            </select>
           </div>
 
           <div>
@@ -335,6 +431,24 @@
             </select>
           </div>
 
+          <div>
+            <label for="keyAccess" class="block text-sm font-medium text-text mb-1">
+              Access
+            </label>
+            <select
+              id="keyAccess"
+              bind:value={newKeyAccess}
+              class="w-full px-3 py-2 bg-surface border border-border rounded text-text focus:outline-none focus:ring-2 focus:ring-yaffle-500/50 focus:border-yaffle-500"
+            >
+              {#each accessOptions as opt}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+            <p class="mt-2 text-xs text-text-dim">
+              {accessOptions.find((opt) => opt.value === newKeyAccess)?.description}
+            </p>
+          </div>
+
           <div class="flex justify-end gap-3">
             <button
               class="px-4 py-2 text-sm text-text-muted hover:text-text transition-colors"
@@ -344,7 +458,7 @@
             </button>
             <button
               class="px-4 py-2 text-sm font-medium bg-yaffle-500 text-white rounded hover:bg-yaffle-600 transition-colors disabled:opacity-50"
-              disabled={creating || !newKeyName.trim()}
+              disabled={creating || !newKeyName.trim() || !newKeyOrgId}
               onclick={createApiKey}
             >
               {creating ? "Creating..." : "Create"}

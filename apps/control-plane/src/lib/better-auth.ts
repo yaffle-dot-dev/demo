@@ -55,10 +55,18 @@ export const auth = betterAuth({
     apiKey({
       // Prefix for easy identification (e.g., yfl_abc123...)
       defaultPrefix: "yfl_",
+      enableMetadata: true,
       // API keys for CLI/CI access
       keyExpiration: {
         // Default expiration: 90 days (in seconds)
         defaultExpiresIn: 60 * 60 * 24 * 90,
+        minExpiresIn: 7,
+        maxExpiresIn: 365,
+      },
+      permissions: {
+        defaultPermissions: {
+          yaffle: ["read"],
+        },
       },
     }),
   ],

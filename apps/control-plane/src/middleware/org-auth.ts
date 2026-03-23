@@ -1,5 +1,10 @@
 import type { Context, Next } from "hono"
-import { requireAuth, AuthError, type AuthContext } from "../lib/auth.ts"
+import {
+  requireAuth,
+  AuthError,
+  type ApiKeyPermissions,
+  type AuthContext,
+} from "../lib/auth.ts"
 import { getMembershipRole } from "../db/queries/users.ts"
 import { findOrgBySlug } from "../db/queries/organizations.ts"
 import { getEnv } from "../lib/env.ts"
@@ -25,6 +30,12 @@ function hasMinRole(userRole: string, requiredRole: string): boolean {
   return userLevel >= requiredLevel
 }
 
+function getRequiredApiKeyPermissions(minRole: "viewer" | "approver" | "admin"): ApiKeyPermissions {
+  return {
+    yaffle: minRole === "viewer" ? ["read"] : ["write"],
+  }
+}
+
 export interface OrgAuthOptions {
   /** Minimum role required (defaults to "viewer") */
   minRole?: "viewer" | "approver" | "admin"
@@ -32,7 +43,7 @@ export interface OrgAuthOptions {
   orgSource?: "query" | "param"
   /** Name of the query param or route param containing the org (defaults to "org") */
   orgKey?: string
-  /** For SSE endpoints - allow token in query param */
+  /** For legacy SSE/API-key endpoints - allow API key in query param */
   allowQueryToken?: boolean
 }
 
@@ -47,7 +58,7 @@ export interface OrgAuthOptions {
  * // Require admin access to org from :org route param
  * route.post("/:org/settings", requireOrgAccess({ minRole: "admin", orgSource: "param" }), handler)
  *
- * // SSE endpoint with token in query
+ * // SSE endpoint with API key in query
  * route.get("/stream", requireOrgAccess({ allowQueryToken: true }), handler)
  * ```
  */
@@ -62,13 +73,16 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
   return async (c: Context, next: Next) => {
     const env = getEnv()
 
-    // Get token from query if allowed (for SSE)
+    // Get API key from query if allowed (legacy SSE support only)
     const queryToken = allowQueryToken ? c.req.query("token") : undefined
 
     // Authenticate the user
     let auth: AuthContext
     try {
-      auth = await requireAuth(c.req.raw.headers, { token: queryToken })
+      auth = await requireAuth(c.req.raw.headers, {
+        token: queryToken,
+        apiKeyPermissions: getRequiredApiKeyPermissions(minRole),
+      })
     } catch (err) {
       if (err instanceof AuthError) {
         const status = err.code === "AUTH_REQUIRED" ? 401 : 403
@@ -93,6 +107,10 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
         { error: { code: "ORG_NOT_FOUND", message: `organization not found: ${orgSlug}` } },
         404,
       )
+    }
+
+    if (auth.apiKeyMetadata?.orgId && auth.apiKeyMetadata.orgId !== org.id) {
+      return c.json({ error: { code: "FORBIDDEN", message: "api key is scoped to another organization" } }, 403)
     }
 
     // Check membership and role
@@ -146,7 +164,7 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
 export interface ResourceAuthOptions {
   /** Minimum role required (defaults to "viewer") */
   minRole?: "viewer" | "approver" | "admin"
-  /** For SSE endpoints - allow token in query param */
+  /** For legacy SSE/API-key endpoints - allow API key in query param */
   allowQueryToken?: boolean
   /** Function to get org ID from context - receives the Hono context */
   getOrgId: (c: Context) => Promise<string | null>
@@ -167,19 +185,26 @@ export function requireResourceAccess(options: ResourceAuthOptions) {
       )
     }
 
-    // Get token from query if allowed (for SSE)
+    // Get API key from query if allowed (legacy SSE support only)
     const queryToken = allowQueryToken ? c.req.query("token") : undefined
 
     // Authenticate the user
     let auth: AuthContext
     try {
-      auth = await requireAuth(c.req.raw.headers, { token: queryToken })
+      auth = await requireAuth(c.req.raw.headers, {
+        token: queryToken,
+        apiKeyPermissions: getRequiredApiKeyPermissions(minRole),
+      })
     } catch (err) {
       if (err instanceof AuthError) {
         const status = err.code === "AUTH_REQUIRED" ? 401 : 403
         return c.json({ error: { code: err.code, message: err.message } }, status)
       }
       throw err
+    }
+
+    if (auth.apiKeyMetadata?.orgId && auth.apiKeyMetadata.orgId !== orgId) {
+      return c.json({ error: { code: "FORBIDDEN", message: "api key is scoped to another organization" } }, 403)
     }
 
     // Check membership and role

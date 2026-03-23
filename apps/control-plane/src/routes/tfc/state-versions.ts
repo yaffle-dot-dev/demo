@@ -14,8 +14,11 @@ import {
   type StateVersion,
 } from "../../db/queries/state-versions.ts"
 import { findWorkspaceById, updateWorkspaceCurrentState } from "../../db/queries/workspaces.ts"
+import { TFC_SCOPES } from "../../db/queries/api-tokens.ts"
 import {
   tfcAuth,
+  getTfcStateVersionAccess,
+  getTfcWorkspaceAccess,
   requireScopes,
   type TfcAuthContext,
 } from "../../middleware/tfc-auth.ts"
@@ -25,6 +28,12 @@ import {
   downloadState,
   StateUploadError,
 } from "../../lib/s3-state.ts"
+import {
+  enforceRateLimit,
+  readRequestBodyBytes,
+  RequestBodyTooLargeError,
+} from "../../lib/request-protection.ts"
+import { getPublicOrigin } from "../../lib/public-origin.ts"
 
 // Hono context variables for TFC auth
 type TfcVariables = {
@@ -53,6 +62,60 @@ stateVersionsRoute.use("*", tfcAuth())
  * 3. Upload is only valid for a short time after creation
  */
 export const stateUploadRoute = new Hono()
+
+const STATE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+const JSON_STATE_UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+const PENDING_STATE_UPLOAD_TTL_MS = 15 * 60 * 1000
+const STATE_UPLOAD_RATE_LIMIT = {
+  bucket: "state-upload",
+  limit: 30,
+  windowMs: 60_000,
+} as const
+
+function getPendingUploadExpiryResponse(): Response {
+  return Response.json(
+    {
+      errors: [
+        {
+          status: "410",
+          title: "State upload URL expired",
+          detail: "Create a new state version and retry the upload",
+        },
+      ],
+    },
+    { status: 410 },
+  )
+}
+
+async function ensurePendingUploadIsUsable(sv: StateVersion): Promise<Response | null> {
+  if (sv.status !== "pending") {
+    return Response.json(
+      {
+        errors: [
+          {
+            status: "409",
+            title: "State version is not pending",
+            detail: `Status is ${sv.status}`,
+          },
+        ],
+      },
+      { status: 409 },
+    )
+  }
+
+  const ageMs = Date.now() - sv.createdAt.getTime()
+  if (ageMs > PENDING_STATE_UPLOAD_TTL_MS) {
+    await discardStateVersion(sv.id)
+    log.warn("State upload failed: state version expired", {
+      stateVersionId: sv.id,
+      createdAt: sv.createdAt.toISOString(),
+      ageMs,
+    })
+    return getPendingUploadExpiryResponse()
+  }
+
+  return null
+}
 
 // =============================================================================
 // JSON:API Response Helpers
@@ -84,15 +147,7 @@ interface JsonApiStateVersion {
 }
 
 function getRequestOrigin(c: { req: { url: string; header: (name: string) => string | undefined } }): string {
-  const forwardedProto = c.req.header("x-forwarded-proto")
-  const forwardedHost = c.req.header("x-forwarded-host")
-
-  if (forwardedProto && forwardedHost) {
-    return `${forwardedProto}://${forwardedHost}`
-  }
-
-  const url = new URL(c.req.url)
-  return url.origin
+  return getPublicOrigin(c.req.url)
 }
 
 function toJsonApiStateVersion(
@@ -145,24 +200,15 @@ function toJsonApiStateVersion(
  */
 stateVersionsRoute.post(
   "/workspaces/:workspace_id/state-versions",
-  requireScopes("state:write"),
+  requireScopes(TFC_SCOPES.stateWrite),
   async (c) => {
     const wsId = c.req.param("workspace_id")
-    const auth = c.get("tfcAuth")
-
-    // Check workspace exists and is locked by caller
-    const ws = await findWorkspaceById(wsId)
-    if (!ws) {
-      return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
+    const access = await getTfcWorkspaceAccess(c, wsId)
+    if (access instanceof Response) {
+      return access
     }
 
-    // Check workspace access for run tokens
-    if (auth.type === "run" && auth.workspaceId !== ws.id) {
-      return c.json(
-        { errors: [{ status: "403", title: "Token not authorized for this workspace" }] },
-        403,
-      )
-    }
+    const { auth, workspace: ws } = access
 
     // Workspace must be locked by caller
     const expectedLocker =
@@ -264,7 +310,6 @@ stateVersionsRoute.post(
       stateVersionId: sv.id,
       workspaceId: wsId,
       serial: attrs.serial,
-      uploadUrl: response.attributes["hosted-state-upload-url"],
     })
 
     return c.json({ data: response }, 201)
@@ -277,22 +322,12 @@ stateVersionsRoute.post(
  */
 stateVersionsRoute.get(
   "/workspaces/:workspace_id/current-state-version",
-  requireScopes("state:read"),
+  requireScopes(TFC_SCOPES.stateRead),
   async (c) => {
     const wsId = c.req.param("workspace_id")
-    const auth = c.get("tfcAuth")
-
-    // Check workspace access
-    const ws = await findWorkspaceById(wsId)
-    if (!ws) {
-      return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
-    }
-
-    if (auth.type === "run" && auth.workspaceId !== ws.id) {
-      return c.json(
-        { errors: [{ status: "403", title: "Token not authorized for this workspace" }] },
-        403,
-      )
+    const access = await getTfcWorkspaceAccess(c, wsId)
+    if (access instanceof Response) {
+      return access
     }
 
     const sv = await getCurrentStateVersion(wsId)
@@ -313,25 +348,15 @@ stateVersionsRoute.get(
  */
 stateVersionsRoute.get(
   "/workspaces/:workspace_id/current-state-version-outputs",
-  requireScopes("state:read"),
+  requireScopes(TFC_SCOPES.stateRead),
   async (c) => {
     const wsId = c.req.param("workspace_id")
-    const auth = c.get("tfcAuth")
 
     log.info("GET current state version outputs", { workspaceId: wsId })
 
-    // Check workspace access
-    const ws = await findWorkspaceById(wsId)
-    if (!ws) {
-      log.warn("GET current state version outputs: workspace not found", { workspaceId: wsId })
-      return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
-    }
-
-    if (auth.type === "run" && auth.workspaceId !== ws.id) {
-      return c.json(
-        { errors: [{ status: "403", title: "Token not authorized for this workspace" }] },
-        403,
-      )
+    const access = await getTfcWorkspaceAccess(c, wsId)
+    if (access instanceof Response) {
+      return access
     }
 
     const sv = await getCurrentStateVersion(wsId)
@@ -390,7 +415,7 @@ stateVersionsRoute.get(
  */
 stateVersionsRoute.get(
   "/state-versions",
-  requireScopes("state:read"),
+  requireScopes(TFC_SCOPES.stateRead),
   async (c) => {
     const searchParams = new URL(c.req.url).searchParams
     const workspaceName = searchParams.get("filter[workspace][name]")
@@ -420,6 +445,11 @@ stateVersionsRoute.get(
       )
     }
 
+    const access = await getTfcWorkspaceAccess(c, workspaceId)
+    if (access instanceof Response) {
+      return access
+    }
+
     const { items, nextCursor } = await listStateVersions(workspaceId, {
       limit: parseInt(searchParams.get("page[size]") || "20", 10),
       cursor: searchParams.get("page[after]") || undefined,
@@ -442,17 +472,21 @@ stateVersionsRoute.get(
  */
 stateVersionsRoute.get(
   "/state-versions/:state_version_id",
-  requireScopes("state:read"),
+  requireScopes(TFC_SCOPES.stateRead),
   async (c) => {
     const svId = c.req.param("state_version_id")
 
     log.info("GET state version by ID", { stateVersionId: svId })
 
-    const sv = await findStateVersionById(svId)
-    if (!sv) {
-      log.warn("GET state version: not found", { stateVersionId: svId })
-      return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
+    const access = await getTfcStateVersionAccess(c, svId)
+    if (access instanceof Response) {
+      if (access.status === 404) {
+        log.warn("GET state version: not found", { stateVersionId: svId })
+      }
+      return access
     }
+
+    const { stateVersion: sv } = access
 
     log.info("GET state version: found", {
       stateVersionId: svId,
@@ -478,29 +512,21 @@ stateVersionsRoute.get(
  */
 stateVersionsRoute.get(
   "/state-versions/:state_version_id/download",
-  requireScopes("state:read"),
+  requireScopes(TFC_SCOPES.stateDownload),
   async (c) => {
     const svId = c.req.param("state_version_id")
-    const auth = c.get("tfcAuth")
-
-    const sv = await findStateVersionById(svId)
-    if (!sv) {
-      return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
+    const access = await getTfcStateVersionAccess(c, svId)
+    if (access instanceof Response) {
+      return access
     }
+
+    const { stateVersion: sv } = access
 
     // Must be finalized
     if (sv.status !== "finalized") {
       return c.json(
         { errors: [{ status: "404", title: "State version is not finalized" }] },
         404,
-      )
-    }
-
-    // Check workspace access
-    if (auth.type === "run" && auth.workspaceId !== sv.workspaceId) {
-      return c.json(
-        { errors: [{ status: "403", title: "Token not authorized for this workspace" }] },
-        403,
       )
     }
 
@@ -555,6 +581,11 @@ stateVersionsRoute.get(
 stateUploadRoute.put(
   "/state-versions/:state_version_id/upload",
   async (c) => {
+    const rateLimitResponse = enforceRateLimit(c, STATE_UPLOAD_RATE_LIMIT)
+    if (rateLimitResponse) {
+      return rateLimitResponse
+    }
+
     const svId = c.req.param("state_version_id")
 
     log.info("State upload request received (unauthenticated)", {
@@ -569,25 +600,9 @@ stateUploadRoute.put(
       return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
     }
 
-    // Must be pending - this is the key security check
-    // A state version can only be uploaded once
-    if (sv.status !== "pending") {
-      log.warn("State upload failed: state version not pending", {
-        stateVersionId: svId,
-        status: sv.status,
-      })
-      return c.json(
-        {
-          errors: [
-            {
-              status: "409",
-              title: "State version is not pending",
-              detail: `Status is ${sv.status}`,
-            },
-          ],
-        },
-        409,
-      )
+    const pendingResponse = await ensurePendingUploadIsUsable(sv)
+    if (pendingResponse) {
+      return pendingResponse
     }
 
     // Get workspace and org for KMS key
@@ -606,8 +621,18 @@ stateUploadRoute.put(
     const kmsKeyArn = org?.kmsKeyArn ?? undefined
 
     // Read body as bytes
-    const body = await c.req.arrayBuffer()
-    const content = new Uint8Array(body)
+    let content: Uint8Array
+    try {
+      content = await readRequestBodyBytes(c.req.raw, STATE_UPLOAD_MAX_BYTES)
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) {
+        return c.json(
+          { errors: [{ status: "413", title: "State upload too large" }] },
+          413,
+        )
+      }
+      throw err
+    }
 
     // Upload to S3, validating MD5 and using org's KMS key
     try {
@@ -713,6 +738,11 @@ stateUploadRoute.put(
 stateUploadRoute.put(
   "/state-versions/:state_version_id/upload-json",
   async (c) => {
+    const rateLimitResponse = enforceRateLimit(c, STATE_UPLOAD_RATE_LIMIT)
+    if (rateLimitResponse) {
+      return rateLimitResponse
+    }
+
     const svId = c.req.param("state_version_id")
 
     log.info("JSON state upload request received (unauthenticated)", {
@@ -727,9 +757,25 @@ stateUploadRoute.put(
       return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
     }
 
+    const pendingResponse = await ensurePendingUploadIsUsable(sv)
+    if (pendingResponse) {
+      return pendingResponse
+    }
+
     // Read and discard the body - we don't currently use the JSON state
     // but must accept it for go-tfe's Upload function to succeed
-    const body = await c.req.arrayBuffer()
+    let body: Uint8Array
+    try {
+      body = await readRequestBodyBytes(c.req.raw, JSON_STATE_UPLOAD_MAX_BYTES)
+    } catch (err) {
+      if (err instanceof RequestBodyTooLargeError) {
+        return c.json(
+          { errors: [{ status: "413", title: "JSON state upload too large" }] },
+          413,
+        )
+      }
+      throw err
+    }
     const size = body.byteLength
 
     log.info("JSON state upload accepted (discarded)", {

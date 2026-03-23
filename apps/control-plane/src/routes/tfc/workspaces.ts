@@ -14,8 +14,11 @@ import {
   type Workspace,
 } from "../../db/queries/workspaces.ts"
 import { discardPendingStateVersions } from "../../db/queries/state-versions.ts"
+import { TFC_SCOPES } from "../../db/queries/api-tokens.ts"
 import {
   tfcAuth,
+  authorizeOrgAccess,
+  getTfcWorkspaceAccess,
   requireScopes,
   type TfcAuthContext,
 } from "../../middleware/tfc-auth.ts"
@@ -152,6 +155,7 @@ function toJsonApiWorkspace(ws: Workspace): JsonApiWorkspace {
  */
 workspacesRoute.get(
   "/organizations/:org_name",
+  requireScopes(TFC_SCOPES.workspaceRead),
   async (c) => {
     const orgName = c.req.param("org_name")
 
@@ -161,6 +165,11 @@ workspacesRoute.get(
         { errors: [{ status: "404", title: `Organization "${orgName}" not found` }] },
         404,
       )
+    }
+
+    const access = await authorizeOrgAccess(c, org.id)
+    if (access instanceof Response) {
+      return access
     }
 
     log.info("TFC: organization fetched", {
@@ -209,6 +218,7 @@ workspacesRoute.get(
  */
 workspacesRoute.get(
   "/organizations/:org_name/entitlement-set",
+  requireScopes(TFC_SCOPES.workspaceRead),
   async (c) => {
     const orgName = c.req.param("org_name")
 
@@ -218,6 +228,11 @@ workspacesRoute.get(
         { errors: [{ status: "404", title: `Organization "${orgName}" not found` }] },
         404,
       )
+    }
+
+    const access = await authorizeOrgAccess(c, org.id)
+    if (access instanceof Response) {
+      return access
     }
 
     log.info("TFC: entitlement-set fetched", {
@@ -276,6 +291,7 @@ workspacesRoute.get(
  */
 workspacesRoute.get(
   "/organizations/:org_name/workspaces",
+  requireScopes(TFC_SCOPES.workspaceRead),
   async (c) => {
     const orgName = c.req.param("org_name")
 
@@ -285,12 +301,10 @@ workspacesRoute.get(
       return c.json({ errors: [{ status: "404", title: "Organization not found" }] }, 404)
     }
 
-    // Check org membership
-    const auth = c.get("tfcAuth") as TfcAuthContext
-    if (auth.type === "run" && auth.orgId !== org.id) {
-      return c.json({ errors: [{ status: "403", title: "Token not authorized for this organization" }] }, 403)
+    const access = await authorizeOrgAccess(c, org.id)
+    if (access instanceof Response) {
+      return access
     }
-    // TODO: Check user membership for user tokens
 
     // Parse query params for filtering
     const searchParams = new URL(c.req.url).searchParams
@@ -316,6 +330,7 @@ workspacesRoute.get(
  */
 workspacesRoute.get(
   "/organizations/:org_name/workspaces/:name",
+  requireScopes(TFC_SCOPES.workspaceRead),
   async (c) => {
     const orgName = c.req.param("org_name")
     const wsName = c.req.param("name")
@@ -323,6 +338,11 @@ workspacesRoute.get(
     const org = await findOrgBySlug(orgName)
     if (!org) {
       return c.json({ errors: [{ status: "404", title: "Organization not found" }] }, 404)
+    }
+
+    const access = await authorizeOrgAccess(c, org.id)
+    if (access instanceof Response) {
+      return access
     }
 
     const ws = await findWorkspaceByName(org.id, wsName)
@@ -357,12 +377,18 @@ workspacesRoute.get(
  */
 workspacesRoute.post(
   "/organizations/:org_name/workspaces",
+  requireScopes(TFC_SCOPES.workspaceWrite),
   async (c) => {
     const orgName = c.req.param("org_name")
 
     const org = await findOrgBySlug(orgName)
     if (!org) {
       return c.json({ errors: [{ status: "404", title: "Organization not found" }] }, 404)
+    }
+
+    const access = await authorizeOrgAccess(c, org.id)
+    if (access instanceof Response) {
+      return access
     }
 
     // Parse request body
@@ -436,13 +462,16 @@ workspacesRoute.post(
  */
 workspacesRoute.get(
   "/workspaces/:workspace_id",
+  requireScopes(TFC_SCOPES.workspaceRead),
   async (c) => {
     const wsId = c.req.param("workspace_id")
 
-    const ws = await findWorkspaceById(wsId)
-    if (!ws) {
-      return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
+    const access = await getTfcWorkspaceAccess(c, wsId)
+    if (access instanceof Response) {
+      return access
     }
+
+    const { workspace: ws } = access
 
     const response = { data: toJsonApiWorkspace(ws) }
     
@@ -471,20 +500,15 @@ workspacesRoute.get(
  */
 workspacesRoute.post(
   "/workspaces/:workspace_id/actions/lock",
-  requireScopes("workspace:lock"),
+  requireScopes(TFC_SCOPES.workspaceLock),
   async (c) => {
     const wsId = c.req.param("workspace_id")
-    const auth = c.get("tfcAuth") as TfcAuthContext
-
-    const ws = await findWorkspaceById(wsId)
-    if (!ws) {
-      return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
+    const access = await getTfcWorkspaceAccess(c, wsId)
+    if (access instanceof Response) {
+      return access
     }
 
-    // Check workspace access for run tokens
-    if (auth.type === "run" && auth.workspaceId !== ws.id) {
-      return c.json({ errors: [{ status: "403", title: "Token not authorized for this workspace" }] }, 403)
-    }
+    const { auth } = access
 
     // Parse optional lock reason
     let reason: string | undefined
@@ -536,15 +560,15 @@ workspacesRoute.post(
  */
 workspacesRoute.post(
   "/workspaces/:workspace_id/actions/unlock",
-  requireScopes("workspace:lock"),
+  requireScopes(TFC_SCOPES.workspaceLock),
   async (c) => {
     const wsId = c.req.param("workspace_id")
-    const auth = c.get("tfcAuth") as TfcAuthContext
-
-    const ws = await findWorkspaceById(wsId)
-    if (!ws) {
-      return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
+    const access = await getTfcWorkspaceAccess(c, wsId)
+    if (access instanceof Response) {
+      return access
     }
+
+    const { auth, workspace: ws } = access
 
     if (!ws.locked) {
       return c.json(
@@ -583,6 +607,7 @@ workspacesRoute.post(
  */
 workspacesRoute.post(
   "/workspaces/:workspace_id/actions/force-unlock",
+  requireScopes(TFC_SCOPES.adminForceUnlock),
   async (c) => {
     const wsId = c.req.param("workspace_id")
     const auth = c.get("tfcAuth") as TfcAuthContext
@@ -595,13 +620,12 @@ workspacesRoute.post(
       )
     }
 
-    const ws = await findWorkspaceById(wsId)
-    if (!ws) {
-      return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
+    const access = await getTfcWorkspaceAccess(c, wsId, "admin")
+    if (access instanceof Response) {
+      return access
     }
 
-    // TODO: Check user has admin role on the org
-    // For now, any authenticated user can force unlock
+    const { workspace: ws } = access
 
     if (!ws.locked) {
       return c.json(

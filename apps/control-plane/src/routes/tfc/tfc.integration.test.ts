@@ -7,6 +7,7 @@ import { wellKnownRoute } from "../well-known.ts"
 import { generateRunToken } from "../../lib/run-token.ts"
 import {
   createApiToken,
+  getDefaultTfcScopesForRole,
   generateToken,
   deleteApiTokensByUserId,
 } from "../../db/queries/api-tokens.ts"
@@ -17,7 +18,7 @@ import {
 import { findOrgBySlug, createOrg } from "../../db/queries/organizations.ts"
 import { ensureMembership } from "../../db/queries/users.ts"
 import { db } from "../../lib/db.ts"
-import { user } from "../../db/schema.ts"
+import { stateVersions, user } from "../../db/schema.ts"
 import { eq } from "drizzle-orm"
 
 /**
@@ -48,14 +49,52 @@ app.route("/tfc", tfcRoute)
 
 // Test fixtures
 const TEST_ORG_SLUG = "tfc-test-org"
+const TEST_OTHER_ORG_SLUG = "tfc-test-org-other"
 const TEST_REPO = "test-infra"
 const TEST_NAMESPACE = `${TEST_ORG_SLUG}--${TEST_REPO}`
 const TEST_USER_ID = "test-user-tfc-integration"
+const TEST_VIEWER_USER_ID = "test-user-tfc-viewer"
+const TEST_OTHER_USER_ID = "test-user-tfc-other-org"
 const TEST_WORKSPACE_NAME = "tfc-integration-test-workspace"
+const TEST_CROSS_TENANT_WORKSPACE_NAME = "tfc-cross-tenant-workspace"
 
 let testOrgId: string
+let otherOrgId: string
 let testUserToken: string
+let viewerUserToken: string
+let otherOrgUserToken: string
 let testWorkspaceId: string | null = null
+
+async function ensureTestUserRecord(id: string, name: string, email: string): Promise<void> {
+  const existingUser = await db.select().from(user).where(eq(user.id, id)).limit(1)
+  if (existingUser.length === 0) {
+    await db.insert(user).values({
+      id,
+      name,
+      email,
+      emailVerified: true,
+    })
+  }
+}
+
+async function mintApiToken(
+  userId: string,
+  description: string,
+  orgId: string,
+  role: "viewer" | "approver" | "admin" = "admin",
+): Promise<string> {
+  const { token, hash } = generateToken()
+  await createApiToken({
+    userId,
+    orgId,
+    scopes: getDefaultTfcScopesForRole(role),
+    createdByFlow: "test",
+    tokenHash: hash,
+    description,
+    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+  })
+  return token
+}
 
 /**
  * Helper to make authenticated requests with a bearer token.
@@ -92,16 +131,9 @@ function md5(content: string | Uint8Array): string {
 // =============================================================================
 
 beforeAll(async () => {
-  // Ensure test user exists (find or create)
-  const existingUser = await db.select().from(user).where(eq(user.id, TEST_USER_ID)).limit(1)
-  if (existingUser.length === 0) {
-    await db.insert(user).values({
-      id: TEST_USER_ID,
-      name: "TFC Test User",
-      email: "tfc-test@example.com",
-      emailVerified: true,
-    })
-  }
+  await ensureTestUserRecord(TEST_USER_ID, "TFC Test User", "tfc-test@example.com")
+  await ensureTestUserRecord(TEST_VIEWER_USER_ID, "TFC Viewer User", "tfc-viewer@example.com")
+  await ensureTestUserRecord(TEST_OTHER_USER_ID, "TFC Other Org User", "tfc-other@example.com")
 
   // Ensure test org exists (find or create)
   let org = await findOrgBySlug(TEST_ORG_SLUG)
@@ -113,6 +145,15 @@ beforeAll(async () => {
   }
   testOrgId = org.id
 
+  let otherOrg = await findOrgBySlug(TEST_OTHER_ORG_SLUG)
+  if (!otherOrg) {
+    otherOrg = await createOrg({
+      name: "TFC Other Org",
+      slug: TEST_OTHER_ORG_SLUG,
+    })
+  }
+  otherOrgId = otherOrg.id
+
   // Ensure test user is a member of the org (required for registry access)
   await ensureMembership({
     orgId: testOrgId,
@@ -121,17 +162,29 @@ beforeAll(async () => {
     source: "manual",
   })
 
+  await ensureMembership({
+    orgId: testOrgId,
+    userId: TEST_VIEWER_USER_ID,
+    role: "viewer",
+    source: "manual",
+  })
+
+  await ensureMembership({
+    orgId: otherOrgId,
+    userId: TEST_OTHER_USER_ID,
+    role: "admin",
+    source: "manual",
+  })
+
   // Clean up any existing test tokens first
   await deleteApiTokensByUserId(TEST_USER_ID)
+  await deleteApiTokensByUserId(TEST_VIEWER_USER_ID)
+  await deleteApiTokensByUserId(TEST_OTHER_USER_ID)
 
   // Create a test API token for the test user
-  const { token, hash } = generateToken()
-  await createApiToken({
-    userId: TEST_USER_ID,
-    tokenHash: hash,
-    description: "TFC integration test token",
-  })
-  testUserToken = token
+  testUserToken = await mintApiToken(TEST_USER_ID, "TFC integration test token", testOrgId, "admin")
+  viewerUserToken = await mintApiToken(TEST_VIEWER_USER_ID, "TFC viewer token", testOrgId, "viewer")
+  otherOrgUserToken = await mintApiToken(TEST_OTHER_USER_ID, "TFC other org token", otherOrgId, "admin")
 })
 
 afterAll(async () => {
@@ -142,14 +195,26 @@ afterAll(async () => {
 
   // Clean up test tokens
   await deleteApiTokensByUserId(TEST_USER_ID)
+  await deleteApiTokensByUserId(TEST_VIEWER_USER_ID)
+  await deleteApiTokensByUserId(TEST_OTHER_USER_ID)
 })
 
 beforeEach(async () => {
   // Clean up any leftover test workspace from failed tests
-  const existing = await findWorkspaceByName(testOrgId, TEST_WORKSPACE_NAME)
-  if (existing) {
-    await deleteWorkspace(existing.id)
+  const workspacesToDelete = [
+    [testOrgId, TEST_WORKSPACE_NAME],
+    [testOrgId, TEST_CROSS_TENANT_WORKSPACE_NAME],
+    [otherOrgId, TEST_WORKSPACE_NAME],
+    [otherOrgId, TEST_CROSS_TENANT_WORKSPACE_NAME],
+  ] as const
+
+  for (const [orgId, workspaceName] of workspacesToDelete) {
+    const existing = await findWorkspaceByName(orgId, workspaceName)
+    if (existing) {
+      await deleteWorkspace(existing.id)
+    }
   }
+
   testWorkspaceId = null
 })
 
@@ -192,6 +257,118 @@ describe("Service Discovery", () => {
 })
 
 // =============================================================================
+// OAuth and Public URL Security Tests
+// =============================================================================
+
+describe("OAuth and Public URL Security", () => {
+  test("rate limits oauth authorize requests", async () => {
+    const makeRequest = () =>
+      new Request(
+        "http://localhost/tfc/oauth/authorize?client_id=terraform-cli&redirect_uri=http%3A%2F%2Flocalhost%3A10000%2Fcallback&response_type=code&code_challenge=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&code_challenge_method=S256",
+        {
+          headers: {
+            "x-forwarded-for": "198.51.100.10",
+          },
+        },
+      )
+
+    for (let i = 0; i < 30; i++) {
+      const res = await app.fetch(makeRequest())
+      expect(res.status).not.toBe(429)
+    }
+
+    const limited = await app.fetch(makeRequest())
+    expect(limited.status).toBe(429)
+    expect(limited.headers.get("Retry-After")).toBeTruthy()
+  })
+
+  test("rate limits oauth token requests", async () => {
+    const makeRequest = () =>
+      new Request("http://localhost/tfc/oauth/token", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-forwarded-for": "198.51.100.11",
+        },
+        body: JSON.stringify({
+          grant_type: "authorization_code",
+          code: "missing",
+          code_verifier: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          redirect_uri: "http://localhost:10000/callback",
+          client_id: "terraform-cli",
+        }),
+      })
+
+    for (let i = 0; i < 20; i++) {
+      const res = await app.fetch(makeRequest())
+      expect(res.status).not.toBe(429)
+    }
+
+    const limited = await app.fetch(makeRequest())
+    expect(limited.status).toBe(429)
+    expect(limited.headers.get("Retry-After")).toBeTruthy()
+  })
+
+  test("state version URLs use configured public origin instead of forwarded host", async () => {
+    const statePayload = JSON.stringify({
+      version: 4,
+      terraform_version: "1.7.0",
+      serial: 1,
+      lineage: "12345678-1234-1234-1234-123456789012",
+      outputs: {},
+      resources: [],
+    })
+
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const request = authRequest(
+      "POST",
+      `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+      testUserToken,
+      {
+        data: {
+          type: "state-versions",
+          attributes: {
+            serial: 1,
+            md5: md5(statePayload),
+          },
+        },
+      },
+    )
+    request.headers.set("x-forwarded-host", "evil.example.com")
+    request.headers.set("x-forwarded-proto", "https")
+
+    const res = await app.fetch(request)
+
+    expect(res.status).toBe(201)
+    const body = await res.json()
+    expect(body.data.attributes["hosted-state-upload-url"]).toStartWith("https://yaffle.local:6969/")
+  })
+})
+
+// =============================================================================
 // Authentication Tests
 // =============================================================================
 
@@ -228,6 +405,27 @@ describe("Authentication", () => {
     )
 
     expect(res.status).toBe(200)
+  })
+
+  test("rejects legacy unscoped user tokens", async () => {
+    const { token, hash } = generateToken()
+    await createApiToken({
+      userId: TEST_USER_ID,
+      tokenHash: hash,
+      description: "legacy unscoped token",
+    })
+
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        token,
+      ),
+    )
+
+    expect(res.status).toBe(401)
+    const body = await res.json()
+    expect(body.errors[0].title).toBe("Token must be rotated")
   })
 
   test("accepts requests with valid run token (JWT)", async () => {
@@ -803,6 +1001,250 @@ describe("Workspace Locking", () => {
 })
 
 // =============================================================================
+// Tenant Isolation Tests
+// =============================================================================
+
+describe("Tenant Isolation", () => {
+  test("rejects listing workspaces in another organization", async () => {
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        otherOrgUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.errors[0].title).toBe("Token not authorized for this organization")
+  })
+
+  test("rejects fetching a workspace by ID from another organization", async () => {
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    const res = await app.fetch(
+      authRequest("GET", `/tfc/api/v2/workspaces/${testWorkspaceId}`, otherOrgUserToken),
+    )
+
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.errors[0].title).toBe("Token not authorized for this organization")
+  })
+
+  test("rejects force-unlock from non-admin user in same organization", async () => {
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    const runToken = await generateRunToken("tenant-isolation-lock", testWorkspaceId!, testOrgId)
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        runToken,
+      ),
+    )
+
+    const res = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/force-unlock`,
+        viewerUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.errors[0].title).toBe("Insufficient permissions")
+  })
+
+  test("rejects current state version access from another organization", async () => {
+    const testState = JSON.stringify({
+      version: 4,
+      terraform_version: "1.7.0",
+      serial: 1,
+      lineage: "12345678-1234-1234-1234-123456789012",
+      outputs: {
+        example: { value: "hello", type: "string" },
+      },
+      resources: [],
+    })
+
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const createStateVersionRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: md5(testState),
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+    const stateVersionBody = await createStateVersionRes.json()
+    const uploadPath = new URL(stateVersionBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: testState,
+      }),
+    )
+
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/current-state-version`,
+        otherOrgUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.errors[0].title).toBe("Token not authorized for this organization")
+  })
+
+  test("rejects state version by ID access from another organization", async () => {
+    const testState = JSON.stringify({
+      version: 4,
+      terraform_version: "1.7.0",
+      serial: 1,
+      lineage: "12345678-1234-1234-1234-123456789012",
+      outputs: {
+        example: { value: "hello", type: "string" },
+      },
+      resources: [],
+    })
+
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const createStateVersionRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: md5(testState),
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+    const stateVersionBody = await createStateVersionRes.json()
+    const stateVersionId = stateVersionBody.data.id
+    const uploadPath = new URL(stateVersionBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: testState,
+      }),
+    )
+
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/state-versions/${stateVersionId}`,
+        otherOrgUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(403)
+    const body = await res.json()
+    expect(body.errors[0].title).toBe("Token not authorized for this organization")
+  })
+})
+
+// =============================================================================
 // State Version Tests
 // =============================================================================
 
@@ -945,6 +1387,148 @@ describe("State Versions", () => {
     expect(res.status).toBe(409)
     const body = await res.json()
     expect(body.errors[0].title).toBe("Workspace must be locked")
+  })
+
+  test("rejects expired pending state upload URLs", async () => {
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const createSvRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: md5(testState),
+            },
+          },
+        },
+      ),
+    )
+
+    expect(createSvRes.status).toBe(201)
+    const svBody = await createSvRes.json()
+    const stateVersionId = svBody.data.id
+    const uploadPath = new URL(svBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    await db
+      .update(stateVersions)
+      .set({ createdAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .where(eq(stateVersions.id, stateVersionId))
+
+    const uploadRes = await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: testState,
+      }),
+    )
+
+    expect(uploadRes.status).toBe(410)
+    const body = await uploadRes.json()
+    expect(body.errors[0].title).toBe("State upload URL expired")
+
+    const getSvRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/state-versions/${stateVersionId}`,
+        testUserToken,
+      ),
+    )
+    expect(getSvRes.status).toBe(200)
+    const current = await getSvRes.json()
+    expect(current.data.attributes.status).toBe("discarded")
+  })
+
+  test("rejects oversized state uploads", async () => {
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const createSvRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: md5(testState),
+            },
+          },
+        },
+      ),
+    )
+
+    expect(createSvRes.status).toBe(201)
+    const svBody = await createSvRes.json()
+    const uploadPath = new URL(svBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    const uploadRes = await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+          "Content-Length": String(10 * 1024 * 1024 + 1),
+        },
+        body: testState,
+      }),
+    )
+
+    expect(uploadRes.status).toBe(413)
+    const body = await uploadRes.json()
+    expect(body.errors[0].title).toBe("State upload too large")
   })
 
   test("rejects state upload with wrong lock owner", async () => {

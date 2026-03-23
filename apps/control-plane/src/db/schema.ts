@@ -11,6 +11,7 @@ import {
   unique,
   uuid,
 } from "drizzle-orm/pg-core"
+import { sql } from "drizzle-orm"
 import { uuidv7 } from "uuidv7"
 
 // Re-export BetterAuth tables
@@ -409,7 +410,10 @@ export const apiTokens = pgTable("api_tokens", {
   userId: text("user_id")
     .references(() => user.id, { onDelete: "cascade" })
     .notNull(),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
   description: text("description"),
+  scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`),
+  createdByFlow: text("created_by_flow"),
   tokenHash: text("token_hash").notNull(),
   lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
