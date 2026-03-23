@@ -26,17 +26,50 @@ await initTelemetry()
 
 const schedulerDisabled = process.env.YAFFLE_DISABLE_SCHEDULER === "true"
 
-if (!schedulerDisabled) {
+type ProcessRole = "all" | "api" | "scheduler" | "job-worker"
+
+function resolveProcessRole(value: string | undefined): ProcessRole {
+  const normalized = value?.trim().toLowerCase()
+  if (
+    normalized === "all"
+    || normalized === "api"
+    || normalized === "scheduler"
+    || normalized === "job-worker"
+  ) {
+    return normalized
+  }
+
+  return "all"
+}
+
+const processRole = resolveProcessRole(process.env.YAFFLE_PROCESS_ROLE)
+const startSchedulerRole = processRole === "all" || processRole === "scheduler"
+const startJobWorkerRole = processRole === "all" || processRole === "job-worker"
+
+log.info("Control plane role configuration", {
+  processRole,
+  schedulerDisabled,
+  startSchedulerRole,
+  startJobWorkerRole,
+})
+
+if (startSchedulerRole && !schedulerDisabled) {
   // Start the IaC job scheduler
   await startScheduler()
   log.info("IaC job scheduler started")
-} else {
+} else if (startSchedulerRole && schedulerDisabled) {
   log.info("IaC job scheduler disabled via YAFFLE_DISABLE_SCHEDULER=true")
+} else {
+  log.info("IaC job scheduler disabled for process role", { processRole })
 }
 
 // Start the generic job worker (for org provisioning, etc.)
-startJobWorker()
-log.info("Job worker started")
+if (startJobWorkerRole) {
+  startJobWorker()
+  log.info("Job worker started")
+} else {
+  log.info("Job worker disabled for process role", { processRole })
+}
 
 // Ensure default provider credential signature catalog exists.
 await ensureDefaultProviderCredentialSignatures()
@@ -106,20 +139,24 @@ log.info(`yaffle api listening on :${port}`, { port })
 // Graceful shutdown
 process.on("SIGTERM", async () => {
   log.info("shutting down")
-  if (!schedulerDisabled) {
-    stopScheduler()
+  if (startSchedulerRole && !schedulerDisabled) {
+    await stopScheduler()
   }
-  stopJobWorker()
+  if (startJobWorkerRole) {
+    stopJobWorker()
+  }
   await shutdownTelemetry()
   process.exit(0)
 })
 
 process.on("SIGINT", async () => {
   log.info("shutting down")
-  if (!schedulerDisabled) {
-    stopScheduler()
+  if (startSchedulerRole && !schedulerDisabled) {
+    await stopScheduler()
   }
-  stopJobWorker()
+  if (startJobWorkerRole) {
+    stopJobWorker()
+  }
   await shutdownTelemetry()
   process.exit(0)
 })

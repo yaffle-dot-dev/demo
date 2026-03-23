@@ -22,6 +22,8 @@
 
 import { randomUUID } from "node:crypto"
 
+import postgres from "postgres"
+
 import {
   findQueuedJobsForSpawning,
   countActiveJobs,
@@ -491,6 +493,80 @@ export class Scheduler {
   }
 }
 
+const SCHEDULER_LOCK_KEY_1 = 0x59414646 // "YAFF"
+const SCHEDULER_LOCK_KEY_2 = 0x4c455244 // "LERD"
+
+type SchedulerLeaderState = {
+  lockClient: ReturnType<typeof postgres> | null
+  hasLeadership: boolean
+}
+
+function getSchedulerLeaderState(): SchedulerLeaderState {
+  const globalKey = "__yaffle_scheduler_leader_state"
+  const globalRef = globalThis as Record<string, unknown>
+  if (!globalRef[globalKey]) {
+    globalRef[globalKey] = {
+      lockClient: null,
+      hasLeadership: false,
+    } as SchedulerLeaderState
+  }
+
+  return globalRef[globalKey] as SchedulerLeaderState
+}
+
+const schedulerLeaderState = getSchedulerLeaderState()
+
+async function acquireSchedulerLeadership(): Promise<boolean> {
+  if (schedulerLeaderState.hasLeadership) {
+    return true
+  }
+
+  const connectionString = process.env.DATABASE_URL ?? "postgresql://yaffle@localhost:5432/yaffle_dev"
+  const lockClient = postgres(connectionString, {
+    max: 1,
+    idle_timeout: 0,
+    connect_timeout: 10,
+  })
+
+  try {
+    const result = await lockClient<[{ acquired: boolean }]>`
+      select pg_try_advisory_lock(${SCHEDULER_LOCK_KEY_1}, ${SCHEDULER_LOCK_KEY_2}) as acquired
+    `
+
+    if (!result[0]?.acquired) {
+      await lockClient.end()
+      return false
+    }
+
+    schedulerLeaderState.lockClient = lockClient
+    schedulerLeaderState.hasLeadership = true
+    return true
+  } catch {
+    await lockClient.end().catch(() => {})
+    return false
+  }
+}
+
+async function releaseSchedulerLeadership(): Promise<void> {
+  if (!schedulerLeaderState.hasLeadership || !schedulerLeaderState.lockClient) {
+    return
+  }
+
+  const lockClient = schedulerLeaderState.lockClient
+  schedulerLeaderState.lockClient = null
+  schedulerLeaderState.hasLeadership = false
+
+  try {
+    await lockClient`
+      select pg_advisory_unlock(${SCHEDULER_LOCK_KEY_1}, ${SCHEDULER_LOCK_KEY_2})
+    `
+  } catch {
+    // ignore unlock errors during shutdown
+  } finally {
+    await lockClient.end().catch(() => {})
+  }
+}
+
 // =============================================================================
 // Singleton scheduler instance
 // =============================================================================
@@ -612,20 +688,33 @@ export async function getScheduler(): Promise<Scheduler> {
  * control plane instance.
  */
 export async function startScheduler(): Promise<void> {
-  // Run startup recovery first
-  await recoverOrphanedJobs()
+  const hasLeadership = await acquireSchedulerLeadership()
+  if (!hasLeadership) {
+    logger.info("Scheduler leadership not acquired; skipping scheduler startup")
+    return
+  }
 
-  const scheduler = await getScheduler()
-  scheduler.start()
+  try {
+    // Run startup recovery first
+    await recoverOrphanedJobs()
+
+    const scheduler = await getScheduler()
+    scheduler.start()
+  } catch (err) {
+    await releaseSchedulerLeadership()
+    throw err
+  }
 }
 
 /**
  * Stop the scheduler.
  */
-export function stopScheduler(): void {
+export async function stopScheduler(): Promise<void> {
   if (schedulerState.schedulerInstance) {
     schedulerState.schedulerInstance.stop()
   }
+
+  await releaseSchedulerLeadership()
 }
 
 /**
