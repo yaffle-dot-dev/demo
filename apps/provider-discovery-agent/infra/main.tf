@@ -11,6 +11,7 @@ module "naming" {
 locals {
   is_preview = var.environment_kind == "transient"
 
+  ai_gateway_id        = "yaffle-provider-discovery"
   worker_name          = "yaffle-provider-discovery-agent-${module.naming.suffix}"
   worker_host          = local.is_preview ? "provider-discovery-agent-${var.environment}.preview.${module.shared.domain}" : "provider-discovery-agent.${module.shared.domain}"
   worker_route_pattern = "${local.worker_host}/*"

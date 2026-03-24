@@ -23,6 +23,11 @@ output "worker_url" {
   description = "Base URL for the provider discovery worker"
 }
 
+output "ai_gateway_id" {
+  value       = local.ai_gateway_id
+  description = "AI Gateway ID used for provider credential extraction"
+}
+
 output "dns_record_id" {
   value       = cloudflare_dns_record.worker.id
   description = "Cloudflare DNS record ID backing the worker hostname"

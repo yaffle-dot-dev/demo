@@ -188,14 +188,30 @@ describe("discoverProviderCredentials", () => {
         return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 })
       }
 
+      if (url === "https://api.github.com/repos/hashicorp/terraform-provider-tfe/git/trees/main?recursive=1") {
+        return new Response(JSON.stringify({
+          tree: [
+            {
+              path: "website/docs/index.html.markdown",
+              type: "blob",
+            },
+          ],
+        }), { status: 200 })
+      }
+
       if (
         url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/README.md"
         || url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/docs/index.md"
+        || url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/website/docs/index.html.markdown"
       ) {
-        return new Response([
-          "Use TFE_TOKEN to authenticate.",
-          "Set TFE_ADDRESS for your hostname.",
-        ].join("\n"), { status: 200 })
+        const body = url.endsWith("website/docs/index.html.markdown")
+          ? [
+              "Use TFE_TOKEN to authenticate.",
+              "Set TFE_ADDRESS for your hostname.",
+            ].join("\n")
+          : "Provider overview"
+
+        return new Response(body, { status: 200 })
       }
 
       throw new Error(`Unexpected fetch: ${url}`)

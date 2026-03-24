@@ -1,5 +1,6 @@
 import { routeAgentRequest } from "agents"
 
+import { extractProviderCredentialsWithLlm } from "./provider-llm"
 import { discoverProviderCredentials } from "./provider-research"
 import { ProviderDiscoveryAgent, type Env } from "./provider-discovery-agent"
 import { timingSafeEqual } from "./signing"
@@ -90,10 +91,29 @@ async function runDirectDiscovery(request: Request, env: Env): Promise<Response>
       timeoutMs: Number(env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS ?? "8000"),
       maxDocs: Number(env.YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS ?? "24"),
       githubToken: env.GITHUB_TOKEN,
+      extractor: (material) => extractProviderCredentialsWithLlm(env, material),
+    })
+
+    console.log("provider_discovery.direct.succeeded", {
+      providerType: parsed.data.providerType,
+      status: result.status,
+      confidence: result.confidence,
+      exactEnvVarCount: result.exactEnvVars.length,
+      prefixEnvVarCount: result.prefixEnvVars.length,
+      sourceCount: result.sources.length,
     })
 
     return Response.json({ data: result }, { status: 200 })
   } catch (error) {
+    console.error("provider_discovery.direct.failed", {
+      providerType: parsed.data.providerType,
+      error: error instanceof Error ? {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+      } : String(error),
+    })
+
     return Response.json(
       {
         error: {
@@ -168,8 +188,22 @@ export default {
 
     try {
       const result = await dispatchDiscovery(env, parsed.data)
+      console.log("provider_discovery.dispatch.accepted", {
+        requestId: parsed.data.requestId,
+        providerType: parsed.data.providerType,
+      })
       return Response.json({ data: result }, { status: 202 })
     } catch (error) {
+      console.error("provider_discovery.dispatch.failed", {
+        requestId: parsed.data.requestId,
+        providerType: parsed.data.providerType,
+        error: error instanceof Error ? {
+          name: error.name,
+          message: error.message,
+          stack: error.stack,
+        } : String(error),
+      })
+
       return Response.json(
         {
           error: {

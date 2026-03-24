@@ -1,5 +1,6 @@
 import { Agent } from "agents"
 
+import { extractProviderCredentialsWithLlm } from "./provider-llm"
 import { discoverProviderCredentials } from "./provider-research"
 import { buildSignedCallbackHeaders } from "./signing"
 import type {
@@ -20,10 +21,15 @@ export interface ProviderDiscoveryAgentState {
 
 export interface Env {
   ProviderDiscoveryAgent: DurableObjectNamespace
+  AI: {
+    run: (model: string, input: unknown, options?: unknown) => Promise<unknown>
+  }
   YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN: string
   YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET: string
   YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS?: string
   YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS?: string
+  YAFFLE_PROVIDER_DISCOVERY_AI_MODEL?: string
+  YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_ID?: string
   GITHUB_TOKEN?: string
 }
 
@@ -144,6 +150,17 @@ export class ProviderDiscoveryAgent extends Agent<Env, ProviderDiscoveryAgentSta
         timeoutMs,
         maxDocs,
         githubToken: this.env.GITHUB_TOKEN,
+        extractor: (material) => extractProviderCredentialsWithLlm(this.env, material),
+      })
+
+      console.log("provider_discovery.callback_flow.succeeded", {
+        requestId: request.requestId,
+        providerType: request.providerType,
+        status: result.status,
+        confidence: result.confidence,
+        exactEnvVarCount: result.exactEnvVars.length,
+        prefixEnvVarCount: result.prefixEnvVars.length,
+        sourceCount: result.sources.length,
       })
 
       await postResultCallback({
@@ -173,6 +190,16 @@ export class ProviderDiscoveryAgent extends Agent<Env, ProviderDiscoveryAgentSta
         lastRunAt: new Date().toISOString(),
       })
     } catch (error) {
+      console.error("provider_discovery.callback_flow.failed", {
+        requestId: request.requestId,
+        providerType: request.providerType,
+        error: error instanceof Error ? {
+          name: error.name,
+          message: error.message,
+          stack: error.stack,
+        } : String(error),
+      })
+
       this.setState({
         ...this.state,
         lastRequestId: request.requestId,

@@ -76,6 +76,26 @@ export interface ProviderDetails {
   docs: ProviderRegistryDoc[]
 }
 
+export interface ProviderDocument {
+  url: string
+  kind: string
+  text: string
+}
+
+export interface ProviderResearchMaterial {
+  providerType: string
+  details: ProviderDetails
+  sources: DiscoverySource[]
+  documents: ProviderDocument[]
+}
+
+export interface ProviderCredentialExtractionResult {
+  exactEnvVars: string[]
+  prefixEnvVars: string[]
+  confidence: DiscoveryResultConfidence
+  reasoningSummary: string
+}
+
 export interface DiscoveryRequestAccepted {
   accepted: true
   requestId: string

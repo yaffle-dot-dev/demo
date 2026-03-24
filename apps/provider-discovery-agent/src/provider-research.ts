@@ -1,8 +1,11 @@
 import type {
   DiscoverySource,
   ProviderCandidate,
+  ProviderCredentialExtractionResult,
   ProviderDetails,
+  ProviderDocument,
   ProviderDiscoveryRunResult,
+  ProviderResearchMaterial,
   ProviderRegistryDoc,
 } from "./types"
 
@@ -259,9 +262,44 @@ async function fetchGitHubDefaultBranch(params: {
   return payload.default_branch ?? "main"
 }
 
+async function fetchGitHubTreePaths(params: {
+  owner: string
+  repo: string
+  defaultBranch: string
+  timeoutMs: number
+  githubToken?: string
+}): Promise<string[]> {
+  type GitHubTreeResponse = {
+    tree?: Array<{
+      path?: string
+      type?: string
+    }>
+  }
+
+  const headers: HeadersInit = {
+    accept: "application/vnd.github+json",
+    "user-agent": "yaffle-provider-discovery-agent",
+  }
+
+  if (params.githubToken) {
+    headers.authorization = `Bearer ${params.githubToken}`
+  }
+
+  const payload = await fetchJson<GitHubTreeResponse>(
+    `${GITHUB_API_BASE_URL}/repos/${params.owner}/${params.repo}/git/trees/${params.defaultBranch}?recursive=1`,
+    { headers },
+    params.timeoutMs,
+  )
+
+  return (payload.tree ?? [])
+    .filter((entry) => entry.type === "blob" && typeof entry.path === "string")
+    .map((entry) => entry.path as string)
+}
+
 function pickHighSignalDocs(docs: ProviderRegistryDoc[], maxDocs: number): ProviderRegistryDoc[] {
   const ranked = [...docs].sort((a, b) => {
     const score = (doc: ProviderRegistryDoc): number => {
+      if (/website\/docs\/index\.html\.markdown$/i.test(doc.path)) return 110
       if (doc.slug === "index") return 100
       if (doc.category === "overview") return 90
       if (doc.category === "guides") return 80
@@ -276,7 +314,7 @@ function pickHighSignalDocs(docs: ProviderRegistryDoc[], maxDocs: number): Provi
 
   const deduped = new Map<string, ProviderRegistryDoc>()
   for (const doc of ranked) {
-    if (!doc.path.endsWith(".md")) {
+    if (!/\.(md|markdown|mdx)$/i.test(doc.path)) {
       continue
     }
 
@@ -290,6 +328,25 @@ function pickHighSignalDocs(docs: ProviderRegistryDoc[], maxDocs: number): Provi
   }
 
   return [...deduped.values()]
+}
+
+function pickFallbackMarkdownPaths(paths: string[], maxDocs: number): string[] {
+  const ranked = [...new Set(paths)]
+    .filter((path) => /\.(md|markdown|mdx)$/i.test(path))
+    .sort((a, b) => scoreFallbackPath(b) - scoreFallbackPath(a) || a.localeCompare(b))
+
+  return ranked.slice(0, maxDocs)
+}
+
+function scoreFallbackPath(path: string): number {
+  const normalized = path.toLowerCase()
+
+  if (/^website\/docs\/index\.html\.markdown$/.test(normalized)) return 120
+  if (/^readme\.md$/.test(normalized)) return 100
+  if (/(provider|configuration|config|auth|authentication|credential)/.test(normalized)) return 90
+  if (/website\/docs\//.test(normalized)) return 80
+  if (/docs\//.test(normalized)) return 70
+  return 10
 }
 
 export function extractCandidateEnvVarsFromText(params: {
@@ -382,14 +439,11 @@ async function collectGitHubMarkdown(params: {
   owner: string
   repo: string
   defaultBranch: string
-  docs: ProviderRegistryDoc[]
+  paths: string[]
   timeoutMs: number
-}): Promise<Array<{ url: string; text: string }>> {
-  const documents: Array<{ url: string; text: string }> = []
-  const paths = new Set<string>([
-    "README.md",
-    ...params.docs.map((doc) => doc.path),
-  ])
+}): Promise<ProviderDocument[]> {
+  const documents: ProviderDocument[] = []
+  const paths = new Set<string>(params.paths)
 
   for (const path of paths) {
     const encodedPath = path
@@ -405,7 +459,11 @@ async function collectGitHubMarkdown(params: {
         },
       }, params.timeoutMs)
 
-      documents.push({ url, text })
+        documents.push({
+          url,
+          text,
+          kind: "github_repository_docs",
+        })
     } catch {
       continue
     }
@@ -414,46 +472,26 @@ async function collectGitHubMarkdown(params: {
   return documents
 }
 
-export async function discoverProviderCredentials(params: {
+async function collectProviderResearchMaterial(params: {
   providerType: string
   timeoutMs: number
   maxDocs: number
   githubToken?: string
-}): Promise<ProviderDiscoveryRunResult> {
+}): Promise<ProviderResearchMaterial | null> {
   const requestedProviderType = normalizeProviderType(params.providerType)
-  if (!requestedProviderType) {
-    return {
-      status: "failed",
-      confidence: "low",
-      exactEnvVars: [],
-      prefixEnvVars: [],
-      sources: [],
-      reasoningSummary: "Provider type was empty after normalization",
-    }
-  }
-
-  const sources: DiscoverySource[] = []
-  const aggregate = new Map<string, { score: number; occurrences: number }>()
-
   const candidate = await resolveProviderCandidate(requestedProviderType, params.timeoutMs)
   if (!candidate) {
-    return {
-      status: "inconclusive",
-      confidence: "low",
-      displayName: requestedProviderType,
-      exactEnvVars: [],
-      prefixEnvVars: [],
-      sources,
-      reasoningSummary: "No exact provider match found in Terraform Registry",
-    }
+    return null
   }
 
   const details = await fetchProviderDetails(candidate, params.timeoutMs)
-  const credentialProviderType = normalizeProviderType(details.name)
-  sources.push({
-    kind: "terraform_registry",
-    url: `${TERRAFORM_REGISTRY_BASE_URL}/providers/${details.namespace}/${details.name}/latest/docs`,
-  })
+  const sources: DiscoverySource[] = [
+    {
+      kind: "terraform_registry",
+      url: `${TERRAFORM_REGISTRY_BASE_URL}/providers/${details.namespace}/${details.name}/latest/docs`,
+    },
+  ]
+  const documents: ProviderDocument[] = []
 
   const repo = parseGitHubRepo(details.source)
   if (repo) {
@@ -465,34 +503,79 @@ export async function discoverProviderCredentials(params: {
     })
 
     const docs = pickHighSignalDocs(details.docs, params.maxDocs)
-    const documents = await collectGitHubMarkdown({
+    const primaryPaths = [
+      "README.md",
+      ...docs.map((doc) => doc.path),
+    ]
+
+    const primaryDocuments = await collectGitHubMarkdown({
       owner: repo.owner,
       repo: repo.repo,
       defaultBranch,
-      docs,
+      paths: primaryPaths,
       timeoutMs: params.timeoutMs,
     })
 
-    for (const document of documents) {
-      const extracted = extractCandidateEnvVarsFromText({
-        text: document.text,
-        providerType: credentialProviderType,
+    for (const document of primaryDocuments) {
+      documents.push(document)
+      sources.push({ kind: document.kind, url: document.url })
+    }
+
+    const treePaths = await fetchGitHubTreePaths({
+      owner: repo.owner,
+      repo: repo.repo,
+      defaultBranch,
+      timeoutMs: params.timeoutMs,
+      githubToken: params.githubToken,
+    }).catch(() => [])
+
+    const fallbackPaths = pickFallbackMarkdownPaths(treePaths, Math.max(params.maxDocs, 12))
+      .filter((path) => !primaryPaths.includes(path))
+
+    if (fallbackPaths.length > 0) {
+      const fallbackDocuments = await collectGitHubMarkdown({
+        owner: repo.owner,
+        repo: repo.repo,
+        defaultBranch,
+        paths: fallbackPaths,
+        timeoutMs: params.timeoutMs,
       })
 
-      for (const [token, score] of extracted.entries()) {
-        const current = aggregate.get(token)
-        if (current) {
-          current.score = Math.max(current.score, score)
-          current.occurrences += 1
-        } else {
-          aggregate.set(token, { score, occurrences: 1 })
-        }
+      for (const document of fallbackDocuments) {
+        documents.push(document)
+        sources.push({ kind: document.kind, url: document.url })
       }
+    }
+  }
 
-      sources.push({
-        kind: "github_repository_docs",
-        url: document.url,
-      })
+  return {
+    providerType: requestedProviderType,
+    details,
+    sources: dedupeSources(sources),
+    documents,
+  }
+}
+
+function extractProviderCredentialsHeuristically(
+  material: ProviderResearchMaterial,
+): ProviderCredentialExtractionResult {
+  const aggregate = new Map<string, { score: number; occurrences: number }>()
+  const credentialProviderType = normalizeProviderType(material.details.name)
+
+  for (const document of material.documents) {
+    const extracted = extractCandidateEnvVarsFromText({
+      text: document.text,
+      providerType: credentialProviderType,
+    })
+
+    for (const [token, score] of extracted.entries()) {
+      const current = aggregate.get(token)
+      if (current) {
+        current.score = Math.max(current.score, score)
+        current.occurrences += 1
+      } else {
+        aggregate.set(token, { score, occurrences: 1 })
+      }
     }
   }
 
@@ -507,7 +590,7 @@ export async function discoverProviderCredentials(params: {
     exactEnvVars,
   })
 
-  const hasOfficialEvidence = sources.some((source) =>
+  const hasOfficialEvidence = material.sources.some((source) =>
     source.kind === "terraform_registry" || source.kind === "github_repository_docs"
   )
 
@@ -517,21 +600,74 @@ export async function discoverProviderCredentials(params: {
       ? "medium"
       : "low"
 
-  const status = exactEnvVars.length > 0 ? "succeeded" : "inconclusive"
-
   return {
-    status,
-    confidence,
-    displayName: details.name,
     exactEnvVars,
     prefixEnvVars,
-    sources: dedupeSources(sources),
+    confidence,
     reasoningSummary: buildReasoningSummary({
-      provider: `${details.namespace}/${details.name}`,
+      provider: `${material.details.namespace}/${material.details.name}`,
       exactCount: exactEnvVars.length,
       prefixCount: prefixEnvVars.length,
       confidence,
     }),
+  }
+}
+
+export async function discoverProviderCredentials(params: {
+  providerType: string
+  timeoutMs: number
+  maxDocs: number
+  githubToken?: string
+  extractor?: (material: ProviderResearchMaterial) => Promise<ProviderCredentialExtractionResult>
+}): Promise<ProviderDiscoveryRunResult> {
+  const requestedProviderType = normalizeProviderType(params.providerType)
+  if (!requestedProviderType) {
+    return {
+      status: "failed",
+      confidence: "low",
+      exactEnvVars: [],
+      prefixEnvVars: [],
+      sources: [],
+      reasoningSummary: "Provider type was empty after normalization",
+    }
+  }
+
+  const material = await collectProviderResearchMaterial({
+    providerType: requestedProviderType,
+    timeoutMs: params.timeoutMs,
+    maxDocs: params.maxDocs,
+    githubToken: params.githubToken,
+  })
+  if (!material) {
+    return {
+      status: "inconclusive",
+      confidence: "low",
+      displayName: requestedProviderType,
+      exactEnvVars: [],
+      prefixEnvVars: [],
+      sources: [],
+      reasoningSummary: "No exact provider match found in Terraform Registry",
+    }
+  }
+
+  const extraction = params.extractor
+    ? await params.extractor(material)
+    : extractProviderCredentialsHeuristically(material)
+
+  const confidence = extraction.exactEnvVars.length > 0
+    ? extraction.confidence
+    : "low"
+
+  const status = extraction.exactEnvVars.length > 0 ? "succeeded" : "inconclusive"
+
+  return {
+    status,
+    confidence,
+    displayName: material.details.name,
+    exactEnvVars: extraction.exactEnvVars,
+    prefixEnvVars: extraction.prefixEnvVars,
+    sources: material.sources,
+    reasoningSummary: extraction.reasoningSummary,
   }
 }
 

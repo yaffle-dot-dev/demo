@@ -86,17 +86,34 @@ import CopyButton from "$lib/components/CopyButton.svelte"
   let copiedAwsSnippet = $state(false)
   let awsBootstrapSeed = $state("")
 
+  function providerLookupKeys(providerType: string): string[] {
+    const normalized = providerType.trim().toLowerCase()
+    if (!normalized) {
+      return []
+    }
+
+    const keys = new Set<string>([normalized])
+    const shortName = normalized.split("/").at(-1)?.trim()
+    if (shortName) {
+      keys.add(shortName)
+    }
+
+    return [...keys]
+  }
+
   const knownProviderSetup = $derived.by((): Record<string, { label: string; suggestedConnectionType: ConnectionType }> =>
     Object.fromEntries(
-      knownProviderSignatures.map((signature) => [
-        signature.providerType,
-        {
-          label: signature.displayName,
-          suggestedConnectionType: signature.suggestedCredentialProviderType === "iam_role"
-            ? "iam-role"
-            : "envvar",
-        },
-      ]),
+      knownProviderSignatures.flatMap((signature) =>
+        providerLookupKeys(signature.providerType).map((key) => [
+          key,
+          {
+            label: signature.displayName,
+            suggestedConnectionType: signature.suggestedCredentialProviderType === "iam_role"
+              ? "iam-role"
+              : "envvar",
+          },
+        ] as const)
+      ),
     )
   )
 

@@ -20,6 +20,7 @@ This workspace manages the Cloudflare-side hostname for the provider discovery w
 - `worker_host`
 - `worker_route_pattern`
 - `worker_url`
+- `ai_gateway_id`
 - `*_secret_id` outputs for Secrets Manager-backed deploy/runtime secrets
 
 PR previews should deploy to the preview hostname from this workspace before merge.

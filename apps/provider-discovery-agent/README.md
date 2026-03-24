@@ -26,6 +26,7 @@ Signed callbacks include `x-yaffle-timestamp`, `x-yaffle-nonce`, and `x-yaffle-s
 Optional:
 
 - `GITHUB_TOKEN` (secret, improves GitHub API rate limits)
+- `YAFFLE_PROVIDER_DISCOVERY_AI_MODEL` (var, default `@cf/zai-org/glm-4.7-flash`)
 - `YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS` (var, default `8000`)
 - `YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS` (var, default `24`)
 
@@ -51,6 +52,8 @@ bun run --filter=@yaffle/provider-discovery-agent deploy
 - Worker deploy secrets are loaded from AWS Secrets Manager via the GitHub Actions CI role
 - If those repo variables are unset, workflows fall back to `http://yaffle.tail66f312.ts.net:3000`
 - Worker observability logs are enabled in Wrangler for deploy-time diagnostics
+- Workers AI extraction routes through the AI Gateway ID surfaced by `apps/provider-discovery-agent/infra`
+- Discovery uses deterministic official-source fetching plus Workers AI extraction; `/discover/direct` is the recommended smoke-test route
 
 Expected GitHub repository configuration:
 
