@@ -207,6 +207,7 @@ resource "aws_iam_role_policy" "github_actions_ci_runtime_secrets" {
         ]
         Resource = [
           "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/shared/cloudflare/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/shared/github-actions/*",
           "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/*/provider-discovery-agent/*",
         ]
       },

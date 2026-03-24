@@ -72,6 +72,13 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Load Yaffle API token from Secrets Manager
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            YAFFLE_API_TOKEN, yaffle/shared/github-actions/yaffle-api-token
+          parse-json-secrets: false
+
       - name: Typecheck provider discovery agent
         run: bun run --filter=@yaffle/provider-discovery-agent typecheck
 

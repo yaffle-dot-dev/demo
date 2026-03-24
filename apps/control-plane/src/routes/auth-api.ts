@@ -103,10 +103,10 @@ authApiRoute.post("/api-keys", async (c) => {
       : { yaffle: ["read"] }
 
     const result = await auth.api.createApiKey({
-      headers: c.req.raw.headers,
       body: {
         name: parsed.data.name,
         expiresIn: parsed.data.expiresIn,
+        userId: authContext.userId,
         metadata: {
           access: parsed.data.access,
           orgId: org.id,
@@ -137,6 +137,7 @@ authApiRoute.post("/api-keys", async (c) => {
     if (err instanceof z.ZodError) {
       return c.json({ error: { code: "VALIDATION_ERROR", message: err.issues[0]?.message ?? "invalid request" } }, 400)
     }
+    console.error("failed to create api key", err)
     return c.json({ error: { code: "INTERNAL_ERROR", message: "failed to create api key" } }, 500)
   }
 })

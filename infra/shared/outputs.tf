@@ -35,6 +35,11 @@ output "cloudflare_api_token_secret_arn" {
   description = "Secrets Manager ARN for the Cloudflare API token"
 }
 
+output "github_actions_yaffle_api_token_secret_arn" {
+  value       = aws_secretsmanager_secret.github_actions_yaffle_api_token.arn
+  description = "Secrets Manager ARN for the Yaffle API token used by GitHub Actions"
+}
+
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC
 # -----------------------------------------------------------------------------

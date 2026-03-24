@@ -17,3 +17,13 @@ resource "aws_secretsmanager_secret" "cloudflare_api_token" {
     ManagedBy = "terraform"
   }
 }
+
+resource "aws_secretsmanager_secret" "github_actions_yaffle_api_token" {
+  name        = "yaffle/shared/github-actions/yaffle-api-token"
+  description = "Yaffle API token used by GitHub Actions workflows to fetch preview outputs"
+
+  tags = {
+    Name      = "yaffle-shared-github-actions-yaffle-api-token"
+    ManagedBy = "terraform"
+  }
+}
