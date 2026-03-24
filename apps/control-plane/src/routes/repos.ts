@@ -5,7 +5,7 @@ import { z } from "zod"
 import {
   findDeploymentsByEnvironment,
 } from "../db/queries/workspace-deployments.ts"
-import { listRunsForPreview, findLatestRun } from "../db/queries/tf-runs.ts"
+import { listRunsForPreview, findLatestSuccessfulRun } from "../db/queries/tf-runs.ts"
 import { findLatestJobForDeployment } from "../db/queries/iac-jobs.ts"
 import {
   listRunGroupsForPr,
@@ -25,6 +25,10 @@ import {
 import { getConnectionReadinessForDeployment } from "../lib/execution-credentials.ts"
 
 const prNumberParam = z.coerce.number().int().positive()
+const environmentQuerySchema = z.object({
+  head_sha: z.string().min(7).max(64).optional(),
+  token: z.string().optional(),
+})
 
 export const reposRoute = new Hono()
 
@@ -88,9 +92,9 @@ reposRoute.get(
     const deploymentsWithRuns = await Promise.all(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
-        const latestApply = await findLatestRun(deployment.id, "apply")
+        const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
         const latestJob = await findLatestJobForDeployment(deployment.id)
-        const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+        const outputs = latestApply?.outputs ?? null
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
         return {
           preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
@@ -191,9 +195,9 @@ reposRoute.get(
           const deploymentsWithRuns = await Promise.all(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
-              const latestApply = await findLatestRun(deployment.id, "apply")
+              const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
               const latestJob = await findLatestJobForDeployment(deployment.id)
-              const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+              const outputs = latestApply?.outputs ?? null
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
               return {
                 preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
@@ -351,9 +355,9 @@ reposRoute.get(
     const deploymentsWithRuns = await Promise.all(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
-        const latestApply = await findLatestRun(deployment.id, "apply")
+        const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
         const latestJob = await findLatestJobForDeployment(deployment.id)
-        const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+        const outputs = latestApply?.outputs ?? null
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
         return {
           preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
@@ -440,9 +444,9 @@ reposRoute.get(
           const deploymentsWithRuns = await Promise.all(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
-              const latestApply = await findLatestRun(deployment.id, "apply")
+              const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
               const latestJob = await findLatestJobForDeployment(deployment.id)
-              const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+              const outputs = latestApply?.outputs ?? null
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
               return {
                 preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
@@ -561,8 +565,24 @@ reposRoute.get(
       return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and environment name are required" } }, 400)
     }
 
-    const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
-    const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
+    const parsedQuery = environmentQuerySchema.safeParse(c.req.query())
+    if (!parsedQuery.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: parsedQuery.error.issues[0]?.message ?? "invalid query" } },
+        400,
+      )
+    }
+
+    const headSha = parsedQuery.data.head_sha
+
+    const deployments = filterDeploymentsByHeadSha(
+      await findDeploymentsByEnvironment(auth.orgId, repo, environmentName),
+      headSha,
+    )
+    const runGroupsData = filterRunGroupsByHeadSha(
+      await listRunGroupsForEnvironment(auth.orgId, repo, environmentName),
+      headSha,
+    )
 
     if (deployments.length === 0) {
       if (runGroupsData.length === 0) {
@@ -594,9 +614,9 @@ reposRoute.get(
     const deploymentsWithRuns = await Promise.all(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
-        const latestApply = await findLatestRun(deployment.id, "apply")
+        const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
         const latestJob = await findLatestJobForDeployment(deployment.id)
-        const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+        const outputs = latestApply?.outputs ?? null
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
         return {
           preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
@@ -642,6 +662,16 @@ reposRoute.get(
       return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and environment name are required" } }, 400)
     }
 
+    const parsedQuery = environmentQuerySchema.safeParse(c.req.query())
+    if (!parsedQuery.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: parsedQuery.error.issues[0]?.message ?? "invalid query" } },
+        400,
+      )
+    }
+
+    const headSha = parsedQuery.data.head_sha
+
     return streamSSE(c, async (stream) => {
       getSseConnectionsActiveCounter().add(1, { type: "environment" })
       let lastPayload = ""
@@ -657,8 +687,14 @@ reposRoute.get(
 
         try {
           const start = Date.now()
-          const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
-          const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
+          const deployments = filterDeploymentsByHeadSha(
+            await findDeploymentsByEnvironment(auth.orgId, repo, environmentName),
+            headSha,
+          )
+          const runGroupsData = filterRunGroupsByHeadSha(
+            await listRunGroupsForEnvironment(auth.orgId, repo, environmentName),
+            headSha,
+          )
 
           if (deployments.length === 0) {
             const payload = runGroupsData.length === 0
@@ -693,9 +729,9 @@ reposRoute.get(
           const deploymentsWithRuns = await Promise.all(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
-              const latestApply = await findLatestRun(deployment.id, "apply")
+              const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
               const latestJob = await findLatestJobForDeployment(deployment.id)
-              const outputs = latestApply?.status === "success" ? latestApply.outputs : null
+              const outputs = latestApply?.outputs ?? null
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
               return {
                 preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
@@ -756,7 +792,10 @@ reposRoute.get(
       // Track deployment IDs for this environment to filter events
       let deploymentIds = new Set<string>()
       const updateDeploymentIds = async (): Promise<void> => {
-        const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+        const deployments = filterDeploymentsByHeadSha(
+          await findDeploymentsByEnvironment(auth.orgId, repo, environmentName),
+          headSha,
+        )
         deploymentIds = new Set(deployments.map((d) => d.id))
       }
       await updateDeploymentIds()
@@ -809,6 +848,26 @@ reposRoute.get(
 // ---------------------------------------------------------------------------
 // Serialization helpers
 // ---------------------------------------------------------------------------
+
+function filterDeploymentsByHeadSha<T extends { headSha: string }>(
+  deployments: T[],
+  headSha?: string,
+): T[] {
+  if (!headSha) {
+    return deployments
+  }
+  return deployments.filter((deployment) => deployment.headSha === headSha)
+}
+
+function filterRunGroupsByHeadSha(
+  runGroups: RunGroup[],
+  headSha?: string,
+): RunGroup[] {
+  if (!headSha) {
+    return runGroups
+  }
+  return runGroups.filter((runGroup) => runGroup.headSha === headSha)
+}
 
 interface SerializedPreview {
   id: string

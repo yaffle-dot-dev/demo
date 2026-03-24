@@ -99,6 +99,33 @@ export async function findLatestRun(
 }
 
 /**
+ * Find the latest successful run for a deployment, optionally filtered by type.
+ */
+export async function findLatestSuccessfulRun(
+  deploymentId: string,
+  runType?: RunType,
+): Promise<TfRun | undefined> {
+  return withDbSpan("select", "tf_runs", async () => {
+    const conditions = [
+      eq(tfRuns.deploymentId, deploymentId),
+      eq(tfRuns.status, "success"),
+    ]
+    if (runType) {
+      conditions.push(eq(tfRuns.runType, runType))
+    }
+
+    const rows = await db
+      .select()
+      .from(tfRuns)
+      .where(and(...conditions))
+      .orderBy(desc(tfRuns.createdAt))
+      .limit(1)
+
+    return rows[0]
+  })
+}
+
+/**
  * List all runs for a deployment.
  */
 export async function listRunsForDeployment(deploymentId: string): Promise<TfRun[]> {

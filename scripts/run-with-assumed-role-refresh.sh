@@ -26,37 +26,104 @@ fi
 REFRESH_SECONDS="${YAFFLE_ASSUME_REFRESH_SECONDS:-3000}"
 ASSUME_DURATION_SECONDS="${YAFFLE_ASSUME_DURATION_SECONDS:-3600}"
 RESTART_GRACE_SECONDS="${YAFFLE_ASSUME_RESTART_GRACE_SECONDS:-20}"
+SHUTDOWN_GRACE_SECONDS="${YAFFLE_ASSUME_SHUTDOWN_GRACE_SECONDS:-3}"
 
 child_pid=""
 sleep_pid=""
+script_pgid="$(ps -o pgid= $$ 2>/dev/null | tr -d ' ' || true)"
+cleanup_done="false"
+
+list_descendants() {
+  local parent="$1"
+  local children child
+  children="$(pgrep -P "$parent" 2>/dev/null || true)"
+  if [ -z "$children" ]; then
+    return 0
+  fi
+
+  for child in $children; do
+    printf "%s\n" "$child"
+    list_descendants "$child"
+  done
+}
+
+signal_descendants() {
+  local parent="$1"
+  local signal="$2"
+  local pid
+
+  for pid in $(list_descendants "$parent" | sort -rn | uniq); do
+    kill "-$signal" "$pid" 2>/dev/null || true
+  done
+}
+
+get_pgid() {
+  local pid="$1"
+  ps -o pgid= "$pid" 2>/dev/null | tr -d ' ' || true
+}
+
+terminate_child() {
+  local grace_seconds="$1"
+  local child_pgid
+
+  if [ -z "$child_pid" ] || ! kill -0 "$child_pid" 2>/dev/null; then
+    return 0
+  fi
+
+  child_pgid="$(get_pgid "$child_pid")"
+
+  signal_descendants "$child_pid" TERM
+
+  if [ -n "$child_pgid" ] && [ "$child_pgid" != "$script_pgid" ]; then
+    kill -TERM "-$child_pgid" 2>/dev/null || true
+  fi
+  kill -TERM "$child_pid" 2>/dev/null || true
+
+  sleep "$grace_seconds"
+
+  if kill -0 "$child_pid" 2>/dev/null; then
+    signal_descendants "$child_pid" KILL
+
+    if [ -n "$child_pgid" ] && [ "$child_pgid" != "$script_pgid" ]; then
+      kill -KILL "-$child_pgid" 2>/dev/null || true
+    fi
+    kill -KILL "$child_pid" 2>/dev/null || true
+  fi
+
+  wait "$child_pid" 2>/dev/null || true
+  child_pid=""
+}
+
+start_child() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" &
+  else
+    # macOS does not ship `setsid`; enable job control so the child gets its
+    # own process group and can be terminated with its descendants.
+    set -m
+    "$@" &
+    set +m
+  fi
+  child_pid=$!
+}
 
 cleanup() {
+  if [ "$cleanup_done" = "true" ]; then
+    return 0
+  fi
+  cleanup_done="true"
+
   if [ -n "$sleep_pid" ] && kill -0 "$sleep_pid" 2>/dev/null; then
     kill -TERM "$sleep_pid" 2>/dev/null || true
     wait "$sleep_pid" 2>/dev/null || true
+    sleep_pid=""
   fi
 
-  if [ -n "$child_pid" ] && kill -0 "$child_pid" 2>/dev/null; then
-    child_pgid="$(ps -o pgid= "$child_pid" 2>/dev/null | tr -d ' ')"
-    if [ -n "$child_pgid" ]; then
-      kill -TERM "-$child_pgid" 2>/dev/null || true
-    else
-      kill -TERM "$child_pid" 2>/dev/null || true
-    fi
-    sleep "$RESTART_GRACE_SECONDS"
-
-    if kill -0 "$child_pid" 2>/dev/null; then
-      if [ -n "$child_pgid" ]; then
-        kill -KILL "-$child_pgid" 2>/dev/null || true
-      else
-        kill -KILL "$child_pid" 2>/dev/null || true
-      fi
-    fi
-    wait "$child_pid" 2>/dev/null || true
-  fi
+  terminate_child "$SHUTDOWN_GRACE_SECONDS"
 }
 
 trap 'cleanup; exit 130' INT TERM
+trap cleanup EXIT
 
 assume_once() {
   local session_name output status source_profile profile_list_raw profile_list
@@ -127,13 +194,20 @@ assume_once() {
 while true; do
   assume_once
 
-  "$@" &
-  child_pid=$!
+  start_child "$@"
 
   sleep "$REFRESH_SECONDS" &
   sleep_pid=$!
 
-  wait -n "$child_pid" "$sleep_pid"
+  while true; do
+    if ! kill -0 "$child_pid" 2>/dev/null; then
+      break
+    fi
+    if ! kill -0 "$sleep_pid" 2>/dev/null; then
+      break
+    fi
+    sleep 1
+  done
 
   if ! kill -0 "$child_pid" 2>/dev/null; then
     kill "$sleep_pid" 2>/dev/null || true
@@ -142,21 +216,8 @@ while true; do
   fi
 
   echo "Refreshing assumed role credentials; restarting child process..." >&2
-  child_pgid="$(ps -o pgid= "$child_pid" 2>/dev/null | tr -d ' ')"
-  if [ -n "$child_pgid" ]; then
-    kill -TERM "-$child_pgid" 2>/dev/null || true
-  else
-    kill -TERM "$child_pid" 2>/dev/null || true
-  fi
-  sleep "$RESTART_GRACE_SECONDS"
-
-  if kill -0 "$child_pid" 2>/dev/null; then
-    if [ -n "$child_pgid" ]; then
-      kill -KILL "-$child_pgid" 2>/dev/null || true
-    else
-      kill -KILL "$child_pid" 2>/dev/null || true
-    fi
-  fi
-  wait "$child_pid" 2>/dev/null || true
+  terminate_child "$RESTART_GRACE_SECONDS"
   kill "$sleep_pid" 2>/dev/null || true
+  wait "$sleep_pid" 2>/dev/null || true
+  sleep_pid=""
 done

@@ -31,8 +31,6 @@ cleanup_lock() {
   rm -rf "$LOCK_DIR"
 }
 
-trap cleanup_lock EXIT INT TERM
-
 case "$MODE" in
   local)
     MODE_ENV="env/dev/control-plane-local-runner.env"
@@ -59,7 +57,7 @@ else
   echo "Warning: secrets env file not found at $SECRETS_ENV_FILE (continuing without it)" >&2
 fi
 
-bunx @dotenvx/dotenvx run -o "${DOTENV_ARGS[@]}" -- \
+exec bunx @dotenvx/dotenvx run -o "${DOTENV_ARGS[@]}" -- \
   env "YAFFLE_USE_ECS_RUNNER=${USE_ECS_RUNNER}" bash -lc '
     set -euo pipefail
     ASSUME_CONTROL_PLANE_ROLE="${YAFFLE_ASSUME_CONTROL_PLANE_ROLE:-false}"

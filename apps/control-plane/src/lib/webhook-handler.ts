@@ -29,7 +29,13 @@ import {
 } from "../db/queries/workspace-deployments.ts"
 import { createIacJob, cancelJobsForPreview, findPendingJobsForPreview } from "../db/queries/iac-jobs.ts"
 import { findLatestRun } from "../db/queries/tf-runs.ts"
-import { createRunGroup, updateRunGroupDependencyGraph, updateRunGroupWorkspaceS3Key, type RunGroupTrigger } from "../db/queries/run-groups.ts"
+import {
+  createRunGroup,
+  updateRunGroupDependencyGraph,
+  updateRunGroupWorkspaceS3Key,
+  updateRunGroupStatus,
+  type RunGroupTrigger,
+} from "../db/queries/run-groups.ts"
 import { events } from "./events.ts"
 import {
   createCheckRun,
@@ -831,11 +837,11 @@ async function handlePrOpenedOrUpdated(
       "yaffle.execution_order": executionOrder,
     })
   } catch (err) {
-    // If dependency scan fails, fall back to config order
     const msg = err instanceof Error ? err.message : String(err)
-    logger.warn(`Dependency scan failed, using config order: ${msg}`, attrs)
-    executionOrder = workspacePaths
-    dependencyGraph = { workspaces: workspacePaths, edges: [] }
+    logger.error(`Dependency scan failed, aborting run group: ${msg}`, attrs)
+    await updateRunGroupStatus(runGroup.id, "failed", { completedAt: new Date() })
+    await surfaceConfigError(ctx, `workspace packaging failed: ${msg}`)
+    return
   }
 
   // Create a map for quick workspace lookup by path
@@ -1226,11 +1232,10 @@ async function handlePushEvent(
       "yaffle.execution_order": executionOrder,
     })
   } catch (err) {
-    // If dependency scan fails, fall back to config order
     const msg = err instanceof Error ? err.message : String(err)
-    logger.warn(`Dependency scan failed, using config order: ${msg}`, attrs)
-    executionOrder = activeWorkspacePaths
-    dependencyGraph = { workspaces: activeWorkspacePaths, edges: [] }
+    logger.error(`Dependency scan failed, aborting run group: ${msg}`, attrs)
+    await updateRunGroupStatus(runGroup.id, "failed", { completedAt: new Date() })
+    return
   }
 
   // Create a map for quick workspace lookup by path
