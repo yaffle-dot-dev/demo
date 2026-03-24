@@ -336,6 +336,15 @@
     latestPlan && latestApply && latestApply.createdAt < latestPlan.createdAt,
   )
 
+  const isWorkspaceInFlight = $derived.by((): boolean => {
+    const status = selectedWorkspace?.preview.status
+    return status === "pending"
+      || status === "planning"
+      || status === "applying"
+      || status === "awaiting_approval"
+      || status === "destroying"
+  })
+
   const tabs = $derived.by((): Tab[] => {
     const result: Tab[] = []
     if (latestPlan) {
@@ -344,7 +353,7 @@
     if (latestApply && !applyIsStale) {
       result.push({ id: "apply", label: "Apply", status: latestApply.status })
     }
-    if (hasOutputs && !applyIsStale) {
+    if (hasOutputs && !applyIsStale && !isWorkspaceInFlight) {
       result.push({ id: "outputs", label: "Outputs" })
     }
     return result
@@ -878,7 +887,7 @@ terraform {
           </div>
 
           <!-- Tab content area -->
-          {#if activeTab === "outputs" && hasOutputs}
+          {#if activeTab === "outputs" && hasOutputs && !isWorkspaceInFlight}
             <div class="flex-1 overflow-auto p-6">
               <OutputsView outputs={displayOutputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
             </div>
