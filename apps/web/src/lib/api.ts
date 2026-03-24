@@ -45,6 +45,22 @@ export interface DependencyGraph {
   edges: [string, string][]
 }
 
+export interface SystemErrorLine {
+  lineNumber: number
+  text: string
+  highlight: boolean
+}
+
+export interface RunGroupSystemError {
+  kind: "config"
+  title: string
+  summary: string
+  filePath: string
+  line: number | null
+  column: number | null
+  excerpt: SystemErrorLine[]
+}
+
 export interface RunGroup {
   id: string
   repo: string
@@ -55,6 +71,7 @@ export interface RunGroup {
   status: string
   /** Inferred dependency graph for this run group */
   dependencyGraph: DependencyGraph | null
+  systemError: RunGroupSystemError | null
   createdAt: string
   startedAt: string | null
   completedAt: string | null

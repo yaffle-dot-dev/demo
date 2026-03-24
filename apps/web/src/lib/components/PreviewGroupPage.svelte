@@ -80,6 +80,8 @@
     return runGroups[0] ?? null
   })
 
+  const systemError = $derived(viewedRunGroup?.systemError ?? null)
+
   // Workspaces with runs filtered to the viewed run group
   const workspacesWithRuns = $derived.by((): WorkspaceWithRuns[] => {
     if (!viewedRunGroup) {
@@ -894,7 +896,32 @@ terraform {
         {/if}
       {:else}
         <div class="flex-1 flex flex-col items-center justify-center text-text-dim gap-2">
-          {#if filteredWorkspaces.length === 0}
+          {#if systemError}
+            <div class="w-full max-w-4xl px-6 py-8">
+              <div class="rounded-xl border border-status-failed/30 bg-status-failed/8 overflow-hidden">
+                <div class="px-5 py-4 border-b border-status-failed/20">
+                  <div class="flex items-center gap-2 text-status-failed font-medium">
+                    <span>✗</span>
+                    <span>{systemError.title}</span>
+                  </div>
+                  <p class="mt-2 text-sm text-text leading-6 whitespace-pre-wrap">{systemError.summary}</p>
+                  <div class="mt-2 text-xs text-text-dim font-mono">
+                    {systemError.filePath}{#if systemError.line}: {systemError.line}{#if systemError.column}:{systemError.column}{/if}{/if}
+                  </div>
+                </div>
+
+                {#if systemError.excerpt.length > 0}
+                  <div class="overflow-auto bg-surface/70">
+                    <pre class="m-0 px-0 py-0 text-sm"><code>
+{#each systemError.excerpt as line}
+<div class="config-line" class:config-line-highlight={line.highlight}><span class="config-line-number">{line.lineNumber}</span><span class="config-line-content">{line.text || " "}</span></div>
+{/each}
+                    </code></pre>
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {:else if filteredWorkspaces.length === 0}
             <svg class="w-12 h-12 text-text-dim/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
@@ -908,3 +935,29 @@ terraform {
     </main>
   </div>
 </div>
+
+<style>
+  .config-line {
+    display: grid;
+    grid-template-columns: 4rem minmax(0, 1fr);
+    gap: 0.75rem;
+    padding: 0.125rem 1.25rem;
+  }
+
+  .config-line-highlight {
+    background: color-mix(in srgb, var(--color-status-failed) 12%, transparent);
+  }
+
+  .config-line-number {
+    color: var(--color-text-dim);
+    text-align: right;
+    user-select: none;
+  }
+
+  .config-line-content {
+    color: var(--color-text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: "Berkeley Mono", "SFMono-Regular", ui-monospace, monospace;
+  }
+</style>

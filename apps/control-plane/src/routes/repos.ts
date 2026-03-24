@@ -58,12 +58,30 @@ reposRoute.get(
 
     const environmentName = `pr-${prNumber}`
     const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+    const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
 
     if (deployments.length === 0) {
-      return c.json(
-        { error: { code: "NOT_FOUND", message: `no previews found for PR #${prNumber}` } },
-        404,
-      )
+      if (runGroupsData.length === 0) {
+        return c.json(
+          { error: { code: "NOT_FOUND", message: `no previews found for PR #${prNumber}` } },
+          404,
+        )
+      }
+
+      const latestRunGroup = runGroupsData[0]
+      return c.json({
+        data: {
+          org: c.req.param("org"),
+          repo,
+          prNumber,
+          ref: latestRunGroup.ref,
+          headSha: latestRunGroup.headSha,
+          authorGithubId: null,
+          authorLogin: null,
+          workspaces: [],
+          runGroups: runGroupsData.map(serializeRunGroup),
+        },
+      })
     }
 
     // Fetch runs for each deployment
@@ -81,9 +99,6 @@ reposRoute.get(
         }
       }),
     )
-
-    // Fetch run groups for this PR
-    const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
 
     // Get metadata from first deployment
     const first = deployments[0]
@@ -148,9 +163,24 @@ reposRoute.get(
         try {
           const startTime = performance.now()
           const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+          const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
 
           if (deployments.length === 0) {
-            const emptyPayload = JSON.stringify({ data: null })
+            const emptyPayload = runGroupsData.length === 0
+              ? JSON.stringify({ data: null })
+              : JSON.stringify({
+                  data: {
+                    org: c.req.param("org"),
+                    repo,
+                    prNumber,
+                    ref: runGroupsData[0]?.ref ?? `refs/heads/pr-${prNumber}`,
+                    headSha: runGroupsData[0]?.headSha ?? "",
+                    authorGithubId: null,
+                    authorLogin: null,
+                    workspaces: [],
+                    runGroups: runGroupsData.map(serializeRunGroup),
+                  },
+                })
             if (emptyPayload !== lastPayload) {
               lastPayload = emptyPayload
               await stream.writeSSE({ event: "update", data: emptyPayload })
@@ -172,9 +202,6 @@ reposRoute.get(
               }
             }),
           )
-
-          // Fetch run groups for this PR
-          const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
 
           const queryDuration = performance.now() - startTime
           getSseSnapshotDurationHistogram().record(queryDuration, {
@@ -297,12 +324,27 @@ reposRoute.get(
 
     // For legacy env routes, branch name is the environment name
     const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, branch)
+    const runGroupsData = await listRunGroupsForBranch(auth.orgId, repo, branch)
 
     if (deployments.length === 0) {
-      return c.json(
-        { error: { code: "NOT_FOUND", message: `no previews found for branch ${branch}` } },
-        404,
-      )
+      if (runGroupsData.length === 0) {
+        return c.json(
+          { error: { code: "NOT_FOUND", message: `no previews found for branch ${branch}` } },
+          404,
+        )
+      }
+
+      const latestRunGroup = runGroupsData[0]
+      return c.json({
+        data: {
+          org: c.req.param("org"),
+          repo,
+          branch,
+          headSha: latestRunGroup.headSha,
+          workspaces: [],
+          runGroups: runGroupsData.map(serializeRunGroup),
+        },
+      })
     }
 
     // Fetch runs for each deployment
@@ -320,9 +362,6 @@ reposRoute.get(
         }
       }),
     )
-
-    // Fetch run groups for this branch
-    const runGroupsData = await listRunGroupsForBranch(auth.orgId, repo, branch)
 
     const first = deployments[0]
 
@@ -376,9 +415,21 @@ reposRoute.get(
         try {
           const startTime = performance.now()
           const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+          const runGroupsData = await listRunGroupsForBranch(auth.orgId, repo, branch)
 
           if (deployments.length === 0) {
-            const emptyPayload = JSON.stringify({ data: null })
+            const emptyPayload = runGroupsData.length === 0
+              ? JSON.stringify({ data: null })
+              : JSON.stringify({
+                  data: {
+                    org: c.req.param("org"),
+                    repo,
+                    branch,
+                    headSha: runGroupsData[0]?.headSha ?? "",
+                    workspaces: [],
+                    runGroups: runGroupsData.map(serializeRunGroup),
+                  },
+                })
             if (emptyPayload !== lastPayload) {
               lastPayload = emptyPayload
               await stream.writeSSE({ event: "update", data: emptyPayload })
@@ -400,9 +451,6 @@ reposRoute.get(
               }
             }),
           )
-
-          // Fetch run groups for this branch
-          const runGroupsData = await listRunGroupsForBranch(auth.orgId, repo, branch)
 
           const queryDuration = performance.now() - startTime
           getSseSnapshotDurationHistogram().record(queryDuration, {
@@ -514,12 +562,32 @@ reposRoute.get(
     }
 
     const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+    const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
 
     if (deployments.length === 0) {
-      return c.json(
-        { error: { code: "NOT_FOUND", message: `no deployments found for environment ${environmentName}` } },
-        404,
-      )
+      if (runGroupsData.length === 0) {
+        return c.json(
+          { error: { code: "NOT_FOUND", message: `no deployments found for environment ${environmentName}` } },
+          404,
+        )
+      }
+
+      const latestRunGroup = runGroupsData[0]
+      return c.json({
+        data: {
+          org: c.req.param("org"),
+          repo,
+          environmentKind: latestRunGroup.prNumber ? "transient" : "named",
+          environmentName,
+          ref: latestRunGroup.ref,
+          headSha: latestRunGroup.headSha,
+          prNumber: latestRunGroup.prNumber,
+          authorGithubId: null,
+          authorLogin: null,
+          workspaces: [],
+          runGroups: runGroupsData.map(serializeRunGroup),
+        },
+      })
     }
 
     // Fetch runs for each deployment
@@ -537,9 +605,6 @@ reposRoute.get(
         }
       }),
     )
-
-    // Fetch run groups for this environment
-    const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
 
     const first = deployments[0]
 
@@ -593,6 +658,38 @@ reposRoute.get(
         try {
           const start = Date.now()
           const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
+          const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
+
+          if (deployments.length === 0) {
+            const payload = runGroupsData.length === 0
+              ? JSON.stringify({ data: null })
+              : JSON.stringify({
+                  data: {
+                    org: c.req.param("org"),
+                    repo,
+                    environmentKind: runGroupsData[0]?.prNumber ? "transient" : "named",
+                    environmentName,
+                    ref: runGroupsData[0]?.ref ?? `refs/heads/${environmentName}`,
+                    headSha: runGroupsData[0]?.headSha ?? "",
+                    prNumber: runGroupsData[0]?.prNumber ?? null,
+                    authorGithubId: null,
+                    authorLogin: null,
+                    workspaces: [],
+                    runGroups: runGroupsData.map(serializeRunGroup),
+                  },
+                })
+
+            if (payload !== lastPayload) {
+              lastPayload = payload
+              getSsePayloadBytesHistogram().record(payload.length, { type: "environment" })
+              getSseMessagesSentCounter().add(1, { type: "snapshot" })
+              await stream.writeSSE({ event: "update", data: payload })
+            } else {
+              getSseMessagesDedupedCounter().add(1, { type: "environment" })
+            }
+            return
+          }
+
           const deploymentsWithRuns = await Promise.all(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
@@ -607,8 +704,6 @@ reposRoute.get(
               }
             }),
           )
-
-          const runGroupsData = await listRunGroupsForEnvironment(auth.orgId, repo, environmentName)
 
           // Debug logging for UI bug investigation
           const latestRg = runGroupsData[0]
@@ -814,6 +909,22 @@ interface SerializedDependencyGraph {
   edges: [string, string][]
 }
 
+interface SerializedSystemErrorLine {
+  lineNumber: number
+  text: string
+  highlight: boolean
+}
+
+interface SerializedSystemError {
+  kind: "config"
+  title: string
+  summary: string
+  filePath: string
+  line: number | null
+  column: number | null
+  excerpt: SerializedSystemErrorLine[]
+}
+
 interface SerializedRunGroup {
   id: string
   repo: string
@@ -823,12 +934,15 @@ interface SerializedRunGroup {
   trigger: string
   status: string
   dependencyGraph: SerializedDependencyGraph | null
+  systemError: SerializedSystemError | null
   createdAt: string
   startedAt: string | null
   completedAt: string | null
 }
 
 function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
+  const rawGraph = rg.dependencyGraph as (SerializedDependencyGraph & { systemError?: SerializedSystemError }) | null
+
   return {
     id: rg.id,
     repo: rg.repo,
@@ -837,7 +951,13 @@ function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
     headSha: rg.headSha,
     trigger: rg.trigger,
     status: rg.status,
-    dependencyGraph: rg.dependencyGraph as SerializedDependencyGraph | null,
+    dependencyGraph: rawGraph
+      ? {
+          workspaces: rawGraph.workspaces,
+          edges: rawGraph.edges,
+        }
+      : null,
+    systemError: rawGraph?.systemError ?? null,
     createdAt: rg.createdAt.toISOString(),
     startedAt: rg.startedAt?.toISOString() ?? null,
     completedAt: rg.completedAt?.toISOString() ?? null,

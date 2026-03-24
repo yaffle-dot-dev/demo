@@ -112,6 +112,22 @@ function contextAttrs(ctx: WebhookContext): Record<string, string | number> {
  */
 type ConfigLoader = (ctx: WebhookContext, token?: string) => Promise<YaffleTomlConfig>
 
+interface ConfigSystemErrorLine {
+  lineNumber: number
+  text: string
+  highlight: boolean
+}
+
+interface ConfigSystemError {
+  kind: "config"
+  title: string
+  summary: string
+  filePath: string
+  line: number | null
+  column: number | null
+  excerpt: ConfigSystemErrorLine[]
+}
+
 /**
  * Result of scanning workspace dependencies and computing execution order.
  */
@@ -505,19 +521,7 @@ export async function rerunPreview(opts: {
  * Fetch config from the repo via the GitHub Contents API.
  */
 async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<YaffleTomlConfig> {
-  if (!ctx.installationId) {
-    throw new ConfigError(
-      "Cannot fetch config without a GitHub App installation",
-    )
-  }
-
-  const raw = await fetchFileContent(
-    ctx.installationId,
-    ctx.owner,
-    ctx.repo,
-    "yaffle.toml",
-    ctx.headSha,
-  )
+  const raw = await fetchRawConfig(ctx)
 
   if (!raw) {
     throw new ConfigError(
@@ -526,6 +530,160 @@ async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<Yaffle
   }
 
   return parseYaffleToml(raw)
+}
+
+async function fetchRawConfig(ctx: WebhookContext): Promise<string | null> {
+  if (!ctx.installationId) {
+    throw new ConfigError(
+      "Cannot fetch config without a GitHub App installation",
+    )
+  }
+
+  return (await fetchFileContent(
+    ctx.installationId,
+    ctx.owner,
+    ctx.repo,
+    "yaffle.toml",
+    ctx.headSha,
+  )) ?? null
+
+}
+
+function inferEnvironmentIdentity(ctx: WebhookContext): {
+  environmentKind: "named" | "transient"
+  environmentName: string
+  prNumber: number | null
+  ref: string
+  trigger: RunGroupTrigger
+} {
+  if (ctx.kind === "pull_request") {
+    return {
+      environmentKind: "transient",
+      environmentName: buildPrEnvironmentName(ctx.prNumber),
+      prNumber: ctx.prNumber,
+      ref: `refs/heads/${ctx.branch}`,
+      trigger: ctx.action === "opened" ? "pr_opened" : "pr_sync",
+    }
+  }
+
+  return {
+    environmentKind: "named",
+    environmentName: ctx.refName,
+    prNumber: null,
+    ref: ctx.ref,
+    trigger: "push",
+  }
+}
+
+function extractConfigErrorLocation(raw: string, message: string): { line: number | null; column: number | null } {
+  const parseMatch = message.match(/line\s+(\d+),\s*column\s+(\d+)/i)
+  if (parseMatch) {
+    return {
+      line: Number(parseMatch[1]),
+      column: Number(parseMatch[2]),
+    }
+  }
+
+  const issueMatch = message.match(/-\s+([^:]+):/)
+  const keyHint = issueMatch?.[1]?.split(".").at(-1)?.trim()
+  if (!keyHint) {
+    return { line: null, column: null }
+  }
+
+  const lines = raw.split(/\r?\n/)
+  const lineIndex = lines.findIndex((line) => line.includes(keyHint))
+  if (lineIndex === -1) {
+    return { line: null, column: null }
+  }
+
+  return {
+    line: lineIndex + 1,
+    column: Math.max(lines[lineIndex].indexOf(keyHint) + 1, 1),
+  }
+}
+
+function buildConfigErrorExcerpt(
+  raw: string,
+  line: number | null,
+): ConfigSystemErrorLine[] {
+  const lines = raw.split(/\r?\n/)
+  if (lines.length === 0) {
+    return []
+  }
+
+  const targetLine = line ?? 1
+  const start = Math.max(1, targetLine - 3)
+  const end = Math.min(lines.length, targetLine + 3)
+
+  const excerpt: ConfigSystemErrorLine[] = []
+  for (let current = start; current <= end; current += 1) {
+    excerpt.push({
+      lineNumber: current,
+      text: lines[current - 1] ?? "",
+      highlight: current === targetLine,
+    })
+  }
+
+  return excerpt
+}
+
+function buildConfigSystemError(raw: string | null, message: string): ConfigSystemError {
+  const location = raw ? extractConfigErrorLocation(raw, message) : { line: null, column: null }
+
+  return {
+    kind: "config",
+    title: "Configuration error",
+    summary: message,
+    filePath: "yaffle.toml",
+    line: location.line,
+    column: location.column,
+    excerpt: raw ? buildConfigErrorExcerpt(raw, location.line) : [],
+  }
+}
+
+async function recordConfigLoadFailure(
+  ctx: WebhookContext,
+  orgId: string,
+  message: string,
+): Promise<void> {
+  let rawConfig: string | null = null
+
+  try {
+    rawConfig = await fetchRawConfig(ctx)
+  } catch {
+    rawConfig = null
+  }
+
+  const detail = buildConfigSystemError(rawConfig, message)
+  const identity = inferEnvironmentIdentity(ctx)
+  const now = new Date()
+
+  const runGroup = await createRunGroup({
+    orgId,
+    repo: ctx.repo,
+    environmentKind: identity.environmentKind,
+    environmentName: identity.environmentName,
+    prNumber: identity.prNumber,
+    ref: identity.ref,
+    headSha: ctx.headSha,
+    trigger: identity.trigger,
+    status: "failed",
+    dependencyGraph: {
+      workspaces: [],
+      edges: [],
+      systemError: detail,
+    },
+    startedAt: now,
+    completedAt: now,
+  })
+
+  events.emitDeploymentUpdate(
+    runGroup.id,
+    orgId,
+    ctx.repo,
+    identity.environmentKind,
+    identity.environmentName,
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +762,7 @@ async function handlePrOpenedOrUpdated(
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
     getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
+    await recordConfigLoadFailure(ctx, org.id, msg)
     await surfaceConfigError(ctx, msg)
     return
   }
@@ -851,6 +1010,7 @@ async function handlePrClosed(
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
     getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
+    await recordConfigLoadFailure(ctx, org.id, msg)
     await surfaceConfigError(ctx, msg)
     return
   }
@@ -994,6 +1154,7 @@ async function handlePushEvent(
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
     getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
+    await recordConfigLoadFailure(ctx, org.id, msg)
     return
   }
 
