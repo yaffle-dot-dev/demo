@@ -70,6 +70,7 @@ interface JsonApiWorkspace {
     "locked-by"?: string | null
     "locked-at"?: string | null
     "locked-reason"?: string | null
+    "lock-id"?: string | null
     "terraform-version"?: string | null
     environment: string
     "created-at": string
@@ -105,6 +106,7 @@ function toJsonApiWorkspace(ws: Workspace): JsonApiWorkspace {
       "locked-by": ws.lockedBy,
       "locked-at": ws.lockedAt?.toISOString() ?? null,
       "locked-reason": ws.lockReason,
+      "lock-id": ws.lockId,
       "terraform-version": ws.terraformVersion ?? "latest",
       environment: ws.environment,
       "created-at": ws.createdAt.toISOString(),
@@ -532,7 +534,9 @@ workspacesRoute.post(
             {
               status: "409",
               title: "Workspace is locked",
-              detail: `Locked by ${current?.lockedBy} at ${current?.lockedAt?.toISOString()}`,
+              detail: current?.lockId
+                ? `Locked by ${current.lockedBy} at ${current.lockedAt?.toISOString()} (lock ID: ${current.lockId})`
+                : `Locked by ${current?.lockedBy} at ${current?.lockedAt?.toISOString()}`,
             },
           ],
         },
@@ -620,7 +624,7 @@ workspacesRoute.post(
       )
     }
 
-    const access = await getTfcWorkspaceAccess(c, wsId, "admin")
+    const access = await getTfcWorkspaceAccess(c, wsId, "admin", { allowLockId: true })
     if (access instanceof Response) {
       return access
     }
@@ -635,7 +639,7 @@ workspacesRoute.post(
     }
 
     const previousOwner = ws.lockedBy
-    const unlocked = await forceUnlockWorkspace(wsId)
+    const unlocked = await forceUnlockWorkspace(ws.id)
     if (!unlocked) {
       return c.json(
         { errors: [{ status: "500", title: "Failed to force unlock workspace" }] },
@@ -644,7 +648,7 @@ workspacesRoute.post(
     }
 
     log.info("Workspace force unlocked", {
-      workspaceId: wsId,
+      workspaceId: ws.id,
       previousOwner: previousOwner ?? "unknown",
       forcedBy: `user:${auth.userId}`,
     })

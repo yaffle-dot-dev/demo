@@ -875,6 +875,7 @@ describe("Workspace Locking", () => {
     const body = await res.json()
     expect(body.data.attributes.locked).toBe(true)
     expect(body.data.attributes["locked-by"]).toContain("user:")
+    expect(body.data.attributes["lock-id"]).toBe(`${TEST_ORG_SLUG}/${TEST_WORKSPACE_NAME}`)
   })
 
   test("locks a workspace with run token", async () => {
@@ -952,6 +953,78 @@ describe("Workspace Locking", () => {
     expect(res.status).toBe(409)
     const body = await res.json()
     expect(body.errors[0].title).toBe("Workspace is locked")
+    expect(body.errors[0].detail).toContain(`${TEST_ORG_SLUG}/${TEST_WORKSPACE_NAME}`)
+  })
+
+  test("force-unlock by lock ID supports relock flow", async () => {
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: { name: TEST_WORKSPACE_NAME },
+          },
+        },
+      ),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+
+    const runToken = await generateRunToken("lock-id-flow", testWorkspaceId!, testOrgId)
+    const lockRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        runToken,
+      ),
+    )
+    expect(lockRes.status).toBe(200)
+
+    const lockBody = await lockRes.json()
+    const lockId = lockBody.data.attributes["lock-id"]
+    expect(typeof lockId).toBe("string")
+    expect(lockId).toBe(`${TEST_ORG_SLUG}/${TEST_WORKSPACE_NAME}`)
+
+    const conflictRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+    expect(conflictRes.status).toBe(409)
+
+    const conflictBody = await conflictRes.json()
+    expect(conflictBody.errors[0].detail).toContain(lockId)
+
+    const forceUnlockRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${encodeURIComponent(lockId)}/actions/force-unlock`,
+        testUserToken,
+      ),
+    )
+
+    expect(forceUnlockRes.status).toBe(200)
+    const forceUnlockBody = await forceUnlockRes.json()
+    expect(forceUnlockBody.data.attributes.locked).toBe(false)
+    expect(forceUnlockBody.data.attributes["lock-id"]).toBeNull()
+
+    const relockRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+        runToken,
+      ),
+    )
+
+    expect(relockRes.status).toBe(200)
+    const relockBody = await relockRes.json()
+    expect(relockBody.data.attributes.locked).toBe(true)
+    expect(relockBody.data.attributes["lock-id"]).toBe(lockId)
   })
 
   test("unlocks a workspace (same owner)", async () => {

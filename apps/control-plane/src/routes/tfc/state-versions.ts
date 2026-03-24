@@ -230,7 +230,9 @@ stateVersionsRoute.post(
               status: "409",
               title: "Workspace must be locked",
               detail: ws.locked
-                ? `Workspace is locked by ${ws.lockedBy}, not ${expectedLocker}`
+                ? ws.lockId
+                  ? `Workspace is locked by ${ws.lockedBy}, not ${expectedLocker} (lock ID: ${ws.lockId})`
+                  : `Workspace is locked by ${ws.lockedBy}, not ${expectedLocker}`
                 : "Workspace is not locked",
             },
           ],

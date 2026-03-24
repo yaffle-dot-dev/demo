@@ -7,7 +7,7 @@ import { logger as log } from "../lib/telemetry.ts"
 import { findApiTokenByHash, hashToken, touchApiToken } from "../db/queries/api-tokens.ts"
 import { findOrgMembership } from "../db/queries/organizations.ts"
 import { findStateVersionById } from "../db/queries/state-versions.ts"
-import { findWorkspaceById } from "../db/queries/workspaces.ts"
+import { findWorkspaceById, findWorkspaceByLockId } from "../db/queries/workspaces.ts"
 import { verifyRunToken } from "../lib/run-token.ts"
 
 // Re-export for convenience
@@ -47,6 +47,9 @@ const ROLE_HIERARCHY: Record<TfcRole, number> = {
   approver: 1,
   admin: 2,
 }
+
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function jsonApiError(status: number, title: string, detail?: string): Response {
   return Response.json(
@@ -300,10 +303,17 @@ export async function authorizeOrgAccess(
 
 export async function getTfcWorkspaceAccess(
   c: Context,
-  workspaceId: string,
+  workspaceIdentifier: string,
   minRole: TfcRole = "viewer",
+  options?: { allowLockId?: boolean },
 ): Promise<TfcWorkspaceAccess | Response> {
-  const workspace = await findWorkspaceById(workspaceId)
+  const workspaceById = UUID_PATTERN.test(workspaceIdentifier)
+    ? await findWorkspaceById(workspaceIdentifier)
+    : undefined
+  const workspace =
+    workspaceById ??
+    (options?.allowLockId ? await findWorkspaceByLockId(workspaceIdentifier) : undefined)
+
   if (!workspace) {
     return jsonApiError(404, "Workspace not found")
   }

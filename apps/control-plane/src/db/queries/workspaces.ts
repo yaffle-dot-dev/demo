@@ -1,7 +1,7 @@
 import { and, desc, eq, gt, type SQL } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
-import { workspaces } from "../schema.ts"
+import { organizations, workspaces } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 
 export type Workspace = typeof workspaces.$inferSelect
@@ -32,6 +32,20 @@ export async function findWorkspaceById(id: string): Promise<Workspace | undefin
       .select()
       .from(workspaces)
       .where(eq(workspaces.id, id))
+      .limit(1)
+    return rows[0]
+  })
+}
+
+/**
+ * Find a workspace by its persisted lock ID.
+ */
+export async function findWorkspaceByLockId(lockId: string): Promise<Workspace | undefined> {
+  return withDbSpan("select", "workspaces", async () => {
+    const rows = await db
+      .select()
+      .from(workspaces)
+      .where(eq(workspaces.lockId, lockId))
       .limit(1)
     return rows[0]
   })
@@ -149,6 +163,23 @@ export async function lockWorkspace(
   reason?: string,
 ): Promise<Workspace | undefined> {
   return withDbSpan("update", "workspaces", async () => {
+    const workspace = await findWorkspaceById(workspaceId)
+    if (!workspace) {
+      return undefined
+    }
+
+    const orgRows = await db
+      .select({ slug: organizations.slug })
+      .from(organizations)
+      .where(eq(organizations.id, workspace.orgId))
+      .limit(1)
+    const orgSlug = orgRows[0]?.slug
+    if (!orgSlug) {
+      return undefined
+    }
+
+    const lockId = buildWorkspaceLockId(orgSlug, workspace.name)
+
     // Use a conditional update to atomically check and lock
     const rows = await db
       .update(workspaces)
@@ -157,6 +188,7 @@ export async function lockWorkspace(
         lockedBy,
         lockedAt: new Date(),
         lockReason: reason,
+        lockId,
       })
       .where(and(eq(workspaces.id, workspaceId), eq(workspaces.locked, false)))
       .returning()
@@ -179,6 +211,7 @@ export async function unlockWorkspace(
         lockedBy: null,
         lockedAt: null,
         lockReason: null,
+        lockId: null,
       })
       .where(and(eq(workspaces.id, workspaceId), eq(workspaces.lockedBy, lockedBy)))
       .returning()
@@ -198,6 +231,7 @@ export async function forceUnlockWorkspace(workspaceId: string): Promise<Workspa
         lockedBy: null,
         lockedAt: null,
         lockReason: null,
+        lockId: null,
       })
       .where(eq(workspaces.id, workspaceId))
       .returning()
@@ -257,7 +291,13 @@ export function buildWorkspaceName(
   ].join("-")
 }
 
-
+/**
+ * Build lock ID for TFC/OpenTofu force-unlock compatibility.
+ * Format: {org_slug}/{workspace_name}
+ */
+export function buildWorkspaceLockId(orgSlug: string, workspaceName: string): string {
+  return `${orgSlug}/${workspaceName}`
+}
 
 /**
  * Find all workspaces for a PR.
@@ -296,6 +336,7 @@ export async function archiveWorkspace(workspaceId: string): Promise<Workspace |
         lockedBy: null,
         lockedAt: null,
         lockReason: null,
+        lockId: null,
       })
       .where(eq(workspaces.id, workspaceId))
       .returning()

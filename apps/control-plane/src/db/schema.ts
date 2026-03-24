@@ -369,6 +369,7 @@ export const workspaces = pgTable(
     lockedBy: text("locked_by"), // "user:{id}" or "run:{id}"
     lockedAt: timestamp("locked_at", { withTimezone: true }),
     lockReason: text("lock_reason"),
+    lockId: text("lock_id"), // "{org_slug}/{workspace_name}" for force-unlock
     currentStateVersionId: uuid("current_state_version_id"), // FK added below
     terraformVersion: text("terraform_version"),
     status: text("status").default("active").notNull(), // "active" | "destroying" | "archived"
