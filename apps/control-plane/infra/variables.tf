@@ -50,6 +50,12 @@ variable "secrets_arn_prefix" {
   default     = ""
 }
 
+variable "local_dev_assume_principals" {
+  type        = string
+  description = "Comma-separated AWS principals allowed to assume the nonprod local-dev control-plane role"
+  default     = ""
+}
+
 data "aws_caller_identity" "current" {}
 
 module "naming" {
@@ -72,6 +78,8 @@ locals {
 
   is_preview = var.environment_kind == "transient"
   secrets_arn_prefix = var.secrets_arn_prefix != "" ? var.secrets_arn_prefix : "arn:aws:secretsmanager:${var.aws_region}:${data.aws_caller_identity.current.account_id}:secret:yaffle/${var.environment}"
+  local_dev_assume_principal_arns = [for value in split(",", var.local_dev_assume_principals) : trimspace(value) if trimspace(value) != ""]
+  create_local_dev_role           = var.environment == "main" && length(local.local_dev_assume_principal_arns) > 0
 
   # API domain: api.yaffle.dev for production, api-{env}.preview.yaffle.dev for previews
   # Uses hyphen (not dot) to stay within *.preview.yaffle.dev wildcard cert coverage

@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODE="${YAFFLE_DEV_RUNNER_MODE:-ecs}"
 SECRETS_ENV_FILE="${YAFFLE_DEV_SECRETS_ENV_FILE:-env/dev/secrets.1password.env}"
+ASSUME_CONTROL_PLANE_ROLE="${YAFFLE_ASSUME_CONTROL_PLANE_ROLE:-false}"
 LOCK_DIR="$ROOT_DIR/.dev/locks/control-plane.lock"
 LOCK_PID_FILE="$LOCK_DIR/pid"
 
@@ -59,6 +60,16 @@ else
   echo "Warning: secrets env file not found at $SECRETS_ENV_FILE (continuing without it)" >&2
 fi
 
-bunx @dotenvx/dotenvx run -o "${DOTENV_ARGS[@]}" -- \
-  env "YAFFLE_USE_ECS_RUNNER=${USE_ECS_RUNNER}" \
-  ./scripts/run-with-assumed-role-refresh.sh -- bun run dev:control-plane
+if [ "$ASSUME_CONTROL_PLANE_ROLE" = "true" ]; then
+  bunx @dotenvx/dotenvx run -o "${DOTENV_ARGS[@]}" -- \
+    env \
+      "YAFFLE_USE_ECS_RUNNER=${USE_ECS_RUNNER}" \
+      "YAFFLE_ASSUME_CONTROL_PLANE_ROLE=${ASSUME_CONTROL_PLANE_ROLE}" \
+      ./scripts/run-with-assumed-role-refresh.sh -- bun run dev:control-plane
+else
+  bunx @dotenvx/dotenvx run -o "${DOTENV_ARGS[@]}" -- \
+    env \
+      "YAFFLE_USE_ECS_RUNNER=${USE_ECS_RUNNER}" \
+      "YAFFLE_ASSUME_CONTROL_PLANE_ROLE=${ASSUME_CONTROL_PLANE_ROLE}" \
+      bun run dev:control-plane
+fi

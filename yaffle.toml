@@ -50,7 +50,7 @@ environments = ["main"]
 [[workspaces]]
 path = "apps/control-plane/infra"
 environments = ["*"]
-variables.secrets_arn_prefix = "arn:aws:secretsmanager:us-east-1:870923192739:secret:yaffle/main"
+variables.local_dev_assume_principals = "arn:aws:iam::870923192739:user/alauni"
 
 [[workspaces]]
 path = "apps/runner/infra"

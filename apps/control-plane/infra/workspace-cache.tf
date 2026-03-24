@@ -106,6 +106,34 @@ resource "aws_iam_role_policy" "control_plane_workspace_cache" {
   })
 }
 
+resource "aws_iam_role_policy" "control_plane_workspace_cache_local_dev" {
+  count = local.create_local_dev_role ? 1 : 0
+
+  name = "workspace-cache-access"
+  role = aws_iam_role.control_plane_task_local_dev[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "WorkspaceCacheReadWrite"
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:PutObjectTagging",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.workspace_cache.arn,
+          "${aws_s3_bucket.workspace_cache.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
 # Runner: uses presigned URLs to download workspaces
 # No IAM policy needed - presigned URLs carry their own authorization.
 # This is intentional: the runner is sandboxed and should not have direct

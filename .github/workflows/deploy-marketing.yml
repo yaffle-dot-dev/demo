@@ -25,6 +25,4 @@ jobs:
       site-name: marketing
       app-path: apps/marketing
       site-infra-workspace: apps/marketing/infra
-      yaffle-api-url: ${{ vars.YAFFLE_API_URL }}
-      tailscale-ping-target: ${{ vars.YAFFLE_TAILSCALE_PING_TARGET }}
     secrets: inherit

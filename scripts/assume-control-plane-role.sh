@@ -12,9 +12,9 @@ if [ "$#" -eq 0 ]; then
   exit 1
 fi
 
-ROLE_ARN="${YAFFLE_CONTROL_PLANE_ROLE_ARN:-}"
+ROLE_ARN="${YAFFLE_ASSUME_ROLE_ARN:-${YAFFLE_CONTROL_PLANE_ROLE_ARN:-}}"
 if [ -z "$ROLE_ARN" ]; then
-  echo "YAFFLE_CONTROL_PLANE_ROLE_ARN must be set" >&2
+  echo "YAFFLE_ASSUME_ROLE_ARN or YAFFLE_CONTROL_PLANE_ROLE_ARN must be set" >&2
   exit 1
 fi
 

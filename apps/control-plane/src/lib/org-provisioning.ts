@@ -84,10 +84,23 @@ async function retryWithBackoff<T>(
 // Configuration
 // =============================================================================
 
-function getConfig(): { region: string; stateBucket: string; controlPlaneRoleArn: string } {
+function getConfig(): {
+  region: string
+  stateBucket: string
+  controlPlaneRoleArn: string
+  controlPlaneTrustRoleArns: string[]
+} {
   const region = process.env.AWS_REGION ?? "us-east-1"
   const stateBucket = process.env.YAFFLE_STATE_BUCKET
   const controlPlaneRoleArn = process.env.YAFFLE_CONTROL_PLANE_ROLE_ARN
+  const controlPlaneTrustRoleArns = [
+    ...(process.env.YAFFLE_ORG_BROKER_TRUST_ROLE_ARNS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+    controlPlaneRoleArn ?? "",
+  ]
+  const normalizedControlPlaneTrustRoleArns = [...new Set(controlPlaneTrustRoleArns)].sort()
 
   if (!stateBucket) {
     throw new Error("YAFFLE_STATE_BUCKET environment variable required")
@@ -99,7 +112,18 @@ function getConfig(): { region: string; stateBucket: string; controlPlaneRoleArn
     throw new Error("YAFFLE_CONTROL_PLANE_ROLE_ARN must be an IAM role ARN (not root)")
   }
 
-  return { region, stateBucket, controlPlaneRoleArn }
+  for (const roleArn of normalizedControlPlaneTrustRoleArns) {
+    if (!/^arn:aws(-[a-z]+)?:iam::\d{12}:role\/.+$/.test(roleArn)) {
+      throw new Error(`Invalid control-plane trust role ARN: ${roleArn}`)
+    }
+  }
+
+  return {
+    region,
+    stateBucket,
+    controlPlaneRoleArn,
+    controlPlaneTrustRoleArns: normalizedControlPlaneTrustRoleArns,
+  }
 }
 
 // Cached clients
@@ -239,7 +263,7 @@ interface KmsKeyResult {
 
 async function createOrgKmsKey(
   orgId: string,
-  controlPlaneRoleArn: string,
+  controlPlaneRoleArns: string[],
   orgBrokerRoleArn: string,
 ): Promise<KmsKeyResult> {
   const config = getConfig()
@@ -298,7 +322,7 @@ async function createOrgKmsKey(
       {
         Sid: "YaffleControlPlaneAdmin",
         Effect: "Allow",
-        Principal: { AWS: controlPlaneRoleArn },
+        Principal: { AWS: controlPlaneRoleArns },
         Action: "kms:*",
         Resource: "*",
       },
@@ -370,7 +394,7 @@ export async function syncOrgKmsKeyPolicy(
       {
         Sid: "YaffleControlPlaneAdmin",
         Effect: "Allow",
-        Principal: { AWS: config.controlPlaneRoleArn },
+        Principal: { AWS: config.controlPlaneTrustRoleArns },
         Action: "kms:*",
         Resource: "*",
       },
@@ -422,7 +446,7 @@ async function createOrgIamRole(orgId: string): Promise<string> {
       {
         Effect: "Allow",
         Principal: {
-          AWS: config.controlPlaneRoleArn,
+          AWS: config.controlPlaneTrustRoleArns,
         },
         Action: "sts:AssumeRole",
       },
@@ -522,8 +546,10 @@ export async function provisionOrgResources(
   // Create IAM broker role first.
   const iamRoleArn = await createOrgIamRole(orgId)
 
-  // Create KMS key (control plane role is key admin).
-  const { keyArn, keyAlias } = await createOrgKmsKey(orgId, config.controlPlaneRoleArn, iamRoleArn)
+  const controlPlaneTrustRoleArns = config.controlPlaneTrustRoleArns
+
+  // Create KMS key (control plane roles are key admins).
+  const { keyArn, keyAlias } = await createOrgKmsKey(orgId, controlPlaneTrustRoleArns, iamRoleArn)
 
   await syncOrgBrokerRoleAssumeTargets(orgId, orgSlug, iamRoleArn, keyArn, [])
 
