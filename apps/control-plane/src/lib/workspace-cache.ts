@@ -22,6 +22,7 @@ import {
 } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
+import { getAwsClientConfig } from "./aws-client-config.ts"
 import { buildOrgResourceTags, toS3ObjectTagging } from "./aws-tags.ts"
 import { logger } from "./telemetry.ts"
 
@@ -57,7 +58,7 @@ export class WorkspaceCache {
   private readonly bucket: string
 
   constructor(config: WorkspaceCacheConfig) {
-    this.s3 = new S3Client({ region: config.region })
+    this.s3 = new S3Client(getAwsClientConfig(config.region))
     this.bucket = config.bucket
   }
 

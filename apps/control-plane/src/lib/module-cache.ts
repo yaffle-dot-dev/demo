@@ -5,6 +5,7 @@ import {
   NoSuchKey,
 } from "@aws-sdk/client-s3"
 
+import { getAwsClientConfig } from "./aws-client-config.ts"
 import { buildOrgResourceTags, toS3ObjectTagging } from "./aws-tags.ts"
 import { logger } from "./telemetry.ts"
 import { getTfcS3Config, isS3Configured } from "./s3-state.ts"
@@ -14,7 +15,7 @@ let s3Client: S3Client | undefined
 
 function getS3Client(region: string): S3Client {
   if (!s3Client) {
-    s3Client = new S3Client({ region })
+    s3Client = new S3Client(getAwsClientConfig(region))
   }
   return s3Client
 }

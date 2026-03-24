@@ -1,8 +1,9 @@
 import { AssumeRoleCommand, STSClient } from "@aws-sdk/client-sts"
 
 import type { AwsSessionCredentials } from "./connection-secrets.ts"
+import { getAwsClientConfig } from "./aws-client-config.ts"
 
-const sts = new STSClient({ region: process.env.AWS_REGION ?? "us-east-1" })
+const sts = new STSClient(getAwsClientConfig(process.env.AWS_REGION ?? "us-east-1"))
 
 export async function assumeOrgBrokerRole(
   orgId: string,

@@ -9,6 +9,7 @@ import {
 } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
+import { getAwsClientConfig } from "./aws-client-config.ts"
 import { logger } from "./telemetry.ts"
 
 /**
@@ -186,7 +187,7 @@ export class WorkspacePackager {
   private readonly urlExpirySeconds: number
 
   constructor(config: WorkspacePackagerConfig) {
-    this.s3 = new S3Client({ region: config.region })
+    this.s3 = new S3Client(getAwsClientConfig(config.region))
     this.bucket = config.bucket
     this.urlExpirySeconds = config.urlExpirySeconds ?? 15 * 60 // 15 minutes
   }

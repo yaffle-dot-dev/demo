@@ -18,6 +18,7 @@ import {
   type GetLogEventsCommandOutput,
 } from "@aws-sdk/client-cloudwatch-logs"
 
+import { getAwsClientConfig } from "./aws-client-config.ts"
 import { logger } from "./telemetry.ts"
 
 /**
@@ -41,7 +42,7 @@ export class LogStreamer {
   private readonly pollIntervalMs: number
 
   constructor(config: LogStreamerConfig) {
-    this.client = new CloudWatchLogsClient({ region: config.region })
+    this.client = new CloudWatchLogsClient(getAwsClientConfig(config.region))
     this.logGroupName = config.logGroupName
     this.pollIntervalMs = config.pollIntervalMs ?? 1000
   }

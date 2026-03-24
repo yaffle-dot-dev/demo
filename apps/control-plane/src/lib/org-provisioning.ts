@@ -28,6 +28,7 @@ import {
   IAMClient,
   TagRoleCommand,
 } from "@aws-sdk/client-iam"
+import { getAwsClientConfig } from "./aws-client-config.ts"
 import { buildOrgResourceTags, toIamTags, toKmsTags } from "./aws-tags.ts"
 import { logger } from "./telemetry.ts"
 
@@ -132,14 +133,14 @@ let iamClient: IAMClient | undefined
 
 function getKmsClient(region: string): KMSClient {
   if (!kmsClient) {
-    kmsClient = new KMSClient({ region })
+    kmsClient = new KMSClient(getAwsClientConfig(region))
   }
   return kmsClient
 }
 
 function getIamClient(region: string): IAMClient {
   if (!iamClient) {
-    iamClient = new IAMClient({ region })
+    iamClient = new IAMClient(getAwsClientConfig(region))
   }
   return iamClient
 }

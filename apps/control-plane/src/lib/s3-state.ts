@@ -7,6 +7,7 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 import { createHash } from "node:crypto"
 
+import { getAwsClientConfig } from "./aws-client-config.ts"
 import { buildOrgResourceTags, toS3ObjectTagging } from "./aws-tags.ts"
 import { logger } from "./telemetry.ts"
 
@@ -46,7 +47,7 @@ let s3Client: S3Client | undefined
 
 function getS3Client(region: string): S3Client {
   if (!s3Client) {
-    s3Client = new S3Client({ region })
+    s3Client = new S3Client(getAwsClientConfig(region))
   }
   return s3Client
 }

@@ -184,6 +184,13 @@ resource "aws_iam_role" "control_plane_task" {
         Principal = {
           Service = "ecs-tasks.amazonaws.com"
         }
+      },
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          AWS = ["arn:aws:iam::870923192739:user/alauni"]
+        }
       }
     ]
   })

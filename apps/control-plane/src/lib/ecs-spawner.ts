@@ -28,6 +28,7 @@ import {
   type RunTaskCommandInput,
 } from "@aws-sdk/client-ecs"
 
+import { getAwsClientConfig } from "./aws-client-config.ts"
 import { logger } from "./telemetry.ts"
 import type { IacEngineSpawner } from "./scheduler.ts"
 import { updateJobEcsTask } from "../db/queries/iac-jobs.ts"
@@ -66,7 +67,7 @@ export class EcsEngineSpawner implements IacEngineSpawner {
 
   constructor(config: EcsSpawnerConfig) {
     this.config = config
-    this.ecs = new ECSClient({ region: config.region })
+    this.ecs = new ECSClient(getAwsClientConfig(config.region))
   }
 
   /**
