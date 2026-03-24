@@ -286,14 +286,34 @@
   // Parse plan summary string like "+3, ~1, -0" into structured data
   function parsePlanSummary(summary: string | null): { add: number; change: number; destroy: number } | null {
     if (!summary || summary === "no changes" || summary === "unknown") return null
-    
-    const match = summary.match(/\+(\d+),\s*~(\d+),\s*-(\d+)/)
-    if (!match) return null
-    
+
+    const canonical = summary.match(/\+(\d+),\s*~(\d+),\s*-(\d+)/)
+    if (canonical) {
+      return {
+        add: parseInt(canonical[1], 10),
+        change: parseInt(canonical[2], 10),
+        destroy: parseInt(canonical[3], 10),
+      }
+    }
+
+    const sparseMatches = [...summary.matchAll(/([+~-])(\d+)/g)]
+    if (sparseMatches.length === 0) return null
+
+    let add = 0
+    let change = 0
+    let destroy = 0
+
+    for (const [, prefix, value] of sparseMatches) {
+      const count = parseInt(value, 10)
+      if (prefix === "+") add = count
+      if (prefix === "~") change = count
+      if (prefix === "-") destroy = count
+    }
+
     return {
-      add: parseInt(match[1], 10),
-      change: parseInt(match[2], 10),
-      destroy: parseInt(match[3], 10),
+      add,
+      change,
+      destroy,
     }
   }
   

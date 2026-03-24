@@ -106,6 +106,48 @@ function extractBearerToken(authHeader: string | undefined): string | null {
   return authHeader.slice(7)
 }
 
+function parsePlanSummaryCounts(summary: string): { add: number; change: number; destroy: number } | null {
+  const canonical = summary.match(/^\s*\+(\d+)\s*,\s*~(\d+)\s*,\s*-(\d+)\s*$/)
+  if (canonical) {
+    return {
+      add: Number(canonical[1]),
+      change: Number(canonical[2]),
+      destroy: Number(canonical[3]),
+    }
+  }
+
+  const sparseMatches = [...summary.matchAll(/([+~-])(\d+)/g)]
+  if (sparseMatches.length === 0) {
+    return null
+  }
+
+  let add = 0
+  let change = 0
+  let destroy = 0
+
+  for (const [, prefix, value] of sparseMatches) {
+    if (prefix === "+") add = Number(value)
+    if (prefix === "~") change = Number(value)
+    if (prefix === "-") destroy = Number(value)
+  }
+
+  return { add, change, destroy }
+}
+
+function deriveHasChangesFromSummary(summary: string | undefined): boolean | null {
+  if (!summary) {
+    return null
+  }
+  if (summary === "no changes") {
+    return false
+  }
+  const counts = parsePlanSummaryCounts(summary)
+  if (!counts) {
+    return null
+  }
+  return counts.add > 0 || counts.change > 0 || counts.destroy > 0
+}
+
 /**
  * Runner authentication middleware.
  * Verifies job token and sets context.
@@ -420,7 +462,19 @@ runnerRoute.post("/complete", async (c) => {
       })
 
       if (jobType === "plan") {
-        const hasChanges = planSummary !== "no changes"
+        const reportedHasChanges = typeof result?.hasChanges === "boolean" ? result.hasChanges : null
+        const derivedHasChanges = deriveHasChangesFromSummary(planSummary)
+        const hasChanges = reportedHasChanges ?? derivedHasChanges ?? false
+
+        if (reportedHasChanges == null && derivedHasChanges == null) {
+          logger.warn("runner.complete.plan_changes_unknown", {
+            "job.id": jobId,
+            "run.id": runId,
+            planSummary: planSummary ?? "missing",
+            reason: "missing_deterministic_change_signal",
+          })
+        }
+
         if (hasChanges) {
           await updateDeploymentStatus(deployment.id, "awaiting_apply")
         } else {

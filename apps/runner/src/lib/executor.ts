@@ -15,6 +15,7 @@ export interface TerraformResult {
   success: boolean
   command: "plan" | "apply" | "destroy"
   output: string
+  hasChanges?: boolean
   planSummary?: string
   planJson?: unknown
   outputs?: Record<string, unknown>
@@ -80,10 +81,11 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       case "plan": {
         result = await runCommand(
           workDir,
-          ["tofu", "plan", "-input=false", "-out=tfplan"],
+          ["tofu", "plan", "-input=false", "-out=tfplan", "-detailed-exitcode"],
           onOutput,
           combinedEnv,
           onProcess,
+          [0, 2],
         )
 
         if (result.success) {
@@ -157,6 +159,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       success: result.success,
       command: context.command,
       output: initResult.output + "\n" + result.output,
+      hasChanges: context.command === "plan" ? result.exitCode === 2 : undefined,
       planSummary,
       planJson,
       outputs,
@@ -258,6 +261,7 @@ async function runCommand(
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv: Record<string, string> = {},
   onProcess?: (proc: Subprocess | null) => void,
+  successExitCodes: number[] = [0],
 ): Promise<CommandResult> {
   const proc = Bun.spawn(args, {
     cwd: workDir,
@@ -307,7 +311,7 @@ async function runCommand(
   onProcess?.(null)
 
   return {
-    success: exitCode === 0,
+    success: successExitCodes.includes(exitCode),
     output,
     exitCode,
   }
@@ -317,21 +321,17 @@ async function runCommand(
  * Parse plan summary from terraform plan output.
  */
 function parsePlanSummary(output: string): string {
+  const planMatch = output.match(/Plan:\s*(\d+)\s*to add,\s*(\d+)\s*to change,\s*(\d+)\s*to destroy/i)
+  if (planMatch) {
+    const [, add, change, destroy] = planMatch
+    return `+${add}, ~${change}, -${destroy}`
+  }
+
   // Look for the summary line like "Plan: 2 to add, 0 to change, 0 to destroy."
   // Or "No changes. Your infrastructure matches the configuration."
   const noChangesMatch = output.match(/No changes\./i)
   if (noChangesMatch) {
     return "no changes"
-  }
-
-  const planMatch = output.match(/Plan: (\d+) to add, (\d+) to change, (\d+) to destroy/i)
-  if (planMatch) {
-    const [, add, change, destroy] = planMatch
-    const parts: string[] = []
-    if (add !== "0") parts.push(`+${add}`)
-    if (change !== "0") parts.push(`~${change}`)
-    if (destroy !== "0") parts.push(`-${destroy}`)
-    return parts.join(" ") || "no changes"
   }
 
   return "unknown"

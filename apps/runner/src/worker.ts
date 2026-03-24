@@ -196,6 +196,7 @@ async function main(): Promise<void> {
     } else if (result.success) {
       await apiClient.complete(runId, {
         output: result.output,
+        hasChanges: result.hasChanges,
         planSummary: result.planSummary,
         planJson: result.planJson,
         outputs: result.outputs,
