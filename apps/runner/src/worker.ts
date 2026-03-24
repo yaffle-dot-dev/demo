@@ -25,6 +25,7 @@ import { RunnerApiClient } from "./lib/api-client.ts"
 import { HeartbeatSupervisor } from "./lib/supervisor.ts"
 import { downloadWorkspace, cleanupWorkspace } from "./lib/workspace.ts"
 import { executeTerraform } from "./lib/executor.ts"
+import type { Subprocess } from "bun"
 
 // Required environment variables
 const JOB_ID = process.env.YAFFLE_JOB_ID
@@ -94,10 +95,18 @@ async function main(): Promise<void> {
   })
 
   // 2. Start heartbeat supervisor
+  let cancellationRequested = false
+  let activeProcess: Subprocess | null = null
+
   const supervisor = new HeartbeatSupervisor({
     apiClient,
     onHeartbeatFailure: () => {
-      error("Heartbeat supervisor detected failure, aborting")
+      cancellationRequested = true
+      error("Heartbeat supervisor detected failure, signalling active tofu process")
+      if (activeProcess) {
+        activeProcess.kill("SIGINT")
+        return
+      }
       process.exit(1)
     },
   })
@@ -164,6 +173,12 @@ async function main(): Promise<void> {
       workDir,
       context,
       onOutput: queueLog,
+      onProcess: (proc) => {
+        activeProcess = proc
+        if (cancellationRequested && activeProcess) {
+          activeProcess.kill("SIGINT")
+        }
+      },
     })
 
     // Flush any remaining logs
@@ -176,7 +191,9 @@ async function main(): Promise<void> {
     // 6. Report completion
     log("Reporting completion...")
 
-    if (result.success) {
+    if (cancellationRequested) {
+      log("Job cancellation acknowledged by worker")
+    } else if (result.success) {
       await apiClient.complete(runId, {
         output: result.output,
         planSummary: result.planSummary,
@@ -201,7 +218,9 @@ async function main(): Promise<void> {
     await flushLogs()
 
     try {
-      await apiClient.fail(runId, errorMessage)
+      if (!cancellationRequested) {
+        await apiClient.fail(runId, errorMessage)
+      }
     } catch (reportErr) {
       error("Failed to report error to API", {
         error: reportErr instanceof Error ? reportErr.message : String(reportErr),

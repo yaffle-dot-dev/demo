@@ -540,12 +540,16 @@
         <text y="28" class="node-status text-status-ready">{statusIcon("success")} Applied</text>
       {:else if applyStatus === "failed"}
         <text y="28" class="node-status text-status-error">{statusIcon("failed")} Apply failed</text>
+      {:else if applyStatus === "cancelled"}
+        <text y="28" class="node-status text-status-failed">{statusIcon("cancelled")} Apply cancelled</text>
       {:else if applyStatus === "skipped"}
         <text y="28" class="node-status text-status-ready">{statusIcon("success")} No changes</text>
       {:else if planStatus === "running"}
         <text y="28" class="node-status text-status-applying">{statusIcon("running")} Planning...</text>
       {:else if planStatus === "failed"}
         <text y="28" class="node-status text-status-failed">{statusIcon("failed")} Plan failed</text>
+      {:else if planStatus === "cancelled"}
+        <text y="28" class="node-status text-status-failed">{statusIcon("cancelled")} Plan cancelled</text>
       {:else if planStatus === "skipped"}
         <text y="28" class="node-status text-text-dim">{statusIcon("skipped")} Skipped</text>
       {:else if planStatus === "pending"}

@@ -24,7 +24,7 @@
     const hasWaiting = waitingStatuses.some((s) => statusSet.has(s))
 
     // Terminal states
-    const hasFailed = statusSet.has("failed")
+    const hasFailed = statusSet.has("failed") || statusSet.has("cancelled")
     const hasSystemError = statusSet.has("system_error")
     const terminalSuccessStatuses = ["ready", "destroyed", "planned", "skipped"]
     const hasSuccess = terminalSuccessStatuses.some((s) => statusSet.has(s))

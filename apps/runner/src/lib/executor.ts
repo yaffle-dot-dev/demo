@@ -1,3 +1,5 @@
+import type { Subprocess } from "bun"
+
 /**
  * Terraform Executor
  *
@@ -27,13 +29,15 @@ export interface ExecutorOptions {
   context: ExecutionContext
   /** Callback for streaming output */
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
+  /** Callback when the active tofu subprocess changes */
+  onProcess?: (proc: Subprocess | null) => void
 }
 
 /**
  * Execute terraform command.
  */
 export async function executeTerraform(opts: ExecutorOptions): Promise<TerraformResult> {
-  const { workDir, context, onOutput } = opts
+  const { workDir, context, onOutput, onProcess } = opts
   const startTime = Date.now()
 
   try {
@@ -49,12 +53,13 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
     await configureVariables(workDir, context)
 
     // Run tofu init
-    const initResult = await runCommand(
-      workDir,
-      ["tofu", "init", "-input=false"],
-      onOutput,
-      combinedEnv,
-    )
+      const initResult = await runCommand(
+        workDir,
+        ["tofu", "init", "-input=false"],
+        onOutput,
+        combinedEnv,
+        onProcess,
+      )
     if (!initResult.success) {
       return {
         success: false,
@@ -78,6 +83,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
           ["tofu", "plan", "-input=false", "-out=tfplan"],
           onOutput,
           combinedEnv,
+          onProcess,
         )
 
         if (result.success) {
@@ -87,6 +93,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
             ["tofu", "show", "-json", "tfplan"],
             undefined, // Don't stream this output
             combinedEnv,
+            onProcess,
           )
           if (showResult.success) {
             try {
@@ -108,6 +115,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
           ["tofu", "apply", "-input=false", "-auto-approve"],
           onOutput,
           combinedEnv,
+          onProcess,
         )
 
         if (result.success) {
@@ -117,6 +125,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
             ["tofu", "output", "-json"],
             undefined,
             combinedEnv,
+            onProcess,
           )
           if (outputResult.success) {
             try {
@@ -135,6 +144,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
           ["tofu", "destroy", "-input=false", "-auto-approve"],
           onOutput,
           combinedEnv,
+          onProcess,
         )
         break
       }
@@ -247,6 +257,7 @@ async function runCommand(
   args: string[],
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv: Record<string, string> = {},
+  onProcess?: (proc: Subprocess | null) => void,
 ): Promise<CommandResult> {
   const proc = Bun.spawn(args, {
     cwd: workDir,
@@ -261,6 +272,7 @@ async function runCommand(
       TF_CLI_ARGS: "-no-color",
     },
   })
+  onProcess?.(proc)
 
   let output = ""
 
@@ -292,6 +304,7 @@ async function runCommand(
   ])
 
   const exitCode = await proc.exited
+  onProcess?.(null)
 
   return {
     success: exitCode === 0,

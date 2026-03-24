@@ -142,6 +142,49 @@ export async function findLatestJobForDeployment(
   })
 }
 
+export async function cancelRunningJobForDeploymentAndType(
+  deploymentId: string,
+  jobType: IacJobType,
+): Promise<IacJob | undefined> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    const rows = await db
+      .update(iacJobs)
+      .set({
+        status: "cancelled",
+        completedAt: new Date(),
+      })
+      .where(and(
+        eq(iacJobs.deploymentId, deploymentId),
+        eq(iacJobs.jobType, jobType),
+        eq(iacJobs.status, "running"),
+      ))
+      .returning()
+
+    const job = rows[0]
+    if (!job) {
+      return undefined
+    }
+
+    events.emitJobUpdate(job.id, deploymentId)
+    getJobStateTransitionsCounter().add(1, {
+      from_state: "running",
+      to_state: "cancelled",
+      job_type: job.jobType,
+    })
+
+    logger.info("job.cancelled", {
+      "job.id": job.id,
+      "job.type": job.jobType,
+      "job.status": "cancelled",
+      "job.status.previous": "running",
+      "deployment.id": deploymentId,
+      "worker.id": job.workerId ?? "unknown",
+    })
+
+    return job
+  })
+}
+
 /**
  * Update job with ECS task ARN for tracking.
  * Used when spawning an ECS runner task.

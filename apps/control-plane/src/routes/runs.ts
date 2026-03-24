@@ -1,9 +1,12 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
+import type { RunType } from "@yaffle/shared"
 
 import { findRunById, updateRunStatus } from "../db/queries/tf-runs.ts"
 import { findDeploymentById } from "../db/queries/workspace-deployments.ts"
+import { cancelRunningJobForDeploymentAndType } from "../db/queries/iac-jobs.ts"
+import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 
 import { processRegistry } from "../lib/process-registry.ts"
 import { logger } from "../lib/telemetry.ts"
@@ -81,8 +84,22 @@ runsRoute.post(
       return c.json({ data: { cancelled: true } })
     }
 
-    // Process not found in registry - might have already finished
-    // or be running on a different instance (ECS)
+    const remoteJob = await cancelRunningJobForDeploymentAndType(run.deploymentId, run.runType as RunType)
+    if (remoteJob) {
+      await updateRunStatus(id, run.deploymentId, "cancelled", {
+        completedAt: new Date(),
+        errorMessage: `Cancelled by ${auth.name || auth.userId}`,
+      })
+      await updateDeploymentStatus(run.deploymentId, "pending")
+
+      logger.info("Run cancelled remotely", {
+        runId: id,
+        jobId: remoteJob.id,
+        deploymentId: run.deploymentId,
+      })
+      return c.json({ data: { cancelled: true } })
+    }
+
     logger.warn("Run process not found in registry", { runId: id })
     return c.json(
       {

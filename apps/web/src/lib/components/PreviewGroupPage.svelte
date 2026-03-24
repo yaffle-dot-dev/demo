@@ -395,6 +395,7 @@
       case "running": return " ..."
       case "pending": return " ~"
       case "failed": return " ✗"
+      case "cancelled": return " ✗"
       case "skipped": return " -"
       default: return ""
     }
@@ -407,6 +408,7 @@
       case "running": return "text-status-applying"
       case "pending": return "text-status-pending"
       case "failed": return "text-status-failed"
+      case "cancelled": return "text-status-failed"
       case "skipped": return "text-text-muted"
       default: return "text-text-muted"
     }
@@ -417,6 +419,14 @@
     if (latestPlan?.status === "running") return latestPlan
     if (latestApply?.status === "running") return latestApply
     return null
+  })
+
+  const cancellationPending = $derived(cancellingRunId !== null && runningRun?.id === cancellingRunId)
+
+  $effect(() => {
+    if (cancellingRunId && runningRun?.id !== cancellingRunId) {
+      cancellingRunId = null
+    }
   })
 
   async function handleCancel() {
@@ -433,7 +443,6 @@
       await cancelRun(runningRun.id)
     } catch (err) {
       cancelError = err instanceof Error ? err.message : "Failed to cancel run"
-    } finally {
       cancellingRunId = null
     }
   }
@@ -501,11 +510,13 @@
     if (apply?.status === "success" || apply?.status === "skipped") return "ready"
     if (apply?.status === "running") return "applying"
     if (apply?.status === "failed") return "failed"
+    if (apply?.status === "cancelled") return "cancelled"
     
     // Then check plan
     if (plan?.status === "success") return "planned"
     if (plan?.status === "running") return "planning"
     if (plan?.status === "failed") return "failed"
+    if (plan?.status === "cancelled") return "cancelled"
     if (plan?.status === "pending") return "pending"
     
     // No runs in this run group
@@ -699,8 +710,10 @@ terraform {
           ? (latestApply?.status === "success" ? "ready"
             : latestApply?.status === "skipped" ? "ready"
             : latestApply?.status === "running" ? "applying"
+            : latestApply?.status === "cancelled" ? "cancelled"
             : latestPlan?.status === "success" ? "planned"
             : latestPlan?.status === "running" ? "planning"
+            : latestPlan?.status === "cancelled" ? "cancelled"
             : latestPlan?.status === "pending" ? "pending"
             : selectedWorkspace.runs.length === 0 ? "queued"
             : selectedWorkspace.preview.status)

@@ -14,7 +14,7 @@
 
 import { RunnerApiClient } from "./api-client.ts"
 
-const HEARTBEAT_INTERVAL_MS = 30 * 1000 // 30 seconds
+const HEARTBEAT_INTERVAL_MS = 5 * 1000 // 5 seconds
 const HEARTBEAT_MAX_RETRIES = 3
 const HEARTBEAT_RETRY_DELAY_MS = 5 * 1000 // 5 seconds
 
