@@ -13,6 +13,7 @@ import {
 import { events } from "../../lib/events.ts"
 import { updateDeploymentStatus } from "./workspace-deployments.ts"
 import { updateRunStatus } from "./tf-runs.ts"
+import { recomputeRunGroupStatus } from "./run-groups.ts"
 import { cascadeFailure } from "../../lib/deployment-side-effects.ts"
 
 export type IacJob = typeof iacJobs.$inferSelect
@@ -383,8 +384,12 @@ export async function failStaleJob(
     // Update deployment status outside the transaction to avoid circular import issues
     if (result.failed) {
       const job = await db
-        .select({ deploymentId: iacJobs.deploymentId })
+        .select({
+          deploymentId: iacJobs.deploymentId,
+          runGroupId: workspaceDeployments.runGroupId,
+        })
         .from(iacJobs)
+        .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
         .where(eq(iacJobs.id, jobId))
         .limit(1)
       if (job[0]) {
@@ -407,6 +412,10 @@ export async function failStaleJob(
             completedAt: new Date(),
             errorMessage,
           })
+        } else if (job[0].runGroupId) {
+          // Defensive recompute when the corresponding tf_run cannot be found.
+          // This avoids run groups getting stuck in "running" after stale job cleanup.
+          await recomputeRunGroupStatus(job[0].runGroupId)
         }
 
         await updateDeploymentStatus(job[0].deploymentId, "system_error")

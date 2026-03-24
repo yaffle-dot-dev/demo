@@ -10,9 +10,10 @@
  * since the workspace contents are deterministic for a given SHA.
  */
 
-import { mkdir, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { randomUUID } from "node:crypto"
 
 import {
   S3Client,
@@ -213,10 +214,8 @@ export class WorkspaceCache {
   }
 
   async extractWorkspaceToTemp(s3Key: string): Promise<string> {
-    const outputDir = join(tmpdir(), `yaffle-ws-cache-${Date.now()}`)
-    const tarballPath = join(tmpdir(), `yaffle-ws-cache-${Date.now()}.tar.gz`)
-
-    await mkdir(outputDir, { recursive: true })
+    const outputDir = await mkdtemp(join(tmpdir(), "yaffle-ws-cache-"))
+    const tarballPath = join(tmpdir(), `yaffle-ws-cache-${Date.now()}-${randomUUID()}.tar.gz`)
 
     const object = await this.s3.send(new GetObjectCommand({
       Bucket: this.bucket,
@@ -242,6 +241,7 @@ export class WorkspaceCache {
     })
 
     if (extract.exitCode !== 0) {
+      await rm(tarballPath, { force: true })
       throw new Error(`Failed to extract workspace cache ${s3Key}: ${extract.stderr.toString()}`)
     }
 

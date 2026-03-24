@@ -250,6 +250,7 @@ interface CommandResult {
   success: boolean
   output: string
   exitCode: number
+  timedOut?: boolean
 }
 
 /**
@@ -262,6 +263,7 @@ async function runCommand(
   extraEnv: Record<string, string> = {},
   onProcess?: (proc: Subprocess | null) => void,
   successExitCodes: number[] = [0],
+  timeoutMs = 20 * 60 * 1000,
 ): Promise<CommandResult> {
   const proc = Bun.spawn(args, {
     cwd: workDir,
@@ -279,6 +281,28 @@ async function runCommand(
   onProcess?.(proc)
 
   let output = ""
+  let timedOut = false
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null
+
+  if (timeoutMs > 0) {
+    timeoutHandle = setTimeout(() => {
+      timedOut = true
+      output += `\n[yaffle-runner] command timed out after ${Math.floor(timeoutMs / 1000)}s\n`
+      try {
+        proc.kill("SIGTERM")
+      } catch {
+        // ignore termination errors
+      }
+
+      setTimeout(() => {
+        try {
+          proc.kill("SIGKILL")
+        } catch {
+          // ignore termination errors
+        }
+      }, 5000)
+    }, timeoutMs)
+  }
 
   // Stream stdout
   const stdoutReader = proc.stdout.getReader()
@@ -308,12 +332,16 @@ async function runCommand(
   ])
 
   const exitCode = await proc.exited
+  if (timeoutHandle) {
+    clearTimeout(timeoutHandle)
+  }
   onProcess?.(null)
 
   return {
-    success: successExitCodes.includes(exitCode),
+    success: successExitCodes.includes(exitCode) && !timedOut,
     output,
     exitCode,
+    timedOut,
   }
 }
 

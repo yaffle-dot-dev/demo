@@ -12,6 +12,48 @@ export type NewRunGroup = typeof runGroups.$inferInsert
 
 export type RunGroupTrigger = "pr_opened" | "pr_sync" | "push" | "manual"
 
+type AggregatedRunGroupStatus = "pending" | "running" | "success" | "failed" | "partial"
+
+const SUCCESS_RUN_STATUSES = new Set(["success", "skipped"])
+const FAILURE_RUN_STATUSES = new Set(["failed", "system_error"])
+const TERMINAL_RUN_STATUSES = new Set(["success", "skipped", "failed", "cancelled", "system_error"])
+
+export function deriveRunGroupStatusFromRunStatuses(statuses: string[]): {
+  status: AggregatedRunGroupStatus
+  isComplete: boolean
+} {
+  const allPending = statuses.every((s) => s === "pending")
+  if (allPending) {
+    return { status: "pending", isComplete: false }
+  }
+
+  const anyRunning = statuses.some((s) => s === "running")
+  if (anyRunning) {
+    return { status: "running", isComplete: false }
+  }
+
+  const allSuccess = statuses.every((s) => SUCCESS_RUN_STATUSES.has(s))
+  if (allSuccess) {
+    return { status: "success", isComplete: true }
+  }
+
+  const anyFailed = statuses.some((s) => FAILURE_RUN_STATUSES.has(s))
+  const allTerminal = statuses.every((s) => TERMINAL_RUN_STATUSES.has(s))
+
+  if (anyFailed) {
+    // Fail fast when a run has definitively failed and no runs are still running.
+    // Pending runs are typically blocked by DAG dependencies and will not recover
+    // without an explicit retry/new run group.
+    return { status: "failed", isComplete: true }
+  }
+
+  if (allTerminal) {
+    return { status: "partial", isComplete: true }
+  }
+
+  return { status: "running", isComplete: false }
+}
+
 /**
  * Create a new run group.
  */
@@ -250,38 +292,13 @@ export async function recomputeRunGroupStatus(runGroupId: string): Promise<void>
     if (runs.length === 0) return
 
     const statuses = runs.map((r) => r.status)
-    const allPending = statuses.every((s) => s === "pending")
-    const allSuccess = statuses.every((s) => s === "success" || s === "skipped")
-    const allComplete = statuses.every((s) =>
-      s === "success" || s === "failed" || s === "cancelled" || s === "skipped"
-    )
-    const anyRunning = statuses.some((s) => s === "running")
-    const anyFailed = statuses.some((s) => s === "failed")
-
-    let newStatus: string
-    let completedAt: Date | undefined
-
-    if (allPending) {
-      newStatus = "pending"
-    } else if (anyRunning) {
-      newStatus = "running"
-    } else if (allComplete) {
-      completedAt = new Date()
-      if (allSuccess) {
-        newStatus = "success"
-      } else if (anyFailed) {
-        newStatus = "failed"
-      } else {
-        newStatus = "partial" // Mix of success/cancelled
-      }
-    } else {
-      newStatus = "running"
-    }
+    const { status, isComplete } = deriveRunGroupStatusFromRunStatuses(statuses)
+    const completedAt = isComplete ? new Date() : undefined
 
     await db
       .update(runGroups)
       .set({
-        status: newStatus,
+        status,
         ...(completedAt ? { completedAt } : {}),
       })
       .where(eq(runGroups.id, runGroupId))
