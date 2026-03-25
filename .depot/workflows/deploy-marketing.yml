@@ -1,5 +1,9 @@
-name: Deploy Marketing
+# Depot CI Migration
+# Source: .github/workflows/deploy-marketing.yml
+#
+# No changes were necessary.
 
+name: Deploy Marketing
 on:
   push:
     branches: [main]
@@ -12,12 +16,10 @@ on:
       - "apps/marketing/**"
       - ".github/workflows/deploy-marketing.yml"
       - ".github/workflows/deploy-static-site.yml"
-
 # Required for OIDC authentication to AWS
 permissions:
   contents: read
   id-token: write
-
 jobs:
   deploy:
     uses: ./.github/workflows/deploy-static-site.yml

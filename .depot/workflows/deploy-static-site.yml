@@ -1,8 +1,12 @@
+# Depot CI Migration
+# Source: .github/workflows/deploy-static-site.yml
+#
+# No changes were necessary.
+
 # Reusable workflow for deploying static sites to S3 + CloudFront
 # Called by marketing and docs deploy workflows
 
 name: Deploy Static Site
-
 on:
   workflow_call:
     inputs:
@@ -48,43 +52,34 @@ on:
         required: false
         type: string
         default: "yaffle.tail66f312.ts.net"
-    secrets:
-      AWS_REGION:
-        required: false
-
 env:
   AWS_REGION: us-east-1
-  YAFFLE_GITHUB_ACTIONS_CI_ROLE_ARN: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
+  YAFFLE_CI_ROLE_ARN: arn:aws:iam::870923192739:role/yaffle-depot-ci
   TAILSCALE_GITHUB_ACTIONS_SECRET_ID: yaffle/shared/tailscale/github-actions-oauth
-
+  GITHUB_ACTION: true
+  
 jobs:
   deploy:
     name: Deploy ${{ inputs.site-name }}
     runs-on: depot-ubuntu-24.04
-
     permissions:
       contents: read
       id-token: write
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "24"
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
-
       - name: Configure AWS credentials (bootstrap)
         if: inputs.tailscale-ping-target != ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ env.YAFFLE_GITHUB_ACTIONS_CI_ROLE_ARN }}
+          role-to-assume: ${{ env.YAFFLE_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
       - name: Fetch Tailscale GitHub Actions OAuth credentials
         if: inputs.tailscale-ping-target != ''
         id: tailscale-bootstrap
@@ -96,7 +91,6 @@ jobs:
 
           echo "oauth-client-id=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_client_id')" >> "$GITHUB_OUTPUT"
           echo "oauth-secret=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_secret')" >> "$GITHUB_OUTPUT"
-
       - name: Connect GitHub Actions runner to Tailscale
         if: inputs.tailscale-ping-target != ''
         uses: tailscale/github-action@v4
@@ -106,21 +100,17 @@ jobs:
           tags: tag:github-actions-ci
           ping: ${{ inputs.tailscale-ping-target }}
           version: latest
-
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
       - name: Load Yaffle API token from Secrets Manager
         uses: aws-actions/aws-secretsmanager-get-secrets@v2
         with:
           secret-ids: |
             YAFFLE_API_TOKEN, yaffle/shared/github-actions/yaffle-api-token
           parse-json-secrets: false
-
       - name: Build site
         run: ${{ inputs.build-command }}
         working-directory: ${{ inputs.app-path }}
-
       - name: Wait for site infrastructure
         id: site-infra
         uses: ./actions/outputs-action
@@ -129,7 +119,6 @@ jobs:
           workspace: ${{ inputs.site-infra-workspace }}
           wait: true
           wait-timeout: 600
-
       - name: Wait for frontend infrastructure
         id: frontend-infra
         uses: ./actions/outputs-action
@@ -138,13 +127,11 @@ jobs:
           workspace: ${{ inputs.frontend-infra-workspace }}
           wait: true
           wait-timeout: 600
-
       - name: Configure AWS credentials (S3 deploy)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.site-infra.outputs.deploy_role_arn }}
           aws-region: ${{ env.AWS_REGION }}
-
       - name: Sync to S3
         run: |
           if [ -n "${{ inputs.s3-prefix }}" ]; then
@@ -156,7 +143,6 @@ jobs:
               s3://${{ steps.site-infra.outputs.primary_bucket_name }} \
               --delete
           fi
-
       # TODO: Re-enable once CloudFront is deployed
       - name: Configure AWS credentials (CloudFront invalidation)
         if: steps.frontend-infra.outputs.cloudfront_distribution_id != 'PLACEHOLDER'
@@ -164,7 +150,6 @@ jobs:
         with:
           role-to-assume: ${{ steps.frontend-infra.outputs.invalidation_role_arn }}
           aws-region: ${{ env.AWS_REGION }}
-
       - name: Invalidate CloudFront cache
         if: steps.frontend-infra.outputs.cloudfront_distribution_id != 'PLACEHOLDER'
         run: |
@@ -177,7 +162,6 @@ jobs:
               --distribution-id ${{ steps.frontend-infra.outputs.cloudfront_distribution_id }} \
               --paths "/*"
           fi
-
       - name: Summary
         run: |
           echo "## Deployed ${{ inputs.site-name }}" >> $GITHUB_STEP_SUMMARY

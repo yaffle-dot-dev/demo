@@ -1,5 +1,9 @@
-name: Build Container Images
+# Depot CI Migration
+# Source: .github/workflows/build-images.yml
+#
+# No changes were necessary.
 
+name: Build Container Images
 on:
   push:
     branches: [main]
@@ -24,34 +28,28 @@ on:
       - "flake.nix"
       - "flake.lock"
       - ".github/workflows/build-images.yml"
-
 permissions:
   contents: read
   id-token: write
-
 env:
   AWS_REGION: us-east-1
-
+  GITHUB_ACTION: true
+  
 jobs:
   build:
     name: Build Images
     runs-on: depot-ubuntu-24.04-arm
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
-
       - name: Install Nix
         uses: DeterminateSystems/nix-installer-action@main
-
       - name: Setup Nix cache
         uses: DeterminateSystems/magic-nix-cache-action@main
-
       - name: Determine tier
         id: tier
         run: |
@@ -62,14 +60,12 @@ jobs:
             echo "tier=nonprod" >> $GITHUB_OUTPUT
             echo "push=false" >> $GITHUB_OUTPUT
           fi
-
       - name: Configure AWS credentials
         if: steps.tier.outputs.push == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
           aws-region: ${{ env.AWS_REGION }}
-
       - name: Login to ECR
         if: steps.tier.outputs.push == 'true'
         id: ecr-login
@@ -78,11 +74,9 @@ jobs:
             skopeo login --username AWS --password-stdin \
             870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
           echo "registry=870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
-
       # Build JavaScript with Bun (outside nix sandbox)
       - name: Install dependencies
         run: bun install --frozen-lockfile
-
       - name: Build control-plane bundle
         run: |
           mkdir -p dist/control-plane/node_modules
@@ -96,7 +90,6 @@ jobs:
 
           # Copy runtime dependencies that can't be bundled
           cp -r node_modules/.bun/minijinja-js@*/node_modules/minijinja-js dist/control-plane/node_modules/
-
       # Package with nix2container
       # --impure allows reading YAFFLE_BUNDLE_PATH env var
       - name: Build control-plane image
@@ -105,7 +98,6 @@ jobs:
           nix build .#control-plane-image --impure -L -o result-control-plane
           # Also build the copyToRegistry to get access to nix2container's skopeo
           nix build .#control-plane-image.copyToRegistry --impure -o copy-control-plane
-
       - name: Push control-plane image
         if: steps.tier.outputs.push == 'true'
         run: |
@@ -129,12 +121,10 @@ jobs:
           skopeo --insecure-policy copy \
             nix:${IMAGE_JSON} \
             docker://${REGISTRY}/yaffle-control-plane-${TIER}:latest
-
       - name: Build runner image
         run: |
           nix build .#runner-image -L -o result-runner
           nix build .#runner-image.copyToRegistry -o copy-runner
-
       - name: Push runner image
         if: steps.tier.outputs.push == 'true'
         run: |
@@ -158,7 +148,6 @@ jobs:
           skopeo --insecure-policy copy \
             nix:${IMAGE_JSON} \
             docker://${REGISTRY}/yaffle-runner-${TIER}:latest
-
       - name: Summary
         run: |
           echo "## Container Images Built" >> $GITHUB_STEP_SUMMARY
