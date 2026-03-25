@@ -310,9 +310,10 @@ export async function triggerApply(opts: {
       throw new Error("preview not found")
     }
 
-    // Check that preview is in awaiting_apply state
-    if (preview.status !== "awaiting_apply") {
-      throw new Error(`preview is in ${preview.status} state, expected awaiting_apply`)
+    // Manual apply is allowed both before the auto-apply countdown is paused
+    // and after it has been explicitly paused for approval.
+    if (preview.status !== "awaiting_apply" && preview.status !== "awaiting_approval") {
+      throw new Error(`preview is in ${preview.status} state, expected awaiting_apply or awaiting_approval`)
     }
 
     // Check that plan succeeded
