@@ -14,7 +14,14 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    tfe = {
+      source  = "hashicorp/tfe"
+      version = "0.75.0"
+    }
   }
+}
+
+provider "tfe" {
 }
 
 # Environment name is passed in by Yaffle
