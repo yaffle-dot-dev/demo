@@ -36,6 +36,21 @@ resource "aws_iam_role" "deploy" {
             ]
           }
         }
+      },
+      {
+        Effect = "Allow"
+        Principal = {
+          Federated = var.depot_oidc_provider_arn
+        }
+        Action = "sts:AssumeRoleWithWebIdentity"
+        Condition = {
+          StringEquals = {
+            "identity.depot.dev:aud" = "sts.amazonaws.com"
+          }
+          StringLike = {
+            "identity.depot.dev:sub" = "spiffe://identity.depot.dev/org/rtlw6kg4g8/ci/github/yaffle-dot-dev/yaffle/*"
+          }
+        }
       }
     ]
   })

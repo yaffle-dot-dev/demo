@@ -55,6 +55,20 @@ output "github_actions_oidc_provider_arn" {
 }
 
 # -----------------------------------------------------------------------------
+# Depot CI OIDC
+# -----------------------------------------------------------------------------
+
+output "depot_ci_role_arn" {
+  value       = aws_iam_role.depot_ci.arn
+  description = "IAM role ARN for Depot CI to assume"
+}
+
+output "depot_oidc_provider_arn" {
+  value       = aws_iam_openid_connect_provider.depot.arn
+  description = "Depot OIDC provider ARN"
+}
+
+# -----------------------------------------------------------------------------
 # ACM Certificate
 # -----------------------------------------------------------------------------
 

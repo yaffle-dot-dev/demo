@@ -9,6 +9,7 @@ module "static_site" {
   environment              = var.environment
   environment_kind         = var.environment_kind
   github_oidc_provider_arn = module.shared.github_actions_oidc_provider_arn
+  depot_oidc_provider_arn  = module.shared.depot_oidc_provider_arn
 }
 
 variable "environment" {

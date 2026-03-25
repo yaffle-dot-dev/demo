@@ -8,6 +8,11 @@ variable "github_oidc_provider_arn" {
   description = "ARN of the GitHub OIDC provider in AWS for GitHub Actions authentication"
 }
 
+variable "depot_oidc_provider_arn" {
+  type        = string
+  description = "ARN of the Depot OIDC provider in AWS for Depot CI authentication"
+}
+
 variable "environment" {
   type        = string
   description = "Environment name - branch name (e.g., 'main') or preview (e.g., 'prvw-42')"
