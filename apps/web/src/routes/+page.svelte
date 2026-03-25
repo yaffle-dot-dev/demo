@@ -141,20 +141,20 @@
     </div>
   </div>
 {:else if showNoOrgs}
-  <!-- Signed in but no orgs - prompt to install GitHub App -->
+  <!-- Signed in but no orgs - prompt to create one -->
   <div class="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
     <div class="max-w-md space-y-4">
       <h1 class="text-2xl font-semibold text-text">Welcome to Yaffle</h1>
       <p class="text-text-muted">
-        Install the Yaffle GitHub App on an organization or your personal account to get started.
+        Create an organization to get started. You'll be able to link GitHub repositories after setup.
       </p>
       <a
-        href={installUrl}
+        href="{base}/new"
         class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
                bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
                transition-colors"
       >
-        Install GitHub App
+        Create an org
       </a>
     </div>
   </div>

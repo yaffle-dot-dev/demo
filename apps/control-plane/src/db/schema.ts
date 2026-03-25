@@ -338,6 +338,7 @@ export const repositories = pgTable(
     orgId: uuid("org_id")
       .references(() => organizations.id)
       .notNull(),
+    installationId: bigint("installation_id", { mode: "number" }),
     githubId: bigint("github_id", { mode: "number" }).notNull(),
     name: text("name").notNull(),
     fullName: text("full_name").notNull(),
@@ -346,6 +347,28 @@ export const repositories = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [unique("repositories_github_id").on(t.githubId)],
+)
+
+// =============================================================================
+// GitHub Repo Mappings (explicit binding from GitHub repo to Yaffle org)
+// =============================================================================
+
+export const githubRepoMappings = pgTable(
+  "github_repo_mappings",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    installationId: bigint("installation_id", { mode: "number" }).notNull(),
+    githubRepoId: bigint("github_repo_id", { mode: "number" }).notNull(),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("github_repo_mappings_install_repo").on(t.installationId, t.githubRepoId),
+    index("github_repo_mappings_org_id_idx").on(t.orgId),
+  ],
 )
 
 // =============================================================================

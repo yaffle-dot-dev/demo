@@ -28,6 +28,7 @@ export type PullRequestAction =
 export interface PullRequestContext {
   kind: "pull_request"
   installationId: number
+  repoGithubId: number
   ownerGithubId: number
   owner: string
   repo: string
@@ -52,6 +53,7 @@ export type RefType = "branch" | "tag"
 export interface PushContext {
   kind: "push"
   installationId: number
+  repoGithubId: number
   ownerGithubId: number
   owner: string
   repo: string

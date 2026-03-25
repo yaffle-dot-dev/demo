@@ -4,8 +4,9 @@ import { z } from "zod"
 
 import { requireAuth, AuthError } from "../lib/auth.ts"
 import { getEnv } from "../lib/env.ts"
-import { listUserOrgs } from "../db/queries/users.ts"
-import { findOrgBySlug, findOrgMembership } from "../db/queries/organizations.ts"
+import { listUserOrgs, ensureMembership } from "../db/queries/users.ts"
+import { findOrgBySlug, findOrgMembership, createOrg } from "../db/queries/organizations.ts"
+import { createJob } from "../db/queries/jobs.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import { createConnection } from "../db/queries/connections.ts"
 import { deleteConnection, findConnectionById, updateConnection } from "../db/queries/connections.ts"
@@ -198,6 +199,77 @@ function buildProviderInferenceMetadata(payload: z.infer<typeof createConnection
     requestedProviderType,
   }
 }
+
+const createOrgSchema = z.object({
+  name: z.string().min(1).max(100),
+  slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens").optional(),
+})
+
+/**
+ * POST /api/orgs
+ *
+ * Create a new organization. The requesting user becomes the admin.
+ * Queues async provisioning of AWS resources (KMS key, IAM role).
+ */
+orgsRoute.post("/", async (c) => {
+  let auth
+  try {
+    auth = await requireAuth(c.req.raw.headers)
+  } catch (err) {
+    if (err instanceof AuthError) {
+      const status = err.code === "AUTH_REQUIRED" ? 401 : 403
+      return c.json({ error: { code: err.code, message: err.message } }, status)
+    }
+    throw err
+  }
+
+  let body: z.infer<typeof createOrgSchema>
+  try {
+    body = createOrgSchema.parse(await c.req.json())
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: err.errors[0].message } }, 400)
+    }
+    return c.json({ error: { code: "INVALID_JSON", message: "Invalid request body" } }, 400)
+  }
+
+  const slug = body.slug ?? body.name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
+  if (!slug) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "Could not derive a valid slug from the org name" } }, 400)
+  }
+
+  // Check for slug collision
+  const existing = await findOrgBySlug(slug)
+  if (existing) {
+    return c.json({ error: { code: "SLUG_TAKEN", message: `Organization slug "${slug}" is already in use` } }, 409)
+  }
+
+  const org = await createOrg({
+    name: body.name,
+    slug,
+    membershipMode: "invite_only",
+  })
+
+  // Make the requesting user an admin
+  await ensureMembership({
+    orgId: org.id,
+    userId: auth.userId,
+    role: "admin",
+    source: "admin_bootstrap",
+  })
+
+  // Queue async provisioning of AWS resources (KMS key, IAM role)
+  await createJob({
+    orgId: org.id,
+    jobType: "org_provision",
+    payload: {
+      orgId: org.id,
+      orgSlug: slug,
+    },
+  })
+
+  return c.json({ data: { id: org.id, slug: org.slug, name: org.name } }, 201)
+})
 
 /**
  * GET /api/orgs

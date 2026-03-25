@@ -264,6 +264,32 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 
+async function deleteJson<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+    credentials: "include",
+  })
+  const text = await res.text()
+  if (!res.ok) {
+    try {
+      const parsed = JSON.parse(text) as ApiError
+      throw new Error(parsed.error?.message ?? `API error: ${res.status}`)
+    } catch {
+      throw new Error(text || `API error: ${res.status}`)
+    }
+  }
+
+  if (!text) {
+    return undefined as T
+  }
+
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new Error("API returned non-JSON data")
+  }
+}
+
 export async function listPreviews(params: {
   org: string
   repo?: string
@@ -297,6 +323,70 @@ export async function listEnvironments(params: {
 export async function listOrgs(): Promise<DetailResponse<OrgInfo[]>> {
   return fetchJson("/orgs")
 }
+
+export async function createOrg(params: { name: string; slug?: string }): Promise<DetailResponse<{ id: string; slug: string; name: string }>> {
+  return postJson("/orgs", params)
+}
+
+// =============================================================================
+// GitHub Integrations
+// =============================================================================
+
+export interface GithubInstallation {
+  installationId: number
+  githubOrgId: number
+  githubOrgLogin: string
+  accountType: string
+  avatarUrl: string
+}
+
+export interface GithubRepo {
+  githubId: number
+  name: string
+  fullName: string
+  defaultBranch: string
+  isPrivate: boolean
+}
+
+export interface RepoMapping {
+  id: string
+  orgId: string
+  installationId: number
+  githubRepoId: number
+  createdBy: string | null
+  createdAt: string
+}
+
+export async function listGithubInstallations(): Promise<DetailResponse<GithubInstallation[]>> {
+  return fetchJson("/integrations/github/installations")
+}
+
+export async function listInstallationRepos(installationId: number): Promise<DetailResponse<GithubRepo[]>> {
+  return fetchJson(`/integrations/github/installations/${installationId}/repositories`)
+}
+
+export async function listRepoMappings(org: string): Promise<DetailResponse<RepoMapping[]>> {
+  return fetchJson(`/orgs/${org}/repo-mappings`)
+}
+
+export async function createRepoMapping(
+  org: string,
+  params: { installationId: number; githubRepoId: number },
+): Promise<DetailResponse<RepoMapping>> {
+  return postJson(`/orgs/${org}/repo-mappings`, params)
+}
+
+export async function deleteRepoMapping(
+  org: string,
+  installationId: number,
+  repoId: number,
+): Promise<DetailResponse<{ removed: boolean }>> {
+  return deleteJson(`/orgs/${org}/repo-mappings/${installationId}/${repoId}`)
+}
+
+// =============================================================================
+// Connections
+// =============================================================================
 
 export async function listOrgConnections(org: string): Promise<DetailResponse<OrgConnection[]>> {
   return fetchJson(`/orgs/${org}/connections`)

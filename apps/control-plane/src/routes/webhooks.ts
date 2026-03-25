@@ -148,6 +148,7 @@ webhooksRoute.post("/github", async (c) => {
     const context: PullRequestContext = {
       kind: "pull_request",
       installationId: payload.installation?.id,
+      repoGithubId: payload.repository.id,
       ownerGithubId: payload.repository.owner.id,
       owner: payload.repository.owner.login,
       repo: repoName,
@@ -240,6 +241,7 @@ webhooksRoute.post("/github", async (c) => {
     const context: PushContext = {
       kind: "push",
       installationId: payload.installation?.id,
+      repoGithubId: payload.repository.id,
       ownerGithubId: payload.repository.owner.id,
       owner: payload.repository.owner.login,
       repo: payload.repository.name,

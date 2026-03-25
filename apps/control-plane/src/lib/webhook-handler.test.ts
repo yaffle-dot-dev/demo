@@ -138,6 +138,7 @@ function makePrContext(overrides?: Partial<PullRequestContext>): PullRequestCont
   return {
     kind: "pull_request",
     installationId: 0,
+    repoGithubId: 123456,
     ownerGithubId: 99999,
     owner: "test-org",
     repo: "test-repo",
@@ -160,6 +161,7 @@ function makePushContext(overrides?: Partial<PushContext>): PushContext {
   return {
     kind: "push",
     installationId: 0,
+    repoGithubId: 123456,
     ownerGithubId: 99999,
     owner: "test-org",
     repo: "test-repo",
