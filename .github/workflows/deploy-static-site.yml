@@ -83,7 +83,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.YAFFLE_GITHUB_ACTIONS_CI_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION || env.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Fetch Tailscale GitHub Actions OAuth credentials
         if: inputs.tailscale-ping-target != ''
@@ -143,7 +143,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.site-infra.outputs.deploy_role_arn }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Sync to S3
         run: |
@@ -163,7 +163,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ steps.frontend-infra.outputs.invalidation_role_arn }}
-          aws-region: ${{ secrets.AWS_REGION || 'us-east-1' }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Invalidate CloudFront cache
         if: steps.frontend-infra.outputs.cloudfront_distribution_id != 'PLACEHOLDER'

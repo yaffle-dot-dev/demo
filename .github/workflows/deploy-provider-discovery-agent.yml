@@ -66,7 +66,7 @@ jobs:
           oauth-client-id: ${{ steps.tailscale-bootstrap.outputs.oauth-client-id }}
           oauth-secret: ${{ steps.tailscale-bootstrap.outputs.oauth-secret }}
           tags: tag:github-actions-ci
-          ping: ${{ vars.YAFFLE_TAILSCALE_PING_TARGET || env.DEFAULT_TAILSCALE_PING_TARGET }}
+          ping: ${{ env.DEFAULT_TAILSCALE_PING_TARGET }}
           version: latest
 
       - name: Install dependencies
@@ -91,7 +91,7 @@ jobs:
         uses: ./actions/outputs-action
         id: infra
         with:
-          api-url: ${{ vars.YAFFLE_API_URL || env.DEFAULT_YAFFLE_API_URL }}
+          api-url: ${{ env.DEFAULT_YAFFLE_API_URL }}
           workspace: apps/provider-discovery-agent/infra
           wait: true
           wait-timeout: 600

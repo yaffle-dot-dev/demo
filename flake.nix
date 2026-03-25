@@ -151,6 +151,34 @@
             npmDepsHash = "sha256-YVODU+0e9T/x9RkAEiHdQ1JxFlgwsrdyzx0ZIgmy9Fw=";
             dontNpmBuild = true;
           };
+          depot = pkgs.stdenv.mkDerivation rec {
+            pname = "depot";
+            version = "2.101.29";
+
+            src = pkgs.fetchurl {
+              url = "https://github.com/depot/cli/releases/download/v${version}/depot_${version}_${
+                if pkgs.stdenv.hostPlatform.isDarwin then "darwin" else "linux"
+              }_${
+                if pkgs.stdenv.hostPlatform.isAarch64 then "arm64" else "amd64"
+              }.tar.gz";
+              sha256 = if pkgs.stdenv.hostPlatform.isDarwin && pkgs.stdenv.hostPlatform.isAarch64
+                then "sha256-YYBAhRD3Wa/pX/wEuB5vWwzv/A9FTFC7q0QTFxrh2lg="
+                else if pkgs.stdenv.hostPlatform.isDarwin
+                then "sha256-awqsc9mniAmg8OjujyKN9jNTn99kWe1D8iRgLq0IViA="
+                else if pkgs.stdenv.hostPlatform.isAarch64
+                then "sha256-FiSAs+mi1YqYQB4Ho3m9r6PZk3YWh4aH+hmNV0H2VEQ="
+                else "sha256-o5eAlh/EQ9tUSE/LM0GnQtU8nkg4vsz/kYEOnkq/W4E=";
+            };
+
+            sourceRoot = ".";
+            dontBuild = true;
+
+            nativeBuildInputs = [ pkgs.installShellFiles ];
+
+            installPhase = ''
+              install -Dm755 bin/depot $out/bin/depot
+            '';
+          };
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
@@ -172,6 +200,9 @@
               # Version control / GitHub
               jujutsu
               gh
+
+              # CI / Build
+              depot
 
               # Dev tooling
               opencode
