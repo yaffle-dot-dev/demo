@@ -16,7 +16,8 @@ import {
   parseYaffleToml,
   resolveApprovers,
 } from "./config-toml.ts"
-import { ensureOrg } from "../db/queries/organizations.ts"
+import { findOrgById } from "../db/queries/organizations.ts"
+import { findOrgForRepo } from "../db/queries/repo-mappings.ts"
 import {
   markRemovedWorkspacesDestroyed,
   findDeploymentById,
@@ -758,7 +759,19 @@ async function handlePrOpenedOrUpdated(
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   const attrs = contextAttrs(ctx)
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId, ctx.installationId)
+
+  // Resolve org via repo mapping (fail-closed if unmapped)
+  const mapping = await findOrgForRepo(ctx.installationId, ctx.repoGithubId)
+  if (!mapping) {
+    logger.warn(`ignoring PR event for unmapped repo ${tag}`, attrs)
+    return
+  }
+  const org = await findOrgById(mapping.orgId)
+  if (!org) {
+    logger.error(`org ${mapping.orgId} not found for mapped repo ${tag}`, attrs)
+    return
+  }
+
   const installationToken = await acquireToken(ctx)
 
   // Load config
@@ -1006,7 +1019,18 @@ async function handlePrClosed(
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   const attrs = contextAttrs(ctx)
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId, ctx.installationId)
+
+  // Resolve org via repo mapping (fail-closed if unmapped)
+  const mapping = await findOrgForRepo(ctx.installationId, ctx.repoGithubId)
+  if (!mapping) {
+    logger.warn(`ignoring PR closed event for unmapped repo ${tag}`, attrs)
+    return
+  }
+  const org = await findOrgById(mapping.orgId)
+  if (!org) {
+    logger.error(`org ${mapping.orgId} not found for mapped repo ${tag}`, attrs)
+    return
+  }
 
   // Load config to know which workspaces to destroy
   let config: YaffleTomlConfig
@@ -1150,7 +1174,18 @@ async function handlePushEvent(
   const attrs = contextAttrs(ctx)
   logger.info(`handling push event: ${tag} sha=${ctx.headSha}`, attrs)
 
-  const org = await ensureOrg(ctx.owner, ctx.ownerGithubId, ctx.installationId)
+  // Resolve org via repo mapping (fail-closed if unmapped)
+  const mapping = await findOrgForRepo(ctx.installationId, ctx.repoGithubId)
+  if (!mapping) {
+    logger.warn(`ignoring push event for unmapped repo ${tag}`, attrs)
+    return
+  }
+  const org = await findOrgById(mapping.orgId)
+  if (!org) {
+    logger.error(`org ${mapping.orgId} not found for mapped repo ${tag}`, attrs)
+    return
+  }
+
   const installationToken = await acquireToken(ctx)
 
   // Load config -- no PR to annotate on push events, just log

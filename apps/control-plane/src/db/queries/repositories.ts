@@ -86,6 +86,54 @@ export async function ensureRepo(params: {
 }
 
 /**
+ * Upsert a repository as inventory (no org coupling).
+ * Used by installation webhook handlers for tracking repo access.
+ */
+export async function upsertRepoInventory(params: {
+  installationId: number
+  githubId: number
+  name: string
+  fullName: string
+  defaultBranch?: string
+}): Promise<Repository> {
+  return withDbSpan("upsert", "repositories", async () => {
+    const rows = await db
+      .insert(repositories)
+      .values({
+        installationId: params.installationId,
+        githubId: params.githubId,
+        name: params.name,
+        fullName: params.fullName,
+        defaultBranch: params.defaultBranch ?? "main",
+      })
+      .onConflictDoUpdate({
+        target: repositories.githubId,
+        set: {
+          installationId: params.installationId,
+          name: params.name,
+          fullName: params.fullName,
+          isActive: true,
+        },
+      })
+      .returning()
+
+    return rows[0]
+  })
+}
+
+/**
+ * Deactivate all repos for an installation (app uninstalled).
+ */
+export async function deactivateAllReposForInstallation(installationId: number): Promise<void> {
+  return withDbSpan("update", "repositories", async () => {
+    await db
+      .update(repositories)
+      .set({ isActive: false })
+      .where(eq(repositories.installationId, installationId))
+  })
+}
+
+/**
  * Mark repositories as inactive (app no longer has access)
  */
 export async function deactivateRepos(githubIds: number[]): Promise<void> {

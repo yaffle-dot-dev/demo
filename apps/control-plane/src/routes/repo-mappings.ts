@@ -1,8 +1,8 @@
 import { Hono } from "hono"
 import { z } from "zod"
 
-import { requireAuth, AuthError } from "../lib/auth.ts"
-import { findOrgBySlug, findOrgMembership } from "../db/queries/organizations.ts"
+import { requireAuth, AuthError, type AuthContext } from "../lib/auth.ts"
+import { findOrgBySlug, findOrgMembership, type Organization } from "../db/queries/organizations.ts"
 import {
   findOrgForRepo,
   setRepoMapping,
@@ -17,28 +17,30 @@ export const repoMappingsRoute = new Hono()
 
 /**
  * Resolve org from slug, verify user is an admin member.
+ * Returns a Hono Response on auth failure, or the resolved context on success.
  */
-async function requireOrgAdmin(c: { req: { raw: { headers: Headers }; param: (key: string) => string } }) {
-  let auth
+async function resolveOrgAdmin(
+  headers: Headers,
+  slug: string,
+): Promise<{ auth: AuthContext; org: Organization } | { error: true; status: number; code: string; message: string }> {
+  let auth: AuthContext
   try {
-    auth = await requireAuth(c.req.raw.headers)
+    auth = await requireAuth(headers)
   } catch (err) {
     if (err instanceof AuthError) {
-      const status = err.code === "AUTH_REQUIRED" ? 401 : 403
-      throw { status, body: { error: { code: err.code, message: err.message } } }
+      return { error: true, status: err.code === "AUTH_REQUIRED" ? 401 : 403, code: err.code, message: err.message }
     }
     throw err
   }
 
-  const slug = c.req.param("slug")
   const org = await findOrgBySlug(slug)
   if (!org) {
-    throw { status: 404, body: { error: { code: "NOT_FOUND", message: "Organization not found" } } }
+    return { error: true, status: 404, code: "NOT_FOUND", message: "Organization not found" }
   }
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership || membership.role !== "admin") {
-    throw { status: 403, body: { error: { code: "FORBIDDEN", message: "Admin access required" } } }
+    return { error: true, status: 403, code: "FORBIDDEN", message: "Admin access required" }
   }
 
   return { auth, org }
@@ -57,8 +59,6 @@ async function verifyInstallationAccess(userId: string, installationId: number):
   const githubToken = rows[0]?.accessToken
   if (!githubToken) return false
 
-  // Check if the user can access repos through this installation
-  // A 200 response means the user has access; 403/404 means they don't
   const res = await fetch(
     `https://api.github.com/user/installations/${installationId}/repositories?per_page=1`,
     {
@@ -84,15 +84,12 @@ const createMappingSchema = z.object({
  * List all repo-to-org mappings for this org.
  */
 repoMappingsRoute.get("/:slug/repo-mappings", async (c) => {
-  let ctx
-  try {
-    ctx = await requireOrgAdmin(c as any)
-  } catch (err: any) {
-    if (err.status && err.body) return c.json(err.body, err.status)
-    throw err
+  const result = await resolveOrgAdmin(c.req.raw.headers, c.req.param("slug"))
+  if ("error" in result) {
+    return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
   }
 
-  const mappings = await listRepoMappingsForOrg(ctx.org.id)
+  const mappings = await listRepoMappingsForOrg(result.org.id)
   return c.json({ data: mappings })
 })
 
@@ -103,12 +100,9 @@ repoMappingsRoute.get("/:slug/repo-mappings", async (c) => {
  * Requires admin role and verified access to the GitHub installation.
  */
 repoMappingsRoute.post("/:slug/repo-mappings", async (c) => {
-  let ctx
-  try {
-    ctx = await requireOrgAdmin(c as any)
-  } catch (err: any) {
-    if (err.status && err.body) return c.json(err.body, err.status)
-    throw err
+  const result = await resolveOrgAdmin(c.req.raw.headers, c.req.param("slug"))
+  if ("error" in result) {
+    return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
   }
 
   let body: z.infer<typeof createMappingSchema>
@@ -122,7 +116,7 @@ repoMappingsRoute.post("/:slug/repo-mappings", async (c) => {
   }
 
   // Verify the user has access to this GitHub installation
-  const hasAccess = await verifyInstallationAccess(ctx.auth.userId, body.installationId)
+  const hasAccess = await verifyInstallationAccess(result.auth.userId, body.installationId)
   if (!hasAccess) {
     return c.json({
       error: { code: "INSTALLATION_NOT_ACCESSIBLE", message: "You do not have access to this GitHub installation" },
@@ -131,17 +125,17 @@ repoMappingsRoute.post("/:slug/repo-mappings", async (c) => {
 
   // Check if this repo is already mapped to a different org
   const existing = await findOrgForRepo(body.installationId, body.githubRepoId)
-  if (existing && existing.orgId !== ctx.org.id) {
+  if (existing && existing.orgId !== result.org.id) {
     return c.json({
       error: { code: "REPO_ALREADY_MAPPED", message: "This repository is already mapped to another organization" },
     }, 409)
   }
 
   const mapping = await setRepoMapping({
-    orgId: ctx.org.id,
+    orgId: result.org.id,
     installationId: body.installationId,
     githubRepoId: body.githubRepoId,
-    createdBy: ctx.auth.userId,
+    createdBy: result.auth.userId,
   })
 
   return c.json({ data: mapping }, 201)
@@ -153,12 +147,9 @@ repoMappingsRoute.post("/:slug/repo-mappings", async (c) => {
  * Remove a repo-to-org mapping. Future webhooks for this repo will be ignored.
  */
 repoMappingsRoute.delete("/:slug/repo-mappings/:installationId/:repoId", async (c) => {
-  let ctx
-  try {
-    ctx = await requireOrgAdmin(c as any)
-  } catch (err: any) {
-    if (err.status && err.body) return c.json(err.body, err.status)
-    throw err
+  const result = await resolveOrgAdmin(c.req.raw.headers, c.req.param("slug"))
+  if ("error" in result) {
+    return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
   }
 
   const installationId = Number(c.req.param("installationId"))
@@ -170,7 +161,7 @@ repoMappingsRoute.delete("/:slug/repo-mappings/:installationId/:repoId", async (
 
   // Verify the mapping belongs to this org before deleting
   const existing = await findOrgForRepo(installationId, repoId)
-  if (!existing || existing.orgId !== ctx.org.id) {
+  if (!existing || existing.orgId !== result.org.id) {
     return c.json({ error: { code: "NOT_FOUND", message: "Mapping not found for this organization" } }, 404)
   }
 

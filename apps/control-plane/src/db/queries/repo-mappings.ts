@@ -1,10 +1,25 @@
 import { and, eq } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
-import { githubRepoMappings } from "../schema.ts"
+import { githubRepoMappings, repositories, githubInstallations } from "../schema.ts"
+import { user } from "../auth-schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 
 export type GithubRepoMapping = typeof githubRepoMappings.$inferSelect
+
+export interface EnrichedRepoMapping {
+  id: string
+  orgId: string
+  installationId: number
+  githubRepoId: number
+  /** Repository full name (e.g. "acme/infra") from repositories table, if known */
+  repoFullName: string | null
+  /** GitHub org login from installations table (e.g. "acme") */
+  githubOrgLogin: string | null
+  /** Display name of user who created the mapping */
+  createdByName: string | null
+  createdAt: Date
+}
 
 /**
  * Find which org a repo is mapped to.
@@ -83,13 +98,27 @@ export async function removeRepoMapping(
 }
 
 /**
- * List all repo mappings for an org.
+ * List all repo mappings for an org, enriched with repo name and creator info.
  */
-export async function listRepoMappingsForOrg(orgId: string): Promise<GithubRepoMapping[]> {
+export async function listRepoMappingsForOrg(orgId: string): Promise<EnrichedRepoMapping[]> {
   return withDbSpan("select", "github_repo_mappings", async () => {
-    return db
-      .select()
+    const rows = await db
+      .select({
+        id: githubRepoMappings.id,
+        orgId: githubRepoMappings.orgId,
+        installationId: githubRepoMappings.installationId,
+        githubRepoId: githubRepoMappings.githubRepoId,
+        repoFullName: repositories.fullName,
+        githubOrgLogin: githubInstallations.githubOrgLogin,
+        createdByName: user.name,
+        createdAt: githubRepoMappings.createdAt,
+      })
       .from(githubRepoMappings)
+      .leftJoin(repositories, eq(repositories.githubId, githubRepoMappings.githubRepoId))
+      .leftJoin(githubInstallations, eq(githubInstallations.installationId, githubRepoMappings.installationId))
+      .leftJoin(user, eq(user.id, githubRepoMappings.createdBy))
       .where(eq(githubRepoMappings.orgId, orgId))
+
+    return rows
   })
 }

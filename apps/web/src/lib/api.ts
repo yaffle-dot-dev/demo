@@ -353,7 +353,9 @@ export interface RepoMapping {
   orgId: string
   installationId: number
   githubRepoId: number
-  createdBy: string | null
+  repoFullName: string | null
+  githubOrgLogin: string | null
+  createdByName: string | null
   createdAt: string
 }
 

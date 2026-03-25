@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte"
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
+  import ActionButton from "$lib/components/ActionButton.svelte"
   import { useSession } from "$lib/auth"
 
   const session = useSession()
@@ -235,12 +236,9 @@
           <h2 class="text-lg font-semibold text-text">API Keys</h2>
           <p class="text-sm text-text-muted">Manage API keys for CLI and CI access</p>
         </div>
-        <button
-          class="px-3 py-1.5 text-sm font-medium bg-yaffle-500 text-white rounded hover:bg-yaffle-600 transition-colors"
-          onclick={() => showCreateModal = true}
-        >
+        <ActionButton onclick={() => showCreateModal = true}>
           Create API Key
-        </button>
+        </ActionButton>
       </div>
 
       {#if error}

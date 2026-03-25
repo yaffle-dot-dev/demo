@@ -65,8 +65,8 @@ export const organizations = pgTable("organizations", {
 export const githubInstallations = pgTable("github_installations", {
   id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
   orgId: uuid("org_id")
-    .references(() => organizations.id, { onDelete: "cascade" })
-    .notNull(),
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  // orgId is nullable during migration — new installations created without an org
   githubOrgId: bigint("github_org_id", { mode: "number" }).notNull(),
   githubOrgLogin: text("github_org_login").notNull(),
   installationId: bigint("installation_id", { mode: "number" }).unique().notNull(),
@@ -336,8 +336,8 @@ export const repositories = pgTable(
   {
     id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
-      .references(() => organizations.id)
-      .notNull(),
+      .references(() => organizations.id),
+    // orgId is nullable during migration — repos are now installation inventory
     installationId: bigint("installation_id", { mode: "number" }),
     githubId: bigint("github_id", { mode: "number" }).notNull(),
     name: text("name").notNull(),

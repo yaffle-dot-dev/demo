@@ -18,17 +18,15 @@ import { logger, getWebhookReceivedCounter, withSpan, SpanStatusCode } from "../
 import { verifyWebhookSignature } from "../lib/webhook-verify.ts"
 import { handleWebhookEvent } from "../lib/webhook-handler.ts"
 import {
-  ensureOrg,
-  updateOrgInstallationStatus,
-  findOrgByInstallationId,
+  upsertGithubInstallation,
+  updateGithubInstallationStatus,
 } from "../db/queries/organizations.ts"
 import {
-  ensureRepo,
+  upsertRepoInventory,
   deactivateRepos,
-  deactivateAllReposForOrg,
+  deactivateAllReposForInstallation,
   reactivateRepos,
 } from "../db/queries/repositories.ts"
-import { ensureUser, ensureMembership } from "../db/queries/users.ts"
 
 export const webhooksRoute = new Hono()
 
@@ -313,72 +311,58 @@ webhooksRoute.post("/github", async (c) => {
     })
 
     if (action === "created") {
-      // App was installed - create/update org and track repos
-      const org = await ensureOrg(login, githubId, installationId)
+      // App was installed — update installation inventory and track repos
+      // Org creation is now handled separately via POST /api/orgs
+      await upsertGithubInstallation({ githubOrgId: githubId, githubOrgLogin: login, installationId })
 
-      // Track initial repositories
-      const repositories = payload.repositories ?? []
-      for (const repo of repositories) {
-        await ensureRepo({
-          orgId: org.id,
+      // Track initial repositories as inventory
+      const repos = payload.repositories ?? []
+      for (const repo of repos) {
+        await upsertRepoInventory({
+          installationId,
           githubId: repo.id,
           name: repo.name,
           fullName: repo.full_name,
         })
       }
 
-      // Create membership for the user who installed the app
-      const sender = payload.sender
-      if (sender?.id && sender?.login) {
-        const user = await ensureUser({
-          login: sender.login,
-          provider: "github",
-          externalId: String(sender.id),
-        })
-        await ensureMembership({
-          orgId: org.id,
-          userId: user.id,
-          role: "admin", // installer gets admin
-          source: "admin_bootstrap",
-        })
-        logger.info(`created admin membership for installer: user=${sender.login} org=${login}`, {
-          "yaffle.org": login,
-          "yaffle.user": sender.login,
-        })
-      }
-
-      logger.info(`installation created: org=${login} repos=${repositories.length}`, {
-        "yaffle.org": login,
-        "yaffle.repo_count": repositories.length,
+      logger.info(`installation created: github_org=${login} repos=${repos.length}`, {
+        "yaffle.github_org": login,
+        "yaffle.installation_id": installationId,
+        "yaffle.repo_count": repos.length,
       })
 
       return c.json({ data: { received: true, action: "installation_created" } })
     }
 
     if (action === "deleted") {
-      // App was uninstalled - mark org as uninstalled and deactivate all repos
-      const org = await findOrgByInstallationId(installationId)
-      if (org) {
-        await updateOrgInstallationStatus(githubId, "uninstalled")
-        await deactivateAllReposForOrg(org.id)
-      }
+      // App was uninstalled — mark installation as uninstalled and deactivate repos
+      await updateGithubInstallationStatus(installationId, "uninstalled")
+      await deactivateAllReposForInstallation(installationId)
 
-      logger.info(`installation deleted: org=${login}`, { "yaffle.org": login })
+      logger.info(`installation deleted: github_org=${login}`, {
+        "yaffle.github_org": login,
+        "yaffle.installation_id": installationId,
+      })
 
       return c.json({ data: { received: true, action: "installation_deleted" } })
     }
 
     if (action === "suspend") {
-      // App was suspended - mark org as suspended
-      await updateOrgInstallationStatus(githubId, "suspended")
-      logger.info(`installation suspended: org=${login}`, { "yaffle.org": login })
+      await updateGithubInstallationStatus(installationId, "suspended")
+      logger.info(`installation suspended: github_org=${login}`, {
+        "yaffle.github_org": login,
+        "yaffle.installation_id": installationId,
+      })
       return c.json({ data: { received: true, action: "installation_suspended" } })
     }
 
     if (action === "unsuspend") {
-      // App was unsuspended - mark org as active again
-      await updateOrgInstallationStatus(githubId, "active")
-      logger.info(`installation unsuspended: org=${login}`, { "yaffle.org": login })
+      await updateGithubInstallationStatus(installationId, "active")
+      logger.info(`installation unsuspended: github_org=${login}`, {
+        "yaffle.github_org": login,
+        "yaffle.installation_id": installationId,
+      })
       return c.json({ data: { received: true, action: "installation_unsuspended" } })
     }
 
@@ -398,17 +382,11 @@ webhooksRoute.post("/github", async (c) => {
     const installationId = installation.id as number
     const login = account.login as string
 
-    const org = await findOrgByInstallationId(installationId)
-    if (!org) {
-      logger.warn(`installation_repositories event for unknown installation: ${installationId}`)
-      return c.json({ data: { ignored: true, reason: "unknown installation" } })
-    }
-
     if (action === "added") {
       const addedRepos = payload.repositories_added ?? []
       for (const repo of addedRepos) {
-        await ensureRepo({
-          orgId: org.id,
+        await upsertRepoInventory({
+          installationId,
           githubId: repo.id,
           name: repo.name,
           fullName: repo.full_name,
@@ -417,8 +395,9 @@ webhooksRoute.post("/github", async (c) => {
       // Reactivate any that were previously removed
       await reactivateRepos(addedRepos.map((r: { id: number }) => r.id))
 
-      logger.info(`repos added to installation: org=${login} count=${addedRepos.length}`, {
-        "yaffle.org": login,
+      logger.info(`repos added to installation: github_org=${login} count=${addedRepos.length}`, {
+        "yaffle.github_org": login,
+        "yaffle.installation_id": installationId,
         "yaffle.repo_count": addedRepos.length,
       })
 
@@ -429,8 +408,9 @@ webhooksRoute.post("/github", async (c) => {
       const removedRepos = payload.repositories_removed ?? []
       await deactivateRepos(removedRepos.map((r: { id: number }) => r.id))
 
-      logger.info(`repos removed from installation: org=${login} count=${removedRepos.length}`, {
-        "yaffle.org": login,
+      logger.info(`repos removed from installation: github_org=${login} count=${removedRepos.length}`, {
+        "yaffle.github_org": login,
+        "yaffle.installation_id": installationId,
         "yaffle.repo_count": removedRepos.length,
       })
 

@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 
 import { requireAuth, AuthError } from "../lib/auth.ts"
+import { getEnv } from "../lib/env.ts"
 import { db } from "../lib/db.ts"
 import { account } from "../db/auth-schema.ts"
 import { eq, and } from "drizzle-orm"
@@ -8,16 +9,97 @@ import { eq, and } from "drizzle-orm"
 export const integrationsRoute = new Hono()
 
 /**
- * Get the GitHub OAuth access token for the authenticated user.
- * Returns undefined if the user doesn't have a linked GitHub account.
+ * Get the GitHub OAuth account record for the authenticated user.
  */
-async function getGithubAccessToken(userId: string): Promise<string | undefined> {
+async function getGithubAccount(userId: string) {
   const rows = await db
-    .select({ accessToken: account.accessToken })
+    .select({
+      id: account.id,
+      accessToken: account.accessToken,
+      refreshToken: account.refreshToken,
+    })
     .from(account)
     .where(and(eq(account.userId, userId), eq(account.providerId, "github")))
     .limit(1)
-  return rows[0]?.accessToken ?? undefined
+  return rows[0] ?? null
+}
+
+/**
+ * Refresh a GitHub OAuth token using the refresh token.
+ * Updates the account record with the new tokens.
+ * Returns the new access token, or null if refresh failed.
+ */
+async function refreshGithubToken(accountId: string, refreshToken: string): Promise<string | null> {
+  const env = getEnv()
+
+  const res = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      client_id: env.githubOauthClientId,
+      client_secret: env.githubOauthClientSecret,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    }),
+  })
+
+  if (!res.ok) return null
+
+  const body = await res.json() as {
+    access_token?: string
+    refresh_token?: string
+    refresh_token_expires_in?: number
+    error?: string
+  }
+
+  if (body.error || !body.access_token) return null
+
+  // Update the stored tokens
+  await db
+    .update(account)
+    .set({
+      accessToken: body.access_token,
+      ...(body.refresh_token ? { refreshToken: body.refresh_token } : {}),
+    })
+    .where(eq(account.id, accountId))
+
+  return body.access_token
+}
+
+/**
+ * Get a valid GitHub access token for the user, refreshing if needed.
+ */
+async function getValidGithubToken(userId: string): Promise<{ token: string } | { error: string }> {
+  const ghAccount = await getGithubAccount(userId)
+  if (!ghAccount?.accessToken) {
+    return { error: "NO_GITHUB_ACCOUNT" }
+  }
+
+  // Try the stored token first with a lightweight check
+  const testRes = await fetch("https://api.github.com/user", {
+    method: "HEAD",
+    headers: {
+      Authorization: `token ${ghAccount.accessToken}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  })
+
+  if (testRes.ok) {
+    return { token: ghAccount.accessToken }
+  }
+
+  // Token expired — try refresh
+  if (testRes.status === 401 && ghAccount.refreshToken) {
+    const newToken = await refreshGithubToken(ghAccount.id, ghAccount.refreshToken)
+    if (newToken) {
+      return { token: newToken }
+    }
+  }
+
+  return { error: "GITHUB_TOKEN_EXPIRED" }
 }
 
 /**
@@ -38,24 +120,24 @@ integrationsRoute.get("/github/installations", async (c) => {
     throw err
   }
 
-  const githubToken = await getGithubAccessToken(auth.userId)
-  if (!githubToken) {
-    return c.json({ error: { code: "NO_GITHUB_ACCOUNT", message: "No linked GitHub account found" } }, 400)
+  const tokenResult = await getValidGithubToken(auth.userId)
+  if ("error" in tokenResult) {
+    const message = tokenResult.error === "NO_GITHUB_ACCOUNT"
+      ? "No linked GitHub account found"
+      : "GitHub access token has expired. Please sign in again."
+    const status = tokenResult.error === "NO_GITHUB_ACCOUNT" ? 400 : 401
+    return c.json({ error: { code: tokenResult.error, message } }, status as any)
   }
 
-  // Call GitHub API to list installations the user can access
   const res = await fetch("https://api.github.com/user/installations?per_page=100", {
     headers: {
-      Authorization: `token ${githubToken}`,
+      Authorization: `token ${tokenResult.token}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
     },
   })
 
   if (!res.ok) {
-    if (res.status === 401) {
-      return c.json({ error: { code: "GITHUB_TOKEN_EXPIRED", message: "GitHub access token has expired. Please sign in again." } }, 401)
-    }
     return c.json({ error: { code: "GITHUB_API_ERROR", message: `GitHub API error: ${res.status}` } }, 502)
   }
 
@@ -101,18 +183,20 @@ integrationsRoute.get("/github/installations/:id/repositories", async (c) => {
 
   const installationId = c.req.param("id")
 
-  const githubToken = await getGithubAccessToken(auth.userId)
-  if (!githubToken) {
-    return c.json({ error: { code: "NO_GITHUB_ACCOUNT", message: "No linked GitHub account found" } }, 400)
+  const tokenResult = await getValidGithubToken(auth.userId)
+  if ("error" in tokenResult) {
+    const message = tokenResult.error === "NO_GITHUB_ACCOUNT"
+      ? "No linked GitHub account found"
+      : "GitHub access token has expired. Please sign in again."
+    const status = tokenResult.error === "NO_GITHUB_ACCOUNT" ? 400 : 401
+    return c.json({ error: { code: tokenResult.error, message } }, status as any)
   }
 
-  // GitHub API returns repos the user can access through this installation
-  // This implicitly verifies the user has access to the installation
   const res = await fetch(
     `https://api.github.com/user/installations/${installationId}/repositories?per_page=100`,
     {
       headers: {
-        Authorization: `token ${githubToken}`,
+        Authorization: `token ${tokenResult.token}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
       },
@@ -120,9 +204,6 @@ integrationsRoute.get("/github/installations/:id/repositories", async (c) => {
   )
 
   if (!res.ok) {
-    if (res.status === 401) {
-      return c.json({ error: { code: "GITHUB_TOKEN_EXPIRED", message: "GitHub access token has expired. Please sign in again." } }, 401)
-    }
     if (res.status === 403 || res.status === 404) {
       return c.json({ error: { code: "INSTALLATION_NOT_ACCESSIBLE", message: "You do not have access to this installation" } }, 403)
     }

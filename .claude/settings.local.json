@@ -14,7 +14,8 @@
       "Bash(npx tsc:*)",
       "Bash(bun run:*)",
       "Bash(./node_modules/.bin/tsc --noEmit -p apps/control-plane/tsconfig.json)",
-      "Bash(bun x:*)"
+      "Bash(bun x:*)",
+      "Bash(ls:*)"
     ]
   }
 }

@@ -28,7 +28,7 @@
       const lastOrg = getLastOrg()
       if (lastOrg) {
         // Redirect to the repos page so they can link repos from the new installation
-        goto(`${base}/${lastOrg}/repos`, { replaceState: true })
+        goto(`${base}/${lastOrg}/settings/repositories`, { replaceState: true })
         return
       }
 
@@ -36,7 +36,7 @@
       try {
         const res = await listOrgs()
         if (res.data.length > 0) {
-          goto(`${base}/${res.data[0].slug}/repos`, { replaceState: true })
+          goto(`${base}/${res.data[0].slug}/settings/repositories`, { replaceState: true })
           return
         }
       } catch {
