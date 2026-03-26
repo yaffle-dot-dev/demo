@@ -6,6 +6,7 @@
     { label: "Members", path: "members" },
     { label: "Repositories", path: "repositories" },
     { label: "Connections", path: "connections" },
+    { label: "Billing", path: "billing" },
     { label: "Support", path: "support" },
   ]
 

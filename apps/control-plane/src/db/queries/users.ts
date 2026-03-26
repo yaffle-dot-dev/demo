@@ -167,6 +167,8 @@ export async function listUserOrgs(userId: string): Promise<
     slug: string
     role: string
     source: string
+    planTier: string
+    subscriptionStatus: string
   }>
 > {
   return withDbSpan("select", "org_memberships", async () => {
@@ -177,6 +179,8 @@ export async function listUserOrgs(userId: string): Promise<
         slug: organizations.slug,
         role: orgMemberships.role,
         source: orgMemberships.source,
+        planTier: organizations.planTier,
+        subscriptionStatus: organizations.subscriptionStatus,
       })
       .from(orgMemberships)
       .innerJoin(organizations, eq(orgMemberships.orgId, organizations.id))

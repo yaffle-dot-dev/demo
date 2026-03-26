@@ -387,6 +387,23 @@ export async function deleteRepoMapping(
 }
 
 // =============================================================================
+// Billing
+// =============================================================================
+
+export async function createCheckoutSession(
+  org: string,
+  params: { priceId: string },
+): Promise<DetailResponse<{ url: string }>> {
+  return postJson(`/orgs/${org}/billing/checkout`, params)
+}
+
+export async function createPortalSession(
+  org: string,
+): Promise<DetailResponse<{ url: string }>> {
+  return postJson(`/orgs/${org}/billing/portal`)
+}
+
+// =============================================================================
 // Connections
 // =============================================================================
 
