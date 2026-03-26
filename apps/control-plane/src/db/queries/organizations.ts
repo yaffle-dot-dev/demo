@@ -76,6 +76,9 @@ export async function updateOrg(
     | "provisioningStatus"
     | "provisioningError"
     | "provisioningAttempts"
+    | "stripeCustomerId"
+    | "subscriptionStatus"
+    | "planTier"
   >>,
 ): Promise<Organization | undefined> {
   return withDbSpan("update", "organizations", async () => {

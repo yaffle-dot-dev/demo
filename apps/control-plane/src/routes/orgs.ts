@@ -5,8 +5,9 @@ import { z } from "zod"
 import { requireAuth, AuthError } from "../lib/auth.ts"
 import { getEnv } from "../lib/env.ts"
 import { listUserOrgs, ensureMembership } from "../db/queries/users.ts"
-import { findOrgBySlug, findOrgMembership, createOrg } from "../db/queries/organizations.ts"
+import { findOrgBySlug, findOrgMembership, createOrg, updateOrg } from "../db/queries/organizations.ts"
 import { createJob } from "../db/queries/jobs.ts"
+import { getStripe } from "../lib/stripe.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import { createConnection } from "../db/queries/connections.ts"
 import { deleteConnection, findConnectionById, updateConnection } from "../db/queries/connections.ts"
@@ -267,6 +268,24 @@ orgsRoute.post("/", async (c) => {
       orgSlug: slug,
     },
   })
+
+  // Create Stripe customer for billing (non-blocking — org works without it)
+  const stripe = getStripe()
+  if (stripe) {
+    try {
+      const customer = await stripe.customers.create({
+        name: body.name,
+        metadata: {
+          orgId: org.id,
+          orgSlug: slug,
+        },
+      })
+      await updateOrg(org.id, { stripeCustomerId: customer.id })
+    } catch (err) {
+      // Log but don't fail org creation — billing can be linked later
+      console.error(`failed to create Stripe customer for org ${slug}:`, err instanceof Error ? err.message : err)
+    }
+  }
 
   return c.json({ data: { id: org.id, slug: org.slug, name: org.name } }, 201)
 })
