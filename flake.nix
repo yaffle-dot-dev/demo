@@ -136,7 +136,10 @@
 
       devShells = forEachSystem (system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfree = true;
+          };
           dotenvx = pkgs.buildNpmPackage rec {
             pname = "dotenvx";
             version = "1.51.2";
@@ -206,6 +209,7 @@
 
               # Dev tooling
               opencode
+              claude-code
               dotenvx
               caddy
               process-compose
