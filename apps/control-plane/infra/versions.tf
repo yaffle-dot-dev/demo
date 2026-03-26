@@ -15,6 +15,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    planetscale = {
+      source  = "planetscale/planetscale"
+      version = "~> 1.0"
+    }
   }
 
   # Backend is injected by Yaffle via backend_override.tf
