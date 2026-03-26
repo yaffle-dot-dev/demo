@@ -54,6 +54,29 @@ output "stripe_webhook_signing_secret_arn" {
   description = "Secrets Manager ARN for the Stripe webhook signing secret"
 }
 
+output "stripe_pricing" {
+  value = {
+    pro = {
+      product_id = stripe_product.pro.id
+      price_id   = stripe_price.pro_monthly.id
+      amount     = stripe_price.pro_monthly.unit_amount / 100
+      interval   = "month"
+    }
+    team = {
+      product_id = stripe_product.team.id
+      price_id   = stripe_price.team_monthly.id
+      amount     = stripe_price.team_monthly.unit_amount / 100
+      interval   = "month"
+    }
+    free_limits = {
+      concurrent_preview_branches = 5
+      preview_creations_per_month = 25
+      named_environments          = 1
+    }
+  }
+  description = "Stripe pricing data — consumed by control plane and marketing site"
+}
+
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC
 # -----------------------------------------------------------------------------
