@@ -24,6 +24,10 @@ terraform {
       source  = "tailscale/tailscale"
       version = "~> 0.21"
     }
+    stripe = {
+      source  = "lukasaron/stripe"
+      version = "~> 2.0"
+    }
   }
 
   # Backend is injected by Yaffle via backend_override.tf
@@ -49,3 +53,7 @@ provider "cloudflare" {}
 # Auth via TAILSCALE_API_KEY or provider-supported OAuth env vars such as
 # TAILSCALE_OAUTH_CLIENT_ID / TAILSCALE_OAUTH_CLIENT_SECRET.
 provider "tailscale" {}
+
+# Stripe provider for billing product catalog.
+# Authenticates via STRIPE_API_KEY env var (set by connection, not in state).
+provider "stripe" {}

@@ -41,6 +41,20 @@ output "github_actions_yaffle_api_token_secret_arn" {
 }
 
 # -----------------------------------------------------------------------------
+# Stripe
+# -----------------------------------------------------------------------------
+
+output "stripe_api_key_secret_arn" {
+  value       = aws_secretsmanager_secret.stripe_api_key.arn
+  description = "Secrets Manager ARN for the Stripe API key"
+}
+
+output "stripe_webhook_signing_secret_arn" {
+  value       = aws_secretsmanager_secret.stripe_webhook_signing_secret.arn
+  description = "Secrets Manager ARN for the Stripe webhook signing secret"
+}
+
+# -----------------------------------------------------------------------------
 # GitHub Actions OIDC
 # -----------------------------------------------------------------------------
 
