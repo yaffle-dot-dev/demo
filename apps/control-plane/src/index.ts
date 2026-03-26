@@ -20,6 +20,7 @@ import { providerDiscoveryRoute } from "./routes/provider-discovery.ts"
 import { integrationsRoute } from "./routes/integrations.ts"
 import { repoMappingsRoute } from "./routes/repo-mappings.ts"
 import { billingRoute } from "./routes/billing.ts"
+import { stripeWebhooksRoute } from "./routes/stripe-webhooks.ts"
 import { auth } from "./lib/better-auth.ts"
 import { startScheduler, stopScheduler } from "./lib/scheduler.ts"
 import { startJobWorker, stopJobWorker } from "./lib/job-worker.ts"
@@ -126,6 +127,7 @@ app.route("/tfc", tfcRoute)
 
 // API routes
 app.route("/api/webhooks", webhooksRoute)
+app.route("/api/webhooks/stripe", stripeWebhooksRoute)
 app.route("/api/previews", previewsRoute)
 app.route("/api/runs", runsRoute)
 app.route("/api/environments", environmentsRoute)
