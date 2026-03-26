@@ -1,11 +1,4 @@
 # =============================================================================
-# Stripe Secrets
-# =============================================================================
-# Secret shells managed by Terraform, values populated via CLI/console.
-# The Stripe provider authenticates via STRIPE_API_KEY env var (connection).
-# =============================================================================
-
-# =============================================================================
 # Stripe Products & Prices
 # =============================================================================
 # Product catalog managed as code. Prices are the source of truth for billing
@@ -65,6 +58,74 @@ resource "stripe_price" "team_monthly" {
 
   metadata = {
     plan_tier = "team"
+  }
+}
+
+# =============================================================================
+# Stripe Webhook Endpoint
+# =============================================================================
+# Receives billing lifecycle events from Stripe.
+# URL is variable — Smee proxy for dev, public URL for prod.
+# The signing secret is exported by the resource (no manual management).
+# =============================================================================
+
+resource "stripe_webhook_endpoint" "billing" {
+  url         = var.stripe_webhook_url
+  description = "Yaffle billing webhook endpoint"
+
+  enabled_events = [
+    "checkout.session.completed",
+    "invoice.paid",
+    "invoice.payment_failed",
+    "customer.subscription.updated",
+    "customer.subscription.deleted",
+  ]
+}
+
+# =============================================================================
+# Stripe Customer Portal
+# =============================================================================
+# Self-service portal for customers to manage payment methods, view invoices,
+# and cancel/update subscriptions. Hosted by Stripe.
+# =============================================================================
+
+resource "stripe_portal_configuration" "default" {
+  active             = true
+  default_return_url = var.yaffle_app_url
+
+  business_profile {
+    headline = "Manage your Yaffle subscription"
+  }
+
+  features {
+    invoice_history {
+      enabled = true
+    }
+
+    payment_method_update {
+      enabled = true
+    }
+
+    subscription_cancel {
+      enabled = true
+      mode    = "at_period_end"
+    }
+
+    subscription_update {
+      enabled                 = true
+      default_allowed_updates = ["price"]
+      proration_behavior      = "create_prorations"
+
+      products {
+        product = stripe_product.pro.id
+        prices  = [stripe_price.pro_monthly.id]
+      }
+
+      products {
+        product = stripe_product.team.id
+        prices  = [stripe_price.team_monthly.id]
+      }
+    }
   }
 }
 

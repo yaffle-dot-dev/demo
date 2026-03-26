@@ -28,6 +28,17 @@ variable "cloudflare_zone_id" {
   description = "Cloudflare zone ID for yaffle.dev (dual DNS setup)"
 }
 
+variable "stripe_webhook_url" {
+  type        = string
+  description = "URL for Stripe webhook endpoint (e.g. Smee proxy for dev, public URL for prod)"
+}
+
+variable "yaffle_app_url" {
+  type        = string
+  description = "Public URL of the Yaffle web app (for Stripe portal return URL)"
+  default     = "https://yaffle.dev"
+}
+
 variable "tailscale_runner_tags" {
   type        = list(string)
   description = "Tags allowed for ECS runner Tailscale nodes"

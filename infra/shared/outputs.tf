@@ -54,6 +54,17 @@ output "stripe_webhook_signing_secret_arn" {
   description = "Secrets Manager ARN for the Stripe webhook signing secret"
 }
 
+output "stripe_webhook_signing_secret" {
+  value       = stripe_webhook_endpoint.billing.secret
+  description = "Stripe webhook signing secret for verifying payloads"
+  sensitive   = true
+}
+
+output "stripe_portal_configuration_id" {
+  value       = stripe_portal_configuration.default.id
+  description = "Stripe Customer Portal configuration ID"
+}
+
 output "stripe_pricing" {
   value = {
     pro = {
