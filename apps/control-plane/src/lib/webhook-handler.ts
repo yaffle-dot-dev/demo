@@ -18,6 +18,7 @@ import {
 } from "./config-toml.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
 import { findOrgForRepo } from "../db/queries/repo-mappings.ts"
+import { checkOrgEntitlements } from "./entitlements.ts"
 import {
   markRemovedWorkspacesDestroyed,
   findDeploymentById,
@@ -772,6 +773,9 @@ async function handlePrOpenedOrUpdated(
     return
   }
 
+  // Check billing entitlements (deployments still get created, but jobs won't be queued if limited)
+  const entitlement = await checkOrgEntitlements(org, "pull_request")
+
   const installationToken = await acquireToken(ctx)
 
   // Load config
@@ -1185,6 +1189,9 @@ async function handlePushEvent(
     logger.error(`org ${mapping.orgId} not found for mapped repo ${tag}`, attrs)
     return
   }
+
+  // Check billing entitlements (deployments still get created, but jobs won't be queued if limited)
+  const entitlement = await checkOrgEntitlements(org, "push")
 
   const installationToken = await acquireToken(ctx)
 
