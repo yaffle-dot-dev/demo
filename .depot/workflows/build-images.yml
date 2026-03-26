@@ -168,3 +168,62 @@ jobs:
           else
             echo "Images built but not pushed (PR build)" >> $GITHUB_STEP_SUMMARY
           fi
+
+  deploy:
+    name: Deploy Control Plane
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: depot-ubuntu-24.04-arm
+    environment: production
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Fetch database credentials
+        uses: aws-actions/aws-secretsmanager-get-secrets@v2
+        with:
+          secret-ids: |
+            DATABASE_URL, yaffle/main/database-url
+          parse-json-secrets: false
+
+      - name: Run database migrations
+        run: cd apps/control-plane && bunx drizzle-kit migrate
+
+      - name: Download current task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition yaffle-cp-main-use1 \
+            --query 'taskDefinition' \
+            --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            > task-definition.json
+
+      - name: Update image in task definition
+        id: render
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: control-plane
+          image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-control-plane-production:sha-${{ github.sha }}
+
+      - name: Deploy to ECS
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: yaffle-cp-main-use1
+          cluster: yaffle-production-use1
+          wait-for-service-stability: true

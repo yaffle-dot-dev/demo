@@ -209,6 +209,7 @@ resource "aws_iam_role_policy" "github_actions_ci_runtime_secrets" {
           "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/shared/cloudflare/*",
           "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/shared/github-actions/*",
           "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/*/provider-discovery-agent/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/*/database-url*",
         ]
       },
       {
@@ -216,6 +217,52 @@ resource "aws_iam_role_policy" "github_actions_ci_runtime_secrets" {
         Effect   = "Allow"
         Action   = ["secretsmanager:ListSecrets"]
         Resource = "*"
+      },
+    ]
+  })
+}
+
+# =============================================================================
+# ECS Deploy Policy
+# =============================================================================
+# Allows GitHub Actions to deploy new task definitions and update ECS services.
+# =============================================================================
+
+resource "aws_iam_role_policy" "github_actions_ci_ecs_deploy" {
+  name = "ecs-deploy"
+  role = aws_iam_role.github_actions_ci.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid    = "ECSTaskDefinition"
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTaskDefinition",
+          "ecs:RegisterTaskDefinition",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECSServiceDeploy"
+        Effect = "Allow"
+        Action = [
+          "ecs:UpdateService",
+          "ecs:DescribeServices",
+        ]
+        Resource = [
+          "arn:aws:ecs:*:${data.aws_caller_identity.current.account_id}:service/yaffle-*/yaffle-*"
+        ]
+      },
+      {
+        Sid    = "PassRoleForTaskDef"
+        Effect = "Allow"
+        Action = "iam:PassRole"
+        Resource = [
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-cp-*",
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-ecs-exec-*",
+        ]
       },
     ]
   })
