@@ -22,6 +22,7 @@
   import RefBadge from "$lib/components/RefBadge.svelte"
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import ConnectionBlockedBadge from "$lib/components/ConnectionBlockedBadge.svelte"
+  import PlanLimitedBadge from "$lib/components/PlanLimitedBadge.svelte"
 
   // Org comes from URL param - always defined since this is a [org] route
   const org = $derived(page.params.org ?? "")
@@ -292,6 +293,9 @@
                         {canManageConnections}
                       />
                     {/if}
+                    {#if env.workspaces.some(w => w.status === "plan_limited")}
+                      <PlanLimitedBadge {org} />
+                    {/if}
                   </div>
                   <div class="flex flex-wrap gap-4 text-xs text-text-dim mt-2">
                     <a 
@@ -385,6 +389,9 @@
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
                       <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
+                      {#if group.workspaces.some(w => w.status === "plan_limited")}
+                        <PlanLimitedBadge {org} />
+                      {/if}
                     </div>
                     <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
                       <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
@@ -433,6 +440,9 @@
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
                       <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
+                      {#if group.workspaces.some(w => w.status === "plan_limited")}
+                        <PlanLimitedBadge {org} />
+                      {/if}
                     </div>
                     <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
                       <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
@@ -477,6 +487,9 @@
                   </a>
                   <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
                   <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
+                  {#if group.workspaces.some(w => w.status === "plan_limited")}
+                    <PlanLimitedBadge {org} />
+                  {/if}
                 </div>
                 <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
                       <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">

@@ -955,42 +955,52 @@ async function handlePrOpenedOrUpdated(
     }
   }
 
-  // Fourth pass: queue plan jobs for root workspaces only
-  // Non-root workspaces will have their jobs queued by the IaC engine
-  // when their upstreams complete (via notifyDownstreams)
-  const rootCount = previewData.filter((p) => p.isRoot).length
-  logger.info("Queueing plan jobs for root workspaces", {
-    ...attrs,
-    rootCount,
-    totalCount: previewData.length,
-  })
+  // Fourth pass: queue plan jobs or mark as plan-limited
+  if (!entitlement.allowed) {
+    // Plan limited — mark all deployments and surface the limit message
+    for (const { preview } of previewData) {
+      await updateDeploymentStatus(preview.id, "plan_limited")
+    }
+    logger.warn(`PR plan-limited: ${entitlement.code} for ${tag}`, {
+      ...attrs,
+      "yaffle.entitlement_code": entitlement.code,
+      deploymentCount: previewData.length,
+    })
+    await surfaceConfigError(ctx, entitlement.message)
+  } else {
+    // Queue plan jobs for root workspaces only
+    // Non-root workspaces will have their jobs queued by the IaC engine
+    // when their upstreams complete (via notifyDownstreams)
+    const rootCount = previewData.filter((p) => p.isRoot).length
+    logger.info("Queueing plan jobs for root workspaces", {
+      ...attrs,
+      rootCount,
+      totalCount: previewData.length,
+    })
 
-  for (const { ws, preview, isRoot } of previewData) {
-    if (isRoot) {
-      // Queue plan job for root workspaces
-      const job = await createIacJob({
-        deploymentId: preview.id,
-        jobType: "plan",
-      })
+    for (const { ws, preview, isRoot } of previewData) {
+      if (isRoot) {
+        const job = await createIacJob({
+          deploymentId: preview.id,
+          jobType: "plan",
+        })
 
-      logger.info("Queued plan job for root workspace", {
-        ...attrs,
-        workspacePath: ws.path,
-        deploymentId: preview.id,
-        jobId: job.id,
-      })
+        logger.info("Queued plan job for root workspace", {
+          ...attrs,
+          workspacePath: ws.path,
+          deploymentId: preview.id,
+          jobId: job.id,
+        })
 
-      // Update PR comment to show planning is queued
-      await comment.update(ws.path, { phase: "planning" })
-    } else {
-      // Non-root workspaces start in pending state
-      // They'll be queued when their upstreams complete
-      logger.info("Workspace waiting for upstream dependencies", {
-        ...attrs,
-        workspacePath: ws.path,
-        deploymentId: preview.id,
-        upstreamCount: (workspaceDeps.get(ws.path) ?? new Set()).size,
-      })
+        await comment.update(ws.path, { phase: "planning" })
+      } else {
+        logger.info("Workspace waiting for upstream dependencies", {
+          ...attrs,
+          workspacePath: ws.path,
+          deploymentId: preview.id,
+          upstreamCount: (workspaceDeps.get(ws.path) ?? new Set()).size,
+        })
+      }
     }
   }
 
@@ -1355,34 +1365,45 @@ async function handlePushEvent(
     }
   }
 
-  // Third pass: queue plan jobs for root workspaces only
-  const rootCount = previewData.filter((p) => p.isRoot).length
-  logger.info("Queueing plan jobs for root production workspaces", {
-    ...attrs,
-    rootCount,
-    totalCount: previewData.length,
-  })
+  // Third pass: queue plan jobs or mark as plan-limited
+  if (!entitlement.allowed) {
+    for (const { preview } of previewData) {
+      await updateDeploymentStatus(preview.id, "plan_limited")
+    }
+    logger.warn(`push plan-limited: ${entitlement.code} for ${tag}`, {
+      ...attrs,
+      "yaffle.entitlement_code": entitlement.code,
+      deploymentCount: previewData.length,
+    })
+  } else {
+    const rootCount = previewData.filter((p) => p.isRoot).length
+    logger.info("Queueing plan jobs for root production workspaces", {
+      ...attrs,
+      rootCount,
+      totalCount: previewData.length,
+    })
 
-  for (const { ws, preview, isRoot } of previewData) {
-    if (isRoot) {
-      const job = await createIacJob({
-        deploymentId: preview.id,
-        jobType: "plan",
-      })
+    for (const { ws, preview, isRoot } of previewData) {
+      if (isRoot) {
+        const job = await createIacJob({
+          deploymentId: preview.id,
+          jobType: "plan",
+        })
 
-      logger.info("Queued plan job for root production workspace", {
-        ...attrs,
-        workspacePath: ws.path,
-        deploymentId: preview.id,
-        jobId: job.id,
-      })
-    } else {
-      logger.info("Production workspace waiting for upstream dependencies", {
-        ...attrs,
-        workspacePath: ws.path,
-        deploymentId: preview.id,
-        upstreamCount: (workspaceDeps.get(ws.path) ?? new Set()).size,
-      })
+        logger.info("Queued plan job for root production workspace", {
+          ...attrs,
+          workspacePath: ws.path,
+          deploymentId: preview.id,
+          jobId: job.id,
+        })
+      } else {
+        logger.info("Production workspace waiting for upstream dependencies", {
+          ...attrs,
+          workspacePath: ws.path,
+          deploymentId: preview.id,
+          upstreamCount: (workspaceDeps.get(ws.path) ?? new Set()).size,
+        })
+      }
     }
   }
 

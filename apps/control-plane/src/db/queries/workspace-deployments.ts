@@ -1,4 +1,4 @@
-import { and, arrayContains, desc, eq, gt, lt, notInArray, sql, type SQL } from "drizzle-orm"
+import { and, asc, arrayContains, desc, eq, gt, lt, notInArray, sql, type SQL } from "drizzle-orm"
 
 import type { PreviewStatus } from "@yaffle/shared"
 
@@ -264,6 +264,19 @@ export async function updateDeploymentStatus(
 }
 
 
+
+/**
+ * Find all plan_limited deployments for an org, oldest first.
+ */
+export async function findPlanLimitedDeployments(orgId: string): Promise<WorkspaceDeployment[]> {
+  return withDbSpan("select", "workspace_deployments", async () => {
+    return db
+      .select()
+      .from(workspaceDeployments)
+      .where(and(eq(workspaceDeployments.orgId, orgId), eq(workspaceDeployments.status, "plan_limited")))
+      .orderBy(asc(workspaceDeployments.createdAt))
+  })
+}
 
 /**
  * Update a deployment's head SHA (on synchronize events).

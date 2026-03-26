@@ -7,6 +7,7 @@ export type PreviewStatus =
   | "ready"
   | "failed"
   | "system_error"
+  | "plan_limited"
   | "destroying"
   | "destroyed"
 
