@@ -55,6 +55,10 @@ export const organizations = pgTable("organizations", {
   provisioningStatus: text("provisioning_status").default("pending").notNull(), // 'pending' | 'provisioning' | 'active' | 'failed'
   provisioningError: text("provisioning_error"),
   provisioningAttempts: integer("provisioning_attempts").default(0).notNull(),
+  // Billing (cached from Stripe via webhooks)
+  stripeCustomerId: text("stripe_customer_id"),
+  subscriptionStatus: text("subscription_status").default("none").notNull(), // 'none' | 'trialing' | 'active' | 'past_due' | 'canceled' | 'unpaid'
+  planTier: text("plan_tier").default("free").notNull(), // 'free' | 'pro' | 'team'
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
