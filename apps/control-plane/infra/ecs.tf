@@ -52,6 +52,14 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "ECS_CLUSTER", value = local.ecs_cluster_name },
         { name = "YAFFLE_RUNNER_API_URL", value = var.runner_api_url },
         { name = "YAFFLE_RUNNER_TFC_API_HOST", value = var.runner_tfc_api_host },
+        # Stripe
+        { name = "STRIPE_PORTAL_CONFIGURATION_ID", value = local.stripe_portal_configuration_id },
+        { name = "STRIPE_PRO_PRICE_ID", value = local.stripe_pricing.pro.price_id },
+        { name = "STRIPE_TEAM_PRICE_ID", value = local.stripe_pricing.team.price_id },
+        # Free tier limits
+        { name = "YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS", value = tostring(local.stripe_pricing.free_limits.concurrent_preview_branches) },
+        { name = "YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS", value = tostring(local.stripe_pricing.free_limits.preview_creations_per_month) },
+        { name = "YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS", value = tostring(local.stripe_pricing.free_limits.named_environments) },
       ]
 
       secrets = [
@@ -60,6 +68,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "GITHUB_APP_PRIVATE_KEY", valueFrom = "${local.secrets_arn_prefix}/github-app-private-key" },
         { name = "GITHUB_WEBHOOK_SECRET", valueFrom = "${local.secrets_arn_prefix}/github-webhook-secret" },
         { name = "BETTER_AUTH_SECRET", valueFrom = "${local.secrets_arn_prefix}/better-auth-secret" },
+        { name = "STRIPE_API_KEY", valueFrom = local.stripe_api_key_secret_arn },
+        { name = "STRIPE_WEBHOOK_SIGNING_SECRET", valueFrom = local.stripe_webhook_signing_secret_arn },
       ]
 
       logConfiguration = {
