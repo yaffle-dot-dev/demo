@@ -80,7 +80,8 @@ jobs:
         with:
           role-to-assume: ${{ env.YAFFLE_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Fetch Tailscale GitHub Actions OAuth credentials
+      
+      - name: Fetch Tailscale CI OAuth credentials
         if: inputs.tailscale-ping-target != ''
         id: tailscale-bootstrap
         run: |
@@ -89,9 +90,12 @@ jobs:
             --query SecretString \
             --output text)
 
+          OAUTH_SECRET=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_secret')
+          echo "::add-mask::${OAUTH_SECRET}"
           echo "oauth-client-id=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_client_id')" >> "$GITHUB_OUTPUT"
-          echo "oauth-secret=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_secret')" >> "$GITHUB_OUTPUT"
-      - name: Connect GitHub Actions runner to Tailscale
+          echo "oauth-secret=${OAUTH_SECRET}" >> "$GITHUB_OUTPUT"
+
+      - name: Connect runner to Tailscale
         if: inputs.tailscale-ping-target != ''
         uses: tailscale/github-action@v4
         with:
@@ -100,6 +104,8 @@ jobs:
           tags: tag:github-actions-ci
           ping: ${{ inputs.tailscale-ping-target }}
           version: latest
+          args: '--accept-dns'
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Load Yaffle API token from Secrets Manager
@@ -143,7 +149,6 @@ jobs:
               s3://${{ steps.site-infra.outputs.primary_bucket_name }} \
               --delete
           fi
-      # TODO: Re-enable once CloudFront is deployed
       - name: Configure AWS credentials (CloudFront invalidation)
         if: steps.frontend-infra.outputs.cloudfront_distribution_id != 'PLACEHOLDER'
         uses: aws-actions/configure-aws-credentials@v4

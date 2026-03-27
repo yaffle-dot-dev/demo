@@ -68,7 +68,7 @@ jobs:
         if: steps.tier.outputs.push == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
+          role-to-assume: arn:aws:iam::870923192739:role/yaffle-depot-ci
           aws-region: ${{ env.AWS_REGION }}
       - name: Login to ECR
         if: steps.tier.outputs.push == 'true'
@@ -222,7 +222,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
+          role-to-assume: arn:aws:iam::870923192739:role/yaffle-depot-ci
           aws-region: ${{ env.AWS_REGION }}
 
       # -----------------------------------------------------------------

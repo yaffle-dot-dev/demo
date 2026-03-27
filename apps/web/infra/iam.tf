@@ -11,10 +11,6 @@
 # Data Sources
 # -----------------------------------------------------------------------------
 
-module "shared" {
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
-}
-
 locals {
   github_oidc_provider_arn = module.shared.github_actions_oidc_provider_arn
 }
