@@ -10,6 +10,7 @@ import { logger } from "./telemetry.ts"
 // =============================================================================
 // Free tier limits (injected from Terraform outputs at deploy time)
 // =============================================================================
+// Validated eagerly at import time — server won't start if these are missing.
 
 function requireEnvInt(name: string): number {
   const val = process.env[name]
@@ -24,9 +25,9 @@ function requireEnvInt(name: string): number {
 }
 
 const FREE_LIMITS = {
-  get concurrentPreviewBranches() { return requireEnvInt("YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS") },
-  get previewCreationsPerMonth() { return requireEnvInt("YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS") },
-  get namedEnvironments() { return requireEnvInt("YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS") },
+  concurrentPreviewBranches: requireEnvInt("YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS"),
+  previewCreationsPerMonth: requireEnvInt("YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS"),
+  namedEnvironments: requireEnvInt("YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS"),
 }
 
 export type EntitlementResult =
