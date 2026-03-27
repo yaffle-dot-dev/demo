@@ -73,6 +73,16 @@ output "ecr_control_plane_arn" {
   description = "ECR repository ARN for control-plane images"
 }
 
+output "ecr_web_url" {
+  value       = aws_ecr_repository.web.repository_url
+  description = "ECR repository URL for web app images"
+}
+
+output "ecr_web_arn" {
+  value       = aws_ecr_repository.web.arn
+  description = "ECR repository ARN for web app images"
+}
+
 output "ecr_runner_url" {
   value       = aws_ecr_repository.runner.repository_url
   description = "ECR repository URL for runner images"

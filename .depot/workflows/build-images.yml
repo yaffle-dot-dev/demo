@@ -10,24 +10,28 @@ on:
     paths:
       - "apps/control-plane/**"
       - "!apps/control-plane/infra/**"
+      - "apps/web/**"
+      - "!apps/web/infra/**"
       - "apps/runner/**"
       - "!apps/runner/infra/**"
       - "packages/**"
       - "nix/**"
       - "flake.nix"
       - "flake.lock"
-      - ".github/workflows/build-images.yml"
+      - ".depot/workflows/build-images.yml"
   pull_request:
     paths:
       - "apps/control-plane/**"
       - "!apps/control-plane/infra/**"
+      - "apps/web/**"
+      - "!apps/web/infra/**"
       - "apps/runner/**"
       - "!apps/runner/infra/**"
       - "packages/**"
       - "nix/**"
       - "flake.nix"
       - "flake.lock"
-      - ".github/workflows/build-images.yml"
+      - ".depot/workflows/build-images.yml"
 permissions:
   contents: read
   id-token: write
@@ -121,6 +125,31 @@ jobs:
           skopeo --insecure-policy copy \
             nix:${IMAGE_JSON} \
             docker://${REGISTRY}/yaffle-control-plane-${TIER}:latest
+      - name: Build web app
+        run: cd apps/web && bun run build
+      - name: Build web image
+        run: |
+          export YAFFLE_WEB_BUNDLE_PATH="${{ github.workspace }}/apps/web/build"
+          nix build .#web-image --impure -L -o result-web
+          nix build .#web-image.copyToRegistry --impure -o copy-web
+      - name: Push web image
+        if: steps.tier.outputs.push == 'true'
+        run: |
+          TIER="${{ steps.tier.outputs.tier }}"
+          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+
+          IMAGE_JSON=$(readlink -f result-web)
+          eval $(grep '^export PATH=' copy-web/bin/copy-to-registry)
+
+          skopeo --insecure-policy copy \
+            nix:${IMAGE_JSON} \
+            docker://${REGISTRY}/yaffle-web-${TIER}:sha-${SHORT_SHA}
+
+          skopeo --insecure-policy copy \
+            nix:${IMAGE_JSON} \
+            docker://${REGISTRY}/yaffle-web-${TIER}:latest
       - name: Build runner image
         run: |
           nix build .#runner-image -L -o result-runner
@@ -163,6 +192,8 @@ jobs:
             echo "### Images Pushed" >> $GITHUB_STEP_SUMMARY
             echo "- \`yaffle-control-plane-${TIER}:sha-${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
             echo "- \`yaffle-control-plane-${TIER}:latest\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-web-${TIER}:sha-${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-web-${TIER}:latest\`" >> $GITHUB_STEP_SUMMARY
             echo "- \`yaffle-runner-${TIER}:sha-${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
             echo "- \`yaffle-runner-${TIER}:latest\`" >> $GITHUB_STEP_SUMMARY
           else
@@ -170,7 +201,7 @@ jobs:
           fi
 
   deploy:
-    name: Deploy Control Plane
+    name: Deploy
     needs: build
     if: github.ref == 'refs/heads/main'
     runs-on: depot-ubuntu-24.04-arm
@@ -194,6 +225,10 @@ jobs:
           role-to-assume: arn:aws:iam::870923192739:role/yaffle-github-actions-ci
           aws-region: ${{ env.AWS_REGION }}
 
+      # -----------------------------------------------------------------
+      # Database migrations
+      # -----------------------------------------------------------------
+
       - name: Fetch database credentials
         uses: aws-actions/aws-secretsmanager-get-secrets@v2
         with:
@@ -204,26 +239,58 @@ jobs:
       - name: Run database migrations
         run: cd apps/control-plane && bunx drizzle-kit migrate
 
-      - name: Download current task definition
+      # -----------------------------------------------------------------
+      # Deploy control plane
+      # -----------------------------------------------------------------
+
+      - name: Download control-plane task definition
         run: |
           aws ecs describe-task-definition \
             --task-definition yaffle-cp-main-use1 \
             --query 'taskDefinition' \
             --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
-            > task-definition.json
+            > cp-task-definition.json
 
-      - name: Update image in task definition
-        id: render
+      - name: Render control-plane image
+        id: render-cp
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
-          task-definition: task-definition.json
+          task-definition: cp-task-definition.json
           container-name: control-plane
           image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-control-plane-production:sha-${{ github.sha }}
 
-      - name: Deploy to ECS
+      - name: Deploy control plane
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
-          task-definition: ${{ steps.render.outputs.task-definition }}
+          task-definition: ${{ steps.render-cp.outputs.task-definition }}
           service: yaffle-cp-main-use1
+          cluster: yaffle-production-use1
+          wait-for-service-stability: true
+
+      # -----------------------------------------------------------------
+      # Deploy web app
+      # -----------------------------------------------------------------
+
+      - name: Download web task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition yaffle-web-main-use1 \
+            --query 'taskDefinition' \
+            --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            > web-task-definition.json
+
+      - name: Render web image
+        id: render-web
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: web-task-definition.json
+          container-name: web
+          image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-web-production:sha-${{ github.sha }}
+
+      - name: Deploy web app
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render-web.outputs.task-definition }}
+          service: yaffle-web-main-use1
           cluster: yaffle-production-use1
           wait-for-service-stability: true

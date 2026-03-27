@@ -37,11 +37,36 @@
             lib = pkgs.lib;
           };
 
+          web = pkgs.callPackage ./nix/web.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+          };
+
           control-plane-image = n2c.buildImage {
-            name = "ghcr.io/yaffle-dot-dev/yaffle/control-plane";
+            name = "yaffle-control-plane";
             tag = "latest";
             config = {
               entrypoint = [ "${control-plane}/bin/yaffle-control-plane" ];
+              env = [
+                "PORT=3000"
+                "NODE_ENV=production"
+                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              ];
+              exposedPorts = { "3000/tcp" = {}; };
+            };
+            copyToRoot = pkgs.buildEnv {
+              name = "root";
+              paths = [ pkgs.cacert ];
+              pathsToLink = [ "/etc/ssl" ];
+            };
+          };
+
+          # Web app image - SvelteKit SSR application
+          web-image = n2c.buildImage {
+            name = "yaffle-web";
+            tag = "latest";
+            config = {
+              entrypoint = [ "${web}/bin/yaffle-web" ];
               env = [
                 "PORT=3000"
                 "NODE_ENV=production"
@@ -60,7 +85,7 @@
           # Contains OpenTofu, Bun, and the TypeScript worker runtime.
           # NO access to Yaffle internals - all inputs flow through the Runner API.
           runner-image = n2c.buildImage {
-            name = "ghcr.io/yaffle-dot-dev/yaffle/runner";
+            name = "yaffle-runner";
             tag = "latest";
             config = {
               entrypoint = [ "${pkgs.bun}/bin/bun" "${runner}/app/src/worker.ts" ];
@@ -89,8 +114,9 @@
             };
           };
         in {
-          inherit control-plane yaffle-cli runner;
+          inherit control-plane yaffle-cli runner web;
           control-plane-image = control-plane-image;
+          web-image = web-image;
           runner-image = runner-image;
           default = control-plane;
           yaffle-outputs = yaffle-cli;
