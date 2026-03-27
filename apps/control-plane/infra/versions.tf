@@ -39,6 +39,8 @@ provider "aws" {
   }
 }
 
+provider "planetscale" {}
+
 # Replica provider for cross-region state bucket replication
 provider "aws" {
   alias  = "replica"
