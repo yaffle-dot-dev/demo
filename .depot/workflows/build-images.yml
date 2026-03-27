@@ -37,7 +37,8 @@ permissions:
   id-token: write
 env:
   AWS_REGION: us-east-1
-  
+  REGISTRY_AUTH_FILE: /tmp/containers-auth.json
+
 jobs:
   build:
     name: Build Images
