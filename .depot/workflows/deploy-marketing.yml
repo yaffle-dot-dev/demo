@@ -4,18 +4,18 @@
 # No changes were necessary.
 
 name: Deploy Marketing
-on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/marketing/**"
-      - ".github/workflows/deploy-marketing.yml"
-      - ".github/workflows/deploy-static-site.yml"
-  pull_request:
-    paths:
-      - "apps/marketing/**"
-      - ".github/workflows/deploy-marketing.yml"
-      - ".github/workflows/deploy-static-site.yml"
+# on:
+#   push:
+#     branches: [main]
+#     paths:
+#       - "apps/marketing/**"
+#       - ".github/workflows/deploy-marketing.yml"
+#       - ".github/workflows/deploy-static-site.yml"
+#   pull_request:
+#     paths:
+#       - "apps/marketing/**"
+#       - ".github/workflows/deploy-marketing.yml"
+#       - ".github/workflows/deploy-static-site.yml"
 # Required for OIDC authentication to AWS
 permissions:
   contents: read

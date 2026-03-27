@@ -1,43 +1,32 @@
-# Depot CI Migration
-# Source: .github/workflows/build-images.yml
-#
-# No changes were necessary.
-
 name: Build Container Images
-on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/control-plane/**"
-      - "!apps/control-plane/infra/**"
-      - "apps/web/**"
-      - "!apps/web/infra/**"
-      - "apps/runner/**"
-      - "!apps/runner/infra/**"
-      - "packages/**"
-      - "nix/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".depot/workflows/build-images.yml"
-  pull_request:
-    paths:
-      - "apps/control-plane/**"
-      - "!apps/control-plane/infra/**"
-      - "apps/web/**"
-      - "!apps/web/infra/**"
-      - "apps/runner/**"
-      - "!apps/runner/infra/**"
-      - "packages/**"
-      - "nix/**"
-      - "flake.nix"
-      - "flake.lock"
-      - ".depot/workflows/build-images.yml"
+# on:
+#   push:
+#     branches: [main]
+#     paths:
+#       - "apps/control-plane/**"
+#       - "!apps/control-plane/infra/**"
+#       - "apps/web/**"
+#       - "!apps/web/infra/**"
+#       - "apps/runner/**"
+#       - "!apps/runner/infra/**"
+#       - "packages/**"
+#       - ".depot/workflows/build-images.yml"
+#   pull_request:
+#     paths:
+#       - "apps/control-plane/**"
+#       - "!apps/control-plane/infra/**"
+#       - "apps/web/**"
+#       - "!apps/web/infra/**"
+#       - "apps/runner/**"
+#       - "!apps/runner/infra/**"
+#       - "packages/**"
+#       - ".depot/workflows/build-images.yml"
 permissions:
   contents: read
   id-token: write
 env:
   AWS_REGION: us-east-1
-  REGISTRY_AUTH_FILE: /tmp/containers-auth.json
+  REGISTRY: 870923192739.dkr.ecr.us-east-1.amazonaws.com
 
 jobs:
   build:
@@ -46,12 +35,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-      - name: Install Nix
-        uses: DeterminateSystems/determinate-nix-action@main
+
+      - name: Setup Depot CLI
+        uses: depot/setup-action@v1
+
       - name: Determine tier
         id: tier
         run: |
@@ -62,138 +49,78 @@ jobs:
             echo "tier=nonprod" >> $GITHUB_OUTPUT
             echo "push=false" >> $GITHUB_OUTPUT
           fi
+
       - name: Configure AWS credentials
         if: steps.tier.outputs.push == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::870923192739:role/yaffle-depot-ci
           aws-region: ${{ env.AWS_REGION }}
+
       - name: Login to ECR
         if: steps.tier.outputs.push == 'true'
-        id: ecr-login
-        run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | \
-            skopeo login --username AWS --password-stdin \
-            870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com
-          echo "registry=870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com" >> $GITHUB_OUTPUT
-      # Build JavaScript with Bun (outside nix sandbox)
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-      - name: Build control-plane bundle
-        run: |
-          mkdir -p dist/control-plane/node_modules
+        uses: aws-actions/amazon-ecr-login@v2
 
-          # Bundle the control-plane
-          # --external minijinja-js: WASM module that doesn't bundle correctly
-          bun build apps/control-plane/src/index.ts \
-            --outdir dist/control-plane \
-            --target bun \
-            --external minijinja-js
-
-          # Copy runtime dependencies that can't be bundled
-          cp -r node_modules/.bun/minijinja-js@*/node_modules/minijinja-js dist/control-plane/node_modules/
-      # Package with nix2container
-      # --impure allows reading YAFFLE_BUNDLE_PATH env var
-      - name: Build control-plane image
+      - name: Set image tags
+        id: tags
         run: |
-          export YAFFLE_BUNDLE_PATH="${{ github.workspace }}/dist/control-plane"
-          nix build .#control-plane-image --impure -L -o result-control-plane
-          # Also build the copyToRegistry to get access to nix2container's skopeo
-          nix build .#control-plane-image.copyToRegistry --impure -o copy-control-plane
-      - name: Push control-plane image
-        if: steps.tier.outputs.push == 'true'
-        run: |
-          TIER="${{ steps.tier.outputs.tier }}"
-          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
           SHORT_SHA="${{ github.sha }}"
           SHORT_SHA="${SHORT_SHA:0:7}"
-
-          # Get the image JSON path
-          IMAGE_JSON=$(readlink -f result-control-plane)
-
-          # Extract and set PATH from the copyToRegistry script (includes nix2container's skopeo)
-          eval $(grep '^export PATH=' copy-control-plane/bin/copy-to-registry)
-
-          # Push with SHA tag using nix2container's skopeo (has nix transport)
-          skopeo --insecure-policy copy \
-            nix:${IMAGE_JSON} \
-            docker://${REGISTRY}/yaffle-control-plane-${TIER}:sha-${SHORT_SHA}
-
-          # Push latest tag
-          skopeo --insecure-policy copy \
-            nix:${IMAGE_JSON} \
-            docker://${REGISTRY}/yaffle-control-plane-${TIER}:latest
-      - name: Build web app
-        run: cd apps/web && bun run build
-      - name: Build web image
-        run: |
-          export YAFFLE_WEB_BUNDLE_PATH="${{ github.workspace }}/apps/web/build"
-          nix build .#web-image --impure -L -o result-web
-          nix build .#web-image.copyToRegistry --impure -o copy-web
-      - name: Push web image
-        if: steps.tier.outputs.push == 'true'
-        run: |
           TIER="${{ steps.tier.outputs.tier }}"
-          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
-          SHORT_SHA="${{ github.sha }}"
-          SHORT_SHA="${SHORT_SHA:0:7}"
+          echo "cp_image=${{ env.REGISTRY }}/yaffle-control-plane-${TIER}" >> $GITHUB_OUTPUT
+          echo "web_image=${{ env.REGISTRY }}/yaffle-web-${TIER}" >> $GITHUB_OUTPUT
+          echo "runner_image=${{ env.REGISTRY }}/yaffle-runner-${TIER}" >> $GITHUB_OUTPUT
+          echo "sha_tag=sha-${SHORT_SHA}" >> $GITHUB_OUTPUT
+      
+      - parallel:
+        - name: Build control-plane image
+          run: |
+            if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
+              depot build -f apps/control-plane/Dockerfile --platform linux/arm64 --push \
+                -t ${{ steps.tags.outputs.cp_image }}:${{ steps.tags.outputs.sha_tag }} \
+                -t ${{ steps.tags.outputs.cp_image }}:latest \
+                .
+            else
+              depot build -f apps/control-plane/Dockerfile --platform linux/arm64 .
+            fi
 
-          IMAGE_JSON=$(readlink -f result-web)
-          eval $(grep '^export PATH=' copy-web/bin/copy-to-registry)
+        - name: Build web image
+          run: |
+            if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
+              depot build -f apps/web/Dockerfile --platform linux/arm64 --push \
+                -t ${{ steps.tags.outputs.web_image }}:${{ steps.tags.outputs.sha_tag }} \
+                -t ${{ steps.tags.outputs.web_image }}:latest \
+                .
+            else
+              depot build -f apps/web/Dockerfile --platform linux/arm64 .
+            fi
 
-          skopeo --insecure-policy copy \
-            nix:${IMAGE_JSON} \
-            docker://${REGISTRY}/yaffle-web-${TIER}:sha-${SHORT_SHA}
+        - name: Build runner image
+          run: |
+            if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
+              depot build -f apps/runner/Dockerfile --platform linux/arm64 --push \
+                -t ${{ steps.tags.outputs.runner_image }}:${{ steps.tags.outputs.sha_tag }} \
+                -t ${{ steps.tags.outputs.runner_image }}:latest \
+                .
+            else
+              depot build -f apps/runner/Dockerfile --platform linux/arm64 .
+            fi
 
-          skopeo --insecure-policy copy \
-            nix:${IMAGE_JSON} \
-            docker://${REGISTRY}/yaffle-web-${TIER}:latest
-      - name: Build runner image
-        run: |
-          nix build .#runner-image -L -o result-runner
-          nix build .#runner-image.copyToRegistry -o copy-runner
-      - name: Push runner image
-        if: steps.tier.outputs.push == 'true'
-        run: |
-          TIER="${{ steps.tier.outputs.tier }}"
-          REGISTRY="${{ steps.ecr-login.outputs.registry }}"
-          SHORT_SHA="${{ github.sha }}"
-          SHORT_SHA="${SHORT_SHA:0:7}"
-
-          # Get the image JSON path
-          IMAGE_JSON=$(readlink -f result-runner)
-
-          # Extract and set PATH from the copyToRegistry script (includes nix2container's skopeo)
-          eval $(grep '^export PATH=' copy-runner/bin/copy-to-registry)
-
-          # Push with SHA tag using nix2container's skopeo (has nix transport)
-          skopeo --insecure-policy copy \
-            nix:${IMAGE_JSON} \
-            docker://${REGISTRY}/yaffle-runner-${TIER}:sha-${SHORT_SHA}
-
-          # Push latest tag
-          skopeo --insecure-policy copy \
-            nix:${IMAGE_JSON} \
-            docker://${REGISTRY}/yaffle-runner-${TIER}:latest
       - name: Summary
         run: |
           echo "## Container Images Built" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
-            TIER="${{ steps.tier.outputs.tier }}"
-            REGISTRY="${{ steps.ecr-login.outputs.registry }}"
-            SHORT_SHA="${{ github.sha }}"
-            SHORT_SHA="${SHORT_SHA:0:7}"
-            echo "**Registry:** ${REGISTRY}" >> $GITHUB_STEP_SUMMARY
-            echo "**Tier:** ${TIER}" >> $GITHUB_STEP_SUMMARY
+            echo "**Registry:** ${{ env.REGISTRY }}" >> $GITHUB_STEP_SUMMARY
+            echo "**Tier:** ${{ steps.tier.outputs.tier }}" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "### Images Pushed" >> $GITHUB_STEP_SUMMARY
-            echo "- \`yaffle-control-plane-${TIER}:sha-${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
-            echo "- \`yaffle-control-plane-${TIER}:latest\`" >> $GITHUB_STEP_SUMMARY
-            echo "- \`yaffle-web-${TIER}:sha-${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
-            echo "- \`yaffle-web-${TIER}:latest\`" >> $GITHUB_STEP_SUMMARY
-            echo "- \`yaffle-runner-${TIER}:sha-${SHORT_SHA}\`" >> $GITHUB_STEP_SUMMARY
-            echo "- \`yaffle-runner-${TIER}:latest\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-control-plane-${{ steps.tier.outputs.tier }}:${{ steps.tags.outputs.sha_tag }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-control-plane-${{ steps.tier.outputs.tier }}:latest\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-web-${{ steps.tier.outputs.tier }}:${{ steps.tags.outputs.sha_tag }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-web-${{ steps.tier.outputs.tier }}:latest\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-runner-${{ steps.tier.outputs.tier }}:${{ steps.tags.outputs.sha_tag }}\`" >> $GITHUB_STEP_SUMMARY
+            echo "- \`yaffle-runner-${{ steps.tier.outputs.tier }}:latest\`" >> $GITHUB_STEP_SUMMARY
           else
             echo "Images built but not pushed (PR build)" >> $GITHUB_STEP_SUMMARY
           fi

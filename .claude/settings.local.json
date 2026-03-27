@@ -15,7 +15,8 @@
       "Bash(bun run:*)",
       "Bash(./node_modules/.bin/tsc --noEmit -p apps/control-plane/tsconfig.json)",
       "Bash(bun x:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "WebFetch(domain:depot.dev)"
     ]
   }
 }

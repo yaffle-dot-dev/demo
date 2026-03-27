@@ -56,7 +56,6 @@ env:
   AWS_REGION: us-east-1
   YAFFLE_CI_ROLE_ARN: arn:aws:iam::870923192739:role/yaffle-depot-ci
   TAILSCALE_GITHUB_ACTIONS_SECRET_ID: yaffle/shared/tailscale/github-actions-oauth
-  GITHUB_ACTION: true
   
 jobs:
   deploy:
@@ -123,7 +122,7 @@ jobs:
         with:
           api-url: ${{ inputs.yaffle-api-url }}
           workspace: ${{ inputs.site-infra-workspace }}
-          wait: true
+          wait: false
           wait-timeout: 600
       - name: Wait for frontend infrastructure
         id: frontend-infra

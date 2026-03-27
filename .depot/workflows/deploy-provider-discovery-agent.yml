@@ -5,19 +5,19 @@
 
 name: Deploy Provider Discovery Agent
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/provider-discovery-agent/**"
-      - "infra/shared/**"
-      - "actions/outputs-action/**"
-      - ".github/workflows/deploy-provider-discovery-agent.yml"
-  pull_request:
-    paths:
-      - "apps/provider-discovery-agent/**"
-      - "infra/shared/**"
-      - "actions/outputs-action/**"
-      - ".github/workflows/deploy-provider-discovery-agent.yml"
+  # push:
+  #   branches: [main]
+  #   paths:
+  #     - "apps/provider-discovery-agent/**"
+  #     - "infra/shared/**"
+  #     - "actions/outputs-action/**"
+  #     - ".github/workflows/deploy-provider-discovery-agent.yml"
+  # pull_request:
+  #   paths:
+  #     - "apps/provider-discovery-agent/**"
+  #     - "infra/shared/**"
+  #     - "actions/outputs-action/**"
+  #     - ".github/workflows/deploy-provider-discovery-agent.yml"
 permissions:
   contents: read
   id-token: write
@@ -99,7 +99,7 @@ jobs:
         with:
           api-url: ${{ env.DEFAULT_YAFFLE_API_URL }}
           workspace: apps/provider-discovery-agent/infra
-          wait: true
+          wait: false
           wait-timeout: 600
       - name: Generate Wrangler deploy config
         working-directory: apps/provider-discovery-agent

@@ -4,121 +4,24 @@
   inputs = {
     nixpkgs.url = "https://flakehub.com/f/NixOS/nixpkgs/0.1";
     systems.url = "github:nix-systems/default";
-    nix2container.url = "github:nlewo/nix2container";
-    nix2container.inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, systems, nix2container, ... }:
+  outputs = { self, nixpkgs, systems, ... }:
     let
       forEachSystem = nixpkgs.lib.genAttrs (import systems);
     in {
       packages = forEachSystem (system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          n2c = nix2container.packages.${system}.nix2container;
-
-          # Control-plane requires a pre-built JS bundle
-          # In CI: bun install && bun build, then nix packages it
-          # Pass bundlePath via --arg or use the wrapper script
-          control-plane = pkgs.callPackage ./nix/control-plane.nix {
-            inherit pkgs;
-            lib = pkgs.lib;
-            # bundlePath passed via --arg in CI, or use build-control-plane.sh locally
-          };
 
           yaffle-cli = pkgs.callPackage ./nix/yaffle-cli.nix {
             inherit pkgs;
             lib = pkgs.lib;
             src = ./.;
           };
-
-          runner = pkgs.callPackage ./nix/runner.nix {
-            inherit pkgs;
-            lib = pkgs.lib;
-          };
-
-          web = pkgs.callPackage ./nix/web.nix {
-            inherit pkgs;
-            lib = pkgs.lib;
-          };
-
-          control-plane-image = n2c.buildImage {
-            name = "yaffle-control-plane";
-            tag = "latest";
-            config = {
-              entrypoint = [ "${control-plane}/bin/yaffle-control-plane" ];
-              env = [
-                "PORT=3000"
-                "NODE_ENV=production"
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-              ];
-              exposedPorts = { "3000/tcp" = {}; };
-            };
-            copyToRoot = pkgs.buildEnv {
-              name = "root";
-              paths = [ pkgs.cacert ];
-              pathsToLink = [ "/etc/ssl" ];
-            };
-          };
-
-          # Web app image - SvelteKit SSR application
-          web-image = n2c.buildImage {
-            name = "yaffle-web";
-            tag = "latest";
-            config = {
-              entrypoint = [ "${web}/bin/yaffle-web" ];
-              env = [
-                "PORT=3000"
-                "NODE_ENV=production"
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-              ];
-              exposedPorts = { "3000/tcp" = {}; };
-            };
-            copyToRoot = pkgs.buildEnv {
-              name = "root";
-              paths = [ pkgs.cacert ];
-              pathsToLink = [ "/etc/ssl" ];
-            };
-          };
-
-          # Runner image - minimal container for isolated tofu execution
-          # Contains OpenTofu, Bun, and the TypeScript worker runtime.
-          # NO access to Yaffle internals - all inputs flow through the Runner API.
-          runner-image = n2c.buildImage {
-            name = "yaffle-runner";
-            tag = "latest";
-            config = {
-              entrypoint = [ "${pkgs.bun}/bin/bun" "${runner}/app/src/worker.ts" ];
-              workingDir = "/workspace";
-              env = [
-                "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
-                "HOME=/tmp"
-              ];
-            };
-            copyToRoot = pkgs.buildEnv {
-              name = "root";
-              paths = [
-                pkgs.cacert
-                pkgs.opentofu
-                pkgs.awscli2
-                pkgs.curl
-                pkgs.jq
-                pkgs.gnutar
-                pkgs.gzip
-                pkgs.bash
-                pkgs.coreutils
-                pkgs.bun
-                runner
-              ];
-              pathsToLink = [ "/bin" "/etc/ssl" "/app" ];
-            };
-          };
         in {
-          inherit control-plane yaffle-cli runner web;
-          control-plane-image = control-plane-image;
-          web-image = web-image;
-          runner-image = runner-image;
-          default = control-plane;
+          inherit yaffle-cli;
+          default = yaffle-cli;
           yaffle-outputs = yaffle-cli;
         }
       );

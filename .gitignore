@@ -13,7 +13,6 @@ result
 
 # Dependencies
 node_modules/
-bun.lock
 
 # Build output
 dist/

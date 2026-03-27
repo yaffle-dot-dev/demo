@@ -1,21 +1,22 @@
 # Depot CI Migration
+# 
 # Source: .github/workflows/deploy-docs.yml
 #
 # No changes were necessary.
 
 name: Deploy Docs
-on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/docs/**"
-      - ".github/workflows/deploy-docs.yml"
-      - ".github/workflows/deploy-static-site.yml"
-  pull_request:
-    paths:
-      - "apps/docs/**"
-      - ".github/workflows/deploy-docs.yml"
-      - ".github/workflows/deploy-static-site.yml"
+# on:
+#   push:
+#     branches: [main]
+#     paths:
+#       - "apps/docs/**"
+#       - ".github/workflows/deploy-docs.yml"
+#       - ".github/workflows/deploy-static-site.yml"
+#   pull_request:
+#     paths:
+#       - "apps/docs/**"
+#       - ".github/workflows/deploy-docs.yml"
+#       - ".github/workflows/deploy-static-site.yml"
 # Required for OIDC authentication to AWS
 permissions:
   contents: read
