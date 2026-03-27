@@ -56,6 +56,11 @@ output "docs_url" {
   description = "Documentation site URL"
 }
 
+output "api_url" {
+  value       = "https://${local.site_domain}/api/"
+  description = "Control plane API URL (via CloudFront)"
+}
+
 # -----------------------------------------------------------------------------
 # S3 Buckets (from app modules)
 # -----------------------------------------------------------------------------

@@ -25,6 +25,10 @@ module "docs" {
   source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/apps--docs--infra/yaffle"
 }
 
+module "control_plane" {
+  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/apps--control-plane--infra/yaffle"
+}
+
 # -----------------------------------------------------------------------------
 # Convenience Locals
 # -----------------------------------------------------------------------------
@@ -45,4 +49,7 @@ locals {
   docs_replica_bucket_domain = module.docs.replica_bucket_regional_domain_name
   docs_primary_bucket_arn    = module.docs.primary_bucket_arn
   docs_replica_bucket_arn    = module.docs.replica_bucket_arn
+
+  # Control plane ALB
+  api_domain = module.control_plane.api_domain
 }

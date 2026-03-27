@@ -4,8 +4,10 @@
 # Unified CloudFront distribution with multiple origins:
 # - Marketing site (/) - Astro static site
 # - Docs site (/docs/*) - Astro/Starlight documentation
+# - Web app (/app/*) - SvelteKit application
+# - Control plane API (/api/*, /tfc/*, /.well-known/*) - Hono API via ALB
 #
-# Each origin has failover to a replica region for high availability.
+# Each static origin has failover to a replica region for high availability.
 # =============================================================================
 
 resource "aws_cloudfront_distribution" "main" {
@@ -58,6 +60,22 @@ resource "aws_cloudfront_distribution" "main" {
   # ===========================================================================
   # ORIGINS
   # ===========================================================================
+
+  # ---------------------------------------------------------------------------
+  # Control Plane API (ALB)
+  # ---------------------------------------------------------------------------
+
+  origin {
+    domain_name = local.api_domain
+    origin_id   = "control-plane-api"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = "https-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
 
   # ---------------------------------------------------------------------------
   # Marketing Site Origins
@@ -168,6 +186,70 @@ resource "aws_cloudfront_distribution" "main" {
     origin_request_policy_id = data.aws_cloudfront_origin_request_policy.cors_s3.id
   }
 
+  # ---------------------------------------------------------------------------
+  # Web App: /app/* (SSR via ALB)
+  # ---------------------------------------------------------------------------
+
+  ordered_cache_behavior {
+    path_pattern           = "/app/*"
+    target_origin_id       = "control-plane-api"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
+  # ---------------------------------------------------------------------------
+  # Control Plane API: /api/*
+  # ---------------------------------------------------------------------------
+
+  ordered_cache_behavior {
+    path_pattern           = "/api/*"
+    target_origin_id       = "control-plane-api"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
+  # ---------------------------------------------------------------------------
+  # Control Plane API: /tfc/*
+  # ---------------------------------------------------------------------------
+
+  ordered_cache_behavior {
+    path_pattern           = "/tfc/*"
+    target_origin_id       = "control-plane-api"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = data.aws_cloudfront_cache_policy.caching_disabled.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
+  # ---------------------------------------------------------------------------
+  # Control Plane API: /.well-known/*
+  # ---------------------------------------------------------------------------
+
+  ordered_cache_behavior {
+    path_pattern           = "/.well-known/*"
+    target_origin_id       = "control-plane-api"
+    viewer_protocol_policy = "redirect-to-https"
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
+    cached_methods         = ["GET", "HEAD"]
+    compress               = true
+
+    cache_policy_id          = aws_cloudfront_cache_policy.default.id
+    origin_request_policy_id = data.aws_cloudfront_origin_request_policy.all_viewer.id
+  }
+
   # ===========================================================================
   # ERROR RESPONSES
   # ===========================================================================
@@ -272,6 +354,14 @@ resource "aws_cloudfront_cache_policy" "immutable" {
 
 data "aws_cloudfront_origin_request_policy" "cors_s3" {
   name = "Managed-CORS-S3Origin"
+}
+
+data "aws_cloudfront_origin_request_policy" "all_viewer" {
+  name = "Managed-AllViewer"
+}
+
+data "aws_cloudfront_cache_policy" "caching_disabled" {
+  name = "Managed-CachingDisabled"
 }
 
 # =============================================================================

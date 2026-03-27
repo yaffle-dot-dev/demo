@@ -21,6 +21,18 @@ variable "replica_region" {
   default     = "us-west-2"
 }
 
+variable "domain" {
+  type        = string
+  description = "Base domain for the application (e.g., 'yaffle.dev')"
+  default     = "yaffle.dev"
+}
+
+variable "web_image" {
+  type        = string
+  description = "Docker image for the web app container"
+  default     = "ghcr.io/yaffle-dot-dev/yaffle/web:latest"
+}
+
 module "naming" {
   source      = "../../../infra_modules/public/naming"
   environment = var.environment
@@ -38,4 +50,12 @@ locals {
   # suffix = {environment}-{region_short} (e.g., "main-use1", "prvw-42-use1")
   name_suffix         = module.naming.suffix
   replica_name_suffix = module.naming_replica.suffix
+
+  # Control plane outputs (ALB, VPC, ECS cluster)
+  vpc_id               = module.control_plane.vpc_id
+  private_subnet_ids   = module.control_plane.private_subnet_ids
+  ecs_cluster_arn      = module.control_plane.ecs_cluster_arn
+  ecs_cluster_name     = module.control_plane.ecs_cluster_name
+  https_listener_arn   = module.control_plane.https_listener_arn
+  alb_security_group_id = module.control_plane.alb_security_group_id
 }

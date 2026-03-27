@@ -56,3 +56,17 @@ output "deploy_role_arn" {
   value       = aws_iam_role.deploy.arn
   description = "IAM role ARN for GitHub Actions to deploy web app"
 }
+
+# -----------------------------------------------------------------------------
+# ECS Service
+# -----------------------------------------------------------------------------
+
+output "web_service_name" {
+  value       = aws_ecs_service.web.name
+  description = "Web app ECS service name"
+}
+
+output "web_task_definition_arn" {
+  value       = aws_ecs_task_definition.web.arn
+  description = "Web app task definition ARN"
+}

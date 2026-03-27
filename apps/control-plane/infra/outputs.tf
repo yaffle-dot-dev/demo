@@ -54,6 +54,41 @@ output "api_domain" {
   description = "Control plane API domain name"
 }
 
+output "alb_arn" {
+  value       = aws_lb.main.arn
+  description = "ALB ARN (shared by control plane and web app)"
+}
+
+output "https_listener_arn" {
+  value       = aws_lb_listener.https.arn
+  description = "HTTPS listener ARN for adding target group rules"
+}
+
+output "alb_security_group_id" {
+  value       = aws_security_group.alb.id
+  description = "ALB security group ID (for web app ingress rules)"
+}
+
+output "vpc_id" {
+  value       = local.vpc_id
+  description = "VPC ID for the environment"
+}
+
+output "private_subnet_ids" {
+  value       = local.private_subnet_ids
+  description = "Private subnet IDs for ECS tasks"
+}
+
+output "ecs_cluster_arn" {
+  value       = local.ecs_cluster_arn
+  description = "ECS cluster ARN"
+}
+
+output "ecs_cluster_name" {
+  value       = local.ecs_cluster_name
+  description = "ECS cluster name"
+}
+
 # -----------------------------------------------------------------------------
 # State Storage
 # -----------------------------------------------------------------------------
