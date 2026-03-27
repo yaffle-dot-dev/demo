@@ -37,7 +37,6 @@ permissions:
   id-token: write
 env:
   AWS_REGION: us-east-1
-  GITHUB_ACTION: true
   
 jobs:
   build:
@@ -51,9 +50,7 @@ jobs:
         with:
           bun-version: latest
       - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@main
-      - name: Setup Nix cache
-        uses: DeterminateSystems/magic-nix-cache-action@main
+        uses: DeterminateSystems/determinate-nix-action@main
       - name: Determine tier
         id: tier
         run: |

@@ -149,14 +149,13 @@ jobs:
             CLOUDFLARE_API_TOKEN, ${{ steps.infra.outputs.cloudflare_api_token_secret_id }}
             YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN, ${{ steps.infra.outputs.agent_token_secret_id }}
             YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET, ${{ steps.infra.outputs.callback_secret_secret_id }}
-            YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_TOKEN, ${{ steps.infra.outputs.ai_gateway_token_secret_id }}
           parse-json-secrets: false
       - name: Load optional GitHub research token from Secrets Manager
         continue-on-error: true
         uses: aws-actions/aws-secretsmanager-get-secrets@v2
         with:
           secret-ids: |
-            GITHUB_TOKEN, ${{ steps.infra.outputs.github_token_secret_id }}
+            GITHUB_RESEARCH_TOKEN, ${{ steps.infra.outputs.github_token_secret_id }}
           parse-json-secrets: false
       - name: Upload worker runtime secrets
         working-directory: apps/provider-discovery-agent
@@ -165,20 +164,17 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
           YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN: ${{ env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN }}
           YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET: ${{ env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET }}
-          YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_TOKEN: ${{ env.YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_TOKEN }}
-          GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+          GITHUB_RESEARCH_TOKEN: ${{ env.GITHUB_RESEARCH_TOKEN }}
         run: |
           jq -n \
             --arg cloudflareAccountId "$CLOUDFLARE_ACCOUNT_ID" \
             --arg agentToken "$YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN" \
             --arg callbackSecret "$YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET" \
-            --arg aiGatewayToken "$YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_TOKEN" \
-            --arg githubToken "$GITHUB_TOKEN" \
+            --arg githubToken "$GITHUB_RESEARCH_TOKEN" \
             '{
               CLOUDFLARE_ACCOUNT_ID: $cloudflareAccountId,
               YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN: $agentToken,
               YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET: $callbackSecret,
-              YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_TOKEN: $aiGatewayToken,
               GITHUB_TOKEN: $githubToken
             }' > wrangler.secrets.json
 
