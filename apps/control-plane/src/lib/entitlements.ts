@@ -41,6 +41,7 @@ export type EntitlementResult =
 export async function checkOrgEntitlements(
   org: Organization,
   eventKind: "pull_request" | "push",
+  environmentName?: string,
 ): Promise<EntitlementResult> {
   // Subscription status checks (all tiers)
   if (org.subscriptionStatus === "canceled" || org.subscriptionStatus === "unpaid") {
@@ -62,7 +63,7 @@ export async function checkOrgEntitlements(
   }
 
   if (eventKind === "push") {
-    return checkFreeEnvironmentLimits(org)
+    return checkFreeEnvironmentLimits(org, environmentName)
   }
 
   return { allowed: true }
@@ -127,8 +128,9 @@ async function checkFreePreviewLimits(org: Organization): Promise<EntitlementRes
 /**
  * Check free tier named environment limits:
  * - Max 1 named environment
+ * - Pushes to an existing environment are always allowed
  */
-async function checkFreeEnvironmentLimits(org: Organization): Promise<EntitlementResult> {
+async function checkFreeEnvironmentLimits(org: Organization, environmentName?: string): Promise<EntitlementResult> {
   // Count distinct named environments this org has deployments for
   const result = await db
     .select({ count: countDistinct(workspaceDeployments.environmentName) })
@@ -141,6 +143,24 @@ async function checkFreeEnvironmentLimits(org: Organization): Promise<Entitlemen
     )
 
   const namedEnvCount = result[0]?.count ?? 0
+
+  // If we're pushing to an environment that already exists, always allow it
+  if (environmentName && namedEnvCount > 0) {
+    const existing = await db
+      .select({ count: countDistinct(workspaceDeployments.environmentName) })
+      .from(workspaceDeployments)
+      .where(
+        and(
+          eq(workspaceDeployments.orgId, org.id),
+          eq(workspaceDeployments.environmentKind, "named"),
+          eq(workspaceDeployments.environmentName, environmentName),
+        ),
+      )
+    if ((existing[0]?.count ?? 0) > 0) {
+      return { allowed: true }
+    }
+  }
+
   if (namedEnvCount >= FREE_LIMITS.namedEnvironments) {
     return {
       allowed: false,

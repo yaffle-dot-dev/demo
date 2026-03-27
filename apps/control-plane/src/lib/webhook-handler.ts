@@ -1200,9 +1200,6 @@ async function handlePushEvent(
     return
   }
 
-  // Check billing entitlements (deployments still get created, but jobs won't be queued if limited)
-  const entitlement = await checkOrgEntitlements(org, "push")
-
   const installationToken = await acquireToken(ctx)
 
   // Load config -- no PR to annotate on push events, just log
@@ -1219,6 +1216,9 @@ async function handlePushEvent(
 
   // Check if this ref matches any push trigger
   const environmentName = findPushTriggerEnvironment(config, ctx.ref)
+
+  // Check billing entitlements (after we know the target environment)
+  const entitlement = await checkOrgEntitlements(org, "push", environmentName ?? undefined)
   if (!environmentName) {
     logger.info(
       `ignoring push to ref that doesn't match any trigger`,

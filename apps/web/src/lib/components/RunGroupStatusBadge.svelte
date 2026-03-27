@@ -26,7 +26,6 @@
     // Terminal states
     const hasFailed = statusSet.has("failed") || statusSet.has("cancelled")
     const hasSystemError = statusSet.has("system_error")
-    const hasPlanLimited = statusSet.has("plan_limited")
     const terminalSuccessStatuses = ["ready", "destroyed", "planned", "skipped"]
     const hasSuccess = terminalSuccessStatuses.some((s) => statusSet.has(s))
 
@@ -34,8 +33,7 @@
     if (hasActive) return "in_progress"
 
     // All done - determine outcome
-    // Plan limited takes priority — it's an actionable upgrade nudge
-    if (hasPlanLimited) return "plan_limited"
+    // plan_limited is handled by PlanLimitedBadge (clickable link to billing)
     // System errors are retriable infrastructure issues, distinct from user failures
     if (hasSystemError) return "system_error"
     if (hasFailed && hasSuccess) return "mixed"

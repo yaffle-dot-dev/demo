@@ -16,5 +16,5 @@
   type="button"
 >
   <span class="font-mono">↑</span>
-  Upgrade to run
+  Plan limit reached
 </button>

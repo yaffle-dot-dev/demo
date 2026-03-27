@@ -6,15 +6,16 @@
   import { goto } from "$app/navigation"
   import { base } from "$app/paths"
   import ActionButton from "$lib/components/ActionButton.svelte"
+  import { env } from "$env/dynamic/public"
 
   const org = $derived(page.params.org ?? "")
   const session = useSession()
 
-  // Pricing from build-time env vars (injected from Terraform outputs)
-  const PRO_PRICE_ID = import.meta.env.VITE_STRIPE_PRO_PRICE_ID ?? ""
-  const PRO_AMOUNT = Number(import.meta.env.VITE_STRIPE_PRO_AMOUNT ?? "99")
-  const TEAM_PRICE_ID = import.meta.env.VITE_STRIPE_TEAM_PRICE_ID ?? ""
-  const TEAM_AMOUNT = Number(import.meta.env.VITE_STRIPE_TEAM_AMOUNT ?? "299")
+  // Pricing from env vars (injected from Terraform outputs at runtime)
+  const PRO_PRICE_ID = $derived(env.PUBLIC_STRIPE_PRO_PRICE_ID ?? "")
+  const PRO_AMOUNT = $derived(Number(env.PUBLIC_STRIPE_PRO_AMOUNT ?? "99"))
+  const TEAM_PRICE_ID = $derived(env.PUBLIC_STRIPE_TEAM_PRICE_ID ?? "")
+  const TEAM_AMOUNT = $derived(Number(env.PUBLIC_STRIPE_TEAM_AMOUNT ?? "299"))
 
   let planTier = $state<string>("free")
   let subscriptionStatus = $state<string>("none")

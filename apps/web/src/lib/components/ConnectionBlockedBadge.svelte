@@ -28,7 +28,7 @@
 
   async function handleClick(): Promise<void> {
     if (canManageConnections) {
-      await goto(`${base}/${org}/settings`)
+      await goto(`${base}/${org}/settings/connections`)
       return
     }
 

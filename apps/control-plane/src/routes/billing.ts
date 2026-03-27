@@ -2,9 +2,10 @@ import { Hono } from "hono"
 import { z } from "zod"
 
 import { requireAuth, AuthError, type AuthContext } from "../lib/auth.ts"
-import { findOrgBySlug, findOrgMembership, type Organization } from "../db/queries/organizations.ts"
+import { findOrgBySlug, findOrgMembership, updateOrg, type Organization } from "../db/queries/organizations.ts"
 import { requireStripe } from "../lib/stripe.ts"
 import { getEnv } from "../lib/env.ts"
+import { logger } from "../lib/telemetry.ts"
 
 export const billingRoute = new Hono()
 
@@ -54,10 +55,20 @@ billingRoute.post("/:slug/billing/checkout", async (c) => {
     return c.json({ error: { code: result.code, message: result.message } }, result.status as any)
   }
 
-  const { org } = result
+  let { org } = result
 
+  // Auto-create Stripe customer if one doesn't exist yet
   if (!org.stripeCustomerId) {
-    return c.json({ error: { code: "NO_BILLING_ACCOUNT", message: "Organization has no billing account. Please contact support." } }, 400)
+    const stripe = requireStripe()
+    const customer = await stripe.customers.create({
+      name: org.name,
+      metadata: { orgId: org.id, orgSlug: org.slug },
+    })
+    org = (await updateOrg(org.id, { stripeCustomerId: customer.id }))!
+    logger.info(`created Stripe customer for org ${org.slug}`, {
+      "yaffle.org": org.slug,
+      "stripe.customer_id": customer.id,
+    })
   }
 
   let body: z.infer<typeof checkoutSchema>
@@ -104,7 +115,7 @@ billingRoute.post("/:slug/billing/portal", async (c) => {
   const { org } = result
 
   if (!org.stripeCustomerId) {
-    return c.json({ error: { code: "NO_BILLING_ACCOUNT", message: "Organization has no billing account. Please contact support." } }, 400)
+    return c.json({ error: { code: "NO_BILLING_ACCOUNT", message: "No subscription found. Subscribe to a plan first." } }, 400)
   }
 
   const stripe = requireStripe()
