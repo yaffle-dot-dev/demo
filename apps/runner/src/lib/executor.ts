@@ -10,6 +10,7 @@ import { join } from "node:path"
 import { writeFile, mkdir } from "node:fs/promises"
 
 import type { ExecutionContext } from "./api-client.ts"
+import { ResourceSpanParser, type ResourceSpanEvent } from "./span-parser.ts"
 
 export interface TerraformResult {
   success: boolean
@@ -32,22 +33,41 @@ export interface ExecutorOptions {
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
   /** Callback when the active tofu subprocess changes */
   onProcess?: (proc: Subprocess | null) => void
+  /** Callback for resource span events parsed from stdout */
+  onSpanEvent?: (event: ResourceSpanEvent) => void
+  /** TRACEPARENT value for OTel trace correlation */
+  traceparent?: string
 }
 
 /**
  * Execute terraform command.
  */
 export async function executeTerraform(opts: ExecutorOptions): Promise<TerraformResult> {
-  const { workDir, context, onOutput, onProcess } = opts
+  const { workDir, context, onOutput, onProcess, onSpanEvent, traceparent } = opts
   const startTime = Date.now()
+
+  // Wrap onOutput to also feed the span parser
+  let wrappedOnOutput = onOutput
+  let spanParser: ResourceSpanParser | undefined
+  if (onSpanEvent) {
+    spanParser = new ResourceSpanParser(onSpanEvent)
+    wrappedOnOutput = (chunk: string, source: "stdout" | "stderr") => {
+      onOutput?.(chunk, source)
+      // Only parse stdout — stderr is terraform diagnostics, not resource lifecycle
+      if (source === "stdout") {
+        spanParser!.feed(chunk)
+      }
+    }
+  }
 
   try {
     // Configure backend
     const backendEnv = await configureBackend(workDir, context)
     const executionEnv = context.executionEnv ?? {}
-    const combinedEnv = {
+    const combinedEnv: Record<string, string> = {
       ...executionEnv,
       ...backendEnv,
+      ...(traceparent ? { TRACEPARENT: traceparent } : {}),
     }
 
     // Configure variables
@@ -57,7 +77,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       const initResult = await runCommand(
         workDir,
         ["tofu", "init", "-input=false"],
-        onOutput,
+        wrappedOnOutput,
         combinedEnv,
         onProcess,
       )
@@ -82,7 +102,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
         result = await runCommand(
           workDir,
           ["tofu", "plan", "-input=false", "-out=tfplan", "-detailed-exitcode"],
-          onOutput,
+          wrappedOnOutput,
           combinedEnv,
           onProcess,
           [0, 2],
@@ -115,7 +135,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
         result = await runCommand(
           workDir,
           ["tofu", "apply", "-input=false", "-auto-approve"],
-          onOutput,
+          wrappedOnOutput,
           combinedEnv,
           onProcess,
         )
@@ -144,7 +164,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
         result = await runCommand(
           workDir,
           ["tofu", "destroy", "-input=false", "-auto-approve"],
-          onOutput,
+          wrappedOnOutput,
           combinedEnv,
           onProcess,
         )
@@ -154,6 +174,9 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       default:
         throw new Error(`Unknown command: ${context.command}`)
     }
+
+    // Flush any remaining buffered lines in the span parser
+    spanParser?.flush()
 
     return {
       success: result.success,

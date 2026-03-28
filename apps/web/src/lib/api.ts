@@ -166,10 +166,22 @@ export interface WorkspacePreview {
   createdAt: string
 }
 
+export interface ResourceSpan {
+  id: string
+  resourceAddress: string
+  resourceType: string | null
+  action: string
+  status: string        // started | complete | error
+  startedAt: string
+  completedAt: string | null
+  durationMs: number | null
+}
+
 export interface WorkspaceWithRuns {
   preview: WorkspacePreview
   runs: Run[]
   outputs: unknown | null
+  resourceSpans?: ResourceSpan[]
 }
 
 export interface PrPreviewGroup {
@@ -530,6 +542,13 @@ export async function getPreviewsByEnv(
  * Get all deployments for an environment (unified endpoint).
  * Works for both PR environments (e.g., "pr-123") and named environments (e.g., "main").
  */
+/**
+ * Get resource spans for a run (for timeline/Gantt chart).
+ */
+export async function getRunSpans(runId: string): Promise<DetailResponse<ResourceSpan[]>> {
+  return fetchJson(`/runs/${runId}/spans`)
+}
+
 export async function getEnvironment(
   org: string,
   repo: string,

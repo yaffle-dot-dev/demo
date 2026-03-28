@@ -94,14 +94,14 @@ processes:
       period_seconds: 10
       failure_threshold: 3
 
-  opencode:
-    command: "opencode web --port 4096 --hostname 0.0.0.0"
-    log_location: .dev/logs/opencode.log
-    readiness_probe:
-      http_get:
-        host: 127.0.0.1
-        port: 4096
-        path: "/global/health"
-      initial_delay_seconds: 3
-      period_seconds: 10
-      failure_threshold: 3
+  # opencode:
+  #   command: "opencode web --port 4096 --hostname 0.0.0.0"
+  #   log_location: .dev/logs/opencode.log
+  #   readiness_probe:
+  #     http_get:
+  #       host: 127.0.0.1
+  #       port: 4096
+  #       path: "/global/health"
+  #     initial_delay_seconds: 3
+  #     period_seconds: 10
+  #     failure_threshold: 3

@@ -15,7 +15,7 @@ import { Hono } from "hono"
 import { z } from "zod"
 
 import { verifyJobToken, type JobTokenPayload } from "../lib/job-token.ts"
-import { logger } from "../lib/telemetry.ts"
+import { logger, tracer } from "../lib/telemetry.ts"
 import {
   claimJobForRunner,
   heartbeatJob,
@@ -27,6 +27,7 @@ import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 import { findRunGroupById } from "../db/queries/run-groups.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
 import { createTfRun, appendRunLog, updateRunStatus } from "../db/queries/tf-runs.ts"
+import { insertResourceSpan, completeResourceSpan, closeOrphanedSpans } from "../db/queries/resource-spans.ts"
 import {
   buildWorkspaceName,
   findWorkspaceByName,
@@ -345,6 +346,119 @@ runnerRoute.post("/logs", async (c) => {
 })
 
 // ---------------------------------------------------------------------------
+// POST /api/runner/spans
+// ---------------------------------------------------------------------------
+
+const spanEventSchema = z.object({
+  resourceAddress: z.string().min(1),
+  resourceType: z.string(),
+  action: z.string(),
+  event: z.enum(["started", "progress", "complete", "error"]),
+  timestamp: z.number(),
+  elapsedMs: z.number().optional(),
+  message: z.string().optional(),
+})
+
+const spansBodySchema = z.object({
+  jobId: z.string().uuid(),
+  runId: z.string().uuid(),
+  events: z.array(spanEventSchema),
+})
+
+/**
+ * Receive batched resource span events from worker.
+ *
+ * For "started" events, inserts a new resource_spans row.
+ * For "complete"/"error" events, updates the existing row.
+ * For "progress" events, no-ops (the frontend uses wall-clock for in-progress bars).
+ * Also mirrors spans to Axiom via OTel tracer.
+ */
+runnerRoute.post("/spans", async (c) => {
+  const auth = c.get("runnerAuth") as RunnerAuthContext
+  const body = await c.req.json()
+
+  const parsed = spansBodySchema.safeParse(body)
+  if (!parsed.success) {
+    return c.json(
+      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      400,
+    )
+  }
+
+  const { jobId, runId, events: spanEvents } = parsed.data
+
+  if (auth.jobToken.job_id !== jobId) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
+      403,
+    )
+  }
+
+  for (const event of spanEvents) {
+    if (event.event === "started") {
+      await insertResourceSpan({
+        runId,
+        resourceAddress: event.resourceAddress,
+        resourceType: event.resourceType,
+        action: event.action,
+        status: "started",
+        startedAt: new Date(event.timestamp),
+        source: "log_parse",
+      })
+
+      // Mirror to Axiom via OTel — start a span (will be ended on complete/error)
+      emitResourceOtelSpan(runId, event)
+    } else if (event.event === "complete" || event.event === "error") {
+      await completeResourceSpan(runId, event.resourceAddress, event.action, {
+        status: event.event === "complete" ? "complete" : "error",
+        completedAt: new Date(event.timestamp),
+        durationMs: event.elapsedMs,
+        attributes: event.message ? { message: event.message } : undefined,
+      })
+
+      // Mirror completed span to Axiom
+      emitResourceOtelSpan(runId, event)
+    }
+    // "progress" events are ignored for storage — the UI uses timestamps
+  }
+
+  // Emit run update to trigger SSE refresh
+  events.emitRunUpdate(runId, auth.jobToken.deployment_id)
+
+  return c.json({ data: { success: true } })
+})
+
+/**
+ * Emit a resource span to Axiom via OTel tracer.
+ */
+function emitResourceOtelSpan(
+  runId: string,
+  event: z.infer<typeof spanEventSchema>,
+): void {
+  try {
+    const span = tracer.startSpan(`tofu.resource.${event.action}`, {
+      startTime: new Date(event.timestamp),
+      attributes: {
+        "tofu.resource.address": event.resourceAddress,
+        "tofu.resource.type": event.resourceType,
+        "tofu.resource.action": event.action,
+        "tofu.resource.event": event.event,
+        "yaffle.run.id": runId,
+      },
+    })
+    if (event.event === "complete" || event.event === "error") {
+      // For complete/error, end the span immediately with the event timestamp
+      span.end(new Date(event.timestamp))
+    } else {
+      // For started events, end immediately (we'll get a complete event later)
+      span.end(new Date(event.timestamp))
+    }
+  } catch {
+    // OTel span emission is best-effort
+  }
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/runner/heartbeat
 // ---------------------------------------------------------------------------
 
@@ -453,13 +567,17 @@ runnerRoute.post("/complete", async (c) => {
     success = completeResult.success
 
     if (success) {
+      const now = new Date()
       const planSummary = typeof result?.planSummary === "string" ? result.planSummary : undefined
       await updateRunStatus(runId, deployment.id, "success", {
-        completedAt: new Date(),
+        completedAt: now,
         planSummary,
         planJson: result?.planJson,
         outputs: result?.outputs,
       })
+
+      // Close any orphaned spans (refresh/read ops that don't emit completion lines)
+      await closeOrphanedSpans(runId, now)
 
       if (jobType === "plan") {
         const reportedHasChanges = typeof result?.hasChanges === "boolean" ? result.hasChanges : null
@@ -505,10 +623,14 @@ runnerRoute.post("/complete", async (c) => {
     success = failResult.success
 
     if (success) {
+      const failedAt = new Date()
       await updateRunStatus(runId, deployment.id, "failed", {
-        completedAt: new Date(),
+        completedAt: failedAt,
         errorMessage: errorMessage ?? "Unknown error",
       })
+
+      // Close any orphaned spans
+      await closeOrphanedSpans(runId, failedAt)
       await updateDeploymentStatus(deployment.id, "failed")
       await cascadeFailure(deployment.id)
       await releaseWorkspaceLockForDeployment(deployment)

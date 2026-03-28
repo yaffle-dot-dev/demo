@@ -667,7 +667,7 @@
   }
   
   .plan-change {
-    fill: var(--color-status-pending);
+    fill: #c49a2a;
   }
   
   .plan-destroy {

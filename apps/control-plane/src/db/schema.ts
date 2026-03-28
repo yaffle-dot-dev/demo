@@ -258,6 +258,30 @@ export const tfRuns = pgTable("tf_runs", {
 })
 
 // =============================================================================
+// Resource Spans (resource-level timing from tofu runs)
+// =============================================================================
+
+export const resourceSpans = pgTable("resource_spans", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  runId: uuid("run_id").references(() => tfRuns.id, { onDelete: "cascade" }).notNull(),
+  resourceAddress: text("resource_address").notNull(),
+  resourceType: text("resource_type"),
+  action: text("action").notNull(),           // create | update | delete | refresh | read
+  status: text("status").default("started").notNull(), // started | complete | error
+  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  durationMs: integer("duration_ms"),
+  source: text("source").default("log_parse").notNull(), // log_parse | otlp (future)
+  traceId: text("trace_id"),
+  spanId: text("span_id"),
+  parentSpanId: text("parent_span_id"),
+  attributes: jsonb("attributes").default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("resource_spans_run_id_idx").on(t.runId),
+])
+
+// =============================================================================
 // Approvals (now uses BetterAuth user ID)
 // =============================================================================
 

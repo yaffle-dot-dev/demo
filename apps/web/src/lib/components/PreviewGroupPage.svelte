@@ -3,7 +3,7 @@
   import { goto } from "$app/navigation"
   import { base } from "$app/paths"
   import { untrack } from "svelte"
-  import type { WorkspaceWithRuns, WorkspacePreview, Run, RunGroup } from "$lib/api"
+  import type { WorkspaceWithRuns, WorkspacePreview, Run, RunGroup, ResourceSpan } from "$lib/api"
   import { cancelRun, rerunPreview } from "$lib/api"
   import { githubTreeUrl, githubCommitUrl } from "$lib/github"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
@@ -15,6 +15,7 @@
   import Terminal from "./Terminal.svelte"
   import PlanSummary from "./PlanSummary.svelte"
   import OutputsView from "./OutputsView.svelte"
+  import ResourceTimeline from "./ResourceTimeline.svelte"
   import RunGroupStatusBadge from "./RunGroupStatusBadge.svelte"
   import RefBadge from "./RefBadge.svelte"
   import ConnectionBlockedBadge from "./ConnectionBlockedBadge.svelte"
@@ -271,7 +272,7 @@
   })
 
   // Tab state
-  type TabId = "plan" | "apply" | "outputs"
+  type TabId = "plan" | "apply" | "outputs" | "timeline"
   let activeTab = $state<TabId>("plan")
 
   // Terminal expanded state - collapsed by default, persisted to localStorage
@@ -324,6 +325,22 @@
     (displayOutputs != null && Object.keys(displayOutputs as object).length > 0)
   )
 
+  // Resource spans from SSE (live, for the currently running run)
+  const liveSpans = $derived(selectedWorkspace?.resourceSpans ?? [])
+
+  // Completed run IDs — always lazy-load these so plan spans persist when apply starts
+  const completedRunIds = $derived(
+    visibleRuns
+      .filter((r) => r.status === "success" || r.status === "failed")
+      .map((r) => r.id),
+  )
+
+  // Timeline tab should show whenever there are runs that could have spans
+  const showTimeline = $derived(
+    liveSpans.length > 0 || completedRunIds.length > 0 ||
+    visibleRuns.some((r) => r.status === "running"),
+  )
+
   // Available tabs based on what data exists
   interface Tab {
     id: TabId
@@ -347,6 +364,9 @@
 
   const tabs = $derived.by((): Tab[] => {
     const result: Tab[] = []
+    if (showTimeline) {
+      result.push({ id: "timeline", label: "Timeline" })
+    }
     if (latestPlan) {
       result.push({ id: "plan", label: "Plan", status: latestPlan.status })
     }
@@ -687,7 +707,7 @@ terraform {
   <div class="flex-1 flex flex-col min-h-0">
     <!-- DAG Visualization (replaces sidebar) -->
     <div class="flex-shrink-0 border-b border-border bg-surface">
-      <div class="px-4 py-2 flex items-center justify-between">
+      <div class="px-4 py-1 flex items-center justify-between">
         <span class="text-xs text-text-dim font-medium uppercase tracking-wider">Workspaces</span>
         {#if hasAnyInProgress && !followMode}
           <button
@@ -867,7 +887,7 @@ terraform {
               {/each}
             </div>
             <!-- Expand/collapse button (only show for terminal tabs) -->
-            {#if activeTab !== "outputs"}
+            {#if activeTab !== "outputs" && activeTab !== "timeline"}
               <button
                 class="p-1.5 text-text-muted hover:text-text transition-colors rounded hover:bg-surface-overlay"
                 onclick={toggleTerminalExpanded}
@@ -887,7 +907,16 @@ terraform {
           </div>
 
           <!-- Tab content area -->
-          {#if activeTab === "outputs" && hasOutputs && !isWorkspaceInFlight}
+          {#if activeTab === "timeline"}
+            <div class="flex-1 overflow-auto p-4">
+              <ResourceTimeline
+                liveSpans={liveSpans}
+                completedRunIds={completedRunIds}
+                planRunId={latestPlan?.status === "success" ? latestPlan.id : null}
+                {streaming}
+              />
+            </div>
+          {:else if activeTab === "outputs" && hasOutputs && !isWorkspaceInFlight}
             <div class="flex-1 overflow-auto p-6">
               <OutputsView outputs={displayOutputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
             </div>

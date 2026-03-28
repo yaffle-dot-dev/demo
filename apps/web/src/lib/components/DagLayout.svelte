@@ -76,6 +76,9 @@
     node,
   }: Props = $props()
 
+  // Top padding inside SVG (smaller than inter-node gap to reduce dead space)
+  const svgPadTop = 4
+
   /**
    * Compute the depth (column) for each item.
    * Depth 0 = no dependencies (roots), higher = further from roots.
@@ -191,7 +194,7 @@
     for (let colIdx = 0; colIdx < cols.length; colIdx++) {
       for (let rowIdx = 0; rowIdx < cols[colIdx].length; rowIdx++) {
         const id = getItemId(cols[colIdx][rowIdx])
-        yPositions.set(id, gapY + rowIdx * minSpacing)
+        yPositions.set(id, svgPadTop + rowIdx * minSpacing)
       }
     }
 
@@ -260,7 +263,7 @@
       if (sourceY !== undefined) {
         // Move source so its center aligns with the intermediate center
         const newSourceY = centerY - nodeH / 2
-        yPositions.set(edge.sourceId, Math.max(gapY, newSourceY))
+        yPositions.set(edge.sourceId, Math.max(svgPadTop, newSourceY))
       }
 
       // Adjust target node position
@@ -268,7 +271,7 @@
       if (targetY !== undefined) {
         // Move target so its center aligns with the intermediate center
         const newTargetY = centerY - nodeH / 2
-        yPositions.set(edge.targetId, Math.max(gapY, newTargetY))
+        yPositions.set(edge.targetId, Math.max(svgPadTop, newTargetY))
       }
     }
 
@@ -296,6 +299,19 @@
           colNodes[i].y = prevBottom + gapY
           yPositions.set(colNodes[i].id, colNodes[i].y)
         }
+      }
+    }
+
+    // Step 5: Compact upward — shift all nodes so the topmost starts at svgPadTop.
+    // Steps 3-4 can push nodes far down, leaving a large empty gap at the top.
+    let globalMinY = Infinity
+    for (const y of yPositions.values()) {
+      globalMinY = Math.min(globalMinY, y)
+    }
+    if (globalMinY > svgPadTop && globalMinY !== Infinity) {
+      const shift = globalMinY - svgPadTop
+      for (const [id, y] of yPositions) {
+        yPositions.set(id, y - shift)
       }
     }
 
@@ -371,7 +387,7 @@
       }
       return maxY + nodeHeight + nodeGapY
     }
-    return maxRows * (nodeHeight + nodeGapY) + nodeGapY
+    return maxRows * (nodeHeight + nodeGapY) + svgPadTop
   })
 
   // Get node position
@@ -380,7 +396,7 @@
   }
 
   function getNodeY(rowIdx: number): number {
-    return rowIdx * (nodeHeight + nodeGapY) + nodeGapY
+    return rowIdx * (nodeHeight + nodeGapY) + svgPadTop
   }
 
   // Build position map for all items
@@ -509,7 +525,7 @@
 <style>
   .dag-container {
     scrollbar-width: thin;
-    padding: 0.25rem;
+    padding: 0 0.25rem 0.25rem;
   }
 
   .dag-container::-webkit-scrollbar {

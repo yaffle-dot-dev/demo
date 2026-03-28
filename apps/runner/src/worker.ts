@@ -25,6 +25,8 @@ import { RunnerApiClient } from "./lib/api-client.ts"
 import { HeartbeatSupervisor } from "./lib/supervisor.ts"
 import { downloadWorkspace, cleanupWorkspace } from "./lib/workspace.ts"
 import { executeTerraform } from "./lib/executor.ts"
+import type { ResourceSpanEvent } from "./lib/span-parser.ts"
+import type { SpanEvent } from "./lib/api-client.ts"
 import type { Subprocess } from "bun"
 
 // Required environment variables
@@ -146,6 +148,46 @@ async function main(): Promise<void> {
     }
   }
 
+  // Buffer for batching span event sends
+  let spanBuffer: SpanEvent[] = []
+  let spanFlushTimer: Timer | null = null
+  const SPAN_FLUSH_INTERVAL = 200 // ms
+
+  const flushSpans = async (): Promise<void> => {
+    if (spanBuffer.length === 0) return
+    const batch = spanBuffer
+    spanBuffer = []
+
+    try {
+      await apiClient.sendSpanEvents(runId, batch)
+    } catch (err) {
+      // Span events are best-effort — don't fail the job
+      error("Failed to send span events", {
+        error: err instanceof Error ? err.message : String(err),
+        count: batch.length,
+      })
+    }
+  }
+
+  const queueSpanEvent = (event: ResourceSpanEvent): void => {
+    spanBuffer.push({
+      resourceAddress: event.resourceAddress,
+      resourceType: event.resourceType,
+      action: event.action,
+      event: event.event,
+      timestamp: event.timestamp,
+      elapsedMs: event.elapsedMs,
+      message: event.message,
+    })
+
+    if (!spanFlushTimer) {
+      spanFlushTimer = setTimeout(async () => {
+        spanFlushTimer = null
+        await flushSpans()
+      }, SPAN_FLUSH_INTERVAL)
+    }
+  }
+
   let workDir: string | undefined
 
   try {
@@ -179,14 +221,19 @@ async function main(): Promise<void> {
           activeProcess.kill("SIGINT")
         }
       },
+      onSpanEvent: queueSpanEvent,
     })
 
-    // Flush any remaining logs
+    // Flush any remaining logs and span events
     if (logFlushTimer) {
       clearTimeout(logFlushTimer)
       logFlushTimer = null
     }
-    await flushLogs()
+    if (spanFlushTimer) {
+      clearTimeout(spanFlushTimer)
+      spanFlushTimer = null
+    }
+    await Promise.all([flushLogs(), flushSpans()])
 
     // 6. Report completion
     log("Reporting completion...")
@@ -211,12 +258,16 @@ async function main(): Promise<void> {
     const errorMessage = err instanceof Error ? err.message : String(err)
     error("Job execution threw exception", { error: errorMessage })
 
-    // Flush any remaining logs
+    // Flush any remaining logs and span events
     if (logFlushTimer) {
       clearTimeout(logFlushTimer)
       logFlushTimer = null
     }
-    await flushLogs()
+    if (spanFlushTimer) {
+      clearTimeout(spanFlushTimer)
+      spanFlushTimer = null
+    }
+    await Promise.all([flushLogs(), flushSpans()])
 
     try {
       if (!cancellationRequested) {

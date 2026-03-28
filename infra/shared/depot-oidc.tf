@@ -227,6 +227,8 @@ resource "aws_iam_role_policy" "depot_ci_ecs_deploy" {
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-cp-*",
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-web-*",
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-ecs-exec-*",
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-runner-task-*",
+          "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-runner-exec-*",
         ]
       },
     ]

@@ -6,6 +6,7 @@ import {
   findDeploymentsByEnvironment,
 } from "../db/queries/workspace-deployments.ts"
 import { listRunsForPreview, findLatestSuccessfulRun } from "../db/queries/tf-runs.ts"
+import { getSpansForRun } from "../db/queries/resource-spans.ts"
 import { findLatestJobForDeployment } from "../db/queries/iac-jobs.ts"
 import {
   listRunGroupsForPr,
@@ -199,10 +200,19 @@ reposRoute.get(
               const latestJob = await findLatestJobForDeployment(deployment.id)
               const outputs = latestApply?.outputs ?? null
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
+
+              // Include resource spans for running deployments
+              const isRunning = deployment.status === "planning" || deployment.status === "applying" || deployment.status === "destroying"
+              const runningRun = isRunning ? runs.find((r) => r.status === "running") : null
+              const resourceSpans = runningRun
+                ? (await getSpansForRun(runningRun.id)).map(serializeResourceSpan)
+                : undefined
+
               return {
                 preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
                 runs: runs.map(serializeRun),
                 outputs,
+                ...(resourceSpans ? { resourceSpans } : {}),
               }
             }),
           )
@@ -448,10 +458,19 @@ reposRoute.get(
               const latestJob = await findLatestJobForDeployment(deployment.id)
               const outputs = latestApply?.outputs ?? null
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
+
+              // Include resource spans for running deployments
+              const isRunning = deployment.status === "planning" || deployment.status === "applying" || deployment.status === "destroying"
+              const runningRun = isRunning ? runs.find((r) => r.status === "running") : null
+              const resourceSpans = runningRun
+                ? (await getSpansForRun(runningRun.id)).map(serializeResourceSpan)
+                : undefined
+
               return {
                 preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
                 runs: runs.map(serializeRun),
                 outputs,
+                ...(resourceSpans ? { resourceSpans } : {}),
               }
             }),
           )
@@ -733,10 +752,19 @@ reposRoute.get(
               const latestJob = await findLatestJobForDeployment(deployment.id)
               const outputs = latestApply?.outputs ?? null
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
+
+              // Include resource spans for running deployments (for live Gantt chart)
+              const isRunning = deployment.status === "planning" || deployment.status === "applying" || deployment.status === "destroying"
+              const runningRun = isRunning ? runs.find((r) => r.status === "running") : null
+              const resourceSpans = runningRun
+                ? (await getSpansForRun(runningRun.id)).map(serializeResourceSpan)
+                : undefined
+
               return {
                 preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
                 runs: runs.map(serializeRun),
                 outputs,
+                ...(resourceSpans ? { resourceSpans } : {}),
               }
             }),
           )
@@ -960,6 +988,39 @@ function serializeRun(r: {
     startedAt: r.startedAt?.toISOString() ?? null,
     completedAt: r.completedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
+  }
+}
+
+interface SerializedResourceSpan {
+  id: string
+  resourceAddress: string
+  resourceType: string | null
+  action: string
+  status: string
+  startedAt: string
+  completedAt: string | null
+  durationMs: number | null
+}
+
+function serializeResourceSpan(s: {
+  id: string
+  resourceAddress: string
+  resourceType: string | null
+  action: string
+  status: string
+  startedAt: Date
+  completedAt: Date | null
+  durationMs: number | null
+}): SerializedResourceSpan {
+  return {
+    id: s.id,
+    resourceAddress: s.resourceAddress,
+    resourceType: s.resourceType,
+    action: s.action,
+    status: s.status,
+    startedAt: s.startedAt.toISOString(),
+    completedAt: s.completedAt?.toISOString() ?? null,
+    durationMs: s.durationMs,
   }
 }
 

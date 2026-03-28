@@ -79,7 +79,7 @@
   function actionColor(group: keyof GroupedChanges): string {
     switch (group) {
       case "create": return "text-status-ready"
-      case "update": return "text-status-planning"
+      case "update": return "text-[#c49a2a]"
       case "replace": return "text-status-applying"
       case "delete": return "text-status-failed"
       case "read": return "text-text-muted"
@@ -90,7 +90,7 @@
   function actionBgColor(group: keyof GroupedChanges): string {
     switch (group) {
       case "create": return "bg-status-ready/10"
-      case "update": return "bg-status-planning/10"
+      case "update": return "bg-[#c49a2a]/10"
       case "replace": return "bg-status-applying/10"
       case "delete": return "bg-status-failed/10"
       default: return "bg-surface-overlay"
@@ -145,7 +145,7 @@
     {/if}
     {#if grouped.update.length > 0}
       <span class="flex items-center gap-1.5">
-        <span class="font-mono text-status-planning">~{grouped.update.length}</span>
+        <span class="font-mono text-[#c49a2a]">~{grouped.update.length}</span>
         <span class="text-text-muted">to update</span>
       </span>
     {/if}

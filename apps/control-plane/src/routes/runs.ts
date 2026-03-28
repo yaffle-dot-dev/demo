@@ -4,6 +4,7 @@ import { z } from "zod"
 import type { RunType } from "@yaffle/shared"
 
 import { findRunById, updateRunStatus } from "../db/queries/tf-runs.ts"
+import { getSpansForRun } from "../db/queries/resource-spans.ts"
 import { findDeploymentById } from "../db/queries/workspace-deployments.ts"
 import { cancelRunningJobForDeploymentAndType } from "../db/queries/iac-jobs.ts"
 import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
@@ -278,6 +279,49 @@ runsRoute.get(
         }),
       })
       await stream.writeSSE({ event: "done", data: "{}" })
+    })
+  },
+)
+
+/**
+ * GET /api/runs/:id/spans
+ *
+ * Get resource spans for a run (for Gantt chart timeline).
+ */
+runsRoute.get(
+  "/:id/spans",
+  requireResourceAccess({ getOrgId: getRunOrgId }),
+  async (c) => {
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
+    if (!parseResult.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
+        400,
+      )
+    }
+    const id = parseResult.data
+
+    const run = await findRunById(id)
+    if (!run) {
+      return c.json(
+        { error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } },
+        404,
+      )
+    }
+
+    const spans = await getSpansForRun(id)
+
+    return c.json({
+      data: spans.map((s) => ({
+        id: s.id,
+        resourceAddress: s.resourceAddress,
+        resourceType: s.resourceType,
+        action: s.action,
+        status: s.status,
+        startedAt: s.startedAt.toISOString(),
+        completedAt: s.completedAt?.toISOString() ?? null,
+        durationMs: s.durationMs,
+      })),
     })
   },
 )

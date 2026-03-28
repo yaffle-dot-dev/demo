@@ -56,6 +56,16 @@ export interface ExecutionContext {
   tfcToken?: string
 }
 
+export interface SpanEvent {
+  resourceAddress: string
+  resourceType: string
+  action: string
+  event: string
+  timestamp: number
+  elapsedMs?: number
+  message?: string
+}
+
 export interface LogsResponse {
   success: boolean
 }
@@ -216,6 +226,29 @@ export class RunnerApiClient {
     if (!response.ok) {
       const error = await response.text()
       throw new Error(`Failed to get job context: ${response.status} ${error}`)
+    }
+
+    const result = await response.json()
+    return result.data
+  }
+
+  /**
+   * Send batched resource span events to control plane.
+   */
+  async sendSpanEvents(runId: string, events: SpanEvent[]): Promise<{ success: boolean }> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/spans`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({
+        jobId: this.config.jobId,
+        runId,
+        events,
+      }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to send span events: ${response.status} ${error}`)
     }
 
     const result = await response.json()
