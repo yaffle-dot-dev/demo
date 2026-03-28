@@ -11,17 +11,32 @@ locals {
   planetscale_database = "yaffle"
 }
 
+data "planetscale_database_postgres" "yaffle" {
+  id           = local.planetscale_database
+  organization = local.planetscale_org
+}
+
 # -----------------------------------------------------------------------------
 # Branch - one per environment
 # -----------------------------------------------------------------------------
 
+
+import {
+  for_each = local.import_main
+
+  to = planetscale_postgres_branch.main
+  id = jsonencode({
+    organization = local.planetscale_org
+    database     = data.planetscale_database_postgres.yaffle.name
+    id           = var.environment
+  })
+}
+
 resource "planetscale_postgres_branch" "main" {
   organization  = local.planetscale_org
-  database      = local.planetscale_database
+  database      = data.planetscale_database_postgres.yaffle.name
   name          = var.environment
-  region        = var.aws_region
   cluster_size  = "PS_5_AWS_ARM"
-  major_version = "18.3"
 }
 
 # -----------------------------------------------------------------------------
@@ -30,9 +45,11 @@ resource "planetscale_postgres_branch" "main" {
 
 resource "planetscale_postgres_branch_role" "app" {
   organization    = local.planetscale_org
-  database        = local.planetscale_database
+  database        = data.planetscale_database_postgres.yaffle.name
   branch          = planetscale_postgres_branch.main.name
+
   name            = "yaffle-cp-${var.environment}"
+  
   inherited_roles = ["pg_read_all_data", "pg_write_all_data"]
 }
 
@@ -55,5 +72,5 @@ resource "aws_secretsmanager_secret" "database_url" {
 
 resource "aws_secretsmanager_secret_version" "database_url" {
   secret_id     = aws_secretsmanager_secret.database_url.id
-  secret_string = "postgresql://${planetscale_postgres_branch_role.app.username}:${planetscale_postgres_branch_role.app.password}@${planetscale_postgres_branch_role.app.access_host_url}/${planetscale_postgres_branch_role.app.database_name}?sslmode=require"
+  secret_string = planetscale_postgres_branch_role.app.access_host_url
 }
