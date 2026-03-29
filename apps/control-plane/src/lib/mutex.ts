@@ -1,16 +1,21 @@
 /**
- * A keyed mutex that serializes async operations per key.
+ * Interface for keyed mutexes that serialize async operations per key.
+ * Operations for different keys run concurrently; operations for the
+ * same key run sequentially.
  *
- * Used to ensure only one webhook handler runs at a time per preview
- * (keyed by owner/repo/prNumber). Operations for different previews
- * run concurrently; operations for the same preview run sequentially
- * in arrival order.
- *
- * This is an in-memory solution suitable for a single-process dev setup.
- * In production with multiple API instances, this would be replaced by
- * DB advisory locks or a proper job queue with per-key ordering.
+ * Implementations:
+ * - KeyedMutex: in-memory, single-process (dev/test)
+ * - PgAdvisoryMutex: PostgreSQL advisory locks, cross-process (production)
  */
-export class KeyedMutex {
+export interface Mutex {
+  run<T>(key: string, fn: () => Promise<T>): Promise<T>
+}
+
+/**
+ * In-memory keyed mutex. Suitable for single-process dev/test setups.
+ * For production with multiple instances, use PgAdvisoryMutex instead.
+ */
+export class KeyedMutex implements Mutex {
   private locks = new Map<string, Promise<void>>()
 
   /**

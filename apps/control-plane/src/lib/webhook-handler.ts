@@ -50,7 +50,8 @@ import {
   createCommentManager,
 } from "./pr-comment.ts"
 import { LocalRunner } from "./local-runner.ts"
-import { KeyedMutex } from "./mutex.ts"
+import { type Mutex, KeyedMutex } from "./mutex.ts"
+import { PgAdvisoryMutex } from "./pg-advisory-mutex.ts"
 import {
   type Runner,
   buildStateKey,
@@ -82,8 +83,20 @@ const defaultRunner: Runner = new LocalRunner()
  * Per-preview mutex. Ensures that concurrent webhook events for the same
  * preview (owner/repo/pr) are processed sequentially. Different previews
  * still run concurrently.
+ *
+ * In production (DATABASE_URL set), uses PostgreSQL advisory locks for
+ * cross-process serialization across multiple API replicas.
+ * In dev/test, falls back to in-memory KeyedMutex.
  */
-const previewMutex = new KeyedMutex()
+function createMutex(): Mutex {
+  const dbUrl = process.env.DATABASE_URL
+  if (dbUrl) {
+    return new PgAdvisoryMutex(dbUrl)
+  }
+  return new KeyedMutex()
+}
+
+export const previewMutex: Mutex = createMutex()
 
 /** Build the mutex key for a webhook context. */
 function mutexKey(ctx: WebhookContext): string {
@@ -268,7 +281,7 @@ async function scanDependencies(
  */
 export function createHandler(
   runner: Runner,
-  opts?: { mutex?: KeyedMutex; configLoader?: ConfigLoader },
+  opts?: { mutex?: Mutex; configLoader?: ConfigLoader },
 ): {
   handleWebhookEvent: (ctx: WebhookContext) => Promise<void>
 } {

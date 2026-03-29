@@ -24,6 +24,7 @@ import { stripeWebhooksRoute } from "./routes/stripe-webhooks.ts"
 import { auth } from "./lib/better-auth.ts"
 import { startScheduler, stopScheduler } from "./lib/scheduler.ts"
 import { startJobWorker, stopJobWorker } from "./lib/job-worker.ts"
+import { previewMutex } from "./lib/webhook-handler.ts"
 import { ensureDefaultProviderCredentialSignatures } from "./db/queries/provider-credential-signatures.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
@@ -147,7 +148,7 @@ const port = Number(process.env.PORT ?? 3000)
 log.info(`yaffle api listening on :${port}`, { port })
 
 // Graceful shutdown
-process.on("SIGTERM", async () => {
+async function shutdown() {
   log.info("shutting down")
   if (startSchedulerRole && !schedulerDisabled) {
     await stopScheduler()
@@ -155,21 +156,15 @@ process.on("SIGTERM", async () => {
   if (startJobWorkerRole) {
     stopJobWorker()
   }
+  if ("close" in previewMutex) {
+    await (previewMutex as { close(): Promise<void> }).close()
+  }
   await shutdownTelemetry()
   process.exit(0)
-})
+}
 
-process.on("SIGINT", async () => {
-  log.info("shutting down")
-  if (startSchedulerRole && !schedulerDisabled) {
-    await stopScheduler()
-  }
-  if (startJobWorkerRole) {
-    stopJobWorker()
-  }
-  await shutdownTelemetry()
-  process.exit(0)
-})
+process.on("SIGTERM", shutdown)
+process.on("SIGINT", shutdown)
 
 export default {
   port,
