@@ -567,9 +567,10 @@
   const workspaceStatuses = $derived(filteredWorkspaces.map(computeWorkspaceStatus))
 
   // Build workspace name matching server-side logic
-  function buildWorkspaceName(environment: string, identifier: string, workspacePath: string): string {
-    const pathSlug = workspacePath.replace(/\//g, "-").replace(/[^a-z0-9-]/gi, "")
-    return `${environment}-${identifier}-${pathSlug}`
+  function buildWorkspaceName(repoName: string, environment: string, identifier: string, workspacePath: string): string {
+    const slugify = (s: string): string =>
+      s.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
+    return [slugify(repoName), slugify(environment), slugify(identifier), slugify(workspacePath)].join("-")
   }
 
   // Generate the backend config block for local tofu usage
@@ -580,10 +581,10 @@
     let workspaceName: string
     
     if (type === "pr") {
-      workspaceName = buildWorkspaceName("preview", `pr-${identifier}`, workspacePath)
+      workspaceName = buildWorkspaceName(repo, "preview", `pr-${identifier}`, workspacePath)
     } else {
       // Branch workspace: uses branch as both environment and identifier
-      workspaceName = buildWorkspaceName(String(identifier), String(identifier), workspacePath)
+      workspaceName = buildWorkspaceName(repo, String(identifier), String(identifier), workspacePath)
     }
     
     // Use current hostname for the TFC API

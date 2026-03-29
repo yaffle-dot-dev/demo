@@ -55,6 +55,68 @@
               exec ${pkgs.bun}/bin/bun run scripts/deploy-marketing.ts "$@"
             '');
           };
+
+          # CI/CD scripts — each independently runnable
+          deploy-all = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-all" ''
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-all.ts "$@"
+            '');
+          };
+          build-images = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "build-images" ''
+              exec ${pkgs.bun}/bin/bun run scripts/build-images.ts "$@"
+            '');
+          };
+          build-cp = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "build-cp" ''
+              exec ${pkgs.bun}/bin/bun run scripts/build-cp.ts "$@"
+            '');
+          };
+          build-web = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "build-web" ''
+              exec ${pkgs.bun}/bin/bun run scripts/build-web.ts "$@"
+            '');
+          };
+          build-runner = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "build-runner" ''
+              exec ${pkgs.bun}/bin/bun run scripts/build-runner.ts "$@"
+            '');
+          };
+          deploy = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy" ''
+              exec ${pkgs.bun}/bin/bun run scripts/deploy.ts "$@"
+            '');
+          };
+          deploy-cp = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-cp" ''
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-cp.ts "$@"
+            '');
+          };
+          deploy-web = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-web" ''
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-web.ts "$@"
+            '');
+          };
+          deploy-runner = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-runner" ''
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-runner.ts "$@"
+            '');
+          };
+          db-migrate = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "db-migrate" ''
+              exec ${pkgs.bun}/bin/bun run scripts/db-migrate.ts "$@"
+            '');
+          };
         }
       );
 
