@@ -103,7 +103,6 @@ jobs:
           tags: tag:github-actions-ci
           ping: ${{ inputs.tailscale-ping-target }}
           version: latest
-          args: '--accept-dns'
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -130,7 +129,7 @@ jobs:
         with:
           api-url: ${{ inputs.yaffle-api-url }}
           workspace: ${{ inputs.frontend-infra-workspace }}
-          wait: true
+          wait: false
           wait-timeout: 600
       - name: Configure AWS credentials (S3 deploy)
         uses: aws-actions/configure-aws-credentials@v4
