@@ -28,20 +28,22 @@ variable "domain" {
 
 variable "runner_api_url" {
   type        = string
-  description = "Runner-reachable control plane API URL for ECS/local runners"
+  description = "URL the runner uses to reach the control plane API (e.g., https://api.yaffle.dev)"
   default     = ""
 }
 
+# NOTE: This is a host, not a URL. Terraform's backend config takes a bare hostname.
+# Don't "fix" the inconsistency with runner_api_url — they're different types for a reason.
 variable "runner_tfc_api_host" {
   type        = string
-  description = "Runner-reachable TFC-compatible API host used for backend state URLs"
+  description = "Host the runner uses for TFC-compatible backend state (e.g., api.yaffle.dev)"
   default     = ""
 }
 
 variable "control_plane_image" {
   type        = string
   description = "Docker image for the control plane container"
-  default     = "ghcr.io/yaffle-dot-dev/yaffle/control-plane:latest"
+  default     = "870923192739.dkr.ecr.us-east-1.amazonaws.com/yaffle-control-plane-production:latest"
 }
 
 variable "secrets_arn_prefix" {

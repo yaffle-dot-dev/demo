@@ -72,5 +72,5 @@ resource "aws_secretsmanager_secret" "database_url" {
 
 resource "aws_secretsmanager_secret_version" "database_url" {
   secret_id     = aws_secretsmanager_secret.database_url.id
-  secret_string = planetscale_postgres_branch_role.app.access_host_url
+  secret_string = "postgresql://${planetscale_postgres_branch_role.app.username}:${planetscale_postgres_branch_role.app.password}@${planetscale_postgres_branch_role.app.access_host_url}:5432/postgres?sslmode=require"
 }

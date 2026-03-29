@@ -622,7 +622,7 @@ export async function getScheduler(): Promise<Scheduler> {
     const taskDefinition = process.env.YAFFLE_ECS_TASK_DEFINITION
     const subnets = (process.env.YAFFLE_ECS_SUBNETS ?? "").split(",").filter(Boolean)
     const securityGroups = (process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "").split(",").filter(Boolean)
-    const apiUrl = process.env.YAFFLE_RUNNER_API_URL ?? process.env.YAFFLE_API_URL
+    const apiUrl = process.env.YAFFLE_RUNNER_API_URL
 
     if (!clusterArn || !taskDefinition || subnets.length === 0 || securityGroups.length === 0 || !apiUrl) {
       throw new Error("Missing ECS spawner configuration (cluster/task/subnets/sg/apiUrl)")
@@ -640,7 +640,7 @@ export async function getScheduler(): Promise<Scheduler> {
     logger.info("Scheduler using ECS engine spawner")
   } else {
     // Local development: spawns detached child processes that survive CP restarts
-    const apiUrl = process.env.YAFFLE_RUNNER_API_URL ?? process.env.YAFFLE_API_URL
+    const apiUrl = process.env.YAFFLE_RUNNER_API_URL
     if (!apiUrl) {
       throw new Error("YAFFLE_RUNNER_API_URL must be configured")
     }

@@ -65,6 +65,14 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS", value = tostring(local.stripe_pricing.free_limits.concurrent_preview_branches) },
         { name = "YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS", value = tostring(local.stripe_pricing.free_limits.preview_creations_per_month) },
         { name = "YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS", value = tostring(local.stripe_pricing.free_limits.named_environments) },
+        # Auth
+        { name = "BETTER_AUTH_URL", value = "https://${var.domain}" },
+        { name = "TRUSTED_ORIGINS", value = "https://${var.domain}" },
+        # Runner spawner (ECS)
+        { name = "YAFFLE_ECS_CLUSTER_ARN", value = local.ecs_cluster_arn },
+        { name = "YAFFLE_ECS_TASK_DEFINITION", value = module.runner.task_definition_family },
+        { name = "YAFFLE_RUNNER_SUBNETS", value = join(",", local.private_subnet_ids) },
+        { name = "YAFFLE_RUNNER_SECURITY_GROUPS", value = module.runner.security_group_id },
       ]
 
       secrets = [
@@ -73,6 +81,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "GITHUB_APP_PRIVATE_KEY", valueFrom = "${local.secrets_arn_prefix}/github-app-private-key" },
         { name = "GITHUB_WEBHOOK_SECRET", valueFrom = "${local.secrets_arn_prefix}/github-webhook-secret" },
         { name = "BETTER_AUTH_SECRET", valueFrom = "${local.secrets_arn_prefix}/better-auth-secret" },
+        { name = "GITHUB_OAUTH_CLIENT_ID", valueFrom = "${local.secrets_arn_prefix}/github-oauth-client-id" },
+        { name = "GITHUB_OAUTH_CLIENT_SECRET", valueFrom = "${local.secrets_arn_prefix}/github-oauth-client-secret" },
         { name = "STRIPE_API_KEY", valueFrom = local.stripe_api_key_secret_arn },
         { name = "STRIPE_WEBHOOK_SIGNING_SECRET", valueFrom = local.stripe_webhook_signing_secret_arn },
       ]

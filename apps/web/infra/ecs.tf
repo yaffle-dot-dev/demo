@@ -53,6 +53,7 @@ resource "aws_ecs_task_definition" "web" {
         { name = "PORT", value = "3000" },
         { name = "NODE_ENV", value = var.is_preview ? "development" : "production" },
         { name = "ORIGIN", value = "https://${var.domain}" },
+        { name = "YAFFLE_API_URL", value = "https://${module.control_plane.api_domain}" },
         # Stripe pricing (runtime vars for SvelteKit $env/dynamic/public)
         { name = "PUBLIC_STRIPE_PRO_PRICE_ID", value = module.shared.stripe_pricing.pro.price_id },
         { name = "PUBLIC_STRIPE_PRO_AMOUNT", value = tostring(module.shared.stripe_pricing.pro.amount) },

@@ -51,6 +51,8 @@ environments = ["main"]
 [[workspaces]]
 path = "apps/control-plane/infra"
 environments = ["*"]
+variables.runner_api_url = "https://api.yaffle.dev"
+variables.runner_tfc_api_host = "api.yaffle.dev"
 
 [[workspaces]]
 path = "apps/runner/infra"

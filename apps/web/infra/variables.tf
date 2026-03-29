@@ -30,7 +30,7 @@ variable "domain" {
 variable "web_image" {
   type        = string
   description = "Docker image for the web app container"
-  default     = "ghcr.io/yaffle-dot-dev/yaffle/web:latest"
+  default     = "870923192739.dkr.ecr.us-east-1.amazonaws.com/yaffle-web-production:latest"
 }
 
 module "naming" {
