@@ -107,8 +107,20 @@ resource "stripe_portal_configuration" "default" {
     }
 
     subscription_cancel {
-      enabled = true
-      mode    = "at_period_end"
+      enabled            = true
+      mode               = "at_period_end"
+      proration_behavior = "none"
+
+      cancellation_reason {
+        enabled = false
+        options = [
+          "too_expensive",
+          "missing_features",
+          "switched_service",
+          "unused",
+          "other",
+        ]
+      }
     }
 
     subscription_update {
