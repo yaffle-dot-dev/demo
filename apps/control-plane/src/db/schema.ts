@@ -249,6 +249,7 @@ export const tfRuns = pgTable("tf_runs", {
   ecsTaskArn: text("ecs_task_arn"),
   planSummary: text("plan_summary"),
   planJson: jsonb("plan_json"),
+  planFileS3Key: text("plan_file_s3_key"),
   logOutput: text("log_output"),
   outputs: jsonb("outputs"),
   errorMessage: text("error_message"),

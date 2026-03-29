@@ -241,11 +241,29 @@ async function main(): Promise<void> {
     if (cancellationRequested) {
       log("Job cancellation acknowledged by worker")
     } else if (result.success) {
+      // Upload plan file to S3 if this was a plan run
+      let planFileS3Key: string | undefined
+      if (result.planFilePath) {
+        try {
+          const { uploadUrl, s3Key } = await apiClient.getPlanFileUploadUrl(runId)
+          const planData = await Bun.file(result.planFilePath).arrayBuffer()
+          await apiClient.uploadPlanFile(uploadUrl, planData)
+          planFileS3Key = s3Key
+          log("Plan file uploaded to S3", { s3Key })
+        } catch (err) {
+          // Non-fatal: apply will fall back to re-planning
+          error("Failed to upload plan file", {
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+
       await apiClient.complete(runId, {
         output: result.output,
         hasChanges: result.hasChanges,
         planSummary: result.planSummary,
         planJson: result.planJson,
+        planFileS3Key,
         outputs: result.outputs,
         durationMs: result.durationMs,
       })

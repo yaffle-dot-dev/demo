@@ -34,6 +34,7 @@ export async function updateRunStatus(
     ecsTaskArn?: string
     planSummary?: string
     planJson?: unknown
+    planFileS3Key?: string
     outputs?: unknown
     errorMessage?: string
     startedAt?: Date

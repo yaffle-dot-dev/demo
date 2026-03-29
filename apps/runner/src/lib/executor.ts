@@ -19,6 +19,7 @@ export interface TerraformResult {
   hasChanges?: boolean
   planSummary?: string
   planJson?: unknown
+  planFilePath?: string
   outputs?: Record<string, unknown>
   errorMessage?: string
   durationMs: number
@@ -132,13 +133,42 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       }
 
       case "apply": {
-        result = await runCommand(
-          workDir,
-          ["tofu", "apply", "-input=false", "-auto-approve"],
-          wrappedOnOutput,
-          combinedEnv,
-          onProcess,
-        )
+        // If a saved plan file URL is provided, download it and apply from plan
+        const planFilePath = join(workDir, "tfplan")
+        let hasPlanFile = false
+
+        if (context.planFileUrl) {
+          try {
+            const planResponse = await fetch(context.planFileUrl)
+            if (planResponse.ok) {
+              const planData = await planResponse.arrayBuffer()
+              await writeFile(planFilePath, Buffer.from(planData))
+              hasPlanFile = true
+            }
+          } catch {
+            // Fall back to re-planning via auto-approve
+          }
+        }
+
+        if (hasPlanFile) {
+          // Apply from saved plan — no refresh, no re-plan
+          result = await runCommand(
+            workDir,
+            ["tofu", "apply", "-input=false", planFilePath],
+            wrappedOnOutput,
+            combinedEnv,
+            onProcess,
+          )
+        } else {
+          // Fallback: re-plan and apply (old behavior)
+          result = await runCommand(
+            workDir,
+            ["tofu", "apply", "-input=false", "-auto-approve"],
+            wrappedOnOutput,
+            combinedEnv,
+            onProcess,
+          )
+        }
 
         if (result.success) {
           // Capture outputs
@@ -185,6 +215,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       hasChanges: context.command === "plan" ? result.exitCode === 2 : undefined,
       planSummary,
       planJson,
+      planFilePath: context.command === "plan" && result.success ? join(workDir, "tfplan") : undefined,
       outputs,
       errorMessage: result.success ? undefined : result.output,
       durationMs: Date.now() - startTime,

@@ -26,7 +26,7 @@ import {
 import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 import { findRunGroupById } from "../db/queries/run-groups.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
-import { createTfRun, appendRunLog, updateRunStatus } from "../db/queries/tf-runs.ts"
+import { createTfRun, appendRunLog, updateRunStatus, findLatestSuccessfulRun } from "../db/queries/tf-runs.ts"
 import { insertResourceSpan, completeResourceSpan, closeOrphanedSpans } from "../db/queries/resource-spans.ts"
 import {
   buildWorkspaceName,
@@ -569,10 +569,12 @@ runnerRoute.post("/complete", async (c) => {
     if (success) {
       const now = new Date()
       const planSummary = typeof result?.planSummary === "string" ? result.planSummary : undefined
+      const planFileS3Key = typeof result?.planFileS3Key === "string" ? result.planFileS3Key : undefined
       await updateRunStatus(runId, deployment.id, "success", {
         completedAt: now,
         planSummary,
         planJson: result?.planJson,
+        planFileS3Key,
         outputs: result?.outputs,
       })
 
@@ -713,6 +715,51 @@ runnerRoute.get("/job/:jobId", async (c) => {
 })
 
 // ---------------------------------------------------------------------------
+// POST /api/runner/plan-file-url
+// ---------------------------------------------------------------------------
+
+/**
+ * Get a presigned URL for uploading the plan file binary after plan completes.
+ * The runner uploads the tfplan binary to S3 so apply can use it directly
+ * instead of re-planning.
+ */
+runnerRoute.post("/plan-file-url", async (c) => {
+  const auth = c.get("runnerAuth") as RunnerAuthContext
+  const body = await c.req.json()
+  const { runId } = body
+
+  if (!runId || typeof runId !== "string") {
+    return c.json(
+      { error: { code: "BAD_REQUEST", message: "runId is required" } },
+      400,
+    )
+  }
+
+  try {
+    const cache = createWorkspaceCache()
+    const { uploadUrl, s3Key } = await cache.getPlanFileUploadUrl(runId)
+
+    logger.info("runner.plan_file_url.generated", {
+      "job.id": auth.jobToken.job_id,
+      "run.id": runId,
+      "s3.key": s3Key,
+    })
+
+    return c.json({ data: { uploadUrl, s3Key } })
+  } catch (err) {
+    logger.error("runner.plan_file_url.failed", {
+      "job.id": auth.jobToken.job_id,
+      "run.id": runId,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return c.json(
+      { error: { code: "INTERNAL_ERROR", message: "Failed to generate upload URL" } },
+      500,
+    )
+  }
+})
+
+// ---------------------------------------------------------------------------
 // GET /api/runner/job/:jobId/context
 // ---------------------------------------------------------------------------
 
@@ -726,6 +773,7 @@ runnerRoute.get("/job/:jobId", async (c) => {
  * - Rendered variables
  * - Backend config (TFC)
  * - TFC token
+ * - Plan file URL (for apply jobs, to apply from saved plan)
  */
 runnerRoute.get("/job/:jobId/context", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
@@ -915,6 +963,29 @@ runnerRoute.get("/job/:jobId/context", async (c) => {
     tfcToken = await generateRunToken(deployment.id, tfcWorkspace.id, org.id)
   }
 
+  // For apply jobs, look up the saved plan file from the latest successful plan
+  let planFileUrl: string | undefined
+  if (job.jobType === "apply") {
+    try {
+      const latestPlan = await findLatestSuccessfulRun(deployment.id, "plan")
+      if (latestPlan?.planFileS3Key) {
+        const cache = createWorkspaceCache()
+        planFileUrl = await cache.getDownloadUrl(latestPlan.planFileS3Key)
+        logger.info("runner.context.plan_file_url", {
+          jobId,
+          planRunId: latestPlan.id,
+          s3Key: latestPlan.planFileS3Key,
+        })
+      }
+    } catch (err) {
+      logger.warn("runner.context.plan_file_url_failed", {
+        jobId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      // Non-fatal: apply will fall back to re-planning
+    }
+  }
+
   return c.json({
     data: {
       workspaceUrl,
@@ -924,6 +995,7 @@ runnerRoute.get("/job/:jobId/context", async (c) => {
       executionEnv,
       backendConfig,
       tfcToken,
+      planFileUrl,
     },
   })
 })

@@ -182,6 +182,26 @@ export class WorkspaceCache {
   }
 
   /**
+   * Get a presigned PUT URL for uploading a plan file.
+   */
+  async getPlanFileUploadUrl(
+    runId: string,
+    expiresIn: number = 15 * 60,
+  ): Promise<{ uploadUrl: string; s3Key: string }> {
+    const s3Key = `plan-files/${runId}/tfplan`
+    const uploadUrl = await getSignedUrl(
+      this.s3,
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: s3Key,
+        ContentType: "application/octet-stream",
+      }),
+      { expiresIn },
+    )
+    return { uploadUrl, s3Key }
+  }
+
+  /**
    * Get a presigned URL for downloading a cached workspace.
    *
    * @param s3Key - S3 key (from upload() return value)

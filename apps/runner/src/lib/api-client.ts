@@ -54,6 +54,8 @@ export interface ExecutionContext {
     workspaceName: string
   }
   tfcToken?: string
+  /** Presigned URL to download the saved plan file (apply only) */
+  planFileUrl?: string
 }
 
 export interface SpanEvent {
@@ -230,6 +232,43 @@ export class RunnerApiClient {
 
     const result = await response.json()
     return result.data
+  }
+
+  /**
+   * Get a presigned URL for uploading the plan file binary.
+   */
+  async getPlanFileUploadUrl(runId: string): Promise<{ uploadUrl: string; s3Key: string }> {
+    const response = await fetch(`${this.config.apiUrl}/api/runner/plan-file-url`, {
+      method: "POST",
+      headers: this.headers,
+      body: JSON.stringify({ runId }),
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to get plan file upload URL: ${response.status} ${error}`)
+    }
+
+    const result = await response.json()
+    return result.data
+  }
+
+  /**
+   * Upload a plan file binary to S3 via presigned URL.
+   */
+  async uploadPlanFile(uploadUrl: string, planData: ArrayBuffer): Promise<void> {
+    const response = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/octet-stream",
+      },
+      body: planData,
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`Failed to upload plan file: ${response.status} ${error}`)
+    }
   }
 
   /**
