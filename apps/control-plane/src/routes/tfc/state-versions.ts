@@ -416,6 +416,71 @@ stateVersionsRoute.get(
   },
 )
 
+/**
+ * GET /tfc/api/v2/state-version-outputs/:id
+ * Get a single state version output by its synthetic ID.
+ *
+ * The ID format is: wsout-{stateVersionId}-{outputName}
+ * Terraform CLI follows the self-links from the list endpoint to fetch individual outputs.
+ */
+stateVersionsRoute.get(
+  "/state-version-outputs/:id",
+  requireScopes(TFC_SCOPES.stateRead),
+  async (c) => {
+    const outputId = c.req.param("id")
+
+    // Parse synthetic ID: wsout-{uuid}-{outputName}
+    // UUID is 36 chars, so: "wsout-" (6) + UUID (36) + "-" (1) + name
+    const prefix = "wsout-"
+    if (!outputId.startsWith(prefix)) {
+      return c.json({ errors: [{ status: "404", title: "Resource not found" }] }, 404)
+    }
+
+    const rest = outputId.slice(prefix.length)
+    // UUID format: 8-4-4-4-12 = 36 chars
+    const stateVersionId = rest.slice(0, 36)
+    const outputName = rest.slice(37) // skip the "-" after UUID
+
+    if (!stateVersionId || !outputName) {
+      return c.json({ errors: [{ status: "404", title: "Resource not found" }] }, 404)
+    }
+
+    const sv = await findStateVersionById(stateVersionId)
+    if (!sv) {
+      return c.json({ errors: [{ status: "404", title: "Resource not found" }] }, 404)
+    }
+
+    // Access check via workspace
+    const access = await getTfcWorkspaceAccess(c, sv.workspaceId)
+    if (access instanceof Response) {
+      return access
+    }
+
+    const outputs = (sv.outputs ?? {}) as Record<string, { value: unknown; type?: unknown; sensitive?: boolean }>
+    const output = outputs[outputName]
+    if (!output) {
+      return c.json({ errors: [{ status: "404", title: "Resource not found" }] }, 404)
+    }
+
+    return c.json({
+      data: {
+        id: outputId,
+        type: "state-version-outputs",
+        attributes: {
+          name: outputName,
+          sensitive: output.sensitive ?? false,
+          type: typeof output.type === "string" ? output.type : JSON.stringify(output.type),
+          value: output.sensitive ? null : output.value,
+          "detailed-type": output.type,
+        },
+        links: {
+          self: `/api/v2/state-version-outputs/${outputId}`,
+        },
+      },
+    })
+  },
+)
+
 // =============================================================================
 // State version routes
 // =============================================================================

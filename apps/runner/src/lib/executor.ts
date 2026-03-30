@@ -120,7 +120,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
           )
           if (showResult.success) {
             try {
-              planJson = JSON.parse(showResult.output)
+              planJson = JSON.parse(showResult.stdout)
             } catch {
               // Ignore JSON parse errors
             }
@@ -181,7 +181,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
           )
           if (outputResult.success) {
             try {
-              outputs = JSON.parse(outputResult.output)
+              outputs = JSON.parse(outputResult.stdout)
             } catch {
               // Ignore JSON parse errors
             }
@@ -303,6 +303,7 @@ async function configureVariables(
 interface CommandResult {
   success: boolean
   output: string
+  stdout: string
   exitCode: number
   timedOut?: boolean
 }
@@ -335,6 +336,7 @@ async function runCommand(
   onProcess?.(proc)
 
   let output = ""
+  let stdout = ""
   let timedOut = false
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null
 
@@ -373,6 +375,9 @@ async function runCommand(
 
       const chunk = decoder.decode(value)
       output += chunk
+      if (source === "stdout") {
+        stdout += chunk
+      }
 
       if (onOutput) {
         onOutput(chunk, source)
@@ -394,6 +399,7 @@ async function runCommand(
   return {
     success: successExitCodes.includes(exitCode) && !timedOut,
     output,
+    stdout,
     exitCode,
     timedOut,
   }
