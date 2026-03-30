@@ -239,7 +239,7 @@ import {
 import {
   for_each = local.import_main
   to       = tailscale_oauth_client.ecs_runner
-  id       = "kjzxjf9c8X11CNTRL"
+  id       = "kdaYfkkryj11CNTRL"
 }
 
 import {

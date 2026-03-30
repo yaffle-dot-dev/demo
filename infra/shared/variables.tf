@@ -48,5 +48,5 @@ variable "tailscale_runner_tags" {
 variable "tailscale_github_actions_tags" {
   type        = list(string)
   description = "Tags allowed for GitHub Actions ephemeral Tailscale nodes"
-  default     = ["tag:github-actions-ci"]
+  default     = ["tag:ci-runner"]
 }

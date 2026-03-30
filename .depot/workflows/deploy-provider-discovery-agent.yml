@@ -74,7 +74,7 @@ jobs:
         with:
           oauth-client-id: ${{ steps.tailscale-bootstrap.outputs.oauth-client-id }}
           oauth-secret: ${{ steps.tailscale-bootstrap.outputs.oauth-secret }}
-          tags: tag:github-actions-ci
+          tags: tag:ci-runner
           ping: ${{ env.DEFAULT_TAILSCALE_PING_TARGET }}
           version: latest
           args: '--accept-dns'

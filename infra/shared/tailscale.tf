@@ -60,6 +60,13 @@ resource "aws_secretsmanager_secret_version" "tailscale_runner_authkey" {
     authkey   = tailscale_oauth_client.ecs_runner.key
     client_id = tailscale_oauth_client.ecs_runner.id
   })
+
+  # Tailscale doesn't return the client secret on read (only at creation time),
+  # so imported oauth clients have key=null in state. Ignore changes to prevent
+  # overwriting manually-set secrets with null.
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
 }
 
 resource "aws_secretsmanager_secret" "tailscale_github_actions_oauth" {

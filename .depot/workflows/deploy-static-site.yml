@@ -100,7 +100,7 @@ jobs:
         with:
           oauth-client-id: ${{ steps.tailscale-bootstrap.outputs.oauth-client-id }}
           oauth-secret: ${{ steps.tailscale-bootstrap.outputs.oauth-secret }}
-          tags: tag:github-actions-ci
+          tags: tag:ci-runner
           ping: ${{ inputs.tailscale-ping-target }}
           version: latest
 
