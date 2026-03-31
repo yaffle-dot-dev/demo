@@ -5,15 +5,15 @@ import { describeTaskDefinition, renderImage, registerTaskDefinition, deployServ
 export async function deployWeb() {
   const { registry, tier, sha, dryRun } = await getConfig()
 
-  const outputs = await fetchOutputs({
-    workspace: "apps/web/infra",
-    environment: "main",
-    wait: false,
-  })
+  const [webOutputs, cpOutputs] = await Promise.all([
+    fetchOutputs({ workspace: "apps/web/infra", environment: "main", wait: false }),
+    fetchOutputs({ workspace: "apps/control-plane/infra", environment: "main", wait: false }),
+  ])
 
-  const cluster = outputs.ecs_cluster_name as string
-  const service = outputs.ecs_service_name as string
-  const family = service
+  const cluster = cpOutputs.ecs_cluster_name as string
+  const service = webOutputs.web_service_name as string
+  const taskDefArn = webOutputs.web_task_definition_arn as string
+  const family = taskDefArn.split("/").pop()!.split(":")[0]
   const image = `${imageUri(registry, "web", tier)}:sha-${sha}`
 
   console.log(`Deploying web: ${image} → ${cluster}/${service}`)

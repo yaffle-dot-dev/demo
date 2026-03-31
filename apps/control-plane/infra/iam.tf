@@ -160,7 +160,9 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
           "secretsmanager:GetSecretValue"
         ]
         Resource = [
-          "${local.secrets_arn_prefix}/*"
+          "${local.secrets_arn_prefix}/*",
+          local.stripe_api_key_secret_arn,
+          local.stripe_webhook_signing_secret_arn,
         ]
       }
     ]

@@ -236,9 +236,7 @@ export const runGroups = pgTable("run_groups", {
 
 export const tfRuns = pgTable("tf_runs", {
   id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  // Note: Column still named preview_id in DB for FK compatibility during migration
-  // Will be renamed to deployment_id in a future migration
-  deploymentId: uuid("preview_id")
+  deploymentId: uuid("deployment_id")
     .references(() => workspaceDeployments.id)
     .notNull(),
   runGroupId: uuid("run_group_id")
@@ -256,7 +254,9 @@ export const tfRuns = pgTable("tf_runs", {
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-})
+}, (t) => [
+  index("tf_runs_deployment_id_idx").on(t.deploymentId, t.createdAt.desc()),
+])
 
 // =============================================================================
 // Resource Spans (resource-level timing from tofu runs)
@@ -288,8 +288,7 @@ export const resourceSpans = pgTable("resource_spans", {
 
 export const approvals = pgTable("approvals", {
   id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  // Note: Column still named preview_id in DB for FK compatibility during migration
-  deploymentId: uuid("preview_id")
+  deploymentId: uuid("deployment_id")
     .references(() => workspaceDeployments.id)
     .notNull(),
   userId: text("user_id")
@@ -325,8 +324,7 @@ export const iacJobs = pgTable(
   "iac_jobs",
   {
     id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-    // Note: Column still named preview_id in DB for FK compatibility during migration
-    deploymentId: uuid("preview_id")
+    deploymentId: uuid("deployment_id")
       .references(() => workspaceDeployments.id, { onDelete: "cascade" })
       .notNull(),
     jobType: iacJobTypeEnum("job_type").notNull(),

@@ -83,9 +83,12 @@ export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<st
 
   console.log(`Fetching outputs for workspace=${opts.workspace}...`)
 
-  const proc = $`bun run ${import.meta.dir}/../../packages/cli/src/outputs.ts ${args}`
+  const { org, repo } = await getOrgRepo()
+
+  const proc = $`bun run packages/cli/src/main.ts outputs ${args}`
     .env({
       GITHUB_TOKEN: token,
+      GITHUB_REPOSITORY: `${org}/${repo}`,
       YAFFLE_API_URL,
       NODE_TLS_REJECT_UNAUTHORIZED: YAFFLE_API_URL.includes("localhost") || YAFFLE_API_URL.includes(".local") ? "0" : "1",
     })

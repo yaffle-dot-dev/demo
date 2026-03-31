@@ -167,3 +167,20 @@ resource "aws_secretsmanager_secret" "stripe_webhook_signing_secret" {
     ManagedBy = "terraform"
   }
 }
+
+# Auto-populate from the Stripe webhook endpoint
+resource "aws_secretsmanager_secret_version" "stripe_webhook_signing_secret" {
+  secret_id     = aws_secretsmanager_secret.stripe_webhook_signing_secret.id
+  secret_string = stripe_webhook_endpoint.billing.secret
+}
+
+# API key: value set via CLI (terraform uses it to authenticate, can't self-reference).
+# Seed with placeholder so ECS tasks don't fail on missing version.
+resource "aws_secretsmanager_secret_version" "stripe_api_key" {
+  secret_id     = aws_secretsmanager_secret.stripe_api_key.id
+  secret_string = "PLACEHOLDER-set-via-cli"
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}

@@ -68,6 +68,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         # Auth
         { name = "BETTER_AUTH_URL", value = "https://${var.domain}" },
         { name = "TRUSTED_ORIGINS", value = "https://${var.domain}" },
+        # Telemetry
+        { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "https://api.axiom.co" },
         # Runner spawner (ECS)
         { name = "YAFFLE_ECS_CLUSTER_ARN", value = local.ecs_cluster_arn },
         { name = "YAFFLE_ECS_TASK_DEFINITION", value = module.runner.task_definition_family },
@@ -76,13 +78,14 @@ resource "aws_ecs_task_definition" "control_plane" {
       ]
 
       secrets = [
-        { name = "DATABASE_URL", valueFrom = "${local.secrets_arn_prefix}/database-url" },
-        { name = "GITHUB_APP_ID", valueFrom = "${local.secrets_arn_prefix}/github-app-id" },
-        { name = "GITHUB_APP_PRIVATE_KEY", valueFrom = "${local.secrets_arn_prefix}/github-app-private-key" },
-        { name = "GITHUB_WEBHOOK_SECRET", valueFrom = "${local.secrets_arn_prefix}/github-webhook-secret" },
-        { name = "BETTER_AUTH_SECRET", valueFrom = "${local.secrets_arn_prefix}/better-auth-secret" },
-        { name = "GITHUB_OAUTH_CLIENT_ID", valueFrom = "${local.secrets_arn_prefix}/github-oauth-client-id" },
-        { name = "GITHUB_OAUTH_CLIENT_SECRET", valueFrom = "${local.secrets_arn_prefix}/github-oauth-client-secret" },
+        { name = "DATABASE_URL", valueFrom = aws_secretsmanager_secret.database_url.arn },
+        { name = "GITHUB_APP_ID", valueFrom = aws_secretsmanager_secret.app["github-app-id"].arn },
+        { name = "GITHUB_APP_PRIVATE_KEY", valueFrom = aws_secretsmanager_secret.app["github-app-private-key"].arn },
+        { name = "GITHUB_WEBHOOK_SECRET", valueFrom = aws_secretsmanager_secret.app["github-webhook-secret"].arn },
+        { name = "BETTER_AUTH_SECRET", valueFrom = aws_secretsmanager_secret.app["better-auth-secret"].arn },
+        { name = "GITHUB_OAUTH_CLIENT_ID", valueFrom = aws_secretsmanager_secret.app["github-oauth-client-id"].arn },
+        { name = "GITHUB_OAUTH_CLIENT_SECRET", valueFrom = aws_secretsmanager_secret.app["github-oauth-client-secret"].arn },
+        { name = "OTEL_EXPORTER_OTLP_HEADERS", valueFrom = aws_secretsmanager_secret.app["otel-headers"].arn },
         { name = "STRIPE_API_KEY", valueFrom = local.stripe_api_key_secret_arn },
         { name = "STRIPE_WEBHOOK_SIGNING_SECRET", valueFrom = local.stripe_webhook_signing_secret_arn },
       ]
@@ -97,7 +100,7 @@ resource "aws_ecs_task_definition" "control_plane" {
       }
 
       healthCheck = {
-        command     = ["CMD-SHELL", "wget -q --spider http://localhost:3000/health || exit 1"]
+        command     = ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
         interval    = 30
         timeout     = 5
         retries     = 3
