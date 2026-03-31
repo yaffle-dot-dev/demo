@@ -3,21 +3,21 @@ version: "0.5"
 log_location: .dev/logs/process-compose.log
 
 processes:
-  postgres:
-    command: |
-      if [ ! -d "$PGDATA" ]; then
-        echo "Run ./scripts/dev-init.sh first to initialize postgres"
-        exit 1
-      fi
-      # Run postgres in foreground (not as daemon)
-      postgres -D "$PGDATA" -k /tmp -p 5432
-    log_location: .dev/logs/postgres.log
-    readiness_probe:
-      exec:
-        command: "pg_isready -h /tmp -p 5432 -d yaffle_dev"
-      initial_delay_seconds: 2
-      period_seconds: 5
-      failure_threshold: 3
+  # postgres:
+  #   command: |
+  #     if [ ! -d "$PGDATA" ]; then
+  #       echo "Run ./scripts/dev-init.sh first to initialize postgres"
+  #       exit 1
+  #     fi
+  #     # Run postgres in foreground (not as daemon)
+  #     postgres -D "$PGDATA" -k /tmp -p 5432
+  #   log_location: .dev/logs/postgres.log
+  #   readiness_probe:
+  #     exec:
+  #       command: "pg_isready -h /tmp -p 5432 -d yaffle_dev"
+  #     initial_delay_seconds: 2
+  #     period_seconds: 5
+  #     failure_threshold: 3
 
   caddy:
     command: "caddy run --config Caddyfile"
@@ -35,9 +35,9 @@ processes:
   control-plane:
     command: "./scripts/dev-control-plane.sh"
     log_location: .dev/logs/control-plane.log
-    depends_on:
-      postgres:
-        condition: process_healthy
+    # depends_on:
+    #   postgres:
+    #     condition: process_healthy
     readiness_probe:
       http_get:
         host: 127.0.0.1

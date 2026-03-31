@@ -3,7 +3,17 @@ import postgres from "postgres"
 
 import * as schema from "../db/schema.ts"
 
-const connectionString = process.env.DATABASE_URL ?? "postgresql://yaffle@localhost:5432/yaffle_dev"
+function cleanDbUrl(raw: string): string {
+  try {
+    const url = new URL(raw)
+    url.searchParams.delete("sslrootcert")
+    return url.toString()
+  } catch {
+    return raw
+  }
+}
+
+const connectionString = cleanDbUrl(process.env.DATABASE_URL ?? "postgresql://yaffle@localhost:5432/yaffle_dev")
 
 const client = postgres(connectionString, {
   max: 10, // Maximum connections in the pool
