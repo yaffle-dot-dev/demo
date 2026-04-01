@@ -143,6 +143,34 @@ export async function findLatestJobForDeployment(
   })
 }
 
+/**
+ * Find the latest job per deployment for a batch of deployment IDs.
+ * Returns a Map keyed by deploymentId.
+ */
+export async function findLatestJobsForDeployments(
+  deploymentIds: string[],
+): Promise<Map<string, IacJob>> {
+  if (deploymentIds.length === 0) return new Map()
+
+  return withDbSpan("select", "iac_jobs", async () => {
+    const idPlaceholders = sql.join(deploymentIds.map(id => sql`${id}`), sql`,`)
+    const rows = await db
+      .select()
+      .from(iacJobs)
+      .where(sql`${iacJobs.deploymentId} IN (${idPlaceholders})`)
+      .orderBy(iacJobs.deploymentId, sql`${iacJobs.queuedAt} DESC`)
+
+    // Keep only the first (latest) row per deployment
+    const map = new Map<string, IacJob>()
+    for (const row of rows) {
+      if (!map.has(row.deploymentId)) {
+        map.set(row.deploymentId, row)
+      }
+    }
+    return map
+  })
+}
+
 export async function cancelRunningJobForDeploymentAndType(
   deploymentId: string,
   jobType: IacJobType,

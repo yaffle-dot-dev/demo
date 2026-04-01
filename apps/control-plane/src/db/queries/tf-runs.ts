@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, sql } from "drizzle-orm"
 
 import type { RunStatus, RunType } from "@yaffle/shared"
 
@@ -72,6 +72,43 @@ export async function appendRunLog(
       .set({ logOutput: sql`coalesce(${tfRuns.logOutput}, '') || ${chunk}` })
       .where(eq(tfRuns.id, runId))
     events.emitRunUpdate(runId, previewId)
+  })
+}
+
+/**
+ * Find the latest run per deployment for a batch of deployment IDs.
+ * Optionally filtered by run type. Returns a Map keyed by deploymentId.
+ *
+ * Fetches all matching runs sorted by deployment + time, then deduplicates
+ * in JS to keep the first (latest) per deployment. Bounded by deployment count.
+ */
+export async function findLatestRunsForDeployments(
+  deploymentIds: string[],
+  runType?: RunType,
+): Promise<Map<string, TfRun>> {
+  if (deploymentIds.length === 0) return new Map()
+
+  return withDbSpan("select", "tf_runs", async () => {
+    const idPlaceholders = sql.join(deploymentIds.map(id => sql`${id}`), sql`,`)
+    const conditions = [sql`${tfRuns.deploymentId} IN (${idPlaceholders})`]
+    if (runType) {
+      conditions.push(eq(tfRuns.runType, runType))
+    }
+
+    const rows = await db
+      .select()
+      .from(tfRuns)
+      .where(and(...conditions))
+      .orderBy(tfRuns.deploymentId, desc(tfRuns.createdAt))
+
+    // Keep only the first (latest) row per deployment
+    const map = new Map<string, TfRun>()
+    for (const row of rows) {
+      if (!map.has(row.deploymentId)) {
+        map.set(row.deploymentId, row)
+      }
+    }
+    return map
   })
 }
 

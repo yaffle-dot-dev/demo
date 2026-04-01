@@ -3,10 +3,12 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
 import { listDeployments } from "../db/queries/workspace-deployments.ts"
-import { findLatestRun } from "../db/queries/tf-runs.ts"
-import { findLatestJobForDeployment } from "../db/queries/iac-jobs.ts"
+import { findLatestRunsForDeployments } from "../db/queries/tf-runs.ts"
+import { findLatestJobsForDeployments } from "../db/queries/iac-jobs.ts"
+import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
-import { getConnectionReadinessForDeployment } from "../lib/execution-credentials.ts"
+import { getConnectionReadinessForDeploymentWithDeps, type ConnectionReadiness } from "../lib/execution-credentials.ts"
+import { getRequiredProvidersForDeployment } from "../lib/provider-requirements.ts"
 
 const listQuerySchema = z.object({
   org: z.string().min(1),
@@ -126,6 +128,14 @@ environmentsRoute.get(
 
 /**
  * Fetch environment data for an org, optionally filtered by repo.
+ *
+ * Batches all DB lookups to avoid N+1 queries:
+ * 1. List deployments (1 query)
+ * 2. Latest apply runs for all deployments (1 query)
+ * 3. Latest runs (any type) for all deployments (1 query)
+ * 4. Latest jobs for all deployments (1 query)
+ * 5. Connections for the org (1 query)
+ * 6. Provider requirements per deployment (cached/parallel)
  */
 async function fetchEnvironments(
   orgId: string,
@@ -137,18 +147,42 @@ async function fetchEnvironments(
     limit: 250,
   })
 
-  const groups = new Map<string, EnvironmentGroup>()
-
   // Filter out destroyed workspaces - they're no longer in the config
   const activePreviews = result.items.filter((p) => p.status !== "destroyed")
+  if (activePreviews.length === 0) return []
+
+  const deploymentIds = activePreviews.map((p) => p.id)
+
+  // Batch fetch all data in parallel (5 queries instead of N*4)
+  const [applyRunsMap, allRunsMap, jobsMap, orgConnections] = await Promise.all([
+    findLatestRunsForDeployments(deploymentIds, "apply"),
+    findLatestRunsForDeployments(deploymentIds),
+    findLatestJobsForDeployments(deploymentIds),
+    listConnectionsForOrg(orgId),
+  ])
+
+  // Build connection readiness for each deployment using the pre-fetched connections
+  const readinessMap = new Map<string, ConnectionReadiness>()
+  await Promise.all(
+    activePreviews.map(async (preview) => {
+      const readiness = await getConnectionReadinessForDeploymentWithDeps(preview, {
+        getProvidersForDeployment: getRequiredProvidersForDeployment,
+        listConnectionsForOrg: async () => orgConnections,
+        resolveConnectionEnv: async () => ({}), // Not needed for readiness check
+      })
+      readinessMap.set(preview.id, readiness)
+    }),
+  )
+
+  const groups = new Map<string, EnvironmentGroup>()
 
   for (const preview of activePreviews) {
     const key = `${preview.repo}:${preview.environmentName}`
 
-    const latestApply = await findLatestRun(preview.id, "apply")
-    const latestRun = latestApply ?? (await findLatestRun(preview.id))
-    const latestJob = await findLatestJobForDeployment(preview.id)
-    const connectionReadiness = await getConnectionReadinessForDeployment(preview)
+    const latestApply = applyRunsMap.get(preview.id)
+    const latestRun = latestApply ?? allRunsMap.get(preview.id)
+    const latestJob = jobsMap.get(preview.id)
+    const connectionReadiness = readinessMap.get(preview.id)!
 
     const workspace: EnvironmentWorkspace = {
       previewId: preview.id,
