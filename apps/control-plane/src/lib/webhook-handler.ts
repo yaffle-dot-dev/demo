@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import { SpanKind } from "@opentelemetry/api"
 
 import type {
@@ -51,7 +53,7 @@ import {
 } from "./pr-comment.ts"
 import { LocalRunner } from "./local-runner.ts"
 import { type Mutex, KeyedMutex } from "./mutex.ts"
-import { PgAdvisoryMutex } from "./pg-advisory-mutex.ts"
+import { DbLeaseMutex } from "./db-lease.ts"
 import {
   type Runner,
   buildStateKey,
@@ -84,14 +86,13 @@ const defaultRunner: Runner = new LocalRunner()
  * preview (owner/repo/pr) are processed sequentially. Different previews
  * still run concurrently.
  *
- * In production (DATABASE_URL set), uses PostgreSQL advisory locks for
- * cross-process serialization across multiple API replicas.
- * In dev/test, falls back to in-memory KeyedMutex.
+ * Uses lease-based locking (pgbouncer-safe). Falls back to in-memory
+ * KeyedMutex in dev/test when DATABASE_URL is not set.
  */
 function createMutex(): Mutex {
   const dbUrl = process.env.DATABASE_URL
   if (dbUrl) {
-    return new PgAdvisoryMutex(dbUrl)
+    return new DbLeaseMutex(`webhook-${randomUUID().slice(0, 8)}`)
   }
   return new KeyedMutex()
 }

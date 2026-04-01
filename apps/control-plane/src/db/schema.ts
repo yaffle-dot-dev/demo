@@ -472,11 +472,11 @@ export const apiTokens = pgTable("api_tokens", {
 })
 
 // =============================================================================
-// Scheduler Leadership Lease
+// Distributed Leases
 // =============================================================================
 
-export const schedulerLease = pgTable("scheduler_lease", {
-  id: text("id").primaryKey().default("singleton"),
+export const leases = pgTable("leases", {
+  key: text("key").primaryKey(),
   holderId: text("holder_id").notNull(),
   acquiredAt: timestamp("acquired_at", { withTimezone: true }).defaultNow().notNull(),
   renewedAt: timestamp("renewed_at", { withTimezone: true }).defaultNow().notNull(),

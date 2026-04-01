@@ -22,9 +22,6 @@
 
 import { randomUUID } from "node:crypto"
 
-import { eq, sql } from "drizzle-orm"
-
-import { db } from "./db.ts"
 import {
   findQueuedJobsForSpawning,
   countActiveJobs,
@@ -37,9 +34,9 @@ import {
   type IacJob,
 } from "../db/queries/iac-jobs.ts"
 import { findDeploymentsReadyForAutoApply } from "../db/queries/workspace-deployments.ts"
-import { schedulerLease } from "../db/schema.ts"
 import { queueAutoApply } from "./webhook-handler.ts"
 import { generateJobTokenForJob } from "./local-spawner.ts"
+import { acquireLease, type LeaseHandle } from "./db-lease.ts"
 import {
   getSchedulerActiveJobsGauge,
   getSchedulerGroupsQueuedGauge,
@@ -511,15 +508,13 @@ export class Scheduler {
 }
 
 /** Lease duration — if the leader doesn't renew within this window, it's dead */
-const LEASE_DURATION_MS = 15_000
-/** How often the leader renews its lease */
-const LEASE_RENEW_INTERVAL_MS = 5_000
+const SCHEDULER_LEASE_TTL_MS = 15_000
+const SCHEDULER_LEASE_KEY = "scheduler:leader"
 
 type SchedulerLeaderState = {
   holderId: string
-  hasLeadership: boolean
+  leaseHandle: LeaseHandle | null
   electionTimer: ReturnType<typeof setInterval> | null
-  renewTimer: ReturnType<typeof setInterval> | null
   abdicatedAt: number | null
 }
 
@@ -529,9 +524,8 @@ function getSchedulerLeaderState(): SchedulerLeaderState {
   if (!globalRef[globalKey]) {
     globalRef[globalKey] = {
       holderId: `scheduler-${randomUUID().slice(0, 8)}`,
-      hasLeadership: false,
+      leaseHandle: null,
       electionTimer: null,
-      renewTimer: null,
       abdicatedAt: null,
     } as SchedulerLeaderState
   }
@@ -541,107 +535,34 @@ function getSchedulerLeaderState(): SchedulerLeaderState {
 
 const schedulerLeaderState = getSchedulerLeaderState()
 
-/**
- * Try to acquire the scheduler lease.
- *
- * Uses an upsert with a WHERE clause on expires_at — if the row doesn't exist
- * or the existing lease has expired, we claim it. If another holder has a valid
- * lease, the upsert is a no-op and we return false.
- */
 async function acquireSchedulerLeadership(): Promise<boolean> {
-  if (schedulerLeaderState.hasLeadership) {
+  if (schedulerLeaderState.leaseHandle) {
     return true
   }
 
-  const holderId = schedulerLeaderState.holderId
+  const handle = await acquireLease(
+    SCHEDULER_LEASE_KEY,
+    schedulerLeaderState.holderId,
+    SCHEDULER_LEASE_TTL_MS,
+  )
 
-  try {
-    // Try to insert if no row exists, or update if lease expired
-    const result: { holder_id: string }[] = await db.execute(
-      sql`INSERT INTO scheduler_lease (id, holder_id, acquired_at, renewed_at, expires_at)
-       VALUES ('singleton', ${holderId}, NOW(), NOW(), NOW() + INTERVAL '${sql.raw(String(LEASE_DURATION_MS))} milliseconds')
-       ON CONFLICT (id) DO UPDATE
-         SET holder_id = ${holderId},
-             acquired_at = NOW(),
-             renewed_at = NOW(),
-             expires_at = NOW() + INTERVAL '${sql.raw(String(LEASE_DURATION_MS))} milliseconds'
-         WHERE scheduler_lease.expires_at < NOW()
-       RETURNING holder_id`,
-    ) as unknown as { holder_id: string }[]
-
-    const acquired = result.length > 0 && result[0].holder_id === holderId
-    if (!acquired) {
-      logger.info("Scheduler leadership held by another instance")
-      return false
-    }
-
-    schedulerLeaderState.hasLeadership = true
-
-    // Start renewing the lease
-    schedulerLeaderState.renewTimer = setInterval(() => {
-      renewLease().catch((err) => {
-        logger.error("Failed to renew scheduler lease", {
-          error: err instanceof Error ? err.message : String(err),
-        })
-      })
-    }, LEASE_RENEW_INTERVAL_MS)
-
-    return true
-  } catch (err) {
-    logger.error("Failed to acquire scheduler leadership", {
-      error: err instanceof Error ? err.message : String(err),
-    })
+  if (!handle) {
+    logger.info("Scheduler leadership held by another instance")
     return false
   }
-}
 
-async function renewLease(): Promise<void> {
-  const holderId = schedulerLeaderState.holderId
-
-  const result = await db
-    .update(schedulerLease)
-    .set({
-      renewedAt: new Date(),
-      expiresAt: new Date(Date.now() + LEASE_DURATION_MS),
-    })
-    .where(eq(schedulerLease.holderId, holderId))
-    .returning({ holderId: schedulerLease.holderId })
-
-  if (result.length === 0) {
-    // Someone else took the lease (shouldn't happen, but be safe)
-    logger.warn("Scheduler lease lost during renewal")
-    schedulerLeaderState.hasLeadership = false
-    if (schedulerLeaderState.renewTimer) {
-      clearInterval(schedulerLeaderState.renewTimer)
-      schedulerLeaderState.renewTimer = null
-    }
-    // Stop the scheduler so the election loop can restart it
-    if (schedulerState.schedulerInstance) {
-      schedulerState.schedulerInstance.stop()
-    }
-  }
+  schedulerLeaderState.leaseHandle = handle
+  return true
 }
 
 async function releaseSchedulerLeadership(): Promise<void> {
-  if (!schedulerLeaderState.hasLeadership) {
+  if (!schedulerLeaderState.leaseHandle) {
     return
   }
 
-  if (schedulerLeaderState.renewTimer) {
-    clearInterval(schedulerLeaderState.renewTimer)
-    schedulerLeaderState.renewTimer = null
-  }
-
-  schedulerLeaderState.hasLeadership = false
-
-  try {
-    // Delete the lease row so another instance can claim immediately
-    await db
-      .delete(schedulerLease)
-      .where(eq(schedulerLease.holderId, schedulerLeaderState.holderId))
-  } catch {
-    // If delete fails, the lease will expire naturally
-  }
+  const handle = schedulerLeaderState.leaseHandle
+  schedulerLeaderState.leaseHandle = null
+  await handle.release()
 }
 
 // =============================================================================
@@ -766,10 +687,10 @@ const ABDICATION_COOLDOWN_MS = 60_000
 /**
  * Start the scheduler with continuous leader election.
  *
- * Tries to acquire the advisory lock immediately. If it fails, retries every
+ * Tries to acquire the lease immediately. If it fails, retries every
  * 5 seconds. When leadership is acquired, runs orphan recovery and starts
  * the scheduler. If the scheduler abdicates (repeated failures), releases
- * the lock and waits a cooldown period before retrying.
+ * the lease and waits a cooldown period before retrying.
  */
 export async function startScheduler(): Promise<void> {
   // Try immediately
@@ -786,7 +707,7 @@ export async function startScheduler(): Promise<void> {
 }
 
 async function tryBecomeLeader(): Promise<void> {
-  if (schedulerLeaderState.hasLeadership) {
+  if (schedulerLeaderState.leaseHandle) {
     return
   }
 
