@@ -3,6 +3,9 @@ import { defineConfig } from "drizzle-kit"
 function cleanDbUrl(raw: string): string {
   const url = new URL(raw)
   url.searchParams.delete("sslrootcert")
+  if (url.searchParams.get("sslmode") === "verify-full") {
+    url.searchParams.set("sslmode", "require")
+  }
   return url.toString()
 }
 

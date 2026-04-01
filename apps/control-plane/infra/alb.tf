@@ -85,13 +85,13 @@ resource "aws_lb_listener" "https" {
 }
 
 # -----------------------------------------------------------------------------
-# Route53 DNS
+# Route53 DNS (previews only)
 # -----------------------------------------------------------------------------
+# Production traffic goes through CloudFront (yaffle.dev/api/*) → ALB.
+# Previews need their own DNS since they don't have CloudFront.
 
-# DNS record for the ALB
-# Production: api.yaffle.dev
-# Preview: api-{env}.preview.yaffle.dev (e.g., api-pr-42.preview.yaffle.dev)
 resource "aws_route53_record" "api" {
+  count   = local.is_preview ? 1 : 0
   zone_id = local.route53_zone_id
   name    = local.api_domain
   type    = "A"
