@@ -11,11 +11,16 @@ export async function deployCp() {
     wait: false,
   })
 
-  const cluster = outputs.ecs_cluster_name as string
-  const service = outputs.control_plane_service_name as string
-  // Task def family: extract from the task definition ARN
-  const taskDefArn = outputs.control_plane_task_definition_arn as string
-  const family = taskDefArn.split("/").pop()!.split(":")[0]
+  const cluster = (outputs.ecs_cluster_name ?? process.env.YAFFLE_ECS_CLUSTER) as string
+  const service = (outputs.control_plane_service_name ?? process.env.YAFFLE_CP_SERVICE) as string
+  const family = service
+
+  if (!cluster || !service) {
+    throw new Error(
+      "Could not determine cluster/service from outputs. " +
+      "Set YAFFLE_ECS_CLUSTER and YAFFLE_CP_SERVICE env vars, or ensure the CP infra has been applied through Yaffle."
+    )
+  }
   const image = `${imageUri(registry, "control-plane", tier)}:sha-${sha}`
 
   console.log(`Deploying control-plane: ${image} → ${cluster}/${service}`)

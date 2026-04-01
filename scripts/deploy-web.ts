@@ -12,8 +12,7 @@ export async function deployWeb() {
 
   const cluster = cpOutputs.ecs_cluster_name as string
   const service = webOutputs.web_service_name as string
-  const taskDefArn = webOutputs.web_task_definition_arn as string
-  const family = taskDefArn.split("/").pop()!.split(":")[0]
+  const family = service
   const image = `${imageUri(registry, "web", tier)}:sha-${sha}`
 
   console.log(`Deploying web: ${image} → ${cluster}/${service}`)

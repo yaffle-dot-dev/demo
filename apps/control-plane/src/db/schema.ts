@@ -470,3 +470,15 @@ export const apiTokens = pgTable("api_tokens", {
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
+
+// =============================================================================
+// Scheduler Leadership Lease
+// =============================================================================
+
+export const schedulerLease = pgTable("scheduler_lease", {
+  id: text("id").primaryKey().default("singleton"),
+  holderId: text("holder_id").notNull(),
+  acquiredAt: timestamp("acquired_at", { withTimezone: true }).defaultNow().notNull(),
+  renewedAt: timestamp("renewed_at", { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+})

@@ -53,8 +53,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "PORT", value = "3000" },
         { name = "NODE_ENV", value = local.is_preview ? "development" : "production" },
         { name = "AWS_REGION", value = var.aws_region },
-        { name = "STATE_BUCKET", value = local.state_bucket_name },
-        { name = "ECS_CLUSTER", value = local.ecs_cluster_name },
+        { name = "YAFFLE_STATE_BUCKET", value = local.state_bucket_name },
+        { name = "YAFFLE_WORKSPACE_CACHE_BUCKET", value = aws_s3_bucket.workspace_cache.id },
         { name = "YAFFLE_RUNNER_API_URL", value = var.runner_api_url },
         { name = "YAFFLE_RUNNER_TFC_API_HOST", value = var.runner_tfc_api_host },
         # Stripe
@@ -71,10 +71,15 @@ resource "aws_ecs_task_definition" "control_plane" {
         # Telemetry
         { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "https://api.axiom.co" },
         # Runner spawner (ECS)
-        { name = "YAFFLE_ECS_CLUSTER_ARN", value = local.ecs_cluster_arn },
+        { name = "YAFFLE_ECS_CLUSTER", value = local.ecs_cluster_arn },
         { name = "YAFFLE_ECS_TASK_DEFINITION", value = module.runner.task_definition_family },
-        { name = "YAFFLE_RUNNER_SUBNETS", value = join(",", local.private_subnet_ids) },
-        { name = "YAFFLE_RUNNER_SECURITY_GROUPS", value = module.runner.security_group_id },
+        { name = "YAFFLE_ECS_SUBNETS", value = join(",", local.private_subnet_ids) },
+        { name = "YAFFLE_ECS_SECURITY_GROUPS", value = module.runner.security_group_id },
+        # Control plane identity
+        { name = "YAFFLE_CONTROL_PLANE_ROLE_ARN", value = aws_iam_role.control_plane_task.arn },
+        # TFC backend
+        { name = "YAFFLE_TFC_API_HOST", value = var.runner_tfc_api_host },
+        { name = "YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS", value = "yaffle.dev" },
       ]
 
       secrets = [
@@ -100,7 +105,7 @@ resource "aws_ecs_task_definition" "control_plane" {
       }
 
       healthCheck = {
-        command     = ["CMD-SHELL", "wget -q --spider http://localhost:3000/api/health || exit 1"]
+        command     = ["CMD-SHELL", "bun -e \"fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
         interval    = 30
         timeout     = 5
         retries     = 3
