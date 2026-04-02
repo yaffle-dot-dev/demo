@@ -5,9 +5,10 @@
 #
 # SECURITY: This task runs untrusted user code. It:
 #   - Has minimal IAM permissions (see iam.tf)
-#   - Has no secrets injected (all inputs via presigned URLs)
-#   - Uses an isolated security group
+#   - Has no secrets injected (job-specific values injected at RunTask time)
+#   - Uses an isolated security group (no ingress, open egress)
 #   - Runs in Fargate (no host access)
+#   - Communicates with the control plane via scoped job tokens (heartbeat, logs, state)
 # =============================================================================
 
 # -----------------------------------------------------------------------------

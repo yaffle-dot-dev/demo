@@ -142,12 +142,6 @@ import {
 
 import {
   for_each = local.import_main
-  to       = aws_route53_record.api
-  id       = "Z0749074TAIKLLRRH3OM_api.yaffle.dev_A"
-}
-
-import {
-  for_each = local.import_main
   to       = aws_cloudwatch_log_group.control_plane
   id       = "/ecs/yaffle-cp-main-use1"
 }

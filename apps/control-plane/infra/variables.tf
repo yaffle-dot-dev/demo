@@ -26,19 +26,6 @@ variable "domain" {
   default     = "yaffle.dev"
 }
 
-variable "runner_api_url" {
-  type        = string
-  description = "URL the runner uses to reach the control plane API (e.g., https://api.yaffle.dev)"
-  default     = ""
-}
-
-# NOTE: This is a host, not a URL. Terraform's backend config takes a bare hostname.
-# Don't "fix" the inconsistency with runner_api_url — they're different types for a reason.
-variable "runner_tfc_api_host" {
-  type        = string
-  description = "Host the runner uses for TFC-compatible backend state (e.g., api.yaffle.dev)"
-  default     = ""
-}
 
 variable "control_plane_image" {
   type        = string
@@ -86,4 +73,8 @@ locals {
   # API domain: api.yaffle.dev for production, api-{env}.preview.yaffle.dev for previews
   # Uses hyphen (not dot) to stay within *.preview.yaffle.dev wildcard cert coverage
   api_domain = local.is_preview ? "api-${var.environment}.preview.${var.domain}" : "api.${var.domain}"
+
+  # Internal domain: used by runners and web app to reach the CP within the VPC.
+  # Resolves via Route53 private hosted zone → ALB, with valid TLS via ACM cert.
+  internal_cp_domain = "cp.internal.${var.domain}"
 }

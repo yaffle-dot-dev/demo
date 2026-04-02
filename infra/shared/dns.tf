@@ -17,7 +17,8 @@ resource "aws_route53_zone" "main" {
 # ACM Certificate
 # =============================================================================
 # Wildcard certificate for yaffle.dev - used by all applications.
-# Validation records are in Route53, same zone as the domain.
+# Covers *.yaffle.dev, *.preview.yaffle.dev, and *.internal.yaffle.dev.
+# Validation records are in Route53 and Cloudflare (dual DNS).
 # =============================================================================
 
 resource "aws_acm_certificate" "main" {
@@ -27,6 +28,7 @@ resource "aws_acm_certificate" "main" {
   subject_alternative_names = [
     "*.${var.domain}",
     "*.preview.${var.domain}",
+    "*.internal.${var.domain}",
   ]
 
   lifecycle {
@@ -77,8 +79,9 @@ resource "aws_acm_certificate_validation" "main" {
 locals {
   # Map base domains to their ACM domain_validation_options key
   cert_domain_mapping = {
-    (var.domain)            = var.domain                # yaffle.dev -> yaffle.dev (shared with *.yaffle.dev)
-    "preview.${var.domain}" = "*.preview.${var.domain}" # preview.yaffle.dev -> *.preview.yaffle.dev
+    (var.domain)             = var.domain                 # yaffle.dev -> yaffle.dev (shared with *.yaffle.dev)
+    "preview.${var.domain}"  = "*.preview.${var.domain}"  # preview.yaffle.dev -> *.preview.yaffle.dev
+    "internal.${var.domain}" = "*.internal.${var.domain}" # internal.yaffle.dev -> *.internal.yaffle.dev
   }
 
   cert_domains = toset(keys(local.cert_domain_mapping))

@@ -54,6 +54,11 @@ output "api_domain" {
   description = "Control plane API domain name"
 }
 
+output "internal_domain" {
+  value       = "cp.internal.${var.domain}"
+  description = "Internal domain for VPC service-to-service communication (valid TLS)"
+}
+
 output "alb_arn" {
   value       = aws_lb.main.arn
   description = "ALB ARN (shared by control plane and web app)"

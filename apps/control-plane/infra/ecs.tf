@@ -55,8 +55,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "AWS_REGION", value = var.aws_region },
         { name = "YAFFLE_STATE_BUCKET", value = local.state_bucket_name },
         { name = "YAFFLE_WORKSPACE_CACHE_BUCKET", value = aws_s3_bucket.workspace_cache.id },
-        { name = "YAFFLE_RUNNER_API_URL", value = var.runner_api_url },
-        { name = "YAFFLE_RUNNER_TFC_API_HOST", value = var.runner_tfc_api_host },
+        { name = "YAFFLE_RUNNER_API_URL", value = "https://${local.internal_cp_domain}" },
+        { name = "YAFFLE_RUNNER_TFC_API_HOST", value = local.internal_cp_domain },
         # Stripe
         { name = "STRIPE_PORTAL_CONFIGURATION_ID", value = local.stripe_portal_configuration_id },
         { name = "STRIPE_PRO_PRICE_ID", value = local.stripe_pricing.pro.price_id },
@@ -78,7 +78,7 @@ resource "aws_ecs_task_definition" "control_plane" {
         # Control plane identity
         { name = "YAFFLE_CONTROL_PLANE_ROLE_ARN", value = aws_iam_role.control_plane_task.arn },
         # TFC backend
-        { name = "YAFFLE_TFC_API_HOST", value = var.runner_tfc_api_host },
+        { name = "YAFFLE_TFC_API_HOST", value = local.internal_cp_domain },
         { name = "YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS", value = "yaffle.dev" },
       ]
 

@@ -5,9 +5,9 @@
  *
  * SECURITY: The runner executes untrusted user terraform code. It:
  *   - Has no access to Yaffle's database or secrets
- *   - Receives job token for scoped API access
- *   - Runs in an isolated security group
- *   - Cannot reach internal services
+ *   - Receives a scoped job token for API access (heartbeat, logs, state)
+ *   - Runs in an isolated security group (no ingress)
+ *   - Reaches the control plane via internal DNS (cp.internal.yaffle.dev)
  *
  * Flow (new API-based pattern):
  *   1. CP spawns ECS task with job ID, token, and API URL
@@ -189,7 +189,7 @@ export function createEcsSpawner(): EcsEngineSpawner {
     throw new Error("YAFFLE_RUNNER_SECURITY_GROUPS not configured")
   }
   if (!apiUrl) {
-    throw new Error("YAFFLE_RUNNER_API_HOST not configured")
+    throw new Error("YAFFLE_RUNNER_API_URL not configured")
   }
 
   return new EcsEngineSpawner({

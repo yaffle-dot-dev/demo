@@ -6,7 +6,7 @@
 # SECURITY: The runner executes untrusted user terraform code. It must:
 #   - Have NO ingress from anywhere (it's not a server)
 #   - Have open egress (terraform providers need internet access)
-#   - NOT be able to reach internal services (enforced by this SG + other SGs)
+#   - Communicate with the control plane only via scoped job tokens
 # =============================================================================
 
 resource "aws_security_group" "runner" {
