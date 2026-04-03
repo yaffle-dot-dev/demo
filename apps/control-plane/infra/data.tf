@@ -48,6 +48,7 @@ module "runner" {
 locals {
   # Shared outputs (true singletons)
   route53_zone_id     = module.shared.route53_zone_id
+  cloudflare_zone_id  = module.shared.cloudflare_zone_id
   acm_certificate_arn = module.shared.acm_certificate_validated_arn
 
   # State bucket (defined in state-storage.tf)

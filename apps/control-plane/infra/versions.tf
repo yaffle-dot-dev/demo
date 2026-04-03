@@ -15,6 +15,10 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.0"
+    }
     planetscale = {
       source  = "planetscale/planetscale"
       version = "~> 1.0"
@@ -38,6 +42,9 @@ provider "aws" {
     }
   }
 }
+
+# Cloudflare provider for dual DNS (api.yaffle.dev record)
+provider "cloudflare" {}
 
 provider "planetscale" {}
 

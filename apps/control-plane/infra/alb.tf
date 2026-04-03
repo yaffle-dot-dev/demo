@@ -85,13 +85,12 @@ resource "aws_lb_listener" "https" {
 }
 
 # -----------------------------------------------------------------------------
-# Route53 DNS (previews only)
+# Route53 DNS
 # -----------------------------------------------------------------------------
-# Production traffic goes through CloudFront (yaffle.dev/api/*) → ALB.
-# Previews need their own DNS since they don't have CloudFront.
+# api.yaffle.dev resolves to the ALB. Used as CloudFront origin (production)
+# and directly by previews (which don't have CloudFront).
 
 resource "aws_route53_record" "api" {
-  count   = local.is_preview ? 1 : 0
   zone_id = local.route53_zone_id
   name    = local.api_domain
   type    = "A"
@@ -101,4 +100,14 @@ resource "aws_route53_record" "api" {
     zone_id                = aws_lb.main.zone_id
     evaluate_target_health = true
   }
+}
+
+# Cloudflare dual DNS record
+resource "cloudflare_dns_record" "api" {
+  zone_id = local.cloudflare_zone_id
+  name    = local.api_domain
+  type    = "CNAME"
+  content = aws_lb.main.dns_name
+  ttl     = 1 # Auto TTL
+  proxied = false
 }

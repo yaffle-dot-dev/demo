@@ -51,5 +51,6 @@ locals {
   docs_replica_bucket_arn    = module.docs.replica_bucket_arn
 
   # Control plane ALB
-  api_domain = module.control_plane.api_domain
+  api_domain  = module.control_plane.api_domain
+  alb_dns_name = module.control_plane.alb_dns_name
 }
