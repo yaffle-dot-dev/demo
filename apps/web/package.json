@@ -10,12 +10,13 @@
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.5.4",
+    "@better-auth/api-key": "1.5.6",
+    "@better-auth/core": "1.5.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
     "@yaffle/design": "workspace:*",
     "@yaffle/shared": "workspace:*",
-    "better-auth": "1.5.4",
+    "better-auth": "1.5.6",
     "xterm": "^5.3.0"
   },
   "devDependencies": {

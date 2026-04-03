@@ -13,7 +13,9 @@ function getApiUrl(): string {
   if (typeof window !== "undefined") {
     return window.location.origin
   }
-  throw new Error("VITE_YAFFLE_API_URL must be configured for server-side auth usage")
+  // During SSR, auth client is never actually used (all auth logic runs in onMount/browser only).
+  // Return a placeholder to avoid crashing module initialization.
+  return "http://localhost"
 }
 
 // Create the BetterAuth client

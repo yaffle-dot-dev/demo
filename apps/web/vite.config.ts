@@ -29,6 +29,11 @@ function getBuildId(): string {
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
+  ssr: {
+    // Bundle better-auth and its dependencies into the SSR output so they don't
+    // need to be in node_modules at runtime (adapter-node slim Docker image)
+    noExternal: ["better-auth", "@better-auth/**", "better-call"],
+  },
   define: {
     __BUILD_SHA__: JSON.stringify(getBuildId()),
     __BUILD_TIME__: JSON.stringify(new Date().toISOString()),

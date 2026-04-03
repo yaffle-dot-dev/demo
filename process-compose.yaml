@@ -51,8 +51,10 @@ processes:
     command: "bunx @dotenvx/dotenvx run -o -f env/dev/base.env -- bun run dev:web"
     log_location: .dev/logs/web.log
     readiness_probe:
-      exec:
-        command: "curl -sf http://localhost:5173/ > /dev/null"
+      http_get:
+        host: 127.0.0.1
+        port: 5173
+        path: "/app/health"
       initial_delay_seconds: 5
       period_seconds: 10
       failure_threshold: 3

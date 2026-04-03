@@ -1,4 +1,4 @@
-import type { Handle } from "@sveltejs/kit"
+import type { Handle, HandleServerError } from "@sveltejs/kit"
 
 const API_URL = process.env.YAFFLE_PUBLIC_API_URL || process.env.YAFFLE_API_URL
 
@@ -8,6 +8,11 @@ if (!API_URL) {
 
 
 export const handle: Handle = async ({ event, resolve }) => {
+  // Lightweight health check - no SSR rendering, no auth
+  if (event.url.pathname === "/app/health") {
+    return new Response("ok", { status: 200 })
+  }
+
   // Proxy /api requests to the backend API server
   // This includes /api/auth/* for BetterAuth endpoints
   if (event.url.pathname.startsWith("/api")) {
@@ -38,4 +43,11 @@ export const handle: Handle = async ({ event, resolve }) => {
   }
 
   return resolve(event)
+}
+
+export const handleError: HandleServerError = ({ error, event }) => {
+  console.error(`[SSR error] ${event.request.method} ${event.url.pathname}`, error)
+  return {
+    message: "Internal Error",
+  }
 }
