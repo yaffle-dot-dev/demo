@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 
 import { parseYaffleToml } from "../lib/config-toml.ts"
-import { DependencyGraph } from "../lib/dependency-graph.ts"
+import { DependencyGraph } from "@yaffle/shared"
 import { requireOrgAccess, type OrgAuthContext } from "../middleware/org-auth.ts"
 
 // Hono context with org auth

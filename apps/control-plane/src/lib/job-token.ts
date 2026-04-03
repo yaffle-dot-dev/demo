@@ -61,6 +61,71 @@ export async function generateJobToken(
   return token
 }
 
+// =============================================================================
+// Scan Job Tokens
+// =============================================================================
+
+/**
+ * Scan job token payload. Scoped to a single scan job (no deployment).
+ */
+export interface ScanJobTokenPayload extends JWTPayload {
+  sub: string // "scan:{scan_job_id}"
+  scan_job_id: string
+  org_id: string
+}
+
+/**
+ * Generate a scan job token (JWT) for scanner worker authentication.
+ */
+export async function generateScanJobToken(
+  scanJobId: string,
+  orgId: string,
+  ttlHours: number = 1,
+): Promise<string> {
+  const secret = getJwtSecret()
+
+  const token = await new SignJWT({
+    scan_job_id: scanJobId,
+    org_id: orgId,
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(`scan:${scanJobId}`)
+    .setIssuedAt()
+    .setExpirationTime(`${ttlHours}h`)
+    .sign(secret)
+
+  log.debug("Scan job token generated", { scanJobId, orgId })
+  return token
+}
+
+/**
+ * Verify a scan job token (JWT).
+ */
+export async function verifyScanJobToken(token: string): Promise<ScanJobTokenPayload | null> {
+  try {
+    const secret = getJwtSecret()
+    const { payload } = await jwtVerify(token, secret)
+
+    if (
+      !payload.sub?.startsWith("scan:") ||
+      typeof payload.scan_job_id !== "string" ||
+      typeof payload.org_id !== "string"
+    ) {
+      log.debug("Scan job token validation failed: missing required fields")
+      return null
+    }
+
+    return payload as ScanJobTokenPayload
+  } catch (err) {
+    log.debug("Scan job token JWT verification failed", { error: String(err) })
+    return null
+  }
+}
+
+// =============================================================================
+// IaC Job Token Verification
+// =============================================================================
+
 /**
  * Verify a job token (JWT).
  */

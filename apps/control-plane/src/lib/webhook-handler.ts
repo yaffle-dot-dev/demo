@@ -16,18 +16,13 @@ import {
   getWorkspacesForEnvironment,
   matchesPullRequestTrigger,
   parseYaffleToml,
-  resolveApprovers,
 } from "./config-toml.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
 import { findOrgForRepo } from "../db/queries/repo-mappings.ts"
-import { checkOrgEntitlements } from "./entitlements.ts"
 import {
-  markRemovedWorkspacesDestroyed,
   findDeploymentById,
   findDeploymentsByEnvironment,
-  setDeploymentUpstreams,
   updateDeploymentStatus,
-  upsertDeployment,
   recordDeploymentApproval,
   resetSkippedDownstreams,
 } from "../db/queries/workspace-deployments.ts"
@@ -35,9 +30,6 @@ import { createIacJob, cancelJobsForPreview, findPendingJobsForPreview } from ".
 import { findLatestRun } from "../db/queries/tf-runs.ts"
 import {
   createRunGroup,
-  updateRunGroupDependencyGraph,
-  updateRunGroupWorkspaceS3Key,
-  updateRunGroupStatus,
   type RunGroupTrigger,
 } from "../db/queries/run-groups.ts"
 import { events } from "./events.ts"
@@ -49,16 +41,12 @@ import {
 import {
   type CheckRunRef,
   checkRunUrl,
-  createCommentManager,
 } from "./pr-comment.ts"
 import { LocalRunner } from "./local-runner.ts"
 import { type Mutex, KeyedMutex } from "./mutex.ts"
 import { DbLeaseMutex } from "./db-lease.ts"
 import {
   type Runner,
-  buildStateKey,
-  previewStatePrefix,
-  environmentStatePrefix,
 } from "./runner.ts"
 
 import {
@@ -71,10 +59,9 @@ import {
   logger,
   withSpan,
 } from "./telemetry.ts"
-import { scanAllWorkspaceDependencies } from "./module-dependency-scanner.ts"
-import { buildGraphFromInferred, type SerializableDependencyGraph } from "./dependency-graph.ts"
-import { prepareWorkspace, cleanupWorkspace } from "./workspace.ts"
-import { createWorkspaceCache } from "./workspace-cache.ts"
+import { createScanJob } from "../db/queries/scan-jobs.ts"
+import { generateScanJobToken } from "./job-token.ts"
+import { getScheduler } from "./scheduler.ts"
 
 const CHECK_NAME = "Yaffle / terraform"
 
@@ -151,23 +138,6 @@ interface ConfigSystemError {
 }
 
 /**
- * Result of scanning workspace dependencies and computing execution order.
- */
-interface DependencyScanResult {
-  /** Serializable graph for storage/UI */
-  graph: SerializableDependencyGraph
-  /** Workspace paths in topological execution order */
-  executionOrder: string[]
-  /** S3 key for cached workspace (if uploaded) */
-  workspaceS3Key?: string
-}
-
-/**
- * Scan repository for workspace dependencies and compute execution order.
- *
- * Clones the repo, scans all workspace directories for Yaffle module references,
- * builds a dependency graph, and returns the topological execution order.
- *
  * Also uploads the workspace to S3 cache for later use by runners.
  *
  * @param ctx - Webhook context with repo info
@@ -177,102 +147,45 @@ interface DependencyScanResult {
  * @param installationToken - GitHub token for cloning
  * @returns Dependency graph, execution order, and workspace S3 key
  */
-async function scanDependencies(
+/**
+ * Dispatch a scan job to a scanner worker.
+ *
+ * Creates a scan_jobs row, generates a token, and spawns the scanner.
+ * The scanner will clone the repo, read config, scan dependencies,
+ * and call POST /api/scanner/complete with the result.
+ *
+ * The webhook handler returns immediately after dispatching.
+ */
+async function dispatchScan(
   ctx: WebhookContext,
-  orgSlug: string,
   orgId: string,
+  orgSlug: string,
+  runGroupId: string,
   workspacePaths: string[],
   installationToken?: string,
-): Promise<DependencyScanResult> {
-  return withSpan("scan_dependencies", async (span) => {
-    span.setAttributes({
-      "yaffle.workspace_count": workspacePaths.length,
-    })
+): Promise<void> {
+  const repoUrl = `https://github.com/${ctx.owner}/${ctx.repo}.git`
 
-    // Clone repo to scan for dependencies
-    let repoDir: string | undefined
-    let workspaceS3Key: string | undefined
-    try {
-      repoDir = await prepareWorkspace({
-        owner: ctx.owner,
-        repo: ctx.repo,
-        headSha: ctx.headSha,
-        installationToken,
-      })
+  const scanJob = await createScanJob({
+    runGroupId,
+    orgId,
+    repoUrl,
+    ref: ctx.kind === "pull_request" ? `refs/heads/${(ctx as any).branch}` : (ctx as any).ref,
+    headSha: ctx.headSha,
+    installationToken,
+    orgSlug,
+    workspacePaths,
+  })
 
-      // Scan all workspaces for module dependencies
-      const inferredGraph = await scanAllWorkspaceDependencies(repoDir, workspacePaths)
+  const scanToken = await generateScanJobToken(scanJob.id, orgId)
 
-      // Build the graph and check for cycles
-      const graph = buildGraphFromInferred(inferredGraph.workspaces, inferredGraph.edges)
-      const cycleCheck = graph.detectCycle()
+  const scheduler = await getScheduler()
+  await scheduler.spawner.spawnScanner(scanJob.id, scanToken)
 
-      if (cycleCheck.hasCycle) {
-        const cyclePath = cycleCheck.cyclePath?.join(" → ") ?? "unknown"
-        throw new ConfigError(`Circular dependency detected: ${cyclePath}`)
-      }
-
-      // Get topological order
-      const executionOrder = graph.getTopologicalOrder()
-      if (!executionOrder) {
-        throw new ConfigError("Failed to compute execution order (possible cycle)")
-      }
-
-      // Filter to only include workspaces that are in the config
-      // (the graph might include external dependencies)
-      const configPaths = new Set(workspacePaths)
-      const filteredOrder = executionOrder.filter((path) => configPaths.has(path))
-
-      // Add any workspaces from config that weren't in the graph (no dependencies)
-      for (const path of workspacePaths) {
-        if (!filteredOrder.includes(path)) {
-          filteredOrder.push(path)
-        }
-      }
-
-      // Upload workspace to S3 cache for runners
-      try {
-        const cache = createWorkspaceCache()
-        workspaceS3Key = await cache.upload(orgSlug, orgId, ctx.repo, ctx.headSha, repoDir)
-        logger.info("Workspace uploaded to S3 cache", {
-          "workspace.s3_key": workspaceS3Key,
-          "workspace.org": orgSlug,
-          "workspace.repo": ctx.repo,
-          "workspace.sha": ctx.headSha.slice(0, 7),
-        })
-        span.setAttributes({
-          "yaffle.workspace_s3_key": workspaceS3Key,
-        })
-      } catch (err) {
-        // Log but don't fail - runners can fall back to git clone
-        logger.warn("Failed to upload workspace to S3 cache", {
-          error: err instanceof Error ? err.message : String(err),
-          "workspace.org": orgSlug,
-          "workspace.repo": ctx.repo,
-          "workspace.sha": ctx.headSha.slice(0, 7),
-        })
-      }
-
-      logger.info("Dependency scan complete", {
-        "yaffle.execution_order": filteredOrder,
-        "yaffle.edge_count": inferredGraph.edges.length,
-      })
-
-      span.setAttributes({
-        "yaffle.execution_order": filteredOrder.join(", "),
-        "yaffle.edge_count": inferredGraph.edges.length,
-      })
-
-      return {
-        graph: graph.toSerializable(),
-        executionOrder: filteredOrder,
-        workspaceS3Key,
-      }
-    } finally {
-      if (repoDir) {
-        await cleanupWorkspace(repoDir)
-      }
-    }
+  logger.info("Scan job dispatched", {
+    "scan_job.id": scanJob.id,
+    "run_group.id": runGroupId,
+    "yaffle.head_sha": ctx.headSha.slice(0, 7),
   })
 }
 
@@ -787,9 +700,6 @@ async function handlePrOpenedOrUpdated(
     return
   }
 
-  // Check billing entitlements (deployments still get created, but jobs won't be queued if limited)
-  const entitlement = await checkOrgEntitlements(org, "pull_request")
-
   const installationToken = await acquireToken(ctx)
 
   // Load config
@@ -823,14 +733,10 @@ async function handlePrOpenedOrUpdated(
     return
   }
 
-  const wsPaths = workspacePaths.join(", ")
   logger.info(
-    `config loaded: ${workspacePaths.length} workspace(s) for PR [${wsPaths}]`,
+    `config loaded: ${workspacePaths.length} workspace(s) for PR`,
     { ...attrs, "yaffle.workspace_count": workspacePaths.length },
   )
-
-  const statePrefix = previewStatePrefix(ctx.prNumber)
-  const comment = createCommentManager(ctx)
 
   // Create a single run group for this PR event (covers both plan and apply)
   const trigger: RunGroupTrigger = ctx.action === "opened" ? "pr_opened" : "pr_sync"
@@ -846,189 +752,12 @@ async function handlePrOpenedOrUpdated(
     status: "pending",
   })
 
-  // Filter config.workspaces to only those that apply to this environment
-  const activeWorkspaces = config.workspaces.filter((ws) => workspacePaths.includes(ws.path))
-  let executionOrder: string[]
-  let dependencyGraph: SerializableDependencyGraph
-
-  try {
-    const scanResult = await scanDependencies(ctx, org.slug, org.id, workspacePaths, installationToken)
-    executionOrder = scanResult.executionOrder
-    dependencyGraph = scanResult.graph
-
-    // Store the dependency graph in the run group for UI
-    await updateRunGroupDependencyGraph(runGroup.id, dependencyGraph)
-
-    // Store the workspace S3 key in the run group for runners
-    if (scanResult.workspaceS3Key) {
-      await updateRunGroupWorkspaceS3Key(runGroup.id, scanResult.workspaceS3Key)
-    }
-
-    logger.info("Execution order determined", {
-      ...attrs,
-      "yaffle.execution_order": executionOrder,
-    })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    logger.error(`Dependency scan failed, aborting run group: ${msg}`, attrs)
-    await updateRunGroupStatus(runGroup.id, "failed", { completedAt: new Date() })
-    await surfaceConfigError(ctx, `workspace packaging failed: ${msg}`)
-    return
-  }
-
-  // Create a map for quick workspace lookup by path
-  const workspaceByPath = new Map(activeWorkspaces.map((ws) => [ws.path, ws]))
-
-  // Build dependency maps:
-  // - workspaceDeps: workspace path -> set of upstream workspace paths
-  // - pathToPreviewId: workspace path -> preview ID (populated after upsert)
-  const workspaceDeps = new Map<string, Set<string>>()
-  for (const [downstream, upstream] of dependencyGraph.edges) {
-    if (!workspaceDeps.has(downstream)) {
-      workspaceDeps.set(downstream, new Set())
-    }
-    workspaceDeps.get(downstream)!.add(upstream)
-  }
-
-  // First pass: upsert all previews with run_group_id
-  // This ensures all workspaces appear in the UI immediately
-  const pathToPreviewId = new Map<string, string>()
-  const previewData: Array<{
-    ws: typeof config.workspaces[0]
-    preview: { id: string }
-    stateKey: string
-    isRoot: boolean // true if no upstream dependencies
-  }> = []
-
-  for (const wsPath of executionOrder) {
-    const ws = workspaceByPath.get(wsPath)
-    if (!ws) continue
-
-    const stateKey = buildStateKey(statePrefix, ws.path)
-    const upstreamPaths = workspaceDeps.get(ws.path) ?? new Set()
-    const isRoot = upstreamPaths.size === 0
-
-    // Resolve approvers from approval rules (supports transient environments via "*")
-    const approvers = resolveApprovers(config, ws.path, environmentName)
-    const requireApproval = approvers.length > 0
-
-    // Upsert preview with run_group_id
-    // PRs are always branch-based, so construct the full ref
-    const preview = await upsertDeployment({
-      orgId: org.id,
-      installationId: ctx.installationId,
-      repo: ctx.repo,
-      environmentKind: "transient",
-      environmentName,
-      prNumber: ctx.prNumber,
-      workspacePath: ws.path,
-      ref: `refs/heads/${ctx.branch}`,
-      headSha: ctx.headSha,
-      authorGithubId: ctx.authorGithubId,
-      authorLogin: ctx.authorLogin,
-      stateKey,
-      mode: "terraform",
-      requireApproval,
-      approvers: approvers.length > 0 ? approvers : null,
-      runGroupId: runGroup.id,
-    })
-
-    pathToPreviewId.set(ws.path, preview.id)
-    previewData.push({ ws, preview, stateKey, isRoot })
-  }
-
-  // Second pass: set upstream_ids on each preview (now that we have all preview IDs)
-  for (const { ws, preview } of previewData) {
-    const upstreamPaths = workspaceDeps.get(ws.path) ?? new Set()
-    if (upstreamPaths.size > 0) {
-      const upstreamIds = [...upstreamPaths]
-        .map((path) => pathToPreviewId.get(path))
-        .filter((id): id is string => id !== undefined)
-
-      await setDeploymentUpstreams(preview.id, upstreamIds)
-
-      logger.info("Set upstream dependencies for deployment", {
-        deploymentId: preview.id,
-        workspacePath: ws.path,
-        upstreamIds,
-      })
-    }
-  }
-
-  // Third pass: cancel any pending destroy jobs and queue plan jobs
-  // On PR reopen, there may be pending destroy jobs from a previous close
-  // that need to be cancelled before queueing new plan jobs
-  for (const { preview } of previewData) {
-    const cancelledCount = await cancelJobsForPreview(preview.id)
-    if (cancelledCount > 0) {
-      logger.info("Cancelled pending jobs for deployment", {
-        ...attrs,
-        deploymentId: preview.id,
-        cancelledCount,
-      })
-    }
-  }
-
-  // Fourth pass: queue plan jobs or mark as plan-limited
-  if (!entitlement.allowed) {
-    // Plan limited — mark all deployments and surface the limit message
-    for (const { preview } of previewData) {
-      await updateDeploymentStatus(preview.id, "plan_limited")
-    }
-    logger.warn(`PR plan-limited: ${entitlement.code} for ${tag}`, {
-      ...attrs,
-      "yaffle.entitlement_code": entitlement.code,
-      deploymentCount: previewData.length,
-    })
-    await surfaceConfigError(ctx, entitlement.message)
-  } else {
-    // Queue plan jobs for root workspaces only
-    // Non-root workspaces will have their jobs queued by the IaC engine
-    // when their upstreams complete (via notifyDownstreams)
-    const rootCount = previewData.filter((p) => p.isRoot).length
-    logger.info("Queueing plan jobs for root workspaces", {
-      ...attrs,
-      rootCount,
-      totalCount: previewData.length,
-    })
-
-    for (const { ws, preview, isRoot } of previewData) {
-      if (isRoot) {
-        const job = await createIacJob({
-          deploymentId: preview.id,
-          jobType: "plan",
-        })
-
-        logger.info("Queued plan job for root workspace", {
-          ...attrs,
-          workspacePath: ws.path,
-          deploymentId: preview.id,
-          jobId: job.id,
-        })
-
-        await comment.update(ws.path, { phase: "planning" })
-      } else {
-        logger.info("Workspace waiting for upstream dependencies", {
-          ...attrs,
-          workspacePath: ws.path,
-          deploymentId: preview.id,
-          upstreamCount: (workspaceDeps.get(ws.path) ?? new Set()).size,
-        })
-      }
-    }
-  }
-
-  // Emit event so UI picks up the queued state
-  if (previewData.length > 0) {
-    const first = previewData[0]
-    events.emitDeploymentUpdate(
-      first.preview.id,
-      org.id,
-      ctx.repo,
-      "transient",
-      environmentName,
-    )
-  }
+  // Dispatch scan to scanner worker — the scanner will:
+  // 1. Clone the repo
+  // 2. Scan .tf files for dependencies and build the DAG
+  // 3. Upload workspace to S3 cache
+  // 4. Call POST /api/scanner/complete which creates deployments and queues plan jobs
+  await dispatchScan(ctx, org.id, org.slug, runGroup.id, workspacePaths, installationToken)
 }
 
 /**
@@ -1231,8 +960,6 @@ async function handlePushEvent(
   // Check if this ref matches any push trigger
   const environmentName = findPushTriggerEnvironment(config, ctx.ref)
 
-  // Check billing entitlements (after we know the target environment)
-  const entitlement = await checkOrgEntitlements(org, "push", environmentName ?? undefined)
   if (!environmentName) {
     logger.info(
       `ignoring push to ref that doesn't match any trigger`,
@@ -1252,15 +979,10 @@ async function handlePushEvent(
     return
   }
 
-  const activeWorkspaces = config.workspaces.filter((ws) => workspacePaths.includes(ws.path))
-
-  const wsPaths = workspacePaths.join(", ")
   logger.info(
-    `config loaded: ${workspacePaths.length} workspace(s) for ${environmentName} [${wsPaths}]`,
+    `config loaded: ${workspacePaths.length} workspace(s) for ${environmentName}`,
     { ...attrs, "yaffle.workspace_count": workspacePaths.length, environmentName },
   )
-
-  const statePrefix = environmentStatePrefix(environmentName)
 
   // Create a single run group for this push event (covers both plan and apply)
   // Push events to the default branch are "named" environments (e.g., "main", "production")
@@ -1276,175 +998,12 @@ async function handlePushEvent(
     status: "pending",
   })
 
-  // Scan dependencies and compute execution order
-  const activeWorkspacePaths = activeWorkspaces.map((ws) => ws.path)
-  let executionOrder: string[]
-  let dependencyGraph: SerializableDependencyGraph
-
-  try {
-    const scanResult = await scanDependencies(ctx, org.slug, org.id, activeWorkspacePaths, installationToken)
-    executionOrder = scanResult.executionOrder
-    dependencyGraph = scanResult.graph
-
-    // Store the dependency graph in the run group for UI
-    await updateRunGroupDependencyGraph(runGroup.id, dependencyGraph)
-
-    // Store the workspace S3 key in the run group for runners
-    if (scanResult.workspaceS3Key) {
-      await updateRunGroupWorkspaceS3Key(runGroup.id, scanResult.workspaceS3Key)
-    }
-
-    logger.info("Execution order determined", {
-      ...attrs,
-      "yaffle.execution_order": executionOrder,
-    })
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    logger.error(`Dependency scan failed, aborting run group: ${msg}`, attrs)
-    await updateRunGroupStatus(runGroup.id, "failed", { completedAt: new Date() })
-    return
-  }
-
-  // Create a map for quick workspace lookup by path
-  const workspaceByPath = new Map(activeWorkspaces.map((ws) => [ws.path, ws]))
-
-  // Build dependency maps
-  const workspaceDeps = new Map<string, Set<string>>()
-  for (const [downstream, upstream] of dependencyGraph.edges) {
-    if (!workspaceDeps.has(downstream)) {
-      workspaceDeps.set(downstream, new Set())
-    }
-    workspaceDeps.get(downstream)!.add(upstream)
-  }
-
-  // First pass: upsert all previews with run_group_id
-  const pathToPreviewId = new Map<string, string>()
-  const previewData: Array<{
-    ws: typeof config.workspaces[0]
-    preview: { id: string }
-    stateKey: string
-    isRoot: boolean
-  }> = []
-
-  for (const wsPath of executionOrder) {
-    const ws = workspaceByPath.get(wsPath)
-    if (!ws) continue
-
-    const stateKey = buildStateKey(statePrefix, ws.path)
-    const upstreamPaths = workspaceDeps.get(ws.path) ?? new Set()
-    const isRoot = upstreamPaths.size === 0
-
-    // Resolve approvers from approval rules
-    const approvers = resolveApprovers(config, ws.path, environmentName)
-    const requireApproval = approvers.length > 0
-
-    const preview = await upsertDeployment({
-      orgId: org.id,
-      installationId: ctx.installationId,
-      repo: ctx.repo,
-      environmentKind: "named",
-      environmentName,
-      prNumber: null, // null for branch/env runs
-      workspacePath: ws.path,
-      ref: ctx.ref,
-      headSha: ctx.headSha,
-      authorGithubId: ctx.pusherGithubId ?? undefined,
-      authorLogin: ctx.pusherLogin ?? undefined,
-      stateKey,
-      mode: "terraform",
-      requireApproval,
-      approvers: approvers.length > 0 ? approvers : null,
-      runGroupId: runGroup.id,
-    })
-
-    pathToPreviewId.set(ws.path, preview.id)
-    previewData.push({ ws, preview, stateKey, isRoot })
-  }
-
-  // Second pass: set upstream_ids on each preview
-  for (const { ws, preview } of previewData) {
-    const upstreamPaths = workspaceDeps.get(ws.path) ?? new Set()
-    if (upstreamPaths.size > 0) {
-      const upstreamIds = [...upstreamPaths]
-        .map((path) => pathToPreviewId.get(path))
-        .filter((id): id is string => id !== undefined)
-
-      await setDeploymentUpstreams(preview.id, upstreamIds)
-
-      logger.info("Set upstream dependencies for production deployment", {
-        deploymentId: preview.id,
-        workspacePath: ws.path,
-        upstreamIds,
-      })
-    }
-  }
-
-  // Third pass: queue plan jobs or mark as plan-limited
-  if (!entitlement.allowed) {
-    for (const { preview } of previewData) {
-      await updateDeploymentStatus(preview.id, "plan_limited")
-    }
-    logger.warn(`push plan-limited: ${entitlement.code} for ${tag}`, {
-      ...attrs,
-      "yaffle.entitlement_code": entitlement.code,
-      deploymentCount: previewData.length,
-    })
-  } else {
-    const rootCount = previewData.filter((p) => p.isRoot).length
-    logger.info("Queueing plan jobs for root production workspaces", {
-      ...attrs,
-      rootCount,
-      totalCount: previewData.length,
-    })
-
-    for (const { ws, preview, isRoot } of previewData) {
-      if (isRoot) {
-        const job = await createIacJob({
-          deploymentId: preview.id,
-          jobType: "plan",
-        })
-
-        logger.info("Queued plan job for root production workspace", {
-          ...attrs,
-          workspacePath: ws.path,
-          deploymentId: preview.id,
-          jobId: job.id,
-        })
-      } else {
-        logger.info("Production workspace waiting for upstream dependencies", {
-          ...attrs,
-          workspacePath: ws.path,
-          deploymentId: preview.id,
-          upstreamCount: (workspaceDeps.get(ws.path) ?? new Set()).size,
-        })
-      }
-    }
-  }
-
-  // Emit event so UI picks up the queued state
-  if (previewData.length > 0) {
-    const first = previewData[0]
-    events.emitDeploymentUpdate(
-      first.preview.id,
-      org.id,
-      ctx.repo,
-      "named",
-      environmentName,
-    )
-  }
-
-  // Mark workspaces that are no longer in the config as destroyed
-  const destroyedCount = await markRemovedWorkspacesDestroyed(
-    org.id,
-    ctx.repo,
-    environmentName,
-    ctx.headSha,
-    workspacePaths,
-  )
-
-  if (destroyedCount > 0) {
-    logger.info(`marked ${destroyedCount} removed workspace(s) as destroyed`, attrs)
-  }
+  // Dispatch scan to scanner worker — the scanner will:
+  // 1. Clone the repo
+  // 2. Scan .tf files for dependencies and build the DAG
+  // 3. Upload workspace to S3 cache
+  // 4. Call POST /api/scanner/complete which creates deployments and queues plan jobs
+  await dispatchScan(ctx, org.id, org.slug, runGroup.id, workspacePaths, installationToken)
 }
 
 

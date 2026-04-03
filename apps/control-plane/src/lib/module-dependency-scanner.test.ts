@@ -4,7 +4,7 @@ import {
   extractDependenciesFromContent,
   moduleNameToWorkspacePath,
   workspacePathToModuleName,
-} from "./module-dependency-scanner.ts"
+} from "@yaffle/shared"
 
 describe("moduleNameToWorkspacePath", () => {
   it("converts module names to workspace paths", () => {

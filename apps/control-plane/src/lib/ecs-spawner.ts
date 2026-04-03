@@ -136,6 +136,61 @@ export class EcsEngineSpawner implements IacEngineSpawner {
   }
 
   /**
+   * Spawn a scanner worker as an ECS task.
+   *
+   * Uses the same task definition as runners but overrides the command
+   * to run scanner.ts instead of worker.ts.
+   */
+  async spawnScanner(scanJobId: string, scanToken: string): Promise<void> {
+    logger.info("Spawning ECS scanner task", { scanJobId })
+
+    const envVars = [
+      { name: "YAFFLE_SCAN_JOB_ID", value: scanJobId },
+      { name: "YAFFLE_JOB_TOKEN", value: scanToken },
+      { name: "YAFFLE_API_URL", value: this.config.apiUrl },
+    ]
+
+    const taskInput: RunTaskCommandInput = {
+      cluster: this.config.clusterArn,
+      taskDefinition: this.config.taskDefinition,
+      launchType: "FARGATE",
+      networkConfiguration: {
+        awsvpcConfiguration: {
+          subnets: this.config.subnets,
+          securityGroups: this.config.securityGroups,
+          assignPublicIp: "DISABLED",
+        },
+      },
+      overrides: {
+        containerOverrides: [
+          {
+            name: "runner",
+            environment: envVars,
+            command: ["bun", "run", "/app/apps/runner/src/scanner.ts"],
+          },
+        ],
+      },
+      tags: [
+        { key: "yaffle:scan-job-id", value: scanJobId },
+      ],
+    }
+
+    const result = await this.ecs.send(new RunTaskCommand(taskInput))
+
+    if (!result.tasks || result.tasks.length === 0) {
+      const failures = result.failures?.map((f) => f.reason).join(", ") ?? "Unknown error"
+      throw new Error(`Failed to start ECS scanner task: ${failures}`)
+    }
+
+    const taskArn = result.tasks[0].taskArn!
+    logger.info("ECS scanner task started", {
+      scanJobId,
+      taskArn,
+      cluster: this.config.clusterArn,
+    })
+  }
+
+  /**
    * Get the status of a running task.
    */
   async getTaskStatus(taskArn: string): Promise<"PENDING" | "RUNNING" | "STOPPED" | "UNKNOWN"> {

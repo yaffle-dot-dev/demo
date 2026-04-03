@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 
-import { DependencyGraph, matchGlobPattern } from "./dependency-graph.ts"
+import { DependencyGraph, matchGlobPattern } from "@yaffle/shared"
 
 describe("DependencyGraph", () => {
   test("tracks direct dependencies", () => {

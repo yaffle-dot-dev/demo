@@ -5,7 +5,7 @@ import type { RunStatus } from "@yaffle/shared"
 import { db } from "../../lib/db.ts"
 import { runGroups, tfRuns } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
-import type { SerializableDependencyGraph } from "../../lib/dependency-graph.ts"
+import type { SerializableDependencyGraph } from "@yaffle/shared"
 
 export type RunGroup = typeof runGroups.$inferSelect
 export type NewRunGroup = typeof runGroups.$inferInsert

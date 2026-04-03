@@ -231,6 +231,48 @@ export const runGroups = pgTable("run_groups", {
 })
 
 // =============================================================================
+// Scan Jobs (dependency scanning worker jobs)
+// =============================================================================
+
+export const scanJobStatusEnum = pgEnum("scan_job_status", [
+  "queued",
+  "running",
+  "completed",
+  "failed",
+])
+
+export const scanJobs = pgTable("scan_jobs", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  runGroupId: uuid("run_group_id")
+    .references(() => runGroups.id, { onDelete: "cascade" })
+    .notNull(),
+  orgId: uuid("org_id")
+    .references(() => organizations.id, { onDelete: "cascade" })
+    .notNull(),
+  status: scanJobStatusEnum("status").default("queued").notNull(),
+  workerId: text("worker_id"),
+  lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),
+  // Inputs
+  repoUrl: text("repo_url").notNull(),
+  ref: text("ref").notNull(),
+  headSha: text("head_sha").notNull(),
+  installationToken: text("installation_token"),
+  orgSlug: text("org_slug").notNull(),
+  // Workspace paths to scan (from parsed yaffle.toml)
+  workspacePaths: jsonb("workspace_paths"),
+  // Result
+  result: jsonb("result"),
+  errorMessage: text("error_message"),
+  // Timing
+  queuedAt: timestamp("queued_at", { withTimezone: true }).defaultNow().notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+}, (table) => [
+  index("scan_jobs_status_idx").on(table.status),
+  index("scan_jobs_run_group_id_idx").on(table.runGroupId),
+])
+
+// =============================================================================
 // TF Runs
 // =============================================================================
 

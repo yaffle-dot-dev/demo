@@ -14,9 +14,7 @@
  */
 
 import { readdir, readFile, stat } from "node:fs/promises"
-import { join, relative } from "node:path"
-
-import { logger } from "./telemetry.ts"
+import { join } from "node:path"
 
 /**
  * Result of scanning a single workspace for dependencies.
@@ -45,7 +43,11 @@ const MODULE_SOURCE_PATTERN = /source\s*=\s*"([^"]+)"/g
 
 const DEFAULT_ALLOWED_MODULE_HOSTS = ["yaffle.dev", "yaffle.local", ".ts.net"]
 
-function getAllowedModuleHosts(): string[] {
+function getAllowedModuleHosts(allowedHostsOverride?: string[]): string[] {
+  if (allowedHostsOverride) {
+    return allowedHostsOverride
+  }
+
   const fromEnv = process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS
   if (!fromEnv) {
     return DEFAULT_ALLOWED_MODULE_HOSTS
@@ -125,11 +127,12 @@ export function workspacePathToModuleName(workspacePath: string): string {
  * Extract Yaffle module dependencies from Terraform file content.
  *
  * @param content - The content of a .tf file
+ * @param allowedHosts - Optional override for allowed module hosts
  * @returns Array of workspace paths that are referenced as dependencies
  */
-export function extractDependenciesFromContent(content: string): string[] {
+export function extractDependenciesFromContent(content: string, allowedHosts?: string[]): string[] {
   const dependencies: string[] = []
-  const allowedHosts = getAllowedModuleHosts()
+  const hosts = getAllowedModuleHosts(allowedHosts)
   let match: RegExpExecArray | null
 
   // Reset regex state
@@ -137,7 +140,7 @@ export function extractDependenciesFromContent(content: string): string[] {
 
   while ((match = MODULE_SOURCE_PATTERN.exec(content)) !== null) {
     const source = match[1]
-    const workspacePath = parseYaffleModuleWorkspacePath(source, allowedHosts)
+    const workspacePath = parseYaffleModuleWorkspacePath(source, hosts)
     if (!workspacePath) {
       continue
     }
@@ -172,12 +175,8 @@ async function findTerraformFiles(dir: string): Promise<string[]> {
         files.push(fullPath)
       }
     }
-  } catch (err) {
+  } catch {
     // Directory doesn't exist or isn't readable - that's OK
-    logger.debug("Could not read directory for TF files", {
-      dir,
-      error: err instanceof Error ? err.message : String(err),
-    })
   }
 
   return files
@@ -203,11 +202,9 @@ export async function scanWorkspace(
   try {
     const stats = await stat(workspaceDir)
     if (!stats.isDirectory()) {
-      logger.warn("Workspace path is not a directory", { workspacePath })
       return { workspacePath, dependsOn: [] }
     }
   } catch {
-    logger.warn("Workspace directory not found", { workspacePath })
     return { workspacePath, dependsOn: [] }
   }
 
@@ -226,23 +223,13 @@ export async function scanWorkspace(
           allDependencies.push(dep)
         }
       }
-    } catch (err) {
-      logger.warn("Failed to read TF file", {
-        file: relative(repoDir, tfFile),
-        error: err instanceof Error ? err.message : String(err),
-      })
+    } catch {
+      // Skip unreadable files
     }
   }
 
   // Deduplicate
   const uniqueDeps = Array.from(new Set(allDependencies))
-
-  if (uniqueDeps.length > 0) {
-    logger.debug("Scanned workspace dependencies", {
-      workspacePath,
-      dependsOn: uniqueDeps,
-    })
-  }
 
   return {
     workspacePath,
@@ -264,11 +251,6 @@ export async function scanAllWorkspaceDependencies(
   const knownWorkspaces = new Set(workspacePaths)
   const edges: [string, string][] = []
 
-  logger.info("Scanning workspaces for dependencies", {
-    workspaceCount: workspacePaths.length,
-    workspaces: workspacePaths,
-  })
-
   // Scan each workspace
   for (const wsPath of workspacePaths) {
     const result = await scanWorkspace(repoDir, wsPath, knownWorkspaces)
@@ -277,12 +259,6 @@ export async function scanAllWorkspaceDependencies(
       edges.push([wsPath, dep])
     }
   }
-
-  logger.info("Dependency scan complete", {
-    workspaceCount: workspacePaths.length,
-    edgeCount: edges.length,
-    edges: edges.map(([src, tgt]) => `${src} -> ${tgt}`),
-  })
 
   return {
     workspaces: workspacePaths,

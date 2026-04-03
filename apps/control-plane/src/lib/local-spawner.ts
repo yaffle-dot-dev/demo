@@ -100,6 +100,52 @@ export class LocalChildProcessSpawner implements IacEngineSpawner {
       pid: child.pid,
     })
   }
+
+  async spawnScanner(scanJobId: string, scanToken: string): Promise<void> {
+    const repoRoot = resolve(import.meta.dir, "../../../..")
+    const scannerScript = resolve(repoRoot, "apps/runner/src/scanner.ts")
+
+    logger.info("Spawning local scanner process", {
+      scanJobId,
+      apiUrl: this.apiUrl,
+      scannerScript,
+    })
+
+    const child = spawn("bun", ["run", scannerScript], {
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        YAFFLE_SCAN_JOB_ID: scanJobId,
+        YAFFLE_JOB_TOKEN: scanToken,
+        YAFFLE_API_URL: this.apiUrl,
+      },
+    })
+
+    child.stdout?.on("data", (data) => {
+      logger.info("Scanner stdout", { scanJobId, output: data.toString().trim() })
+    })
+    child.stderr?.on("data", (data) => {
+      logger.error("Scanner stderr", { scanJobId, output: data.toString().trim() })
+    })
+    child.on("error", (err) => {
+      logger.error("Scanner spawn error", { scanJobId, error: err.message })
+    })
+    child.on("exit", (code, signal) => {
+      logger.info("Scanner exited", {
+        "scan_job.id": scanJobId,
+        "worker.exit_code": code ?? undefined,
+        "worker.signal": signal ?? undefined,
+      })
+    })
+
+    child.unref()
+
+    logger.info("Local scanner spawned", {
+      scanJobId,
+      pid: child.pid,
+    })
+  }
 }
 
 /**
@@ -114,6 +160,9 @@ export function createLocalSpawner(config?: LocalSpawnerConfig): IacEngineSpawne
   return {
     async spawn(jobId: string, jobToken: string): Promise<void> {
       return spawner.spawn(jobId, jobToken)
+    },
+    async spawnScanner(scanJobId: string, scanToken: string): Promise<void> {
+      return spawner.spawnScanner(scanJobId, scanToken)
     },
   }
 }

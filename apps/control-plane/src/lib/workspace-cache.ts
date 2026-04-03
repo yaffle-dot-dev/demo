@@ -202,6 +202,21 @@ export class WorkspaceCache {
   }
 
   /**
+   * Get a presigned PUT URL for uploading a workspace tarball.
+   */
+  async getUploadUrl(s3Key: string, expiresIn: number = 15 * 60): Promise<string> {
+    return getSignedUrl(
+      this.s3,
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: s3Key,
+        ContentType: "application/gzip",
+      }),
+      { expiresIn },
+    )
+  }
+
+  /**
    * Get a presigned URL for downloading a cached workspace.
    *
    * @param s3Key - S3 key (from upload() return value)

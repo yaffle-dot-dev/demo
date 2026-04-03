@@ -15,6 +15,7 @@ import { authApiRoute } from "./routes/auth-api.ts"
 import { healthRoute } from "./routes/health.ts"
 import { wellKnownRoute } from "./routes/well-known.ts"
 import { runnerRoute } from "./routes/runner.ts"
+import { scannerRoute } from "./routes/scanner.ts"
 import { tfcRoute, stateUploadRoute } from "./routes/tfc/index.ts"
 import { providerDiscoveryRoute } from "./routes/provider-discovery.ts"
 import { integrationsRoute } from "./routes/integrations.ts"
@@ -140,6 +141,7 @@ app.route("/api/orgs", repoMappingsRoute) // Repo-to-org mapping CRUD
 app.route("/api/orgs", billingRoute) // Billing checkout & portal
 app.route("/api/users", authApiRoute) // Custom user endpoints (e.g., /api/users/me)
 app.route("/api/runner", runnerRoute) // Runner worker API (claim, heartbeat, complete)
+app.route("/api/scanner", scannerRoute) // Scanner worker API (claim, heartbeat, complete)
 app.route("/api/internal/provider-discovery", providerDiscoveryRoute)
 app.route("/api", healthRoute)
 

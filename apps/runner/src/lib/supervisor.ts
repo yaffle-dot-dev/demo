@@ -12,19 +12,22 @@
  * between tofu execution and completion reporting.
  */
 
-import { RunnerApiClient } from "./api-client.ts"
-
 const HEARTBEAT_INTERVAL_MS = 5 * 1000 // 5 seconds
 const HEARTBEAT_MAX_RETRIES = 3
 const HEARTBEAT_RETRY_DELAY_MS = 5 * 1000 // 5 seconds
 
+/** Any API client that can send heartbeats */
+export interface HeartbeatCapable {
+  heartbeat(): Promise<{ success: boolean; reason?: string }>
+}
+
 export interface SupervisorConfig {
-  apiClient: RunnerApiClient
+  apiClient: HeartbeatCapable
   onHeartbeatFailure?: () => void
 }
 
 export class HeartbeatSupervisor {
-  private readonly apiClient: RunnerApiClient
+  private readonly apiClient: HeartbeatCapable
   private readonly onHeartbeatFailure: () => void
 
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null

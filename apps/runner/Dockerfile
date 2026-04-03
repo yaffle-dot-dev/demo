@@ -16,6 +16,7 @@ FROM oven/bun:1-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
+      git \
       jq \
       bash \
       tar \
@@ -44,4 +45,4 @@ ENV HOME=/tmp
 
 WORKDIR /workspace
 
-ENTRYPOINT ["bun", "run", "/app/apps/runner/src/worker.ts"]
+CMD ["bun", "run", "/app/apps/runner/src/worker.ts"]

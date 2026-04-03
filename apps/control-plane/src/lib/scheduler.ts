@@ -87,6 +87,18 @@ export interface IacEngineSpawner {
    * @returns Promise that resolves when the engine is spawned (not when it completes)
    */
   spawn(jobId: string, jobToken: string): Promise<void>
+
+  /**
+   * Spawn a scanner worker for dependency scanning.
+   *
+   * The scanner worker:
+   * 1. Claims the scan job via /api/scanner/claim
+   * 2. Clones the repo, reads config, scans dependencies
+   * 3. Uploads workspace tarball to S3
+   * 4. Reports result via /api/scanner/complete
+   * 5. Exits
+   */
+  spawnScanner(scanJobId: string, scanToken: string): Promise<void>
 }
 
 // Re-export spawners
@@ -96,7 +108,7 @@ export { LocalChildProcessSpawner } from "./local-spawner.ts"
 export class Scheduler {
   private readonly workerId: string
   private readonly config: Required<SchedulerConfig>
-  private readonly spawner: IacEngineSpawner
+  readonly spawner: IacEngineSpawner
   private readonly limits: ConcurrencyLimits
 
   private pollTimer: ReturnType<typeof setInterval> | null = null
@@ -189,6 +201,12 @@ export class Scheduler {
           error: err instanceof Error ? err.message : String(err),
         })
       })
+      this.checkStaleScanJobs().catch((err) => {
+        logger.error("Stale scan job check failed", {
+          workerId: this.workerId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
     }, this.config.staleCheckIntervalMs)
 
     // Start checking for auto-apply candidates
@@ -204,6 +222,7 @@ export class Scheduler {
     // Run immediately on start
     this.pollForJobs().catch(() => {})
     this.checkStaleJobs().catch(() => {})
+    this.checkStaleScanJobs().catch(() => {})
     this.pollForAutoApplies().catch(() => {})
   }
 
@@ -461,6 +480,37 @@ export class Scheduler {
           lastHeartbeat: job.lastHeartbeat?.toISOString() ?? "never",
         })
       }
+    }
+  }
+
+  /**
+   * Check for stale scan jobs (scanner workers that stopped heartbeating).
+   */
+  private async checkStaleScanJobs(): Promise<void> {
+    if (!this.running) return
+
+    const { findStaleScanJobs, failScanJob } = await import("../db/queries/scan-jobs.ts")
+    const { updateRunGroupStatus } = await import("../db/queries/run-groups.ts")
+
+    const staleScanJobs = await findStaleScanJobs(this.config.staleThresholdMs)
+
+    if (staleScanJobs.length === 0) return
+
+    logger.warn("Found stale scan jobs (will mark as failed)", {
+      workerId: this.workerId,
+      staleScanJobCount: staleScanJobs.length,
+    })
+
+    for (const job of staleScanJobs) {
+      await failScanJob(job.id, "Scanner worker stopped responding (stale heartbeat)")
+      await updateRunGroupStatus(job.runGroupId, "failed", { completedAt: new Date() })
+
+      logger.error("Marked stale scan job as failed", {
+        workerId: this.workerId,
+        scanJobId: job.id,
+        runGroupId: job.runGroupId,
+        lastHeartbeat: job.lastHeartbeat?.toISOString() ?? "never",
+      })
     }
   }
 
