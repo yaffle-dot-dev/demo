@@ -78,3 +78,18 @@ output "log_group_arn" {
   value       = aws_cloudwatch_log_group.runner.arn
   description = "CloudWatch log group ARN for runner logs"
 }
+
+# -----------------------------------------------------------------------------
+# Scanner Lambda
+# -----------------------------------------------------------------------------
+
+output "scanner_lambda_function_name" {
+  value       = aws_lambda_function.scanner.function_name
+  description = "Scanner Lambda function name"
+}
+
+output "scanner_lambda_arn" {
+  value       = aws_lambda_function.scanner.arn
+  description = "Scanner Lambda function ARN"
+}
+

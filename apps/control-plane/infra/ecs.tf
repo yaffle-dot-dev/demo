@@ -75,6 +75,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "YAFFLE_ECS_TASK_DEFINITION", value = module.runner.task_definition_family },
         { name = "YAFFLE_ECS_SUBNETS", value = join(",", local.private_subnet_ids) },
         { name = "YAFFLE_ECS_SECURITY_GROUPS", value = module.runner.security_group_id },
+        # Scanner Lambda
+        { name = "YAFFLE_SCANNER_LAMBDA_FUNCTION", value = module.runner.scanner_lambda_function_name },
         # Control plane identity
         { name = "YAFFLE_CONTROL_PLANE_ROLE_ARN", value = aws_iam_role.control_plane_task.arn },
         # TFC backend

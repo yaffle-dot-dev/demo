@@ -62,6 +62,19 @@ locals {
     ]
   })
 
+  control_plane_lambda_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "lambda:InvokeFunction",
+        ]
+        Resource = module.runner.scanner_lambda_arn
+      },
+    ]
+  })
+
   control_plane_secrets_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -262,6 +275,13 @@ resource "aws_iam_role_policy" "control_plane_ecs_local_dev" {
   name   = "ecs-runner-access"
   role   = aws_iam_role.control_plane_task_local_dev[0].id
   policy = local.control_plane_ecs_policy
+}
+
+# Lambda access for invoking scanner function
+resource "aws_iam_role_policy" "control_plane_lambda" {
+  name   = "lambda-scanner-access"
+  role   = aws_iam_role.control_plane_task.id
+  policy = local.control_plane_lambda_policy
 }
 
 # Secrets Manager access for reading connection credentials

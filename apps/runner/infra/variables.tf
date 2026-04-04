@@ -48,6 +48,14 @@ variable "tailscale_tags" {
   default     = ["tag:ecs-runner"]
 }
 
+variable "axiom_token" {
+  type        = string
+  description = "Axiom API token for scanner Lambda telemetry"
+  default     = ""
+  sensitive   = true
+}
+
+
 # -----------------------------------------------------------------------------
 # Naming
 # -----------------------------------------------------------------------------
