@@ -175,7 +175,7 @@ export async function completeRunGroup(
       runGroup.repo,
       environmentName,
       runGroup.headSha,
-      workspacePaths,
+      executionOrder,
     )
   }
 

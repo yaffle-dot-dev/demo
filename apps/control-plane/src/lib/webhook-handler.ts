@@ -183,8 +183,20 @@ async function dispatchScan(
   const { updateRunGroupStatus } = await import("../db/queries/run-groups.ts")
   await updateRunGroupStatus(runGroupId, "scanning")
 
-  const scheduler = await getScheduler()
-  await scheduler.spawner.spawnScanner(scanJob.id, scanToken)
+  // Use Lambda if configured (fast ~1s cold start), fall back to ECS scanner
+  const lambdaFunction = process.env.YAFFLE_SCANNER_LAMBDA_FUNCTION
+  if (lambdaFunction) {
+    const { LambdaScannerSpawner } = await import("./lambda-scanner-spawner.ts")
+    const lambdaSpawner = new LambdaScannerSpawner({
+      functionName: lambdaFunction,
+      region: process.env.AWS_REGION ?? "us-east-1",
+      apiUrl: process.env.YAFFLE_RUNNER_API_URL!,
+    })
+    await lambdaSpawner.spawnScanner(scanJob.id, scanToken)
+  } else {
+    const scheduler = await getScheduler()
+    await scheduler.spawner.spawnScanner(scanJob.id, scanToken)
+  }
 
   logger.info("Scan job dispatched", {
     "scan_job.id": scanJob.id,
