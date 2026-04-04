@@ -25,6 +25,10 @@ export interface ProviderRequirementDeployment {
   runGroupId: string | null
 }
 
+function providerDeploymentKey(deployment: ProviderRequirementDeployment): string {
+  return `${deployment.runGroupId ?? "no-run-group"}:${deployment.workspacePath}`
+}
+
 const PROVIDER_BLOCK_PATTERN = /provider\s+"([^"]+)"/g
 const REQUIRED_PROVIDER_PATTERN = /(\w+)\s*=\s*\{[^}]*source\s*=\s*"([^"]+)"/gms
 const MODULE_SOURCE_PATTERN = /source\s*=\s*"([^"]+)"/g
@@ -263,6 +267,103 @@ export async function getRequiredProvidersForDeployment(
       await cleanupWorkspace(repoDir)
     }
   })
+}
+
+export async function getRequiredProvidersForDeployments(
+  deployments: ProviderRequirementDeployment[],
+  opts?: {
+    extractionConcurrency?: number
+    runGroupsById?: Map<string, Pick<RunGroup, "id" | "workspaceS3Key">>
+  },
+): Promise<Map<string, string[]>> {
+  if (deployments.length === 0) {
+    return new Map()
+  }
+
+  const extractionConcurrency = Math.max(1, opts?.extractionConcurrency ?? DEFAULT_EXTRACTION_CONCURRENCY)
+  const runGroupIds = [...new Set(
+    deployments
+      .map((deployment) => deployment.runGroupId)
+      .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
+  )]
+
+  const runGroupsById = opts?.runGroupsById ?? await findRunGroupsByIds(runGroupIds)
+  const providersByDeployment = new Map<string, string[]>()
+  const missingByArchive = new Map<string, Array<{
+    deploymentKey: string
+    workspaceCacheKey: string
+    workspacePath: string
+  }>>()
+
+  for (const deployment of deployments) {
+    const deploymentKey = providerDeploymentKey(deployment)
+
+    if (!deployment.runGroupId) {
+      providersByDeployment.set(deploymentKey, [])
+      continue
+    }
+
+    const runGroup = runGroupsById.get(deployment.runGroupId)
+    if (!runGroup?.workspaceS3Key) {
+      providersByDeployment.set(deploymentKey, [])
+      continue
+    }
+
+    const workspaceCacheKey = workspaceExtractionKey(runGroup.workspaceS3Key, deployment.workspacePath)
+    const cached = getCachedWorkspaceProviders(workspaceCacheKey)
+    if (cached) {
+      providersByDeployment.set(deploymentKey, cached)
+      continue
+    }
+
+    const existing = missingByArchive.get(runGroup.workspaceS3Key)
+    if (existing) {
+      existing.push({
+        deploymentKey,
+        workspaceCacheKey,
+        workspacePath: deployment.workspacePath,
+      })
+    } else {
+      missingByArchive.set(runGroup.workspaceS3Key, [{
+        deploymentKey,
+        workspaceCacheKey,
+        workspacePath: deployment.workspacePath,
+      }])
+    }
+  }
+
+  const workspaceCache = createWorkspaceCache()
+  const archiveEntries = [...missingByArchive.entries()]
+
+  await mapWithConcurrency(archiveEntries, extractionConcurrency, async ([workspaceS3Key, workspaces]) => {
+    await withSpan("connections.extract_workspace_providers_batch", async (span) => {
+      span.setAttributes({
+        "connections.workspace_s3_key": workspaceS3Key,
+        "connections.workspace_count": workspaces.length,
+      })
+
+      const repoDir = await workspaceCache.extractWorkspaceToTemp(workspaceS3Key)
+
+      try {
+        await Promise.all(workspaces.map(async (workspace) => {
+          let providers: string[] = []
+
+          try {
+            providers = await extractProviders(join(repoDir, workspace.workspacePath))
+          } catch {
+            providers = []
+          }
+
+          setCachedWorkspaceProviders(workspace.workspaceCacheKey, providers)
+          providersByDeployment.set(workspace.deploymentKey, providers)
+        }))
+      } finally {
+        await cleanupWorkspace(repoDir)
+      }
+    })
+  })
+
+  return providersByDeployment
 }
 
 async function mapWithConcurrency<T, R>(

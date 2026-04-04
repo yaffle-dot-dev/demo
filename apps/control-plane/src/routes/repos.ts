@@ -35,7 +35,9 @@ import {
   getConnectionReadinessForDeployment,
   getConnectionReadinessForDeploymentWithDeps,
 } from "../lib/execution-credentials.ts"
-import { getRequiredProvidersForDeployment } from "../lib/provider-requirements.ts"
+import {
+  getRequiredProvidersForDeployments,
+} from "../lib/provider-requirements.ts"
 
 const prNumberParam = z.coerce.number().int().positive()
 const environmentQuerySchema = z.object({
@@ -656,14 +658,19 @@ async function buildEnvironmentSnapshotData(params: {
     findRunGroupsByIds(deploymentRunGroupIds),
   ])
 
+  const providersByDeployment = await getRequiredProvidersForDeployments(deployments, {
+    runGroupsById,
+  })
+
   const readinessEntries = await Promise.all(
     deployments.map(async (deployment) => {
       const readiness = await getConnectionReadinessForDeploymentWithDeps(deployment, {
-        getProvidersForDeployment: (currentDeployment) => getRequiredProvidersForDeployment(currentDeployment, {
-          runGroup: currentDeployment.runGroupId
-            ? runGroupsById.get(currentDeployment.runGroupId) ?? null
-            : null,
-        }),
+        getProvidersForDeployment: (currentDeployment) =>
+          Promise.resolve(
+            providersByDeployment.get(
+              `${currentDeployment.runGroupId ?? "no-run-group"}:${currentDeployment.workspacePath}`,
+            ) ?? [],
+          ),
         listConnectionsForOrg: async () => orgConnections,
         resolveConnectionEnv: async () => ({}),
       })
