@@ -10,6 +10,7 @@ env/dev/secrets*.env
 
 # Nix
 result
+result-*
 
 # Dependencies
 node_modules/

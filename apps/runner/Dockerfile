@@ -16,7 +16,6 @@ FROM oven/bun:1-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
-      git \
       jq \
       bash \
       tar \

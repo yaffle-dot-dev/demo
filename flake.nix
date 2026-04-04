@@ -19,8 +19,13 @@
             lib = pkgs.lib;
             src = ./.;
           };
+
+          lambda-layer-tailscale = pkgs.callPackage ./nix/lambda-layers/tailscale-layer.nix {
+            inherit pkgs;
+            lib = pkgs.lib;
+          };
         in {
-          inherit yaffle-cli;
+          inherit yaffle-cli lambda-layer-tailscale;
           default = yaffle-cli;
           yaffle-outputs = yaffle-cli;
         }
@@ -109,6 +114,30 @@
             type = "app";
             program = toString (pkgs.writeShellScript "deploy-runner" ''
               exec ${pkgs.bun}/bin/bun run scripts/deploy-runner.ts "$@"
+            '');
+          };
+          build-scanner = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "build-scanner" ''
+              exec ${pkgs.bun}/bin/bun run scripts/build-scanner.ts "$@"
+            '');
+          };
+          deploy-scanner = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-scanner" ''
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-scanner.ts "$@"
+            '');
+          };
+          test-scanner-lambda = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "test-scanner-lambda" ''
+              exec ${pkgs.bun}/bin/bun run scripts/test-scanner-lambda.ts "$@"
+            '');
+          };
+          publish-scanner-layers = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "publish-scanner-layers" ''
+              exec ${pkgs.bun}/bin/bun run scripts/publish-scanner-layers.ts "$@"
             '');
           };
           db-migrate = {
@@ -233,7 +262,6 @@
                 echo "  process-compose up         - start all services"
                 echo "  process-compose up -t=false - start without TUI"
                 echo "  process-compose down       - stop all services"
-                echo "  YAFFLE_DEV_RUNNER_MODE=ecs process-compose up -t=false - restart CP in ECS mode"
                 echo "  bun install                - install dependencies"
                 echo "  bun test                   - run tests"
               echo ""
@@ -248,9 +276,6 @@
               echo "  https://yaffle.local:6969/api   - control plane API"
               echo ""
             '';
-
-            # Stable shell defaults. Runtime app config is loaded from env/dev/*.env.
-            YAFFLE_DEV_RUNNER_MODE = "local";
           };
         }
       );
