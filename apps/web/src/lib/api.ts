@@ -580,6 +580,15 @@ export async function getEnvironment(
   org: string,
   repo: string,
   environmentName: string,
+  opts?: {
+    view?: "full" | "dag"
+  },
 ): Promise<DetailResponse<EnvironmentPreviewGroup>> {
-  return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environmentName)}`)
+  const searchParams = new URLSearchParams()
+  if (opts?.view) {
+    searchParams.set("view", opts.view)
+  }
+
+  const query = searchParams.size > 0 ? `?${searchParams}` : ""
+  return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environmentName)}${query}`)
 }

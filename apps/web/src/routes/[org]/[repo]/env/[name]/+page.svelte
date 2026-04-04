@@ -5,7 +5,7 @@
   import { usePreviewStream } from "$lib/sse/index.svelte"
   import { getLatestRunGroup } from "$lib/sse/types"
   import { githubRepoUrl, githubPullUrl } from "$lib/github"
-  import { listOrgs } from "$lib/api"
+  import { getEnvironment, listOrgs } from "$lib/api"
   import type { EnvironmentPreviewGroup } from "$lib/api"
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import PreviewGroupPage from "$lib/components/PreviewGroupPage.svelte"
@@ -15,6 +15,7 @@
   }
 
   let { data }: { data: PageData } = $props()
+  let initialEnvironment = $state<EnvironmentPreviewGroup | null>(null)
 
   // Reactive params
   const org = $derived($page.params.org ?? "")
@@ -26,7 +27,7 @@
 
   // Cast to EnvironmentPreviewGroup for type-safe access
   const displayData = $derived(
-    (stream.data as EnvironmentPreviewGroup | null) ?? data.initialEnvironment
+    (stream.data as EnvironmentPreviewGroup | null) ?? initialEnvironment
   )
 
   // Determine display type: PR environments show PR-style, named envs show branch-style
@@ -60,6 +61,35 @@
   )
 
   let canManageConnections = $state(false)
+
+  $effect(() => {
+    initialEnvironment = data.initialEnvironment
+  })
+
+  $effect(() => {
+    if (!browser || !org || !repo || !environmentName || data.initialEnvironment) {
+      return
+    }
+
+    let cancelled = false
+
+    void (async () => {
+      try {
+        const response = await getEnvironment(org, repo, environmentName, { view: "dag" })
+        if (!cancelled) {
+          initialEnvironment = response.data
+        }
+      } catch {
+        if (!cancelled) {
+          initialEnvironment = null
+        }
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  })
 
   onMount(() => {
     if (!browser) {
