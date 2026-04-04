@@ -10,6 +10,64 @@ import { recomputeRunGroupStatus } from "./run-groups.ts"
 
 export type TfRun = typeof tfRuns.$inferSelect
 export type NewTfRun = typeof tfRuns.$inferInsert
+export type TfRunListItem = Pick<
+  TfRun,
+  | "id"
+  | "deploymentId"
+  | "runGroupId"
+  | "runType"
+  | "status"
+  | "checkRunId"
+  | "planSummary"
+  | "outputs"
+  | "errorMessage"
+  | "logOutput"
+  | "startedAt"
+  | "completedAt"
+  | "createdAt"
+>
+export type TfRunOutputsItem = Pick<
+  TfRun,
+  | "id"
+  | "deploymentId"
+  | "runType"
+  | "status"
+  | "outputs"
+  | "createdAt"
+>
+
+function selectRunListFields() {
+  return {
+    id: tfRuns.id,
+    deploymentId: tfRuns.deploymentId,
+    runGroupId: tfRuns.runGroupId,
+    runType: tfRuns.runType,
+    status: tfRuns.status,
+    checkRunId: tfRuns.checkRunId,
+    planSummary: tfRuns.planSummary,
+    outputs: tfRuns.outputs,
+    errorMessage: tfRuns.errorMessage,
+    logOutput: tfRuns.logOutput,
+    startedAt: tfRuns.startedAt,
+    completedAt: tfRuns.completedAt,
+    createdAt: tfRuns.createdAt,
+  }
+}
+
+function groupRunsByDeployment(rows: TfRunListItem[]): Map<string, TfRunListItem[]> {
+  const map = new Map<string, TfRunListItem[]>()
+
+  for (const row of rows) {
+    const existing = map.get(row.deploymentId)
+    if (existing) {
+      existing.push(row)
+    } else {
+      map.set(row.deploymentId, [row])
+    }
+  }
+
+  return map
+}
 
 /**
  * Create a new TF run record.
@@ -113,6 +171,85 @@ export async function findLatestRunsForDeployments(
 }
 
 /**
+ * List runs for a batch of deployments using the slim projection needed by repo/env routes.
+ * Optionally restrict to a set of run groups so we don't load unrelated history.
+ */
+export async function listRunsForDeployments(
+  deploymentIds: string[],
+  opts?: {
+    runGroupIds?: string[]
+  },
+): Promise<Map<string, TfRunListItem[]>> {
+  if (deploymentIds.length === 0) {
+    return new Map()
+  }
+
+  if (opts?.runGroupIds && opts.runGroupIds.length === 0) {
+    return new Map(deploymentIds.map((deploymentId) => [deploymentId, []]))
+  }
+
+  return withDbSpan("select", "tf_runs", async () => {
+    const conditions = [inArray(tfRuns.deploymentId, deploymentIds)]
+
+    if (opts?.runGroupIds) {
+      conditions.push(inArray(tfRuns.runGroupId, opts.runGroupIds))
+    }
+
+    const rows = await db
+      .select(selectRunListFields())
+      .from(tfRuns)
+      .where(and(...conditions))
+      .orderBy(tfRuns.deploymentId, desc(tfRuns.createdAt))
+
+    return groupRunsByDeployment(rows)
+  })
+}
+
+/**
+ * Find the latest successful run per deployment using the minimal fields needed by the UI.
+ */
+export async function findLatestSuccessfulRunsForDeployments(
+  deploymentIds: string[],
+  runType?: RunType,
+): Promise<Map<string, TfRunOutputsItem>> {
+  if (deploymentIds.length === 0) {
+    return new Map()
+  }
+
+  return withDbSpan("select", "tf_runs", async () => {
+    const conditions = [
+      inArray(tfRuns.deploymentId, deploymentIds),
+      eq(tfRuns.status, "success"),
+    ]
+
+    if (runType) {
+      conditions.push(eq(tfRuns.runType, runType))
+    }
+
+    const rows = await db
+      .select({
+        id: tfRuns.id,
+        deploymentId: tfRuns.deploymentId,
+        runType: tfRuns.runType,
+        status: tfRuns.status,
+        outputs: tfRuns.outputs,
+        createdAt: tfRuns.createdAt,
+      })
+      .from(tfRuns)
+      .where(and(...conditions))
+      .orderBy(tfRuns.deploymentId, desc(tfRuns.createdAt))
+
+    const map = new Map<string, TfRunOutputsItem>()
+    for (const row of rows) {
+      if (!map.has(row.deploymentId)) {
+        map.set(row.deploymentId, row)
+      }
+    }
+    return map
+  })
+}
+
+/**
  * Find the latest run for a deployment, optionally filtered by type.
  */
 export async function findLatestRun(
@@ -166,10 +303,10 @@ export async function findLatestSuccessfulRun(
 /**
  * List all runs for a deployment.
  */
-export async function listRunsForDeployment(deploymentId: string): Promise<TfRun[]> {
+export async function listRunsForDeployment(deploymentId: string): Promise<TfRunListItem[]> {
   return withDbSpan("select", "tf_runs", async () => {
     return db
-      .select()
+      .select(selectRunListFields())
       .from(tfRuns)
       .where(eq(tfRuns.deploymentId, deploymentId))
       .orderBy(desc(tfRuns.createdAt))

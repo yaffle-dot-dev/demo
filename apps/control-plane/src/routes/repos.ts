@@ -5,10 +5,18 @@ import { z } from "zod"
 import {
   findDeploymentsByEnvironment,
 } from "../db/queries/workspace-deployments.ts"
-import { listRunsForPreview, findLatestSuccessfulRun } from "../db/queries/tf-runs.ts"
-import { getSpansForRun } from "../db/queries/resource-spans.ts"
-import { findLatestJobForDeployment } from "../db/queries/iac-jobs.ts"
 import {
+  listRunsForPreview,
+  listRunsForDeployments,
+  findLatestSuccessfulRun,
+  findLatestSuccessfulRunsForDeployments,
+  type TfRunListItem,
+} from "../db/queries/tf-runs.ts"
+import { getSpansForRun } from "../db/queries/resource-spans.ts"
+import { findLatestJobForDeployment, findLatestJobsForDeployments } from "../db/queries/iac-jobs.ts"
+import { listConnectionsForOrg } from "../db/queries/connections.ts"
+import {
+  findRunGroupsByIds,
   listRunGroupsForPr,
   listRunGroupsForBranch,
   listRunGroupsForEnvironment,
@@ -23,7 +31,11 @@ import {
   getSseMessagesDedupedCounter,
   getSseConnectionsActiveCounter,
 } from "../lib/telemetry.ts"
-import { getConnectionReadinessForDeployment } from "../lib/execution-credentials.ts"
+import {
+  getConnectionReadinessForDeployment,
+  getConnectionReadinessForDeploymentWithDeps,
+} from "../lib/execution-credentials.ts"
+import { getRequiredProvidersForDeployment } from "../lib/provider-requirements.ts"
 
 const prNumberParam = z.coerce.number().int().positive()
 const environmentQuerySchema = z.object({
@@ -567,6 +579,174 @@ reposRoute.get(
 // Unified Environment Route (replaces both PR and branch routes)
 // ---------------------------------------------------------------------------
 
+interface EnvironmentSnapshotData {
+  org: string
+  repo: string
+  environmentKind: "named" | "transient"
+  environmentName: string
+  ref: string
+  headSha: string
+  prNumber: number | null
+  authorGithubId: number | null
+  authorLogin: string | null
+  workspaces: Array<WorkspaceWithRunsForResponse>
+  runGroups: SerializedRunGroup[]
+}
+
+type WorkspaceWithRunsForResponse = {
+  preview: SerializedPreview
+  runs: SerializedRun[]
+  outputs: unknown | null
+  resourceSpans?: SerializedResourceSpan[]
+}
+
+async function buildEnvironmentSnapshotData(params: {
+  orgId: string
+  orgSlug: string
+  repo: string
+  environmentName: string
+  headSha?: string
+  includeResourceSpans?: boolean
+}): Promise<EnvironmentSnapshotData | null> {
+  const [allDeployments, allRunGroups] = await Promise.all([
+    findDeploymentsByEnvironment(params.orgId, params.repo, params.environmentName),
+    listRunGroupsForEnvironment(params.orgId, params.repo, params.environmentName),
+  ])
+
+  const deployments = filterDeploymentsByHeadSha(allDeployments, params.headSha)
+  const runGroupsData = filterRunGroupsByHeadSha(allRunGroups, params.headSha)
+  const serializedRunGroups = runGroupsData.map(serializeRunGroup)
+
+  if (deployments.length === 0) {
+    if (runGroupsData.length === 0) {
+      return null
+    }
+
+    const latestRunGroup = runGroupsData[0]
+    return {
+      org: params.orgSlug,
+      repo: params.repo,
+      environmentKind: latestRunGroup.prNumber ? "transient" : "named",
+      environmentName: params.environmentName,
+      ref: latestRunGroup.ref,
+      headSha: latestRunGroup.headSha,
+      prNumber: latestRunGroup.prNumber,
+      authorGithubId: null,
+      authorLogin: null,
+      workspaces: [],
+      runGroups: serializedRunGroups,
+    }
+  }
+
+  const deploymentIds = deployments.map((deployment) => deployment.id)
+  const visibleRunGroupIds = [...new Set(runGroupsData.map((runGroup) => runGroup.id))]
+  const deploymentRunGroupIds = [...new Set(
+    deployments
+      .map((deployment) => deployment.runGroupId)
+      .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
+  )]
+
+  const [runsByDeployment, latestApplyByDeployment, latestJobsMap, orgConnections, runGroupsById] = await Promise.all([
+    visibleRunGroupIds.length > 0
+      ? listRunsForDeployments(deploymentIds, { runGroupIds: visibleRunGroupIds })
+      : listRunsForDeployments(deploymentIds),
+    findLatestSuccessfulRunsForDeployments(deploymentIds, "apply"),
+    findLatestJobsForDeployments(deploymentIds),
+    listConnectionsForOrg(params.orgId),
+    findRunGroupsByIds(deploymentRunGroupIds),
+  ])
+
+  const readinessEntries = await Promise.all(
+    deployments.map(async (deployment) => {
+      const readiness = await getConnectionReadinessForDeploymentWithDeps(deployment, {
+        getProvidersForDeployment: (currentDeployment) => getRequiredProvidersForDeployment(currentDeployment, {
+          runGroup: currentDeployment.runGroupId
+            ? runGroupsById.get(currentDeployment.runGroupId) ?? null
+            : null,
+        }),
+        listConnectionsForOrg: async () => orgConnections,
+        resolveConnectionEnv: async () => ({}),
+      })
+
+      return [deployment.id, readiness] as const
+    }),
+  )
+  const readinessByDeployment = new Map(readinessEntries)
+
+  const resourceSpansByRunId = new Map<string, SerializedResourceSpan[]>()
+  if (params.includeResourceSpans) {
+    const runningRuns = deployments
+      .map((deployment) => {
+        const isRunning = deployment.status === "planning"
+          || deployment.status === "applying"
+          || deployment.status === "destroying"
+        if (!isRunning) {
+          return null
+        }
+
+        const runs = runsByDeployment.get(deployment.id) ?? []
+        return runs.find((run) => run.status === "running") ?? null
+      })
+      .filter((run): run is TfRunListItem => run !== null)
+
+    const spanEntries = await Promise.all(
+      runningRuns.map(async (run) => {
+        const spans = (await getSpansForRun(run.id)).map(serializeResourceSpan)
+        return [run.id, spans] as const
+      }),
+    )
+
+    for (const [runId, spans] of spanEntries) {
+      resourceSpansByRunId.set(runId, spans)
+    }
+  }
+
+  const defaultReadiness = {
+    status: "not_required" as const,
+    missingProviders: [],
+    conflictProviders: [],
+    matchedConnections: [],
+  }
+
+  const workspaces = deployments.map((deployment) => {
+    const runs = runsByDeployment.get(deployment.id) ?? []
+    const latestApply = latestApplyByDeployment.get(deployment.id)
+    const latestJob = latestJobsMap.get(deployment.id)
+    const connectionReadiness = readinessByDeployment.get(deployment.id) ?? defaultReadiness
+    const runningRun = params.includeResourceSpans
+      ? runs.find((run) => run.status === "running")
+      : undefined
+    const resourceSpans = runningRun
+      ? resourceSpansByRunId.get(runningRun.id)
+      : undefined
+
+    return {
+      preview: serializePreview(
+        { ...deployment, blockedReason: latestJob?.blockedReason ?? null },
+        connectionReadiness,
+      ),
+      runs: runs.map(serializeRun),
+      outputs: latestApply?.outputs ?? null,
+      ...(resourceSpans && resourceSpans.length > 0 ? { resourceSpans } : {}),
+    }
+  })
+
+  const first = deployments[0]
+  return {
+    org: params.orgSlug,
+    repo: params.repo,
+    environmentKind: first.prNumber ? "transient" : "named",
+    environmentName: first.environmentName,
+    ref: first.ref,
+    headSha: first.headSha,
+    prNumber: first.prNumber,
+    authorGithubId: first.authorGithubId,
+    authorLogin: first.authorLogin,
+    workspaces,
+    runGroups: serializedRunGroups,
+  }
+}
+
 /**
  * GET /api/orgs/:org/repos/:repo/environment/:name
  *
@@ -578,10 +758,11 @@ reposRoute.get(
   requireOrgAccess({ orgSource: "param", orgKey: "org" }),
   async (c) => {
     const auth = getAuth(c)
+    const org = c.req.param("org")
     const repo = c.req.param("repo")
     const environmentName = c.req.param("name")
-    if (!repo || !environmentName) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and environment name are required" } }, 400)
+    if (!org || !repo || !environmentName) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "org, repo, and environment name are required" } }, 400)
     }
 
     const parsedQuery = environmentQuerySchema.safeParse(c.req.query())
@@ -594,73 +775,23 @@ reposRoute.get(
 
     const headSha = parsedQuery.data.head_sha
 
-    const deployments = filterDeploymentsByHeadSha(
-      await findDeploymentsByEnvironment(auth.orgId, repo, environmentName),
+    const snapshot = await buildEnvironmentSnapshotData({
+      orgId: auth.orgId,
+      orgSlug: org,
+      repo,
+      environmentName,
       headSha,
-    )
-    const runGroupsData = filterRunGroupsByHeadSha(
-      await listRunGroupsForEnvironment(auth.orgId, repo, environmentName),
-      headSha,
-    )
+    })
 
-    if (deployments.length === 0) {
-      if (runGroupsData.length === 0) {
-        return c.json(
-          { error: { code: "NOT_FOUND", message: `no deployments found for environment ${environmentName}` } },
-          404,
-        )
-      }
-
-      const latestRunGroup = runGroupsData[0]
-      return c.json({
-        data: {
-          org: c.req.param("org"),
-          repo,
-          environmentKind: latestRunGroup.prNumber ? "transient" : "named",
-          environmentName,
-          ref: latestRunGroup.ref,
-          headSha: latestRunGroup.headSha,
-          prNumber: latestRunGroup.prNumber,
-          authorGithubId: null,
-          authorLogin: null,
-          workspaces: [],
-          runGroups: runGroupsData.map(serializeRunGroup),
-        },
-      })
+    if (!snapshot) {
+      return c.json(
+        { error: { code: "NOT_FOUND", message: `no deployments found for environment ${environmentName}` } },
+        404,
+      )
     }
 
-    // Fetch runs for each deployment
-    const deploymentsWithRuns = await Promise.all(
-      deployments.map(async (deployment) => {
-        const runs = await listRunsForPreview(deployment.id)
-        const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-        const latestJob = await findLatestJobForDeployment(deployment.id)
-        const outputs = latestApply?.outputs ?? null
-        const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
-        return {
-          preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
-          runs: runs.map(serializeRun),
-          outputs,
-        }
-      }),
-    )
-
-    const first = deployments[0]
-
     return c.json({
-      data: {
-        org: c.req.param("org"),
-        repo,
-        environmentKind: first.environmentKind,
-        environmentName: first.environmentName,
-        ref: first.ref,
-        headSha: first.headSha,
-        prNumber: first.prNumber,
-        authorGithubId: first.authorGithubId,
-        authorLogin: first.authorLogin,
-        workspaces: deploymentsWithRuns,
-        runGroups: runGroupsData.map(serializeRunGroup),
-      },
+      data: snapshot,
     })
   },
 )
@@ -675,10 +806,11 @@ reposRoute.get(
   requireOrgAccess({ orgSource: "param", orgKey: "org", allowQueryToken: true }),
   async (c) => {
     const auth = getAuth(c)
+    const org = c.req.param("org")
     const repo = c.req.param("repo")
     const environmentName = c.req.param("name")
-    if (!repo || !environmentName) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and environment name are required" } }, 400)
+    if (!org || !repo || !environmentName) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "org, repo, and environment name are required" } }, 400)
     }
 
     const parsedQuery = environmentQuerySchema.safeParse(c.req.query())
@@ -696,6 +828,7 @@ reposRoute.get(
       let lastPayload = ""
       let inFlight = false
       let pendingUpdate = false
+      let deploymentIds = new Set<string>()
 
       const sendSnapshot = async (): Promise<void> => {
         if (inFlight) {
@@ -706,73 +839,20 @@ reposRoute.get(
 
         try {
           const start = Date.now()
-          const deployments = filterDeploymentsByHeadSha(
-            await findDeploymentsByEnvironment(auth.orgId, repo, environmentName),
+          const snapshot = await buildEnvironmentSnapshotData({
+            orgId: auth.orgId,
+            orgSlug: org,
+            repo,
+            environmentName,
             headSha,
-          )
-          const runGroupsData = filterRunGroupsByHeadSha(
-            await listRunGroupsForEnvironment(auth.orgId, repo, environmentName),
-            headSha,
-          )
-
-          if (deployments.length === 0) {
-            const payload = runGroupsData.length === 0
-              ? JSON.stringify({ data: null })
-              : JSON.stringify({
-                  data: {
-                    org: c.req.param("org"),
-                    repo,
-                    environmentKind: runGroupsData[0]?.prNumber ? "transient" : "named",
-                    environmentName,
-                    ref: runGroupsData[0]?.ref ?? `refs/heads/${environmentName}`,
-                    headSha: runGroupsData[0]?.headSha ?? "",
-                    prNumber: runGroupsData[0]?.prNumber ?? null,
-                    authorGithubId: null,
-                    authorLogin: null,
-                    workspaces: [],
-                    runGroups: runGroupsData.map(serializeRunGroup),
-                  },
-                })
-
-            if (payload !== lastPayload) {
-              lastPayload = payload
-              getSsePayloadBytesHistogram().record(payload.length, { type: "environment" })
-              getSseMessagesSentCounter().add(1, { type: "snapshot" })
-              await stream.writeSSE({ event: "update", data: payload })
-            } else {
-              getSseMessagesDedupedCounter().add(1, { type: "environment" })
-            }
-            return
-          }
-
-          const deploymentsWithRuns = await Promise.all(
-            deployments.map(async (deployment) => {
-              const runs = await listRunsForPreview(deployment.id)
-              const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-              const latestJob = await findLatestJobForDeployment(deployment.id)
-              const outputs = latestApply?.outputs ?? null
-              const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
-
-              // Include resource spans for running deployments (for live Gantt chart)
-              const isRunning = deployment.status === "planning" || deployment.status === "applying" || deployment.status === "destroying"
-              const runningRun = isRunning ? runs.find((r) => r.status === "running") : null
-              const resourceSpans = runningRun
-                ? (await getSpansForRun(runningRun.id)).map(serializeResourceSpan)
-                : undefined
-
-              return {
-                preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
-                runs: runs.map(serializeRun),
-                outputs,
-                ...(resourceSpans ? { resourceSpans } : {}),
-              }
-            }),
-          )
+            includeResourceSpans: true,
+          })
+          deploymentIds = new Set(snapshot?.workspaces.map((workspace) => workspace.preview.id) ?? [])
 
           // Debug logging for UI bug investigation
-          const latestRg = runGroupsData[0]
+          const latestRg = snapshot?.runGroups[0]
           console.log(`[sse:environment:debug] latestRunGroup=${latestRg?.id} status=${latestRg?.status}`)
-          for (const dwr of deploymentsWithRuns) {
+          for (const dwr of snapshot?.workspaces ?? []) {
             const runsInLatestRg = dwr.runs.filter((r: { runGroupId: string | null }) => r.runGroupId === latestRg?.id)
             console.log(`[sse:environment:debug] workspace=${dwr.preview.workspacePath} totalRuns=${dwr.runs.length} runsInLatestRg=${runsInLatestRg.length}`)
           }
@@ -780,22 +860,7 @@ reposRoute.get(
           const elapsed = Date.now() - start
           getSseSnapshotDurationHistogram().record(elapsed, { type: "environment" })
 
-          const first = deployments[0]
-          const payload = JSON.stringify({
-            data: {
-              org: c.req.param("org"),
-              repo,
-              environmentKind: first?.environmentKind ?? "named",
-              environmentName,
-              ref: first?.ref ?? `refs/heads/${environmentName}`,
-              headSha: first?.headSha ?? "",
-              prNumber: first?.prNumber ?? null,
-              authorGithubId: first?.authorGithubId ?? null,
-              authorLogin: first?.authorLogin ?? null,
-              workspaces: deploymentsWithRuns,
-              runGroups: runGroupsData.map(serializeRunGroup),
-            },
-          })
+          const payload = JSON.stringify({ data: snapshot })
 
           if (payload !== lastPayload) {
             lastPayload = payload
@@ -817,17 +882,6 @@ reposRoute.get(
       // Send initial snapshot
       await sendSnapshot()
 
-      // Track deployment IDs for this environment to filter events
-      let deploymentIds = new Set<string>()
-      const updateDeploymentIds = async (): Promise<void> => {
-        const deployments = filterDeploymentsByHeadSha(
-          await findDeploymentsByEnvironment(auth.orgId, repo, environmentName),
-          headSha,
-        )
-        deploymentIds = new Set(deployments.map((d) => d.id))
-      }
-      await updateDeploymentIds()
-
       // Listen for deployment updates matching this environment
       const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
         if (
@@ -835,9 +889,7 @@ reposRoute.get(
           event.repo === repo &&
           event.environmentName === environmentName
         ) {
-          updateDeploymentIds()
-            .then(() => sendSnapshot())
-            .catch((err) => console.error(`[sse:environment] error in handleDeploymentUpdate:`, err))
+          sendSnapshot().catch((err) => console.error(`[sse:environment] error in handleDeploymentUpdate:`, err))
         }
       }
 
