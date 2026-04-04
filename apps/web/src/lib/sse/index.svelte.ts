@@ -162,6 +162,7 @@ export function usePreviewListStream(
   return {
     get previews() { return store.previews },
     get dependencyGraphs() { return store.dependencyGraphs },
+    get hasReceivedSnapshot() { return store.hasReceivedSnapshot },
     get connectionState() { return store.connectionState },
   }
 }

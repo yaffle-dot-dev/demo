@@ -40,6 +40,43 @@ const uuidParam = z.string().uuid()
 
 export const previewsRoute = new Hono()
 
+interface PreviewOverviewSnapshot {
+  data: ReturnType<typeof serializePreview>[]
+  dependencyGraphs: Record<string, { workspaces: string[]; edges: [string, string][] }>
+  nextCursor: string | null
+}
+
+async function buildPreviewOverviewSnapshot(params: {
+  orgId: string
+  repo?: string
+  status?: z.infer<typeof listQuerySchema>["status"]
+  prNumber?: number
+  limit?: number
+  cursor?: string
+}): Promise<PreviewOverviewSnapshot> {
+  const [result, dependencyGraphs] = await Promise.all([
+    listDeployments(params.orgId, {
+      repo: params.repo,
+      status: params.status,
+      prNumber: params.prNumber,
+      limit: params.limit,
+      cursor: params.cursor,
+    }),
+    getLatestDependencyGraphsForOrg(params.orgId, params.repo),
+  ])
+
+  const graphsObject: Record<string, { workspaces: string[]; edges: [string, string][] }> = {}
+  for (const [key, graph] of dependencyGraphs) {
+    graphsObject[key] = graph
+  }
+
+  return {
+    data: result.items.map(serializePreview),
+    dependencyGraphs: graphsObject,
+    nextCursor: result.nextCursor,
+  }
+}
+
 /**
  * GET /api/previews?org=owner&repo=owner/repo&status=ready&pr_number=42&limit=50&cursor=...
  *
@@ -83,6 +120,34 @@ previewsRoute.get(
   },
 )
 
+previewsRoute.get(
+  "/overview",
+  requireOrgAccess({ orgSource: "query", orgKey: "org" }),
+  async (c) => {
+    const parsed = listQuerySchema.safeParse(c.req.query())
+    if (!parsed.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0].message } },
+        400,
+      )
+    }
+
+    const { repo, status, pr_number, limit, cursor } = parsed.data
+    const auth = getAuth(c)
+
+    const snapshot = await buildPreviewOverviewSnapshot({
+      orgId: auth.orgId,
+      repo,
+      status,
+      prNumber: pr_number,
+      limit,
+      cursor,
+    })
+
+    return c.json(snapshot)
+  },
+)
+
 /**
  * GET /api/previews/stream?org=owner&repo=owner/repo
  *
@@ -116,29 +181,14 @@ previewsRoute.get(
         inFlight = true
         pendingUpdate = false
         try {
-          // Fetch deployments and dependency graphs in parallel
-          const [result, dependencyGraphs] = await Promise.all([
-            listDeployments(auth.orgId, {
-              repo,
-              status,
-              prNumber: pr_number,
-              limit,
-              cursor,
-            }),
-            getLatestDependencyGraphsForOrg(auth.orgId, repo),
-          ])
-
-          // Convert dependency graph map to object for JSON serialization
-          const graphsObject: Record<string, { workspaces: string[]; edges: [string, string][] }> = {}
-          for (const [key, graph] of dependencyGraphs) {
-            graphsObject[key] = graph
-          }
-
-          const payload = JSON.stringify({
-            data: result.items.map(serializePreview),
-            dependencyGraphs: graphsObject,
-            nextCursor: result.nextCursor,
-          })
+          const payload = JSON.stringify(await buildPreviewOverviewSnapshot({
+            orgId: auth.orgId,
+            repo,
+            status,
+            prNumber: pr_number,
+            limit,
+            cursor,
+          }))
 
           if (payload !== lastPayload) {
             lastPayload = payload

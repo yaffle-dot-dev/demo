@@ -96,11 +96,13 @@ import type { DependencyGraph } from "$lib/api"
 export class PreviewListStore {
   previews = $state<Preview[]>([])
   dependencyGraphs = $state<Record<string, DependencyGraph>>({})
+  hasReceivedSnapshot = $state(false)
   connectionState = $state<ConnectionState>("disconnected")
 
   /** Handle an SSE "update" message */
   handleMessage(payload: unknown): void {
     const typed = payload as PreviewListPayload
+    this.hasReceivedSnapshot = true
     if (Array.isArray(typed.data)) {
       this.previews = typed.data
     }
@@ -113,6 +115,7 @@ export class PreviewListStore {
   reset(): void {
     this.previews = []
     this.dependencyGraphs = {}
+    this.hasReceivedSnapshot = false
     this.connectionState = "disconnected"
   }
 }

@@ -24,13 +24,25 @@
   import ConnectionBlockedBadge from "$lib/components/ConnectionBlockedBadge.svelte"
   import PlanLimitedBadge from "$lib/components/PlanLimitedBadge.svelte"
 
+  type PageData = {
+    initialEnvironments: EnvironmentGroup[]
+    initialPreviews: Preview[]
+    initialDependencyGraphs: Record<string, DependencyGraph>
+  }
+
+  let { data }: { data: PageData } = $props()
+
   // Org comes from URL param - always defined since this is a [org] route
   const org = $derived(page.params.org ?? "")
 
   let showInactive = $state(false)
   let environments = $state<EnvironmentGroup[]>([])
-  let loading = $state(true)
+  let loading = $state(false)
   let error = $state("")
+
+  $effect(() => {
+    environments = data.initialEnvironments
+  })
   
   // Current user's GitHub ID for matching "your" PR environments
   let myGithubId = $state<number | null>(null)
@@ -48,8 +60,16 @@
   // Derived: is org ready to use?
   const isOrgReady = $derived(orgStatus.status === "active" || orgStatus.status === null)
 
-  // Use SSE data for previews (filtered to only include PR/transient previews)
-  const previews = $derived(stream.previews.filter((p) => p.prNumber != null && p.prNumber > 0))
+  const previewSource = $derived(
+    stream.hasReceivedSnapshot ? stream.previews : data.initialPreviews,
+  )
+
+  const dependencyGraphSource = $derived(
+    stream.hasReceivedSnapshot ? stream.dependencyGraphs : data.initialDependencyGraphs,
+  )
+
+  // Use live SSE data once it has produced a snapshot; otherwise render initial payload.
+  const previews = $derived(previewSource.filter((p) => p.prNumber != null && p.prNumber > 0))
 
   const ACTIVE_STATUSES = new Set([
     "pending",
@@ -79,26 +99,18 @@
     return ref.replace(/^refs\/(heads|tags)\//, "")
   }
 
-  async function load() {
+  async function loadUserContext() {
     if (!browser) return
-    loading = true
-    error = ""
     try {
-      // Fetch user's GitHub ID and environments in parallel
-      const [meRes, envRes, orgsRes] = await Promise.all([
+      const [meRes, orgsRes] = await Promise.all([
         getMe(),
-        listEnvironments({ org }),
         listOrgs(),
       ])
       myGithubId = meRes.data.githubId
-      environments = envRes.data
       const orgRole = orgsRes.data.find((item) => item.slug === org)?.role ?? ""
       canManageConnections = orgRole === "admin"
     } catch (e) {
       error = e instanceof Error ? e.message : String(e)
-      environments = []
-    } finally {
-      loading = false
     }
   }
 
@@ -113,9 +125,9 @@
 
   // Refresh environments when preview SSE data changes
   $effect(() => {
-    // Track the previews array - when SSE pushes new data, also refresh envs
+    void stream.hasReceivedSnapshot
     void stream.previews
-    if (browser && stream.previews.length > 0) {
+    if (browser && stream.hasReceivedSnapshot) {
       refreshEnvironments()
     }
   })
@@ -177,7 +189,7 @@
   // Helper to get dependency graph for a PR group
   function getDependencyGraph(repo: string, environmentName: string): DependencyGraph | null {
     const key = `${repo}:${environmentName}`
-    return stream.dependencyGraphs[key] ?? null
+    return dependencyGraphSource[key] ?? null
   }
 
   function countConnectionBlockedWorkspaces(env: EnvironmentGroup): number {
@@ -232,7 +244,7 @@
         goto(`${base}/`)
         return
       }
-      load()
+      void loadUserContext()
     })
 
     return unsubscribe

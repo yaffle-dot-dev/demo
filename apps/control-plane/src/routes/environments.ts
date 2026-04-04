@@ -14,6 +14,7 @@ const listQuerySchema = z.object({
   org: z.string().min(1),
   repo: z.string().optional(),
   token: z.string().optional(), // For SSE auth
+  view: z.enum(["full", "dag"]).optional(),
 })
 
 export const environmentsRoute = new Hono()
@@ -62,10 +63,10 @@ environmentsRoute.get(
       )
     }
 
-    const { repo } = parsed.data
+    const { repo, view } = parsed.data
     const auth = getAuth(c)
 
-    const environments = await fetchEnvironments(auth.orgId, repo)
+    const environments = await fetchEnvironments(auth.orgId, repo, view ?? "full")
     return c.json({ data: environments })
   },
 )
@@ -87,7 +88,7 @@ environmentsRoute.get(
       )
     }
 
-    const { repo } = parsed.data
+    const { repo, view } = parsed.data
     const auth = getAuth(c)
 
     return streamSSE(c, async (stream) => {
@@ -98,7 +99,7 @@ environmentsRoute.get(
         if (inFlight) return
         inFlight = true
         try {
-          const environments = await fetchEnvironments(auth.orgId, repo)
+          const environments = await fetchEnvironments(auth.orgId, repo, view ?? "full")
           const payload = JSON.stringify({ data: environments })
 
           if (payload !== lastPayload) {
@@ -140,6 +141,7 @@ environmentsRoute.get(
 async function fetchEnvironments(
   orgId: string,
   repo?: string,
+  detailLevel: "full" | "dag" = "full",
 ): Promise<EnvironmentGroup[]> {
   const result = await listDeployments(orgId, {
     repo,
@@ -152,6 +154,56 @@ async function fetchEnvironments(
   if (activePreviews.length === 0) return []
 
   const deploymentIds = activePreviews.map((p) => p.id)
+
+  if (detailLevel === "dag") {
+    const groups = new Map<string, EnvironmentGroup>()
+
+    for (const preview of activePreviews) {
+      const key = `${preview.repo}:${preview.environmentName}`
+      const workspace: EnvironmentWorkspace = {
+        previewId: preview.id,
+        workspacePath: preview.workspacePath,
+        status: preview.status,
+        connectionStatus: "not_required",
+        missingProviders: [],
+        conflictProviders: [],
+        matchedConnections: [],
+        blockedReason: null,
+        headSha: preview.headSha,
+        lastRunId: null,
+        lastRunType: null,
+        lastRunStatus: null,
+        lastRunCompletedAt: null,
+        planSummary: null,
+      }
+
+      const existing = groups.get(key)
+      if (!existing) {
+        groups.set(key, {
+          repo: preview.repo,
+          ref: preview.ref,
+          environmentName: preview.environmentName,
+          headSha: preview.headSha,
+          status: preview.status,
+          updatedAt: preview.createdAt.toISOString(),
+          workspaces: [workspace],
+        })
+        continue
+      }
+
+      existing.workspaces.push(workspace)
+      if (preview.headSha !== existing.headSha) {
+        existing.headSha = preview.headSha
+      }
+      existing.status = aggregateStatus(existing.workspaces)
+      const candidateTime = preview.createdAt.toISOString()
+      if (new Date(candidateTime) > new Date(existing.updatedAt)) {
+        existing.updatedAt = candidateTime
+      }
+    }
+
+    return Array.from(groups.values())
+  }
 
   // Batch fetch all data in parallel (5 queries instead of N*4)
   const [applyRunsMap, allRunsMap, jobsMap, orgConnections] = await Promise.all([

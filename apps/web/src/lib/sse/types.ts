@@ -89,6 +89,8 @@ export interface PreviewListStreamState {
   readonly previews: Preview[]
   /** Dependency graphs keyed by "{repo}:{environmentName}" */
   readonly dependencyGraphs: Record<string, DependencyGraph>
+  /** Whether at least one snapshot payload has been received */
+  readonly hasReceivedSnapshot: boolean
   /** Connection lifecycle state */
   readonly connectionState: ConnectionState
 }

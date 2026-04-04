@@ -222,6 +222,12 @@ export interface EnvironmentPreviewGroup {
   runGroups: RunGroup[]
 }
 
+export interface PreviewOverviewResponse {
+  data: Preview[]
+  dependencyGraphs: Record<string, DependencyGraph>
+  nextCursor: string | null
+}
+
 async function fetchJson<T>(path: string): Promise<T> {
   // BetterAuth uses cookies for authentication, sent automatically by the browser
   const res = await fetch(`${API_BASE}${path}`, {
@@ -324,12 +330,33 @@ export async function listPreviews(params: {
 export async function listEnvironments(params: {
   org: string
   repo?: string
+  view?: "full" | "dag"
 }): Promise<DetailResponse<EnvironmentGroup[]>> {
   const searchParams = new URLSearchParams()
   searchParams.set("org", params.org)
   if (params.repo) searchParams.set("repo", params.repo)
+  if (params.view) searchParams.set("view", params.view)
 
   return fetchJson(`/environments?${searchParams}`)
+}
+
+export async function getPreviewOverview(params: {
+  org: string
+  repo?: string
+  status?: string
+  prNumber?: number
+  limit?: number
+  cursor?: string
+}): Promise<PreviewOverviewResponse> {
+  const searchParams = new URLSearchParams()
+  searchParams.set("org", params.org)
+  if (params.repo) searchParams.set("repo", params.repo)
+  if (params.status) searchParams.set("status", params.status)
+  if (params.prNumber) searchParams.set("pr_number", String(params.prNumber))
+  if (params.limit) searchParams.set("limit", String(params.limit))
+  if (params.cursor) searchParams.set("cursor", params.cursor)
+
+  return fetchJson(`/previews/overview?${searchParams}`)
 }
 
 export async function listOrgs(): Promise<DetailResponse<OrgInfo[]>> {
