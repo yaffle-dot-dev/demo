@@ -43,6 +43,7 @@ const prNumberParam = z.coerce.number().int().positive()
 const environmentQuerySchema = z.object({
   head_sha: z.string().min(7).max(64).optional(),
   token: z.string().optional(),
+  view: z.enum(["full", "dag"]).optional(),
 })
 
 export const reposRoute = new Hono()
@@ -608,6 +609,7 @@ async function buildEnvironmentSnapshotData(params: {
   repo: string
   environmentName: string
   headSha?: string
+  detailLevel?: "full" | "dag"
   includeResourceSpans?: boolean
 }): Promise<EnvironmentSnapshotData | null> {
   const [allDeployments, allRunGroups] = await Promise.all([
@@ -641,6 +643,41 @@ async function buildEnvironmentSnapshotData(params: {
   }
 
   const deploymentIds = deployments.map((deployment) => deployment.id)
+  const defaultReadiness = {
+    status: "not_required" as const,
+    missingProviders: [],
+    conflictProviders: [],
+    matchedConnections: [],
+  }
+
+  if (params.detailLevel === "dag") {
+    const latestJobsMap = await findLatestJobsForDeployments(deploymentIds)
+
+    const workspaces = deployments.map((deployment) => ({
+      preview: serializePreview(
+        { ...deployment, blockedReason: latestJobsMap.get(deployment.id)?.blockedReason ?? null },
+        defaultReadiness,
+      ),
+      runs: [],
+      outputs: null,
+    }))
+
+    const first = deployments[0]
+    return {
+      org: params.orgSlug,
+      repo: params.repo,
+      environmentKind: first.prNumber ? "transient" : "named",
+      environmentName: first.environmentName,
+      ref: first.ref,
+      headSha: first.headSha,
+      prNumber: first.prNumber,
+      authorGithubId: first.authorGithubId,
+      authorLogin: first.authorLogin,
+      workspaces,
+      runGroups: serializedRunGroups,
+    }
+  }
+
   const visibleRunGroupIds = [...new Set(runGroupsData.map((runGroup) => runGroup.id))]
   const deploymentRunGroupIds = [...new Set(
     deployments
@@ -706,13 +743,6 @@ async function buildEnvironmentSnapshotData(params: {
     for (const [runId, spans] of spanEntries) {
       resourceSpansByRunId.set(runId, spans)
     }
-  }
-
-  const defaultReadiness = {
-    status: "not_required" as const,
-    missingProviders: [],
-    conflictProviders: [],
-    matchedConnections: [],
   }
 
   const workspaces = deployments.map((deployment) => {
@@ -781,6 +811,7 @@ reposRoute.get(
     }
 
     const headSha = parsedQuery.data.head_sha
+    const detailLevel = parsedQuery.data.view ?? "full"
 
     const snapshot = await buildEnvironmentSnapshotData({
       orgId: auth.orgId,
@@ -788,6 +819,7 @@ reposRoute.get(
       repo,
       environmentName,
       headSha,
+      detailLevel,
     })
 
     if (!snapshot) {

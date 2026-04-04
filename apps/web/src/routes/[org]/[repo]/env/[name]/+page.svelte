@@ -10,6 +10,12 @@
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import PreviewGroupPage from "$lib/components/PreviewGroupPage.svelte"
 
+  type PageData = {
+    initialEnvironment: EnvironmentPreviewGroup | null
+  }
+
+  let { data }: { data: PageData } = $props()
+
   // Reactive params
   const org = $derived($page.params.org ?? "")
   const repo = $derived($page.params.repo ?? "")
@@ -19,7 +25,9 @@
   const stream = usePreviewStream(() => org, () => repo, "environment", () => environmentName)
 
   // Cast to EnvironmentPreviewGroup for type-safe access
-  const displayData = $derived(stream.data as EnvironmentPreviewGroup | null)
+  const displayData = $derived(
+    (stream.data as EnvironmentPreviewGroup | null) ?? data.initialEnvironment
+  )
 
   // Determine display type: PR environments show PR-style, named envs show branch-style
   const isPrEnvironment = $derived(displayData?.environmentKind === "transient")
