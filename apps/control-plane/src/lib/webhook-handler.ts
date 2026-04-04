@@ -179,6 +179,10 @@ async function dispatchScan(
 
   const scanToken = await generateScanJobToken(scanJob.id, orgId)
 
+  // Mark run group as scanning so the UI shows progress instead of "no runs"
+  const { updateRunGroupStatus } = await import("../db/queries/run-groups.ts")
+  await updateRunGroupStatus(runGroupId, "scanning")
+
   const scheduler = await getScheduler()
   await scheduler.spawner.spawnScanner(scanJob.id, scanToken)
 

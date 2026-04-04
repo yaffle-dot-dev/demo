@@ -199,11 +199,16 @@ async function main(): Promise<void> {
   })
 
   // 2. Start heartbeat supervisor
+  // Heartbeat keeps the scan job alive during long clones.
+  // Unlike terraform runners, we don't exit on heartbeat rejection —
+  // if the job was already completed/failed, the heartbeat will be
+  // rejected but we should still finish reporting the result.
+  let heartbeatRejected = false
   const supervisor = new HeartbeatSupervisor({
     apiClient,
     onHeartbeatFailure: () => {
-      error("Heartbeat failed, aborting scan")
-      process.exit(1)
+      heartbeatRejected = true
+      error("Heartbeat rejected — scan job may have been reclaimed or timed out")
     },
   })
   supervisor.start()

@@ -706,6 +706,28 @@ terraform {
 
   <!-- Main content -->
   <div class="flex-1 flex flex-col min-h-0">
+    {#if filteredWorkspaces.length === 0 && (viewedRunGroup?.status === "scanning" || viewedRunGroup?.status === "pending")}
+      <!-- Scanning state: clean centered loading -->
+      <div class="flex-1 flex items-center justify-center pt-16">
+        <div class="flex flex-col items-center gap-3">
+          <svg
+            class="w-6 h-6 animate-spin text-yaffle-400"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            aria-hidden="true"
+          >
+            <circle cx="8" cy="8" r="6" stroke-opacity="0.25"></circle>
+            <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"></path>
+          </svg>
+          <div class="text-center">
+            <p class="text-sm font-medium text-text">Scanning workspaces</p>
+            <p class="text-xs text-text-dim mt-1">Analyzing dependencies and preparing workspace...</p>
+          </div>
+        </div>
+      </div>
+    {:else}
     <!-- DAG Visualization (replaces sidebar) -->
     <div class="flex-shrink-0 border-b border-border bg-surface">
       <div class="px-4 py-1 flex items-center justify-between">
@@ -985,6 +1007,7 @@ terraform {
         </div>
       {/if}
     </main>
+    {/if}
   </div>
 </div>
 
