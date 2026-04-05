@@ -1,4 +1,3 @@
-import { browser } from "$app/environment"
 import type { PageLoad } from "./$types"
 
 import type { EnvironmentPreviewGroup } from "$lib/api"
@@ -8,12 +7,6 @@ type EnvironmentResponse = {
 }
 
 export const load: PageLoad = async ({ fetch, params }) => {
-  if (browser) {
-    return {
-      initialEnvironment: null,
-    }
-  }
-
   const response = await fetch(
     `/api/orgs/${encodeURIComponent(params.org)}/repos/${encodeURIComponent(params.repo)}/environment/${encodeURIComponent(params.name)}?view=dag`,
   )

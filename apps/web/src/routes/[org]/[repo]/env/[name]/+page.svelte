@@ -5,7 +5,7 @@
   import { usePreviewStream } from "$lib/sse/index.svelte"
   import { getLatestRunGroup } from "$lib/sse/types"
   import { githubRepoUrl, githubPullUrl } from "$lib/github"
-  import { getEnvironment, listOrgs } from "$lib/api"
+  import { listOrgs } from "$lib/api"
   import type { EnvironmentPreviewGroup } from "$lib/api"
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import PreviewGroupPage from "$lib/components/PreviewGroupPage.svelte"
@@ -64,31 +64,6 @@
 
   $effect(() => {
     initialEnvironment = data.initialEnvironment
-  })
-
-  $effect(() => {
-    if (!browser || !org || !repo || !environmentName || data.initialEnvironment) {
-      return
-    }
-
-    let cancelled = false
-
-    void (async () => {
-      try {
-        const response = await getEnvironment(org, repo, environmentName, { view: "dag" })
-        if (!cancelled) {
-          initialEnvironment = response.data
-        }
-      } catch {
-        if (!cancelled) {
-          initialEnvironment = null
-        }
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
   })
 
   onMount(() => {

@@ -6,7 +6,13 @@
   import type { WorkspaceWithRuns, WorkspacePreview, Run, RunGroup, ResourceSpan } from "$lib/api"
   import { cancelRun, rerunPreview } from "$lib/api"
   import { githubTreeUrl, githubCommitUrl } from "$lib/github"
+  import { useRunLogStream } from "$lib/run-log-stream.svelte"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
+  import {
+    getWorkspaceDisplayStatus,
+    isWorkspaceActivelyRunningStatus,
+    isWorkspaceInProgressStatus,
+  } from "$lib/workspace-status"
   import {
     getWorkspacesInRunGroup,
     getLatestRunGroup,
@@ -153,14 +159,40 @@
     })
   })
 
-  // Helper: check if a workspace has an actively running run (not just pending)
-  function isWorkspaceActivelyRunning(ws: WorkspaceWithRuns): boolean {
-    return ws.runs.some((r) => r.status === "running")
+  // Are we viewing the latest run group or a historical one?
+  const isViewingLatest = $derived(
+    viewedRunGroup?.id === runGroups[0]?.id
+  )
+
+  function getDisplayStatusForWorkspace(workspace: WorkspaceWithRuns): string {
+    return getWorkspaceDisplayStatus({
+      workspace,
+      workspaces: filteredWorkspaces,
+      dependencyGraph: viewedRunGroup?.dependencyGraph ?? null,
+      isViewingLatest,
+    })
   }
 
-  // Helper: check if a workspace has any in-progress run (running or pending)
+  const workspaceDisplayStatuses = $derived.by((): Record<string, string> => {
+    const statuses: Record<string, string> = {}
+
+    for (const workspace of filteredWorkspaces) {
+      statuses[workspace.preview.workspacePath] = getDisplayStatusForWorkspace(workspace)
+    }
+
+    return statuses
+  })
+
+  // Helper: check if a workspace has an actively running run group status.
+  function isWorkspaceActivelyRunning(ws: WorkspaceWithRuns): boolean {
+    const status = workspaceDisplayStatuses[ws.preview.workspacePath] ?? ws.preview.status
+    return isWorkspaceActivelyRunningStatus(status)
+  }
+
+  // Helper: check if a workspace is part of in-flight work for the viewed run group.
   function isWorkspaceInProgress(ws: WorkspaceWithRuns): boolean {
-    return ws.runs.some((r) => r.status === "running" || r.status === "pending")
+    const status = workspaceDisplayStatuses[ws.preview.workspacePath] ?? ws.preview.status
+    return isWorkspaceInProgressStatus(status)
   }
 
   // Follow mode: auto-follow the running workspace unless user manually selected one
@@ -398,16 +430,39 @@
     }
   })
 
-  // Get terminal output for current tab
-  const terminalOutput = $derived.by(() => {
+  const selectedTerminalRun = $derived.by((): Run | null => {
+    if (activeTab === "plan") {
+      return latestPlan ?? null
+    }
+
+    if (activeTab === "apply") {
+      return latestApply ?? null
+    }
+
+    return null
+  })
+
+  const selectedTerminalRunId = $derived(selectedTerminalRun?.id ?? null)
+  const selectedTerminalRunStreaming = $derived(selectedTerminalRun?.status === "running")
+
+  const terminalFallbackOutput = $derived.by(() => {
     if (activeTab === "plan" && latestPlan) {
-      return latestPlan.logOutput ?? latestPlan.planSummary ?? ""
+      return latestPlan.planSummary ?? ""
     }
-    if (activeTab === "apply" && latestApply) {
-      return latestApply.logOutput ?? ""
-    }
+
     return ""
   })
+
+  const runLogStream = useRunLogStream(
+    () => selectedTerminalRunId,
+    () => selectedTerminalRunStreaming,
+  )
+
+  const terminalOutput = $derived(
+    runLogStream.output || terminalFallbackOutput
+  )
+
+  const terminalStreaming = $derived(runLogStream.isStreaming)
 
   // Get plan JSON for plan summary view
   const planJson = $derived.by(() => {
@@ -495,76 +550,26 @@
   // Check if a rerun is possible (no run in progress)
   const canRerun = $derived(!runningRun && selectedWorkspace && !rerunning)
 
-  // Check if the selected workspace is queued (no runs yet)
+  const selectedWorkspaceDisplayStatus = $derived(
+    selectedWorkspace
+      ? workspaceDisplayStatuses[selectedWorkspace.preview.workspacePath] ?? selectedWorkspace.preview.status
+      : null
+  )
+
+  // Check if the selected workspace is waiting on run-group work without visible runs yet.
   const isQueuedWorkspace = $derived(
-    selectedWorkspace && selectedWorkspace.runs.length === 0
+    selectedWorkspace
+      && selectedWorkspace.runs.length === 0
+      && selectedWorkspaceDisplayStatus != null
+      && isWorkspaceInProgressStatus(selectedWorkspaceDisplayStatus)
   )
 
-  // Are we viewing the latest run group or a historical one?
-  const isViewingLatest = $derived(
-    viewedRunGroup?.id === runGroups[0]?.id
+  // Workspace statuses for the run group status badge.
+  const workspaceStatusList = $derived(
+    filteredWorkspaces.map((workspace) =>
+      workspaceDisplayStatuses[workspace.preview.workspacePath] ?? workspace.preview.status
+    )
   )
-
-  // Check if a workspace has any failed upstream dependencies (for skipped detection)
-  function hasFailedUpstream(wsPath: string): boolean {
-    const graph = viewedRunGroup?.dependencyGraph
-    if (!graph) return false
-
-    const deps = graph.edges
-      .filter((edge: [string, string]) => edge[0] === wsPath)
-      .map((edge: [string, string]) => edge[1])
-
-    for (const depPath of deps) {
-      const depWs = filteredWorkspaces.find((w) => w.preview.workspacePath === depPath)
-      if (!depWs) continue
-
-      const plan = depWs.runs.find((r) => r.runType === "plan")
-      const apply = depWs.runs.find((r) => r.runType === "apply")
-
-      if (plan?.status === "failed" || apply?.status === "failed") {
-        return true
-      }
-    }
-
-    return false
-  }
-
-  // Compute workspace status from its runs in the current run group
-  // This mirrors the displayStatus logic used for individual workspace headers
-  function computeWorkspaceStatus(ws: WorkspaceWithRuns): string {
-    const plan = ws.runs.find((r) => r.runType === "plan")
-    const apply = ws.runs.find((r) => r.runType === "apply")
-    
-    // Check apply first (it's the final state)
-    if (apply?.status === "success" || apply?.status === "skipped") return "ready"
-    if (apply?.status === "running") return "applying"
-    if (apply?.status === "failed") return "failed"
-    if (apply?.status === "cancelled") return "cancelled"
-    
-    // Then check plan
-    if (plan?.status === "success") return "planned"
-    if (plan?.status === "running") return "planning"
-    if (plan?.status === "failed") return "failed"
-    if (plan?.status === "cancelled") return "cancelled"
-    if (plan?.status === "pending") return "pending"
-    
-    // No runs in this run group
-    if (ws.runs.length === 0) {
-      // For latest run group, use live preview status
-      if (isViewingLatest) return ws.preview.status
-      // For historical run groups, check if blocked by upstream failure
-      if (hasFailedUpstream(ws.preview.workspacePath)) return "ready" // skipped = success for badge
-      // Otherwise it was pending/queued at that point
-      return "pending"
-    }
-    
-    // Fallback to preview status
-    return ws.preview.status
-  }
-
-  // Workspace statuses for the run group status badge
-  // Computed from runs in the viewed run group, not from preview.status
-  const workspaceStatuses = $derived(filteredWorkspaces.map(computeWorkspaceStatus))
 
   // Build workspace name matching server-side logic
   function buildWorkspaceName(repoName: string, environment: string, identifier: string, workspacePath: string): string {
@@ -642,7 +647,7 @@ terraform {
           {:else}
             <RefBadge label={String(identifier)} href={githubTreeUrl({ org, repo }, refName(ref))} />
           {/if}
-          <RunGroupStatusBadge statuses={workspaceStatuses} />
+          <RunGroupStatusBadge statuses={workspaceStatusList} />
           {#if missingConnectionBlockedWorkspaces.length > 0}
             <ConnectionBlockedBadge
               {org}
@@ -749,6 +754,7 @@ terraform {
       <DagVisualization
         workspaces={filteredWorkspaces}
         dependencyGraph={viewedRunGroup?.dependencyGraph ?? null}
+        workspaceStatuses={workspaceDisplayStatuses}
         {selectedPath}
         onSelect={handleWorkspaceSelect}
       />
@@ -757,20 +763,8 @@ terraform {
     <!-- Content area -->
     <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
       {#if selectedWorkspace}
-        <!-- Workspace header: derive status from the run group / visible runs -->
-        {@const displayStatus = viewedRunGroup
-          ? (latestApply?.status === "success" ? "ready"
-            : latestApply?.status === "skipped" ? "ready"
-            : latestApply?.status === "running" ? "applying"
-            : latestApply?.status === "cancelled" ? "cancelled"
-            : latestPlan?.status === "success" ? "planned"
-            : latestPlan?.status === "running" ? "planning"
-            : latestPlan?.status === "cancelled" ? "cancelled"
-            : latestPlan?.status === "pending" ? "pending"
-            : selectedWorkspace.runs.length === 0 ? "queued"
-            : selectedWorkspace.preview.status)
-          : selectedWorkspace.runs.length === 0 ? "queued"
-          : selectedWorkspace.preview.status}
+        <!-- Workspace header: derive status from the viewed run group -->
+        {@const displayStatus = selectedWorkspaceDisplayStatus ?? selectedWorkspace.preview.status}
         {@const cfg = statusConfig(displayStatus)}
         <!-- Workspace header bar -->
         <div class="flex-shrink-0 px-6 py-4 border-b border-border">
@@ -877,15 +871,21 @@ terraform {
         </div>
 
         {#if isQueuedWorkspace}
-          <!-- Queued workspace - no runs dispatched yet -->
+          {@const waitingCfg = statusConfig(selectedWorkspaceDisplayStatus ?? "pending")}
           <div class="flex flex-col items-center justify-center h-48 text-center">
             <svg class="w-10 h-10 text-text-dim/50 mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <circle cx="12" cy="12" r="10" stroke-dasharray="4 4"/>
               <path d="M12 6v6l4 2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <p class="text-sm text-text-muted mb-1">Queued</p>
+            <p class="text-sm text-text-muted mb-1">{waitingCfg.label}</p>
             <p class="text-xs text-text-dim/75 max-w-sm">
-              This workspace is waiting to be dispatched. It will start once its upstream dependencies complete.
+              {#if selectedWorkspaceDisplayStatus === "awaiting_approval"}
+                This workspace is paused and waiting for approval before apply can start.
+              {:else if selectedWorkspaceDisplayStatus === "planning" || selectedWorkspaceDisplayStatus === "applying"}
+                This workspace is starting up. Live run details will appear as soon as the runner claims work.
+              {:else}
+                This workspace is waiting to be dispatched. It will start once its upstream dependencies complete.
+              {/if}
             </p>
           </div>
         {:else if tabs.length > 0}
@@ -945,13 +945,20 @@ terraform {
             </div>
           {:else if (activeTab === "plan" && latestPlan) || (activeTab === "apply" && latestApply)}
             <!-- Terminal connected directly to tabs bar -->
-            {#key `${selectedPath}-${activeTab}`}
-              <div 
-                bind:this={terminalContainer}
-                class="transition-all duration-200 ease-in-out"
-                style="height: {terminalExpanded ? '500px' : '250px'}"
-              >
-                <Terminal output={terminalOutput} {streaming} />
+            {#key `${selectedPath}-${activeTab}-${selectedTerminalRunId ?? "none"}`}
+              <div class="flex flex-col min-h-0">
+                {#if runLogStream.error}
+                  <div class="px-6 py-2 border-b border-status-failed/20 bg-status-failed/8 text-xs text-status-failed">
+                    Live log stream error: {runLogStream.error}
+                  </div>
+                {/if}
+                <div 
+                  bind:this={terminalContainer}
+                  class="transition-all duration-200 ease-in-out"
+                  style="height: {terminalExpanded ? '500px' : '250px'}"
+                >
+                  <Terminal output={terminalOutput} streaming={terminalStreaming} />
+                </div>
               </div>
             {/key}
           {:else}

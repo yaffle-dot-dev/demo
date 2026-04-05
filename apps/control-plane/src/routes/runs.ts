@@ -3,18 +3,21 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 import type { RunType } from "@yaffle/shared"
 
-import { findRunById, updateRunStatus } from "../db/queries/tf-runs.ts"
+import { findRunById, getRunLogSnapshot, updateRunStatus } from "../db/queries/tf-runs.ts"
 import { getSpansForRun } from "../db/queries/resource-spans.ts"
 import { findDeploymentById } from "../db/queries/workspace-deployments.ts"
 import { cancelRunningJobForDeploymentAndType } from "../db/queries/iac-jobs.ts"
 import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 
+import { events, type RunUpdateEvent } from "../lib/events.ts"
 import { processRegistry } from "../lib/process-registry.ts"
 import { logger } from "../lib/telemetry.ts"
 import { requireResourceAccess, getAuth } from "../middleware/org-auth.ts"
-import { LogStreamer, buildLogStreamName } from "../lib/log-streamer.ts"
 
 const uuidParam = z.string().uuid()
+const logStreamQuerySchema = z.object({
+  offset: z.coerce.number().int().min(0).optional(),
+})
 
 export const runsRoute = new Hono()
 
@@ -157,15 +160,45 @@ runsRoute.get(
 )
 
 /**
+ * GET /api/runs/:id/output
+ *
+ * Get the full stored log output for a run as plain text.
+ */
+runsRoute.get(
+  "/:id/output",
+  requireResourceAccess({ getOrgId: getRunOrgId }),
+  async (c) => {
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
+    if (!parseResult.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
+        400,
+      )
+    }
+
+    const run = await findRunById(parseResult.data)
+    if (!run) {
+      return c.json(
+        { error: { code: "RUN_NOT_FOUND", message: `run ${parseResult.data} not found` } },
+        404,
+      )
+    }
+
+    return c.text(run.logOutput ?? "")
+  },
+)
+
+/**
  * GET /api/runs/:id/logs
  *
  * Stream logs for a run via Server-Sent Events (SSE).
  *
- * For ECS runs, this streams from CloudWatch Logs.
- * For local runs, this returns the stored log output.
+ * Streams incremental log updates from the stored tf_run log buffer.
+ * Use /output for the initial snapshot, then this endpoint for deltas.
  *
  * Event types:
  *   - log: A log line { timestamp, message }
+ *   - reset: The stream offset is no longer valid, reload from scratch { output }
  *   - error: An error occurred { message }
  *   - done: Streaming complete
  */
@@ -182,6 +215,16 @@ runsRoute.get(
     }
     const id = parseResult.data
 
+    const queryParseResult = logStreamQuerySchema.safeParse(c.req.query())
+    if (!queryParseResult.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: queryParseResult.error.issues[0]?.message ?? "invalid query" } },
+        400,
+      )
+    }
+
+    let lastSentOffset = queryParseResult.data.offset ?? 0
+
     const run = await findRunById(id)
     if (!run) {
       return c.json(
@@ -190,95 +233,117 @@ runsRoute.get(
       )
     }
 
-    // Check if this is an ECS-based run
-    const ecsTaskArn = run.ecsTaskArn
+    return streamSSE(c, async (stream) => {
+      let inFlight = false
+      let pendingRefresh = false
+      let finished = false
 
-    if (ecsTaskArn) {
-      // Stream from CloudWatch Logs
-      const logGroupName = process.env.YAFFLE_RUNNER_LOG_GROUP
-      if (!logGroupName) {
-        return c.json(
-          { error: { code: "CONFIG_ERROR", message: "Log streaming not configured" } },
-          500,
-        )
+      let resolveStream: (() => void) | null = null
+
+      const finish = async (sendDone: boolean): Promise<void> => {
+        if (finished) {
+          return
+        }
+
+        finished = true
+        clearInterval(heartbeat)
+        events.offRunUpdate(handleRunUpdate)
+
+        if (sendDone) {
+          await stream.writeSSE({ event: "done", data: "{}" }).catch(() => {})
+        }
+
+        resolveStream?.()
       }
 
-      const logStreamName = buildLogStreamName(ecsTaskArn, "runner", "runner")
-      const streamer = new LogStreamer({
-        logGroupName,
-        region: process.env.AWS_REGION ?? "us-east-1",
-        pollIntervalMs: 1000,
-      })
+      const sendDelta = async (): Promise<void> => {
+        if (finished) {
+          return
+        }
 
-      logger.info("Starting log stream", {
-        runId: id,
-        logGroupName,
-        logStreamName,
-        ecsTaskArn,
-      })
+        if (inFlight) {
+          pendingRefresh = true
+          return
+        }
 
-      return streamSSE(c, async (stream) => {
-        const controller = new AbortController()
-
-        // Clean up on disconnect
-        c.req.raw.signal.addEventListener("abort", () => {
-          controller.abort()
-        })
+        inFlight = true
+        pendingRefresh = false
 
         try {
-          for await (const event of streamer.streamLogs(logStreamName, true, controller.signal)) {
+          const snapshot = await getRunLogSnapshot(id)
+          if (!snapshot) {
             await stream.writeSSE({
-              event: event.isError ? "error" : "log",
+              event: "error",
+              data: JSON.stringify({ message: "Run not found" }),
+            }).catch(() => {})
+            await finish(true)
+            return
+          }
+
+          const output = snapshot.logOutput ?? ""
+
+          if (output.length < lastSentOffset) {
+            lastSentOffset = output.length
+            await stream.writeSSE({
+              event: "reset",
+              data: JSON.stringify({ output }),
+            })
+          } else if (output.length > lastSentOffset) {
+            const message = output.slice(lastSentOffset)
+            lastSentOffset = output.length
+            await stream.writeSSE({
+              event: "log",
               data: JSON.stringify({
-                timestamp: event.timestamp,
-                message: event.message,
+                timestamp: Date.now(),
+                message,
               }),
             })
           }
+
+          if (snapshot.status !== "running") {
+            await finish(true)
+          }
         } catch (err) {
-          if (err instanceof Error && err.name === "AbortError") {
-            // Normal disconnect
-          } else {
-            logger.error("Log streaming error", {
-              runId: id,
-              error: err instanceof Error ? err.message : String(err),
-            })
-            await stream.writeSSE({
-              event: "error",
-              data: JSON.stringify({ message: "Log streaming error" }),
-            })
+          logger.error("Log streaming error", {
+            runId: id,
+            error: err instanceof Error ? err.message : String(err),
+          })
+          await stream.writeSSE({
+            event: "error",
+            data: JSON.stringify({ message: "Log streaming error" }),
+          }).catch(() => {})
+          await finish(true)
+        } finally {
+          inFlight = false
+          if (pendingRefresh && !finished) {
+            await sendDelta()
           }
         }
+      }
 
-        await stream.writeSSE({ event: "done", data: "{}" })
-      })
-    }
+      const handleRunUpdate = (event: RunUpdateEvent): void => {
+        if (event.runId === id) {
+          void sendDelta()
+        }
+      }
 
-    // For non-ECS runs, return stored logs as a single event
-    if (run.logOutput) {
-      return streamSSE(c, async (stream) => {
-        // Send existing logs as a single chunk
-        await stream.writeSSE({
-          event: "log",
-          data: JSON.stringify({
-            timestamp: run.startedAt?.getTime() ?? Date.now(),
-            message: run.logOutput,
-          }),
+      await stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) }).catch(() => {})
+
+      const heartbeat = setInterval(() => {
+        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+          .catch(() => {})
+      }, 10_000)
+
+      events.onRunUpdate(handleRunUpdate)
+
+      await new Promise<void>((resolve) => {
+        resolveStream = resolve
+        stream.onAbort(() => {
+          void finish(false)
         })
-        await stream.writeSSE({ event: "done", data: "{}" })
-      })
-    }
 
-    // No logs available
-    return streamSSE(c, async (stream) => {
-      await stream.writeSSE({
-        event: "log",
-        data: JSON.stringify({
-          timestamp: Date.now(),
-          message: "No logs available for this run",
-        }),
+        void sendDelta()
       })
-      await stream.writeSSE({ event: "done", data: "{}" })
     })
   },
 )

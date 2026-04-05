@@ -11,6 +11,7 @@ export const STATUS_CONFIG: Record<string, { label: string; color: string; icon:
   pending: { label: "Pending", color: "text-status-pending", icon: "~" },
   planning: { label: "Planning", color: "text-status-planning", icon: "..." },
   planned: { label: "Planned", color: "text-status-ready", icon: "✓" },
+  awaiting_apply: { label: "Planned", color: "text-status-ready", icon: "✓" },
   applying: { label: "Applying", color: "text-status-applying", icon: "..." },
   awaiting_approval: { label: "Awaiting approval", color: "text-status-planning", icon: "?" },
   ready: { label: "Ready", color: "text-status-ready", icon: "✓" },

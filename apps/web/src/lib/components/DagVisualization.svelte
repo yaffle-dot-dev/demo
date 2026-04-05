@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { WorkspaceWithRuns, DependencyGraph, Run, WorkspacePreview } from "$lib/api"
+  import type { WorkspaceWithRuns, DependencyGraph, Run } from "$lib/api"
   import { triggerApply, pauseApply } from "$lib/api"
   import { statusConfig } from "$lib/status"
   import DagLayout from "./DagLayout.svelte"
@@ -8,6 +8,7 @@
   interface Props {
     workspaces: WorkspaceWithRuns[]
     dependencyGraph: DependencyGraph | null
+    workspaceStatuses: Record<string, string>
     selectedPath: string
     onSelect: (path: string) => void
   }
@@ -18,50 +19,11 @@
 
   const workspacesWithRuns = $derived(props.workspaces)
   const dependencyGraph = $derived(props.dependencyGraph)
+  const workspaceStatuses = $derived(props.workspaceStatuses)
   const selectedPath = $derived(props.selectedPath)
   const onSelect = $derived(props.onSelect)
 
-  // Build the complete list of workspaces from the dependency graph.
-  // For workspaces without runs yet, create placeholder entries showing "Queued" status.
-  const workspaces = $derived.by((): WorkspaceWithRuns[] => {
-    // If no dependency graph, fall back to workspaces with runs
-    if (!dependencyGraph || dependencyGraph.workspaces.length === 0) {
-      return workspacesWithRuns
-    }
-
-    // Build lookup for workspaces that have runs
-    const wsWithRunsByPath = new Map(
-      workspacesWithRuns.map((ws) => [ws.preview.workspacePath, ws])
-    )
-
-    // Build complete list from dependency graph
-    return dependencyGraph.workspaces.map((path): WorkspaceWithRuns => {
-      // If we have run data for this workspace, use it
-      const existing = wsWithRunsByPath.get(path)
-      if (existing) return existing
-
-      // Otherwise, create a placeholder for workspaces without runs yet
-      const placeholder: WorkspacePreview = {
-        id: `placeholder-${path}`,
-        workspacePath: path,
-        status: "pending",
-        connectionStatus: "not_required",
-        missingProviders: [],
-        conflictProviders: [],
-        matchedConnections: [],
-        blockedReason: null,
-        stateKey: "",
-        mode: "preview",
-        requireApproval: false,
-        createdAt: new Date().toISOString(),
-      }
-      return {
-        preview: placeholder,
-        runs: [],
-        outputs: null,
-      }
-    })
-  })
+  const workspaces = $derived(workspacesWithRuns)
 
   // ============================================================================
   // Countdown timer state for auto-apply
@@ -449,11 +411,12 @@
   {@const isSelected = wsPath === selectedPath}
   {@const planStatus = getEffectiveStatus(workspace, "plan")}
   {@const applyStatus = getEffectiveStatus(workspace, "apply")}
+  {@const displayStatus = workspaceStatuses[wsPath] ?? workspace.preview.status}
   {@const planSummary = getPlanSummary(workspace)}
   {@const isBlocked = hasFailedUpstream(wsPath)}
   {@const readyForApply = isReadyForApply(workspace)}
   {@const requiresApproval = getRequiresApproval(workspace)}
-  {@const isQueued = workspace.runs.length === 0}
+  {@const isQueued = workspace.runs.length === 0 && (displayStatus === "queued" || displayStatus === "pending")}
   {@const isSubmitting = applyingWorkspaces.has(wsPath)}
   {@const btnWidth = 72}
   {@const btnHeight = 18}
@@ -587,9 +550,8 @@
         {@const skippedCfg = statusConfig("skipped")}
         <text y="28" class="node-status {skippedCfg.color}">{skippedCfg.icon} {skippedCfg.label}</text>
       {:else}
-        <!-- No runs yet - workspace waiting to be dispatched -->
-        {@const queuedCfg = statusConfig("queued")}
-        <text y="28" class="node-status {queuedCfg.color}">{queuedCfg.icon} {queuedCfg.label}</text>
+        {@const fallbackCfg = statusConfig(displayStatus)}
+        <text y="28" class="node-status {fallbackCfg.color}">{fallbackCfg.icon} {fallbackCfg.label}</text>
       {/if}
     </g>
   </g>
@@ -704,10 +666,6 @@
     font-family: var(--font-mono, monospace);
     font-size: 9px;
     fill: var(--color-yaffle-500);
-  }
-  
-  .timer-progress {
-    /* No transition - we want smooth updates from the interval */
   }
   
   /* Approval button for requireApproval workspaces */

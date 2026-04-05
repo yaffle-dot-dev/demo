@@ -23,7 +23,7 @@ import {
   type RunGroup,
 } from "../db/queries/run-groups.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
-import { events, type DeploymentUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
+import { events, type DeploymentUpdateEvent, type JobUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
 import {
   getSseSnapshotDurationHistogram,
   getSsePayloadBytesHistogram,
@@ -257,24 +257,20 @@ reposRoute.get(
             lastPayload = payload
             getSsePayloadBytesHistogram().record(payload.length, { type: "pr" })
             getSseMessagesSentCounter().add(1, { type: "snapshot" })
-            console.log(`[sse:pr] sending update: workspaces=${deploymentsWithRuns.length} payloadLen=${payload.length}`)
             await stream.writeSSE({ event: "update", data: payload })
           } else {
             getSseMessagesDedupedCounter().add(1, { type: "pr" })
-            console.log(`[sse:pr] skipping update: payload unchanged`)
           }
         } finally {
           inFlight = false
           // If updates came in while we were fetching, fetch again
           if (pendingUpdate) {
-            console.log(`[sse:pr] processing pending update`)
             await sendSnapshot()
           }
         }
       }
 
       // Send initial snapshot
-      console.log(`[sse:pr] sending initial snapshot for PR #${prNumber}`)
       await sendSnapshot()
 
       // Track deployment IDs for this PR to filter events
@@ -282,13 +278,11 @@ reposRoute.get(
       const updateDeploymentIds = async (): Promise<void> => {
         const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
         deploymentIds = new Set(deployments.map((d) => d.id))
-        console.log(`[sse:pr] updateDeploymentIds: found ${deploymentIds.size} deployments`)
       }
       await updateDeploymentIds()
 
       // Listen for deployment updates matching this environment
       const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
-        console.log(`[sse:pr] handleDeploymentUpdate: deploymentId=${event.deploymentId} matches=${event.orgId === auth.orgId && event.repo === repo && event.environmentName === environmentName}`)
         if (event.orgId === auth.orgId && event.repo === repo && event.environmentName === environmentName) {
           updateDeploymentIds()
             .then(() => sendSnapshot())
@@ -298,15 +292,20 @@ reposRoute.get(
 
       // Listen for run updates for any deployment in this PR
       const handleRunUpdate = (event: RunUpdateEvent): void => {
-        console.log(`[sse:pr] handleRunUpdate: deploymentId=${event.deploymentId} inSet=${deploymentIds.has(event.deploymentId)} setSize=${deploymentIds.size}`)
         if (deploymentIds.has(event.deploymentId)) {
           sendSnapshot().catch((err) => console.error(`[sse:pr] error in handleRunUpdate:`, err))
         }
       }
 
+      const handleJobUpdate = (event: JobUpdateEvent): void => {
+        if (deploymentIds.has(event.deploymentId)) {
+          sendSnapshot().catch((err) => console.error(`[sse:pr] error in handleJobUpdate:`, err))
+        }
+      }
+
       events.onDeploymentUpdate(handleDeploymentUpdate)
       events.onRunUpdate(handleRunUpdate)
-      console.log(`[sse:pr] connected: PR #${prNumber}`)
+      events.onJobUpdate(handleJobUpdate)
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
@@ -319,11 +318,11 @@ reposRoute.get(
       // disconnects and onAbort fires, which lets cleanup run first.
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
-          console.log(`[sse:pr] onAbort called: PR #${prNumber}`)
           getSseConnectionsActiveCounter().add(-1, { type: "pr" })
           clearInterval(heartbeat)
           events.offDeploymentUpdate(handleDeploymentUpdate)
           events.offRunUpdate(handleRunUpdate)
+          events.offJobUpdate(handleJobUpdate)
           resolve()
         })
       })
@@ -552,9 +551,15 @@ reposRoute.get(
         }
       }
 
+      const handleJobUpdate = (event: JobUpdateEvent): void => {
+        if (deploymentIds.has(event.deploymentId)) {
+          sendSnapshot().catch((err) => console.error(`[sse:env] error in handleJobUpdate:`, err))
+        }
+      }
+
       events.onDeploymentUpdate(handleDeploymentUpdate)
       events.onRunUpdate(handleRunUpdate)
-      console.log(`[sse:env] connected: ${branch}`)
+      events.onJobUpdate(handleJobUpdate)
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
@@ -566,11 +571,11 @@ reposRoute.get(
       // finally block.  Resolves only when the client disconnects.
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
-          console.log(`[sse:env] onAbort called: ${branch}`)
           getSseConnectionsActiveCounter().add(-1, { type: "env" })
           clearInterval(heartbeat)
           events.offDeploymentUpdate(handleDeploymentUpdate)
           events.offRunUpdate(handleRunUpdate)
+          events.offJobUpdate(handleJobUpdate)
           resolve()
         })
       })
@@ -888,14 +893,6 @@ reposRoute.get(
           })
           deploymentIds = new Set(snapshot?.workspaces.map((workspace) => workspace.preview.id) ?? [])
 
-          // Debug logging for UI bug investigation
-          const latestRg = snapshot?.runGroups[0]
-          console.log(`[sse:environment:debug] latestRunGroup=${latestRg?.id} status=${latestRg?.status}`)
-          for (const dwr of snapshot?.workspaces ?? []) {
-            const runsInLatestRg = dwr.runs.filter((r: { runGroupId: string | null }) => r.runGroupId === latestRg?.id)
-            console.log(`[sse:environment:debug] workspace=${dwr.preview.workspacePath} totalRuns=${dwr.runs.length} runsInLatestRg=${runsInLatestRg.length}`)
-          }
-
           const elapsed = Date.now() - start
           getSseSnapshotDurationHistogram().record(elapsed, { type: "environment" })
 
@@ -934,14 +931,20 @@ reposRoute.get(
 
       // Listen for run updates for any deployment in this environment
       const handleRunUpdate = (event: RunUpdateEvent): void => {
-        if (deploymentIds.has(event.previewId)) {
+        if (deploymentIds.has(event.deploymentId)) {
           sendSnapshot().catch((err) => console.error(`[sse:environment] error in handleRunUpdate:`, err))
+        }
+      }
+
+      const handleJobUpdate = (event: JobUpdateEvent): void => {
+        if (deploymentIds.has(event.deploymentId)) {
+          sendSnapshot().catch((err) => console.error(`[sse:environment] error in handleJobUpdate:`, err))
         }
       }
 
       events.onDeploymentUpdate(handleDeploymentUpdate)
       events.onRunUpdate(handleRunUpdate)
-      console.log(`[sse:environment] connected: ${environmentName}`)
+      events.onJobUpdate(handleJobUpdate)
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
@@ -952,11 +955,11 @@ reposRoute.get(
       // Block until client disconnects
       await new Promise<void>((resolve) => {
         stream.onAbort(() => {
-          console.log(`[sse:environment] onAbort called: ${environmentName}`)
           getSseConnectionsActiveCounter().add(-1, { type: "environment" })
           clearInterval(heartbeat)
           events.offDeploymentUpdate(handleDeploymentUpdate)
           events.offRunUpdate(handleRunUpdate)
+          events.offJobUpdate(handleJobUpdate)
           resolve()
         })
       })
@@ -1044,7 +1047,6 @@ interface SerializedRun {
   planSummary: string | null
   outputs: unknown
   errorMessage: string | null
-  logOutput: string | null
   startedAt: string | null
   completedAt: string | null
   createdAt: string
@@ -1060,7 +1062,6 @@ function serializeRun(r: {
   planSummary: string | null
   outputs: unknown
   errorMessage: string | null
-  logOutput: string | null
   startedAt: Date | null
   completedAt: Date | null
   createdAt: Date
@@ -1075,7 +1076,6 @@ function serializeRun(r: {
     planSummary: r.planSummary,
     outputs: r.outputs,
     errorMessage: r.errorMessage,
-    logOutput: r.logOutput,
     startedAt: r.startedAt?.toISOString() ?? null,
     completedAt: r.completedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),

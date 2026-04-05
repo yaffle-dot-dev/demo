@@ -1,7 +1,11 @@
+import { randomUUID } from "node:crypto"
 import { EventEmitter } from "node:events"
 
-import { getSseEventsEmittedCounter } from "./telemetry.ts"
+import postgres from "postgres"
+
 import type { EnvironmentKind } from "./config-toml.ts"
+import { getDatabaseListenUrl, sql } from "./db.ts"
+import { getSseEventsEmittedCounter, logger } from "./telemetry.ts"
 
 export interface RunUpdateEvent {
   runId: string
@@ -30,16 +34,33 @@ export interface JobUpdateEvent {
   previewId: string
 }
 
-class YaffleEvents extends EventEmitter {
+type EventMap = {
+  "run:update": RunUpdateEvent
+  "deployment:update": DeploymentUpdateEvent
+  "job:update": JobUpdateEvent
+}
+
+type EventName = keyof EventMap
+
+interface BroadcastEnvelope<T extends EventName = EventName> {
+  senderId: string
+  type: T
+  payload: EventMap[T]
+}
+
+const PG_CHANNEL = "yaffle_control_plane_events"
+
+class YaffleEvents {
+  private readonly emitter = new EventEmitter()
+  private readonly instanceId = randomUUID()
+  private listenerReady: Promise<void> | null = null
+  private listenerSql: ReturnType<typeof postgres> | null = null
+
   constructor() {
-    super()
-    // Allow many concurrent SSE connections before warning.
-    // Each browser tab creates 1-2 listeners per event type.
-    this.setMaxListeners(100)
+    this.emitter.setMaxListeners(100)
   }
 
   emitRunUpdate(runId: string, deploymentId: string): void {
-    console.log(`[events] emitRunUpdate: runId=${runId} deploymentId=${deploymentId} listeners=${this.listenerCount("run:update")}`)
     getSseEventsEmittedCounter().add(1, { type: "run_update" })
     this.emit("run:update", { runId, deploymentId, previewId: deploymentId })
   }
@@ -54,53 +75,151 @@ class YaffleEvents extends EventEmitter {
     environmentKind: EnvironmentKind,
     environmentName: string,
   ): void {
-    console.log(`[events] emitDeploymentUpdate: deploymentId=${deploymentId} env=${environmentName} listeners=${this.listenerCount("deployment:update")}`)
     getSseEventsEmittedCounter().add(1, { type: "deployment_update" })
 
-    // Emit new event
     this.emit("deployment:update", {
       deploymentId,
       orgId,
       repo,
       environmentKind,
       environmentName,
-      previewId: deploymentId, // backward compat
-    } satisfies DeploymentUpdateEvent)
-
-  }
-
-  onRunUpdate(handler: (event: RunUpdateEvent) => void): void {
-    this.on("run:update", handler)
-    console.log(`[events] onRunUpdate: now have ${this.listenerCount("run:update")} listeners`)
-  }
-
-  offRunUpdate(handler: (event: RunUpdateEvent) => void): void {
-    this.off("run:update", handler)
-    console.log(`[events] offRunUpdate: now have ${this.listenerCount("run:update")} listeners`)
-  }
-
-  onDeploymentUpdate(handler: (event: DeploymentUpdateEvent) => void): void {
-    this.on("deployment:update", handler)
-    console.log(`[events] onDeploymentUpdate: now have ${this.listenerCount("deployment:update")} listeners`)
-  }
-
-  offDeploymentUpdate(handler: (event: DeploymentUpdateEvent) => void): void {
-    this.off("deployment:update", handler)
-    console.log(`[events] offDeploymentUpdate: now have ${this.listenerCount("deployment:update")} listeners`)
+      previewId: deploymentId,
+    })
   }
 
   emitJobUpdate(jobId: string, deploymentId: string): void {
-    console.log(`[events] emitJobUpdate: jobId=${jobId} deploymentId=${deploymentId} listeners=${this.listenerCount("job:update")}`)
     getSseEventsEmittedCounter().add(1, { type: "job_update" })
     this.emit("job:update", { jobId, deploymentId, previewId: deploymentId })
   }
 
+  onRunUpdate(handler: (event: RunUpdateEvent) => void): void {
+    this.ensureListener()
+    this.emitter.on("run:update", handler)
+  }
+
+  offRunUpdate(handler: (event: RunUpdateEvent) => void): void {
+    this.emitter.off("run:update", handler)
+  }
+
+  onDeploymentUpdate(handler: (event: DeploymentUpdateEvent) => void): void {
+    this.ensureListener()
+    this.emitter.on("deployment:update", handler)
+  }
+
+  offDeploymentUpdate(handler: (event: DeploymentUpdateEvent) => void): void {
+    this.emitter.off("deployment:update", handler)
+  }
+
   onJobUpdate(handler: (event: JobUpdateEvent) => void): void {
-    this.on("job:update", handler)
+    this.ensureListener()
+    this.emitter.on("job:update", handler)
   }
 
   offJobUpdate(handler: (event: JobUpdateEvent) => void): void {
-    this.off("job:update", handler)
+    this.emitter.off("job:update", handler)
+  }
+
+  private emit<T extends EventName>(type: T, payload: EventMap[T]): void {
+    this.emitter.emit(type, payload)
+    void this.broadcast(type, payload)
+  }
+
+  private ensureListener(): void {
+    if (this.listenerReady) {
+      return
+    }
+
+    this.listenerReady = this.startListener().catch((error) => {
+      this.listenerReady = null
+      logger.error("events.listener.failed", {
+        channel: PG_CHANNEL,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    })
+  }
+
+  private async startListener(): Promise<void> {
+    const listenUrl = getDatabaseListenUrl()
+
+    if (!process.env.DATABASE_LISTEN_URL) {
+      const log = process.env.NODE_ENV === "production" ? logger.warn : logger.info
+      log("events.listener.using_database_url", {
+        channel: PG_CHANNEL,
+        note: "Set DATABASE_LISTEN_URL to a direct Postgres connection when using PgBouncer transaction pooling.",
+      })
+    }
+
+    this.listenerSql = postgres(listenUrl, {
+      max: 1,
+      idle_timeout: 0,
+      connect_timeout: 10,
+      connection: {
+        application_name: "yaffle-events-listener",
+      },
+    })
+
+    await this.listenerSql.listen(
+      PG_CHANNEL,
+      (payload) => this.handleBroadcast(payload),
+      () => {
+        logger.info("events.listener.ready", {
+          channel: PG_CHANNEL,
+          hasDedicatedListenUrl: !!process.env.DATABASE_LISTEN_URL,
+        })
+      },
+    )
+  }
+
+  private async broadcast<T extends EventName>(
+    type: T,
+    payload: EventMap[T],
+  ): Promise<void> {
+    const envelope: BroadcastEnvelope<T> = {
+      senderId: this.instanceId,
+      type,
+      payload,
+    }
+
+    try {
+      await sql.notify(PG_CHANNEL, JSON.stringify(envelope))
+    } catch (error) {
+      logger.error("events.broadcast.failed", {
+        channel: PG_CHANNEL,
+        type,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  private handleBroadcast(payload: string): void {
+    let parsed: BroadcastEnvelope | null = null
+
+    try {
+      parsed = JSON.parse(payload) as BroadcastEnvelope
+    } catch (error) {
+      logger.warn("events.broadcast.invalid_json", {
+        channel: PG_CHANNEL,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return
+    }
+
+    if (!parsed || parsed.senderId === this.instanceId) {
+      return
+    }
+
+    switch (parsed.type) {
+      case "run:update":
+      case "deployment:update":
+      case "job:update":
+        this.emitter.emit(parsed.type, parsed.payload)
+        return
+      default:
+        logger.warn("events.broadcast.unknown_type", {
+          channel: PG_CHANNEL,
+          type: String((parsed as { type?: unknown }).type ?? "unknown"),
+        })
+    }
   }
 }
 

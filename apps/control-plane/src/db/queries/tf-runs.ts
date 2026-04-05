@@ -21,7 +21,6 @@ export type TfRunListItem = Pick<
   | "planSummary"
   | "outputs"
   | "errorMessage"
-  | "logOutput"
   | "startedAt"
   | "completedAt"
   | "createdAt"
@@ -47,7 +46,6 @@ function selectRunListFields() {
     planSummary: tfRuns.planSummary,
     outputs: tfRuns.outputs,
     errorMessage: tfRuns.errorMessage,
-    logOutput: tfRuns.logOutput,
     startedAt: tfRuns.startedAt,
     completedAt: tfRuns.completedAt,
     createdAt: tfRuns.createdAt,
@@ -146,6 +144,32 @@ export async function getRunLogState(runId: string): Promise<{
       startedAt: row.startedAt,
       runType: row.runType,
       hasLogOutput: !!row.logOutput,
+    }
+  })
+}
+
+export async function getRunLogSnapshot(runId: string): Promise<{
+  status: RunStatus
+  logOutput: string | null
+} | undefined> {
+  return withDbSpan("select", "tf_runs", async () => {
+    const rows = await db
+      .select({
+        status: tfRuns.status,
+        logOutput: tfRuns.logOutput,
+      })
+      .from(tfRuns)
+      .where(eq(tfRuns.id, runId))
+      .limit(1)
+
+    const row = rows[0]
+    if (!row) {
+      return undefined
+    }
+
+    return {
+      status: row.status as RunStatus,
+      logOutput: row.logOutput,
     }
   })
 }
