@@ -1,3 +1,5 @@
+import { appendRunViewCorrelation, type RunViewCorrelation } from "$lib/run-view-monitoring"
+
 const API_BASE = "/api"
 
 export interface Preview {
@@ -489,8 +491,11 @@ export async function getRunPlan(id: string): Promise<DetailResponse<unknown>> {
   return fetchJson(`/runs/${id}/plan`)
 }
 
-export async function getRunOutput(id: string): Promise<string> {
-  const res = await fetch(`${API_BASE}/runs/${id}/output`, {
+export async function getRunOutput(
+  id: string,
+  correlation?: RunViewCorrelation | null,
+): Promise<string> {
+  const res = await fetch(appendRunViewCorrelation(`${API_BASE}/runs/${id}/output`, correlation), {
     credentials: "include",
   })
   if (!res.ok) {

@@ -1,5 +1,7 @@
 import { browser } from "$app/environment"
 
+import { appendRunViewCorrelation } from "$lib/run-view-monitoring"
+
 import { SSEConnection } from "./connection"
 import { PreviewStreamStore, PreviewListStore, OrgStatusStore } from "./stores.svelte"
 import type { PreviewStreamState, PreviewListStreamState, OrgStatusStreamState } from "./types"
@@ -58,6 +60,8 @@ export function usePreviewStream(
   getRepo: () => string,
   type: "pr" | "env" | "environment",
   getId: () => string | number,
+  getRunViewSessionId?: () => string | null,
+  getPageViewId?: () => string | null,
 ): PreviewStreamState {
   const store = new PreviewStreamStore()
 
@@ -67,6 +71,8 @@ export function usePreviewStream(
     const org = getOrg()
     const repo = getRepo()
     const id = getId()
+    const runViewSessionId = getRunViewSessionId?.() ?? null
+    const pageViewId = getPageViewId?.() ?? null
 
     if (!browser || !org || !repo || !id) return
 
@@ -84,7 +90,10 @@ export function usePreviewStream(
       path = `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(String(id))}/stream`
     }
 
-    const url = `/api${path}`
+    const url = appendRunViewCorrelation(`/api${path}`, {
+      runViewSessionId,
+      pageViewId,
+    })
 
     const connection = new SSEConnection({
       url,
@@ -104,6 +113,7 @@ export function usePreviewStream(
 
   return {
     get data() { return store.data },
+    get latestMeta() { return store.latestMeta },
     get connectionState() { return store.connectionState },
     get isStreaming() { return store.isStreaming },
     get viewedRunGroupId() { return store.viewedRunGroupId },

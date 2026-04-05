@@ -2,6 +2,11 @@
   import { browser } from "$app/environment"
   import { onMount } from "svelte"
   import { page } from "$app/stores"
+  import {
+    createRunViewPageId,
+    createRunViewTelemetryClient,
+    getOrCreateRunViewSessionId,
+  } from "$lib/run-view-monitoring"
   import { usePreviewStream } from "$lib/sse/index.svelte"
   import { getLatestRunGroup } from "$lib/sse/types"
   import { githubRepoUrl, githubPullUrl } from "$lib/github"
@@ -22,8 +27,26 @@
   const repo = $derived($page.params.repo ?? "")
   const environmentName = $derived($page.params.name ?? "")
 
+  const runViewSessionId = $state(browser ? getOrCreateRunViewSessionId() : null)
+  const pageViewId = $state(browser ? createRunViewPageId() : null)
+  const runViewStartMs = $state(browser ? performance.now() : null)
+  let lastVisibleAtMs = $state<number | null>(browser ? performance.now() : null)
+  const trackRunViewEvent = createRunViewTelemetryClient(() => ({
+    org,
+    repo,
+    environmentName,
+    correlation: { runViewSessionId, pageViewId },
+  }))
+
   // Single hook replaces all inline SSE code - uses unified "environment" endpoint
-  const stream = usePreviewStream(() => org, () => repo, "environment", () => environmentName)
+  const stream = usePreviewStream(
+    () => org,
+    () => repo,
+    "environment",
+    () => environmentName,
+    () => runViewSessionId,
+    () => pageViewId,
+  )
 
   // Cast to EnvironmentPreviewGroup for type-safe access
   const displayData = $derived(
@@ -61,15 +84,105 @@
   )
 
   let canManageConnections = $state(false)
+  let lastEnvironmentConnectionState = $state<"connecting" | "connected" | "disconnected">("connecting")
+  let hasSeenEnvironmentConnected = $state(false)
+  let environmentReconnectCount = $state(0)
+  let lastEnvironmentSnapshotMetaKey = $state<string | null>(null)
 
   $effect(() => {
     initialEnvironment = data.initialEnvironment
+  })
+
+  function shouldIgnoreVisibilityReconnect(): boolean {
+    if (!browser) {
+      return true
+    }
+
+    if (document.hidden) {
+      return true
+    }
+
+    return lastVisibleAtMs != null && performance.now() - lastVisibleAtMs < 1_000
+  }
+
+  $effect(() => {
+    const connectionState = stream.connectionState
+
+    if (connectionState === "connected") {
+      if (
+        hasSeenEnvironmentConnected
+        && lastEnvironmentConnectionState === "disconnected"
+        && !shouldIgnoreVisibilityReconnect()
+      ) {
+        environmentReconnectCount += 1
+        trackRunViewEvent({
+          name: "run_view_env_stream_reconnected",
+          streamType: "environment",
+          reconnectCount: environmentReconnectCount,
+          connectionState,
+          isVisible: !document.hidden,
+        })
+      }
+
+      hasSeenEnvironmentConnected = true
+    }
+
+    lastEnvironmentConnectionState = connectionState
+  })
+
+  $effect(() => {
+    const meta = stream.latestMeta
+    const latestRunGroupId = displayData ? getLatestRunGroup(displayData)?.id ?? null : null
+    const workspaceCount = displayData?.workspaces.length
+
+    if (!meta || !displayData) {
+      return
+    }
+
+    const metaKey = `${meta.streamId}:${meta.sentAt}`
+    if (metaKey === lastEnvironmentSnapshotMetaKey) {
+      return
+    }
+
+    lastEnvironmentSnapshotMetaKey = metaKey
+
+    const sourceEventMs = Date.parse(meta.sourceEventAt)
+    const sentAtMs = Date.parse(meta.sentAt)
+    const now = Date.now()
+
+    trackRunViewEvent({
+      name: "run_view_env_snapshot_applied",
+      streamType: "environment",
+      runGroupId: latestRunGroupId,
+      workspaceCount,
+      sourceEventType: meta.sourceEventType,
+      sourceEventAt: meta.sourceEventAt,
+      sentAt: meta.sentAt,
+      freshnessMs: Number.isFinite(sourceEventMs) ? now - sourceEventMs : undefined,
+      transportMs: Number.isFinite(sourceEventMs) && Number.isFinite(sentAtMs)
+        ? sentAtMs - sourceEventMs
+        : undefined,
+      clientApplyMs: Number.isFinite(sentAtMs) ? now - sentAtMs : undefined,
+      isVisible: !document.hidden,
+    })
   })
 
   onMount(() => {
     if (!browser) {
       return
     }
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        lastVisibleAtMs = performance.now()
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    trackRunViewEvent({
+      name: "run_view_opened",
+    })
 
     void (async () => {
       try {
@@ -80,6 +193,10 @@
         canManageConnections = false
       }
     })()
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
   })
 </script>
 
@@ -111,6 +228,9 @@
     latestHeadSha={latestRunGroupSha}
     onSwitchToLatest={stream.switchToLatest}
     {canManageConnections}
+    {runViewStartMs}
+    runViewCorrelation={{ runViewSessionId, pageViewId }}
+    onTrackRunViewEvent={trackRunViewEvent}
   />
 {:else}
   <div class="flex items-center justify-center h-full text-text-dim">

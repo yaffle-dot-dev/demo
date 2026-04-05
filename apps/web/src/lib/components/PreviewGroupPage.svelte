@@ -7,6 +7,7 @@
   import { cancelRun, rerunPreview } from "$lib/api"
   import { githubTreeUrl, githubCommitUrl } from "$lib/github"
   import { useRunLogStream } from "$lib/run-log-stream.svelte"
+  import type { RunViewCorrelation, RunViewTelemetryEvent } from "$lib/run-view-monitoring"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
   import {
     getWorkspaceDisplayStatus,
@@ -48,6 +49,12 @@
     onSwitchToLatest?: () => void
     /** Whether current user can manage org connections */
     canManageConnections?: boolean
+    /** Navigation start time for first-render timing */
+    runViewStartMs?: number | null
+    /** Correlation IDs for run-view monitoring */
+    runViewCorrelation?: RunViewCorrelation | null
+    /** Optional run-view telemetry sink */
+    onTrackRunViewEvent?: ((event: RunViewTelemetryEvent) => void) | null
   }
   
   /** Extract display name from a full ref (e.g., "refs/heads/main" -> "main") */
@@ -74,6 +81,9 @@
   const latestHeadSha = $derived(props.latestHeadSha ?? null)
   const onSwitchToLatest = $derived(props.onSwitchToLatest ?? null)
   const canManageConnections = $derived(props.canManageConnections ?? false)
+  const runViewStartMs = $derived(props.runViewStartMs ?? null)
+  const runViewCorrelation = $derived(props.runViewCorrelation ?? null)
+  const onTrackRunViewEvent = $derived(props.onTrackRunViewEvent ?? null)
 
   // Get the run group we're viewing
   const viewedRunGroup = $derived.by((): RunGroup | null => {
@@ -89,6 +99,14 @@
 
   const systemError = $derived(viewedRunGroup?.systemError ?? null)
 
+  const displayDependencyGraph = $derived.by(() => {
+    if (viewedRunGroup?.dependencyGraph) {
+      return viewedRunGroup.dependencyGraph
+    }
+
+    return runGroups.find((runGroup) => runGroup.dependencyGraph)?.dependencyGraph ?? null
+  })
+
   // Workspaces with runs filtered to the viewed run group
   const workspacesWithRuns = $derived.by((): WorkspaceWithRuns[] => {
     if (!viewedRunGroup) {
@@ -97,6 +115,18 @@
     return getWorkspacesInRunGroup(workspaces, viewedRunGroup.id)
   })
 
+  const isLatestRunGroup = $derived(viewedRunGroup?.id === runGroups[0]?.id)
+  const usingFreshPendingDag = $derived(
+    !!viewedRunGroup
+      && isLatestRunGroup
+      && workspacesWithRuns.length === 0
+      && (viewedRunGroup.status === "scanning"
+        || viewedRunGroup.status === "pending"
+        || viewedRunGroup.status === "running")
+      && !!displayDependencyGraph
+      && displayDependencyGraph.workspaces.length > 0
+  )
+
   // Build the complete list of workspaces from the dependency graph.
   // For workspaces without runs yet, create placeholder entries showing "Queued" status.
   const filteredWorkspaces = $derived.by((): WorkspaceWithRuns[] => {
@@ -104,10 +134,31 @@
       return []
     }
 
-    const graph = viewedRunGroup.dependencyGraph
+    const graph = displayDependencyGraph
     if (!graph || graph.workspaces.length === 0) {
       // No dependency graph, fall back to workspaces with runs
       return workspacesWithRuns
+    }
+
+    if (usingFreshPendingDag) {
+      return graph.workspaces.map((path): WorkspaceWithRuns => ({
+        preview: {
+          id: `pending-${viewedRunGroup.id}-${path}`,
+          workspacePath: path,
+          status: "pending",
+          connectionStatus: "not_required",
+          missingProviders: [],
+          conflictProviders: [],
+          matchedConnections: [],
+          blockedReason: null,
+          stateKey: "",
+          mode: "preview",
+          requireApproval: false,
+          createdAt: new Date().toISOString(),
+        },
+        runs: [],
+        outputs: null,
+      }))
     }
 
     // Build lookup for workspaces that have runs in this run group
@@ -159,10 +210,10 @@
     })
   })
 
+  const hasCoherentDag = $derived(!!viewedRunGroup && filteredWorkspaces.length > 0)
+
   // Are we viewing the latest run group or a historical one?
-  const isViewingLatest = $derived(
-    viewedRunGroup?.id === runGroups[0]?.id
-  )
+  const isViewingLatest = $derived(isLatestRunGroup)
 
   function getDisplayStatusForWorkspace(workspace: WorkspaceWithRuns): string {
     return getWorkspaceDisplayStatus({
@@ -312,7 +363,7 @@
   let terminalExpanded = $state(
     typeof localStorage !== "undefined" && localStorage.getItem(TERMINAL_EXPANDED_KEY) === "true"
   )
-  let terminalContainer: HTMLDivElement | null = null
+  let terminalContainer = $state<HTMLDivElement | null>(null)
 
   function toggleTerminalExpanded() {
     const expanding = !terminalExpanded
@@ -456,6 +507,8 @@
   const runLogStream = useRunLogStream(
     () => selectedTerminalRunId,
     () => selectedTerminalRunStreaming,
+    () => runViewCorrelation?.runViewSessionId ?? null,
+    () => runViewCorrelation?.pageViewId ?? null,
   )
 
   const terminalOutput = $derived(
@@ -463,6 +516,308 @@
   )
 
   const terminalStreaming = $derived(runLogStream.isStreaming)
+  const TERMINAL_STALL_THRESHOLD_MS = 5_000
+
+  let firstDagTelemetrySent = $state(false)
+  let lastObservedLatestRunGroupId = $state<string | null>(null)
+  let pendingNewRunGroupId = $state<string | null>(null)
+  let newRunDetectedAtMs = $state<number | null>(null)
+  let pendingFirstLogByteRunId = $state<string | null>(null)
+  let firstLogByteStartedAtMs = $state<number | null>(null)
+  let emittedFirstLogByteRunIds = $state<string[]>([])
+  let lastLogVisibleAtMs = $state<number | null>(typeof document !== "undefined" ? performance.now() : null)
+  let trackedLogRunId = $state<string | null>(null)
+  let lastLogConnectionState = $state<typeof runLogStream.connectionState>("idle")
+  let hasSeenLogConnected = $state(false)
+  let logReconnectCount = $state(0)
+  let activeTerminalStallRunId = $state<string | null>(null)
+  let terminalStallStartedAtMs = $state<number | null>(null)
+
+  function shouldIgnoreLogVisibilityReconnect(): boolean {
+    if (typeof document === "undefined") {
+      return true
+    }
+
+    if (document.hidden) {
+      return true
+    }
+
+    return lastLogVisibleAtMs != null && performance.now() - lastLogVisibleAtMs < 1_000
+  }
+
+  $effect(() => {
+    if (typeof document === "undefined") {
+      return
+    }
+
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        lastLogVisibleAtMs = performance.now()
+      }
+    }
+
+    document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange)
+    }
+  })
+
+  $effect(() => {
+    if (
+      firstDagTelemetrySent
+      || !onTrackRunViewEvent
+      || runViewStartMs == null
+      || !viewedRunGroup
+      || !hasCoherentDag
+    ) {
+      return
+    }
+
+    onTrackRunViewEvent({
+      name: "run_view_first_dag_rendered",
+      runGroupId: viewedRunGroup.id,
+      durationMs: performance.now() - runViewStartMs,
+      workspaceCount: filteredWorkspaces.length,
+      usedPlaceholderDag: usingFreshPendingDag,
+    })
+
+    firstDagTelemetrySent = true
+  })
+
+  $effect(() => {
+    const latestRunGroupId = runGroups[0]?.id ?? null
+    if (!latestRunGroupId) {
+      return
+    }
+
+    if (!lastObservedLatestRunGroupId) {
+      lastObservedLatestRunGroupId = latestRunGroupId
+      return
+    }
+
+    if (latestRunGroupId === lastObservedLatestRunGroupId) {
+      return
+    }
+
+    lastObservedLatestRunGroupId = latestRunGroupId
+    pendingNewRunGroupId = latestRunGroupId
+    newRunDetectedAtMs = performance.now()
+
+    onTrackRunViewEvent?.({
+      name: "run_view_new_run_detected",
+      runGroupId: latestRunGroupId,
+    })
+  })
+
+  $effect(() => {
+    if (
+      !onTrackRunViewEvent
+      || !pendingNewRunGroupId
+      || newRunDetectedAtMs == null
+      || runGroups[0]?.id !== pendingNewRunGroupId
+      || !hasCoherentDag
+    ) {
+      return
+    }
+
+    onTrackRunViewEvent({
+      name: "run_view_new_run_handoff_rendered",
+      runGroupId: pendingNewRunGroupId,
+      durationMs: performance.now() - newRunDetectedAtMs,
+      workspaceCount: filteredWorkspaces.length,
+      usedPlaceholderDag: usingFreshPendingDag,
+    })
+
+    pendingNewRunGroupId = null
+    newRunDetectedAtMs = null
+  })
+
+  $effect(() => {
+    if (!selectedTerminalRunId || !selectedTerminalRunStreaming) {
+      pendingFirstLogByteRunId = null
+      firstLogByteStartedAtMs = null
+      return
+    }
+
+    if (emittedFirstLogByteRunIds.includes(selectedTerminalRunId)) {
+      pendingFirstLogByteRunId = null
+      firstLogByteStartedAtMs = null
+      return
+    }
+
+    if (pendingFirstLogByteRunId === selectedTerminalRunId) {
+      return
+    }
+
+    pendingFirstLogByteRunId = selectedTerminalRunId
+    firstLogByteStartedAtMs = performance.now()
+  })
+
+  $effect(() => {
+    if (
+      !onTrackRunViewEvent
+      || !pendingFirstLogByteRunId
+      || firstLogByteStartedAtMs == null
+      || runLogStream.output.length === 0
+    ) {
+      return
+    }
+
+    const emittedRunId = pendingFirstLogByteRunId
+
+    onTrackRunViewEvent({
+      name: "run_view_terminal_first_log_byte",
+      runGroupId: selectedTerminalRun?.runGroupId ?? null,
+      runId: emittedRunId,
+      workspacePath: selectedWorkspace?.preview.workspacePath ?? null,
+      runType: selectedTerminalRun?.runType ?? null,
+      durationMs: performance.now() - firstLogByteStartedAtMs,
+    })
+
+    emittedFirstLogByteRunIds = [...emittedFirstLogByteRunIds, emittedRunId]
+    pendingFirstLogByteRunId = null
+    firstLogByteStartedAtMs = null
+  })
+
+  $effect(() => {
+    if (selectedTerminalRunId === trackedLogRunId) {
+      return
+    }
+
+    trackedLogRunId = selectedTerminalRunId
+    lastLogConnectionState = runLogStream.connectionState
+    hasSeenLogConnected = false
+    logReconnectCount = 0
+    activeTerminalStallRunId = null
+    terminalStallStartedAtMs = null
+  })
+
+  $effect(() => {
+    const runId = selectedTerminalRunId
+    const connectionState = runLogStream.connectionState
+
+    if (runId && selectedTerminalRunStreaming && connectionState === "connected") {
+      if (
+        hasSeenLogConnected
+        && lastLogConnectionState === "disconnected"
+        && !shouldIgnoreLogVisibilityReconnect()
+      ) {
+        logReconnectCount += 1
+        onTrackRunViewEvent?.({
+          name: "run_view_log_stream_reconnected",
+          streamType: "run_log",
+          runGroupId: selectedTerminalRun?.runGroupId ?? null,
+          runId,
+          workspacePath: selectedWorkspace?.preview.workspacePath ?? null,
+          runType: selectedTerminalRun?.runType ?? null,
+          reconnectCount: logReconnectCount,
+          connectionState,
+          isVisible: !document.hidden,
+        })
+      }
+
+      hasSeenLogConnected = true
+    }
+
+    lastLogConnectionState = connectionState
+  })
+
+  $effect(() => {
+    const runId = selectedTerminalRunId
+    const lastOutputAtMs = runLogStream.lastOutputAtMs
+
+    if (
+      !onTrackRunViewEvent
+      || !runId
+      || !selectedTerminalRunStreaming
+      || runLogStream.connectionState !== "connected"
+      || lastOutputAtMs == null
+      || typeof document === "undefined"
+      || document.hidden
+    ) {
+      return
+    }
+
+    if (activeTerminalStallRunId === runId) {
+      return
+    }
+
+    const elapsedMs = performance.now() - lastOutputAtMs
+    const remainingMs = TERMINAL_STALL_THRESHOLD_MS - elapsedMs
+
+    const startStall = () => {
+      if (activeTerminalStallRunId === runId) {
+        return
+      }
+
+      activeTerminalStallRunId = runId
+      terminalStallStartedAtMs = performance.now()
+
+      onTrackRunViewEvent({
+        name: "run_view_terminal_stall_started",
+        streamType: "run_log",
+        runGroupId: selectedTerminalRun?.runGroupId ?? null,
+        runId,
+        workspacePath: selectedWorkspace?.preview.workspacePath ?? null,
+        runType: selectedTerminalRun?.runType ?? null,
+        stallThresholdMs: TERMINAL_STALL_THRESHOLD_MS,
+        connectionState: runLogStream.connectionState,
+        isVisible: !document.hidden,
+      })
+    }
+
+    if (remainingMs <= 0) {
+      startStall()
+      return
+    }
+
+    const timer = setTimeout(startStall, remainingMs)
+    return () => {
+      clearTimeout(timer)
+    }
+  })
+
+  $effect(() => {
+    if (
+      !onTrackRunViewEvent
+      || !activeTerminalStallRunId
+      || terminalStallStartedAtMs == null
+    ) {
+      return
+    }
+
+    const runId = selectedTerminalRunId
+    const lastOutputAtMs = runLogStream.lastOutputAtMs
+
+    if (
+      activeTerminalStallRunId !== runId
+      || !selectedTerminalRunStreaming
+      || runLogStream.connectionState !== "connected"
+    ) {
+      activeTerminalStallRunId = null
+      terminalStallStartedAtMs = null
+      return
+    }
+
+    if (lastOutputAtMs != null && lastOutputAtMs > terminalStallStartedAtMs) {
+      onTrackRunViewEvent({
+        name: "run_view_terminal_stall_ended",
+        streamType: "run_log",
+        runGroupId: selectedTerminalRun?.runGroupId ?? null,
+        runId,
+        workspacePath: selectedWorkspace?.preview.workspacePath ?? null,
+        runType: selectedTerminalRun?.runType ?? null,
+        durationMs: performance.now() - terminalStallStartedAtMs,
+        stallThresholdMs: TERMINAL_STALL_THRESHOLD_MS,
+        connectionState: runLogStream.connectionState,
+        isVisible: !document.hidden,
+      })
+
+      activeTerminalStallRunId = null
+      terminalStallStartedAtMs = null
+    }
+  })
 
   // Get plan JSON for plan summary view
   const planJson = $derived.by(() => {
@@ -753,7 +1108,7 @@ terraform {
       </div>
       <DagVisualization
         workspaces={filteredWorkspaces}
-        dependencyGraph={viewedRunGroup?.dependencyGraph ?? null}
+        dependencyGraph={displayDependencyGraph}
         workspaceStatuses={workspaceDisplayStatuses}
         {selectedPath}
         onSelect={handleWorkspaceSelect}

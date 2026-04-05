@@ -6,6 +6,7 @@ import type {
   PreviewListPayload,
   OrgStatusPayload,
   OrgProvisioningStatus,
+  StreamPayloadMeta,
 } from "./types"
 import { hasActiveRun, getLatestRunGroup, getCurrentRunGroup } from "./types"
 
@@ -19,6 +20,7 @@ import { hasActiveRun, getLatestRunGroup, getCurrentRunGroup } from "./types"
  */
 export class PreviewStreamStore {
   data = $state<PreviewGroup | null>(null)
+  latestMeta = $state<StreamPayloadMeta | null>(null)
   connectionState = $state<ConnectionState>("disconnected")
   /** The run group ID being viewed (null = latest) */
   viewedRunGroupId = $state<string | null>(null)
@@ -44,6 +46,8 @@ export class PreviewStreamStore {
    */
   handleMessage(payload: unknown): void {
     const typed = payload as PreviewStreamPayload
+
+    this.latestMeta = typed.meta ?? null
     if (!typed.data) return
 
     // Auto-pin: if unpinned and we already have data, check if a new run group started
@@ -78,6 +82,7 @@ export class PreviewStreamStore {
   /** Reset all state (used when params change) */
   reset(): void {
     this.data = null
+    this.latestMeta = null
     this.connectionState = "disconnected"
     this.viewedRunGroupId = null
     this.pinnedHeadSha = null

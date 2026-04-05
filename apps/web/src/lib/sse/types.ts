@@ -18,9 +18,20 @@ export type ConnectionState = "connecting" | "connected" | "disconnected"
 // SSE message types (from backend)
 // ---------------------------------------------------------------------------
 
+export interface StreamPayloadMeta {
+  streamType: "environment" | "pr" | "env" | "run_log"
+  streamId: string
+  runViewSessionId: string | null
+  pageViewId: string | null
+  sourceEventType: string
+  sourceEventAt: string
+  sentAt: string
+}
+
 /** Payload shape for PR/env detail SSE streams */
 export interface PreviewStreamPayload {
   data: PrPreviewGroup | EnvPreviewGroup | null
+  meta?: StreamPayloadMeta
 }
 
 /** Payload shape for org dashboard preview list SSE stream */
@@ -69,6 +80,8 @@ export interface OrgStatusStreamState {
 export interface PreviewStreamState {
   /** Live data from SSE - always the latest snapshot */
   readonly data: PrPreviewGroup | EnvPreviewGroup | null
+  /** Metadata from the latest SSE payload */
+  readonly latestMeta: StreamPayloadMeta | null
   /** Connection lifecycle state */
   readonly connectionState: ConnectionState
   /** Whether a run is actively streaming (running or pending) */

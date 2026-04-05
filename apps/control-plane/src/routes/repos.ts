@@ -26,10 +26,12 @@ import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 import { events, type DeploymentUpdateEvent, type JobUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
 import {
   getSseSnapshotDurationHistogram,
+  getSseEventToSendLatencyHistogram,
   getSsePayloadBytesHistogram,
   getSseMessagesSentCounter,
   getSseMessagesDedupedCounter,
   getSseConnectionsActiveCounter,
+  logger,
 } from "../lib/telemetry.ts"
 import {
   getConnectionReadinessForDeployment,
@@ -38,12 +40,57 @@ import {
 import {
   getRequiredProvidersForDeployments,
 } from "../lib/provider-requirements.ts"
+import {
+  buildStreamPayloadMeta,
+  createStreamContext,
+  parseRunViewCorrelation,
+  runViewCorrelationQueryFields,
+} from "../lib/run-view-monitoring.ts"
 
 const prNumberParam = z.coerce.number().int().positive()
 const environmentQuerySchema = z.object({
   head_sha: z.string().min(7).max(64).optional(),
   token: z.string().optional(),
   view: z.enum(["full", "dag"]).optional(),
+  ...runViewCorrelationQueryFields,
+})
+const runViewTelemetryEventSchema = z.object({
+  name: z.enum([
+    "run_view_opened",
+    "run_view_first_dag_rendered",
+    "run_view_new_run_detected",
+    "run_view_new_run_handoff_rendered",
+    "run_view_env_snapshot_applied",
+    "run_view_env_stream_reconnected",
+    "run_view_log_stream_reconnected",
+    "run_view_terminal_first_log_byte",
+    "run_view_terminal_stall_started",
+    "run_view_terminal_stall_ended",
+  ]),
+  occurredAt: z.string().datetime(),
+  runViewSessionId: z.string().uuid().nullable(),
+  pageViewId: z.string().uuid().nullable(),
+  runGroupId: z.string().uuid().nullable().optional(),
+  runId: z.string().uuid().nullable().optional(),
+  workspacePath: z.string().min(1).max(512).nullable().optional(),
+  runType: z.string().min(1).max(32).nullable().optional(),
+  durationMs: z.number().finite().nonnegative().max(600_000).optional(),
+  workspaceCount: z.number().int().nonnegative().max(10_000).optional(),
+  usedPlaceholderDag: z.boolean().optional(),
+  streamType: z.enum(["environment", "run_log"]).optional(),
+  sourceEventType: z.string().min(1).max(64).nullable().optional(),
+  sourceEventAt: z.string().datetime().nullable().optional(),
+  sentAt: z.string().datetime().nullable().optional(),
+  freshnessMs: z.number().finite().nonnegative().max(600_000).optional(),
+  transportMs: z.number().finite().nonnegative().max(600_000).optional(),
+  clientApplyMs: z.number().finite().nonnegative().max(600_000).optional(),
+  reconnectCount: z.number().int().nonnegative().max(1_000).optional(),
+  stallThresholdMs: z.number().finite().nonnegative().max(600_000).optional(),
+  connectionState: z.string().min(1).max(64).nullable().optional(),
+  isVisible: z.boolean().optional(),
+})
+const runViewTelemetryBatchSchema = z.object({
+  events: z.array(runViewTelemetryEventSchema).min(1).max(20),
 })
 
 export const reposRoute = new Hono()
@@ -840,6 +887,69 @@ reposRoute.get(
   },
 )
 
+reposRoute.post(
+  "/:org/repos/:repo/environment/:name/telemetry",
+  requireOrgAccess({ orgSource: "param", orgKey: "org" }),
+  async (c) => {
+    const auth = getAuth(c)
+    const org = c.req.param("org")
+    const repo = c.req.param("repo")
+    const environmentName = c.req.param("name")
+    if (!org || !repo || !environmentName) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "org, repo, and environment name are required" } }, 400)
+    }
+
+    let body: unknown
+    try {
+      body = await c.req.json()
+    } catch {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: "body must be valid JSON" } }, 400)
+    }
+
+    const parsed = runViewTelemetryBatchSchema.safeParse(body)
+    if (!parsed.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0]?.message ?? "invalid telemetry payload" } },
+        400,
+      )
+    }
+
+    for (const event of parsed.data.events) {
+      logger.info("run_view.client_event", {
+        orgId: auth.orgId,
+        orgSlug: org,
+        repo,
+        environmentName,
+        eventName: event.name,
+        occurredAt: event.occurredAt,
+        runViewSessionId: event.runViewSessionId ?? undefined,
+        pageViewId: event.pageViewId ?? undefined,
+        runGroupId: event.runGroupId ?? undefined,
+        runId: event.runId ?? undefined,
+        workspacePath: event.workspacePath ?? undefined,
+        runType: event.runType ?? undefined,
+        durationMs: event.durationMs,
+        workspaceCount: event.workspaceCount,
+        usedPlaceholderDag: event.usedPlaceholderDag,
+        streamType: event.streamType ?? undefined,
+        sourceEventType: event.sourceEventType ?? undefined,
+        sourceEventAt: event.sourceEventAt ?? undefined,
+        sentAt: event.sentAt ?? undefined,
+        freshnessMs: event.freshnessMs,
+        transportMs: event.transportMs,
+        clientApplyMs: event.clientApplyMs,
+        reconnectCount: event.reconnectCount,
+        stallThresholdMs: event.stallThresholdMs,
+        connectionState: event.connectionState ?? undefined,
+        isVisible: event.isVisible,
+        telemetrySource: "browser",
+      })
+    }
+
+    return c.json({ data: { accepted: parsed.data.events.length } }, 202)
+  },
+)
+
 /**
  * GET /api/orgs/:org/repos/:repo/environment/:name/stream
  *
@@ -866,13 +976,37 @@ reposRoute.get(
     }
 
     const headSha = parsedQuery.data.head_sha
+    const correlation = parseRunViewCorrelation(parsedQuery.data)
 
     return streamSSE(c, async (stream) => {
+      const streamContext = createStreamContext("environment", correlation)
+      let latestTrigger = {
+        sourceEventType: "initial",
+        sourceEventAt: new Date().toISOString(),
+      }
+
       getSseConnectionsActiveCounter().add(1, { type: "environment" })
+      logger.debug("Environment stream opened", {
+        orgId: auth.orgId,
+        repo,
+        environmentName,
+        streamId: streamContext.streamId,
+        runViewSessionId: streamContext.runViewSessionId ?? undefined,
+        pageViewId: streamContext.pageViewId ?? undefined,
+      })
+
       let lastPayload = ""
       let inFlight = false
       let pendingUpdate = false
       let deploymentIds = new Set<string>()
+
+      const requestSnapshot = async (trigger: {
+        sourceEventType: string
+        sourceEventAt: string
+      }): Promise<void> => {
+        latestTrigger = trigger
+        await sendSnapshot()
+      }
 
       const sendSnapshot = async (): Promise<void> => {
         if (inFlight) {
@@ -882,6 +1016,7 @@ reposRoute.get(
         inFlight = true
 
         try {
+          const trigger = latestTrigger
           const start = Date.now()
           const snapshot = await buildEnvironmentSnapshotData({
             orgId: auth.orgId,
@@ -896,12 +1031,30 @@ reposRoute.get(
           const elapsed = Date.now() - start
           getSseSnapshotDurationHistogram().record(elapsed, { type: "environment" })
 
-          const payload = JSON.stringify({ data: snapshot })
+          const sentAt = new Date().toISOString()
+          const payload = JSON.stringify({
+            data: snapshot,
+            meta: buildStreamPayloadMeta({
+              context: streamContext,
+              sourceEventType: trigger.sourceEventType,
+              sourceEventAt: trigger.sourceEventAt,
+              sentAt,
+            }),
+          })
 
           if (payload !== lastPayload) {
             lastPayload = payload
             getSsePayloadBytesHistogram().record(payload.length, { type: "environment" })
             getSseMessagesSentCounter().add(1, { type: "snapshot" })
+
+            const sourceEventMs = Date.parse(trigger.sourceEventAt)
+            if (Number.isFinite(sourceEventMs)) {
+              getSseEventToSendLatencyHistogram().record(Date.now() - sourceEventMs, {
+                type: "environment",
+                sourceEventType: trigger.sourceEventType,
+              })
+            }
+
             await stream.writeSSE({ event: "update", data: payload })
           } else {
             getSseMessagesDedupedCounter().add(1, { type: "environment" })
@@ -916,7 +1069,10 @@ reposRoute.get(
       }
 
       // Send initial snapshot
-      await sendSnapshot()
+      await requestSnapshot({
+        sourceEventType: "initial",
+        sourceEventAt: new Date().toISOString(),
+      })
 
       // Listen for deployment updates matching this environment
       const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
@@ -925,20 +1081,29 @@ reposRoute.get(
           event.repo === repo &&
           event.environmentName === environmentName
         ) {
-          sendSnapshot().catch((err) => console.error(`[sse:environment] error in handleDeploymentUpdate:`, err))
+          requestSnapshot({
+            sourceEventType: "deployment_update",
+            sourceEventAt: event.emittedAt,
+          }).catch((err) => console.error(`[sse:environment] error in handleDeploymentUpdate:`, err))
         }
       }
 
       // Listen for run updates for any deployment in this environment
       const handleRunUpdate = (event: RunUpdateEvent): void => {
         if (deploymentIds.has(event.deploymentId)) {
-          sendSnapshot().catch((err) => console.error(`[sse:environment] error in handleRunUpdate:`, err))
+          requestSnapshot({
+            sourceEventType: "run_update",
+            sourceEventAt: event.emittedAt,
+          }).catch((err) => console.error(`[sse:environment] error in handleRunUpdate:`, err))
         }
       }
 
       const handleJobUpdate = (event: JobUpdateEvent): void => {
         if (deploymentIds.has(event.deploymentId)) {
-          sendSnapshot().catch((err) => console.error(`[sse:environment] error in handleJobUpdate:`, err))
+          requestSnapshot({
+            sourceEventType: "job_update",
+            sourceEventAt: event.emittedAt,
+          }).catch((err) => console.error(`[sse:environment] error in handleJobUpdate:`, err))
         }
       }
 
@@ -948,7 +1113,17 @@ reposRoute.get(
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
-        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+        stream.writeSSE({
+          event: "heartbeat",
+          data: JSON.stringify({
+            ts: Date.now(),
+            meta: buildStreamPayloadMeta({
+              context: streamContext,
+              sourceEventType: "heartbeat",
+              sourceEventAt: new Date().toISOString(),
+            }),
+          }),
+        })
           .catch(() => { /* connection likely closed */ })
       }, 30_000)
 
@@ -960,6 +1135,14 @@ reposRoute.get(
           events.offDeploymentUpdate(handleDeploymentUpdate)
           events.offRunUpdate(handleRunUpdate)
           events.offJobUpdate(handleJobUpdate)
+          logger.debug("Environment stream closed", {
+            orgId: auth.orgId,
+            repo,
+            environmentName,
+            streamId: streamContext.streamId,
+            runViewSessionId: streamContext.runViewSessionId ?? undefined,
+            pageViewId: streamContext.pageViewId ?? undefined,
+          })
           resolve()
         })
       })

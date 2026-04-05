@@ -10,6 +10,7 @@ import { getSseEventsEmittedCounter, logger } from "./telemetry.ts"
 export interface RunUpdateEvent {
   runId: string
   deploymentId: string
+  emittedAt: string
   /** @deprecated Use deploymentId */
   previewId: string
 }
@@ -23,6 +24,7 @@ export interface DeploymentUpdateEvent {
   repo: string
   environmentKind: EnvironmentKind
   environmentName: string
+  emittedAt: string
   /** @deprecated For backward compatibility with old listeners */
   previewId: string
 }
@@ -30,6 +32,7 @@ export interface DeploymentUpdateEvent {
 export interface JobUpdateEvent {
   jobId: string
   deploymentId: string
+  emittedAt: string
   /** @deprecated Use deploymentId */
   previewId: string
 }
@@ -62,7 +65,12 @@ class YaffleEvents {
 
   emitRunUpdate(runId: string, deploymentId: string): void {
     getSseEventsEmittedCounter().add(1, { type: "run_update" })
-    this.emit("run:update", { runId, deploymentId, previewId: deploymentId })
+    this.emit("run:update", {
+      runId,
+      deploymentId,
+      emittedAt: new Date().toISOString(),
+      previewId: deploymentId,
+    })
   }
 
   /**
@@ -83,13 +91,19 @@ class YaffleEvents {
       repo,
       environmentKind,
       environmentName,
+      emittedAt: new Date().toISOString(),
       previewId: deploymentId,
     })
   }
 
   emitJobUpdate(jobId: string, deploymentId: string): void {
     getSseEventsEmittedCounter().add(1, { type: "job_update" })
-    this.emit("job:update", { jobId, deploymentId, previewId: deploymentId })
+    this.emit("job:update", {
+      jobId,
+      deploymentId,
+      emittedAt: new Date().toISOString(),
+      previewId: deploymentId,
+    })
   }
 
   onRunUpdate(handler: (event: RunUpdateEvent) => void): void {

@@ -556,6 +556,18 @@ export function getSseMessagesDedupedCounter(): typeof _sseMessagesDeduped & {} 
   return _sseMessagesDeduped
 }
 
+let _sseEventToSendLatency: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: latency from backend event emission to SSE payload send in ms. */
+export function getSseEventToSendLatencyHistogram(): typeof _sseEventToSendLatency & {} {
+  if (!_sseEventToSendLatency) {
+    _sseEventToSendLatency = getMeter().createHistogram("yaffle.sse.event_to_send", {
+      description: "Latency from event emission to SSE payload send in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _sseEventToSendLatency
+}
+
 let _sseConnectionsActive: ReturnType<ReturnType<typeof metrics.getMeter>["createUpDownCounter"]> | null = null
 /** UpDownCounter: active SSE connections (gauge-like). */
 export function getSseConnectionsActiveCounter(): typeof _sseConnectionsActive & {} {
@@ -576,6 +588,63 @@ export function getSseEventsEmittedCounter(): typeof _sseEventsEmitted & {} {
     })
   }
   return _sseEventsEmitted
+}
+
+let _runLogConnectionsActive: ReturnType<ReturnType<typeof metrics.getMeter>["createUpDownCounter"]> | null = null
+/** UpDownCounter: active per-run log SSE connections. */
+export function getRunLogConnectionsActiveCounter(): typeof _runLogConnectionsActive & {} {
+  if (!_runLogConnectionsActive) {
+    _runLogConnectionsActive = getMeter().createUpDownCounter("yaffle.run_logs.connections.active", {
+      description: "Number of active per-run log SSE connections",
+    })
+  }
+  return _runLogConnectionsActive
+}
+
+let _runLogMessagesSent: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: run log SSE messages sent, by event type. */
+export function getRunLogMessagesSentCounter(): typeof _runLogMessagesSent & {} {
+  if (!_runLogMessagesSent) {
+    _runLogMessagesSent = getMeter().createCounter("yaffle.run_logs.messages.sent", {
+      description: "Run log SSE messages sent",
+    })
+  }
+  return _runLogMessagesSent
+}
+
+let _runLogPayloadBytes: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: run log SSE payload sizes in bytes. */
+export function getRunLogPayloadBytesHistogram(): typeof _runLogPayloadBytes & {} {
+  if (!_runLogPayloadBytes) {
+    _runLogPayloadBytes = getMeter().createHistogram("yaffle.run_logs.payload.bytes", {
+      description: "Run log SSE payload size in bytes",
+      unit: "By",
+    })
+  }
+  return _runLogPayloadBytes
+}
+
+let _runLogStreamEnds: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: run log stream terminations, by reason. */
+export function getRunLogStreamEndsCounter(): typeof _runLogStreamEnds & {} {
+  if (!_runLogStreamEnds) {
+    _runLogStreamEnds = getMeter().createCounter("yaffle.run_logs.stream.ends", {
+      description: "Run log SSE stream terminations by reason",
+    })
+  }
+  return _runLogStreamEnds
+}
+
+let _runLogEventToSendLatency: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: latency from run log event emission to SSE log payload send in ms. */
+export function getRunLogEventToSendLatencyHistogram(): typeof _runLogEventToSendLatency & {} {
+  if (!_runLogEventToSendLatency) {
+    _runLogEventToSendLatency = getMeter().createHistogram("yaffle.run_logs.event_to_send", {
+      description: "Latency from run log event emission to SSE log payload send in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _runLogEventToSendLatency
 }
 
 // ---------------------------------------------------------------------------

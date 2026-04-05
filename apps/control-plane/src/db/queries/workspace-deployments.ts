@@ -223,16 +223,7 @@ export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<
       })
       .returning()
 
-    const deployment = rows[0]
-    // Emit event so SSE streams pick up the new headSha
-    events.emitDeploymentUpdate(
-      deployment.id,
-      deployment.orgId,
-      deployment.repo,
-      deployment.environmentKind as EnvironmentKind,
-      deployment.environmentName,
-    )
-    return deployment
+    return rows[0]
   })
 }
 

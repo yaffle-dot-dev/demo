@@ -11,12 +11,29 @@ import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 
 import { events, type RunUpdateEvent } from "../lib/events.ts"
 import { processRegistry } from "../lib/process-registry.ts"
-import { logger } from "../lib/telemetry.ts"
+import {
+  getRunLogConnectionsActiveCounter,
+  getRunLogEventToSendLatencyHistogram,
+  getRunLogMessagesSentCounter,
+  getRunLogPayloadBytesHistogram,
+  getRunLogStreamEndsCounter,
+  logger,
+} from "../lib/telemetry.ts"
 import { requireResourceAccess, getAuth } from "../middleware/org-auth.ts"
+import {
+  buildStreamPayloadMeta,
+  createStreamContext,
+  parseRunViewCorrelation,
+  runViewCorrelationQueryFields,
+} from "../lib/run-view-monitoring.ts"
 
 const uuidParam = z.string().uuid()
 const logStreamQuerySchema = z.object({
   offset: z.coerce.number().int().min(0).optional(),
+  ...runViewCorrelationQueryFields,
+})
+const runOutputQuerySchema = z.object({
+  ...runViewCorrelationQueryFields,
 })
 
 export const runsRoute = new Hono()
@@ -176,6 +193,14 @@ runsRoute.get(
       )
     }
 
+    const queryParseResult = runOutputQuerySchema.safeParse(c.req.query())
+    if (!queryParseResult.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: queryParseResult.error.issues[0]?.message ?? "invalid query" } },
+        400,
+      )
+    }
+
     const run = await findRunById(parseResult.data)
     if (!run) {
       return c.json(
@@ -183,6 +208,16 @@ runsRoute.get(
         404,
       )
     }
+
+    const correlation = parseRunViewCorrelation(queryParseResult.data)
+
+    logger.debug("Run output fetched", {
+      runId: run.id,
+      deploymentId: run.deploymentId,
+      runType: run.runType,
+      runViewSessionId: correlation.runViewSessionId ?? undefined,
+      pageViewId: correlation.pageViewId ?? undefined,
+    })
 
     return c.text(run.logOutput ?? "")
   },
@@ -224,6 +259,7 @@ runsRoute.get(
     }
 
     let lastSentOffset = queryParseResult.data.offset ?? 0
+    const correlation = parseRunViewCorrelation(queryParseResult.data)
 
     const run = await findRunById(id)
     if (!run) {
@@ -234,13 +270,34 @@ runsRoute.get(
     }
 
     return streamSSE(c, async (stream) => {
+      const streamContext = createStreamContext("run_log", correlation)
+      const metricAttrs = {
+        runType: run.runType,
+      }
+
+      let latestTrigger = {
+        sourceEventType: "initial",
+        sourceEventAt: new Date().toISOString(),
+      }
+
       let inFlight = false
       let pendingRefresh = false
       let finished = false
 
       let resolveStream: (() => void) | null = null
 
-      const finish = async (sendDone: boolean): Promise<void> => {
+      getRunLogConnectionsActiveCounter().add(1, metricAttrs)
+      logger.debug("Run log stream opened", {
+        runId: id,
+        deploymentId: run.deploymentId,
+        runType: run.runType,
+        streamId: streamContext.streamId,
+        runViewSessionId: streamContext.runViewSessionId ?? undefined,
+        pageViewId: streamContext.pageViewId ?? undefined,
+        offset: lastSentOffset,
+      })
+
+      const finish = async (reason: "done" | "aborted" | "error" | "not_found", sendDone: boolean): Promise<void> => {
         if (finished) {
           return
         }
@@ -248,12 +305,43 @@ runsRoute.get(
         finished = true
         clearInterval(heartbeat)
         events.offRunUpdate(handleRunUpdate)
+        getRunLogConnectionsActiveCounter().add(-1, metricAttrs)
+        getRunLogStreamEndsCounter().add(1, { ...metricAttrs, reason })
+
+        logger.debug("Run log stream closed", {
+          runId: id,
+          deploymentId: run.deploymentId,
+          runType: run.runType,
+          streamId: streamContext.streamId,
+          runViewSessionId: streamContext.runViewSessionId ?? undefined,
+          pageViewId: streamContext.pageViewId ?? undefined,
+          reason,
+          offset: lastSentOffset,
+          sendDone,
+        })
 
         if (sendDone) {
-          await stream.writeSSE({ event: "done", data: "{}" }).catch(() => {})
+          const payload = JSON.stringify({
+            meta: buildStreamPayloadMeta({
+              context: streamContext,
+              sourceEventType: reason,
+              sourceEventAt: new Date().toISOString(),
+            }),
+          })
+          await stream.writeSSE({ event: "done", data: payload }).catch(() => {})
+          getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "done" })
+          getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "done" })
         }
 
         resolveStream?.()
+      }
+
+      const requestDelta = async (trigger: {
+        sourceEventType: string
+        sourceEventAt: string
+      }): Promise<void> => {
+        latestTrigger = trigger
+        await sendDelta()
       }
 
       const sendDelta = async (): Promise<void> => {
@@ -270,13 +358,24 @@ runsRoute.get(
         pendingRefresh = false
 
         try {
+          const trigger = latestTrigger
           const snapshot = await getRunLogSnapshot(id)
           if (!snapshot) {
+            const payload = JSON.stringify({
+              message: "Run not found",
+              meta: buildStreamPayloadMeta({
+                context: streamContext,
+                sourceEventType: trigger.sourceEventType,
+                sourceEventAt: trigger.sourceEventAt,
+              }),
+            })
             await stream.writeSSE({
               event: "error",
-              data: JSON.stringify({ message: "Run not found" }),
+              data: payload,
             }).catch(() => {})
-            await finish(true)
+            getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "error" })
+            getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "error" })
+            await finish("not_found", true)
             return
           }
 
@@ -284,35 +383,71 @@ runsRoute.get(
 
           if (output.length < lastSentOffset) {
             lastSentOffset = output.length
+            const payload = JSON.stringify({
+              output,
+              meta: buildStreamPayloadMeta({
+                context: streamContext,
+                sourceEventType: trigger.sourceEventType,
+                sourceEventAt: trigger.sourceEventAt,
+              }),
+            })
             await stream.writeSSE({
               event: "reset",
-              data: JSON.stringify({ output }),
+              data: payload,
             })
+            getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "reset" })
+            getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "reset" })
           } else if (output.length > lastSentOffset) {
             const message = output.slice(lastSentOffset)
             lastSentOffset = output.length
-            await stream.writeSSE({
-              event: "log",
-              data: JSON.stringify({
-                timestamp: Date.now(),
-                message,
+            const payload = JSON.stringify({
+              timestamp: Date.now(),
+              message,
+              meta: buildStreamPayloadMeta({
+                context: streamContext,
+                sourceEventType: trigger.sourceEventType,
+                sourceEventAt: trigger.sourceEventAt,
               }),
             })
+            await stream.writeSSE({
+              event: "log",
+              data: payload,
+            })
+            getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "log" })
+            getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "log" })
+
+            const sourceEventMs = Date.parse(trigger.sourceEventAt)
+            if (Number.isFinite(sourceEventMs)) {
+              getRunLogEventToSendLatencyHistogram().record(Date.now() - sourceEventMs, {
+                ...metricAttrs,
+                sourceEventType: trigger.sourceEventType,
+              })
+            }
           }
 
           if (snapshot.status !== "running") {
-            await finish(true)
+            await finish("done", true)
           }
         } catch (err) {
           logger.error("Log streaming error", {
             runId: id,
             error: err instanceof Error ? err.message : String(err),
           })
+          const payload = JSON.stringify({
+            message: "Log streaming error",
+            meta: buildStreamPayloadMeta({
+              context: streamContext,
+              sourceEventType: "stream_error",
+              sourceEventAt: new Date().toISOString(),
+            }),
+          })
           await stream.writeSSE({
             event: "error",
-            data: JSON.stringify({ message: "Log streaming error" }),
+            data: payload,
           }).catch(() => {})
-          await finish(true)
+          getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "error" })
+          getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "error" })
+          await finish("error", true)
         } finally {
           inFlight = false
           if (pendingRefresh && !finished) {
@@ -323,15 +458,38 @@ runsRoute.get(
 
       const handleRunUpdate = (event: RunUpdateEvent): void => {
         if (event.runId === id) {
-          void sendDelta()
+          void requestDelta({
+            sourceEventType: "run_update",
+            sourceEventAt: event.emittedAt,
+          })
         }
       }
 
-      await stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) }).catch(() => {})
+      const initialHeartbeat = JSON.stringify({
+        ts: Date.now(),
+        meta: buildStreamPayloadMeta({
+          context: streamContext,
+          sourceEventType: "heartbeat",
+          sourceEventAt: new Date().toISOString(),
+        }),
+      })
+      await stream.writeSSE({ event: "heartbeat", data: initialHeartbeat }).catch(() => {})
+      getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "heartbeat" })
+      getRunLogPayloadBytesHistogram().record(initialHeartbeat.length, { ...metricAttrs, event: "heartbeat" })
 
       const heartbeat = setInterval(() => {
-        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+        const payload = JSON.stringify({
+          ts: Date.now(),
+          meta: buildStreamPayloadMeta({
+            context: streamContext,
+            sourceEventType: "heartbeat",
+            sourceEventAt: new Date().toISOString(),
+          }),
+        })
+        stream.writeSSE({ event: "heartbeat", data: payload })
           .catch(() => {})
+        getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "heartbeat" })
+        getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "heartbeat" })
       }, 10_000)
 
       events.onRunUpdate(handleRunUpdate)
@@ -339,10 +497,13 @@ runsRoute.get(
       await new Promise<void>((resolve) => {
         resolveStream = resolve
         stream.onAbort(() => {
-          void finish(false)
+          void finish("aborted", false)
         })
 
-        void sendDelta()
+        void requestDelta({
+          sourceEventType: "initial",
+          sourceEventAt: new Date().toISOString(),
+        })
       })
     })
   },

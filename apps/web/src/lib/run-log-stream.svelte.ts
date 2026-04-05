@@ -1,6 +1,8 @@
 import { browser } from "$app/environment"
 
 import { getRunOutput } from "$lib/api"
+import { appendRunViewCorrelation, type RunViewCorrelation } from "$lib/run-view-monitoring"
+import type { StreamPayloadMeta } from "$lib/sse/types"
 
 type RunLogConnectionState = "idle" | "loading" | "connecting" | "connected" | "disconnected" | "error"
 
@@ -12,19 +14,27 @@ export interface RunLogStreamState {
   readonly isStreaming: boolean
   readonly connectionState: RunLogConnectionState
   readonly error: string | null
+  readonly latestMeta: StreamPayloadMeta | null
+  readonly lastOutputAtMs: number | null
 }
 
 export function useRunLogStream(
   getRunId: () => string | null,
   getShouldStream: () => boolean,
+  getRunViewSessionId?: () => string | null,
+  getPageViewId?: () => string | null,
 ): RunLogStreamState {
   let output = $state("")
   let isStreaming = $state(false)
   let connectionState = $state<RunLogConnectionState>("idle")
   let error = $state<string | null>(null)
+  let latestMeta = $state<StreamPayloadMeta | null>(null)
+  let lastOutputAtMs = $state<number | null>(null)
 
   let currentRunId: string | null = null
   let currentShouldStream = false
+  let currentRunViewSessionId: string | null = null
+  let currentPageViewId: string | null = null
   let eventSource: EventSource | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
   let visibilityHandler: (() => void) | null = null
@@ -67,9 +77,11 @@ export function useRunLogStream(
 
   const handleLogEvent = (event: MessageEvent): void => {
     try {
-      const parsed = JSON.parse(event.data) as { message?: string }
+      const parsed = JSON.parse(event.data) as { message?: string, meta?: StreamPayloadMeta }
+      latestMeta = parsed.meta ?? latestMeta
       if (parsed.message) {
         output += parsed.message
+        lastOutputAtMs = performance.now()
       }
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
@@ -79,8 +91,10 @@ export function useRunLogStream(
 
   const handleResetEvent = (event: MessageEvent): void => {
     try {
-      const parsed = JSON.parse(event.data) as { output?: string }
+      const parsed = JSON.parse(event.data) as { output?: string, meta?: StreamPayloadMeta }
+      latestMeta = parsed.meta ?? latestMeta
       output = parsed.output ?? ""
+      lastOutputAtMs = performance.now()
     } catch (err) {
       error = err instanceof Error ? err.message : String(err)
       connectionState = "error"
@@ -93,12 +107,19 @@ export function useRunLogStream(
     }
 
     const runId = currentRunId
+    const correlation: RunViewCorrelation = {
+      runViewSessionId: currentRunViewSessionId,
+      pageViewId: currentPageViewId,
+    }
 
     close()
     connectionState = "connecting"
     error = null
 
-    const url = `/api/runs/${encodeURIComponent(runId)}/logs?offset=${output.length}`
+    const url = appendRunViewCorrelation(
+      `/api/runs/${encodeURIComponent(runId)}/logs?offset=${output.length}`,
+      correlation,
+    )
     const es = new EventSource(url, { withCredentials: true })
     eventSource = es
 
@@ -118,10 +139,17 @@ export function useRunLogStream(
       handleResetEvent(event as MessageEvent)
     })
 
-    es.addEventListener("heartbeat", () => {
+    es.addEventListener("heartbeat", (event) => {
       if (eventSource !== es || destroyed || currentRunId !== runId) return
       if (connectionState !== "connected") {
         connectionState = "connected"
+      }
+
+      try {
+        const parsed = JSON.parse((event as MessageEvent).data) as { meta?: StreamPayloadMeta }
+        latestMeta = parsed.meta ?? latestMeta
+      } catch {
+        // Heartbeat metadata is optional.
       }
     })
 
@@ -141,9 +169,13 @@ export function useRunLogStream(
     })
   }
 
-  const loadOutput = async (runId: string, version: number): Promise<void> => {
+  const loadOutput = async (
+    runId: string,
+    version: number,
+    correlation: RunViewCorrelation,
+  ): Promise<void> => {
     try {
-      const nextOutput = await getRunOutput(runId)
+      const nextOutput = await getRunOutput(runId, correlation)
 
       if (destroyed || version !== loadVersion || currentRunId !== runId) {
         return
@@ -171,6 +203,8 @@ export function useRunLogStream(
     loadVersion += 1
     currentRunId = null
     currentShouldStream = false
+    currentRunViewSessionId = null
+    currentPageViewId = null
     finished = false
     clearReconnectTimer()
     close()
@@ -178,9 +212,16 @@ export function useRunLogStream(
     isStreaming = false
     connectionState = "idle"
     error = null
+    latestMeta = null
+    lastOutputAtMs = null
   }
 
-  const setTarget = (runId: string | null, shouldStream: boolean): void => {
+  const setTarget = (
+    runId: string | null,
+    shouldStream: boolean,
+    runViewSessionId: string | null,
+    pageViewId: string | null,
+  ): void => {
     if (!browser) {
       return
     }
@@ -192,15 +233,24 @@ export function useRunLogStream(
 
     const runChanged = runId !== currentRunId
     const streamingChanged = shouldStream !== currentShouldStream
+    const correlationChanged = runViewSessionId !== currentRunViewSessionId
+      || pageViewId !== currentPageViewId
 
-    if (!runChanged && !streamingChanged) {
+    if (!runChanged && !streamingChanged && !correlationChanged) {
       return
     }
 
     currentRunId = runId
     currentShouldStream = shouldStream
+    currentRunViewSessionId = runViewSessionId
+    currentPageViewId = pageViewId
     isStreaming = shouldStream
     error = null
+
+    const correlation: RunViewCorrelation = {
+      runViewSessionId,
+      pageViewId,
+    }
 
     if (runChanged) {
       loadVersion += 1
@@ -209,8 +259,10 @@ export function useRunLogStream(
       clearReconnectTimer()
       close()
       output = ""
+      latestMeta = null
+      lastOutputAtMs = null
       connectionState = "loading"
-      void loadOutput(runId, loadVersion)
+      void loadOutput(runId, loadVersion, correlation)
       return
     }
 
@@ -264,7 +316,12 @@ export function useRunLogStream(
   })
 
   $effect(() => {
-    setTarget(getRunId(), getShouldStream())
+    setTarget(
+      getRunId(),
+      getShouldStream(),
+      getRunViewSessionId?.() ?? null,
+      getPageViewId?.() ?? null,
+    )
   })
 
   return {
@@ -272,5 +329,7 @@ export function useRunLogStream(
     get isStreaming() { return isStreaming },
     get connectionState() { return connectionState },
     get error() { return error },
+    get latestMeta() { return latestMeta },
+    get lastOutputAtMs() { return lastOutputAtMs },
   }
 }
