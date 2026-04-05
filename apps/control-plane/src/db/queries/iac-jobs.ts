@@ -9,6 +9,8 @@ import {
   getJobRunDurationHistogram,
   getJobHeartbeatsCounter,
   getJobStateTransitionsCounter,
+  getRunnerStartupDurationHistogram,
+  getRunnerTaskDurationHistogram,
 } from "../../lib/telemetry.ts"
 import { events } from "../../lib/events.ts"
 import { updateDeploymentStatus } from "./workspace-deployments.ts"
@@ -234,6 +236,23 @@ export async function updateJobEcsTask(
         workerId: taskArn,
       })
       .where(eq(iacJobs.id, jobId))
+  })
+}
+
+/**
+ * Record that a job was successfully dispatched to a runner.
+ *
+ * Jobs remain in `queued` state until a runner claims them, but this timestamp
+ * lets us measure startup and task-lifetime proxy metrics.
+ */
+export async function markJobDispatched(jobId: string): Promise<void> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    await db
+      .update(iacJobs)
+      .set({
+        dispatchedAt: new Date(),
+      })
+      .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "queued")))
   })
 }
 
@@ -711,9 +730,18 @@ export async function claimJobForRunner(
       const queueWaitMs = job.startedAt && job.queuedAt
         ? job.startedAt.getTime() - job.queuedAt.getTime()
         : 0
+      const dispatchToClaimMs = job.startedAt && job.dispatchedAt
+        ? job.startedAt.getTime() - job.dispatchedAt.getTime()
+        : null
 
       // Record metrics
       getJobQueueWaitHistogram().record(queueWaitMs, { job_type: job.jobType })
+      if (dispatchToClaimMs != null) {
+        getRunnerStartupDurationHistogram().record(dispatchToClaimMs, {
+          job_type: job.jobType,
+          dispatch_mode: "burst",
+        })
+      }
       getJobStateTransitionsCounter().add(1, {
         from_state: "queued",
         to_state: "running",
@@ -729,6 +757,7 @@ export async function claimJobForRunner(
         "deployment.id": job.deploymentId,
         "worker.id": workerId,
         "duration.queue_wait_ms": queueWaitMs,
+        "duration.dispatch_to_claim_ms": dispatchToClaimMs ?? undefined,
         "job.attempts": job.attempts,
       })
 
@@ -800,12 +829,22 @@ export async function completeJobFromRunner(
       const runDurationMs = job.completedAt && job.startedAt
         ? job.completedAt.getTime() - job.startedAt.getTime()
         : 0
+      const taskDurationMs = job.completedAt && job.dispatchedAt
+        ? job.completedAt.getTime() - job.dispatchedAt.getTime()
+        : null
 
       // Record metrics
       getJobRunDurationHistogram().record(runDurationMs, {
         job_type: job.jobType,
         status: "completed",
       })
+      if (taskDurationMs != null) {
+        getRunnerTaskDurationHistogram().record(taskDurationMs, {
+          job_type: job.jobType,
+          dispatch_mode: "burst",
+          status: "completed",
+        })
+      }
       getJobStateTransitionsCounter().add(1, {
         from_state: "running",
         to_state: "completed",
@@ -821,6 +860,7 @@ export async function completeJobFromRunner(
         "deployment.id": job.deploymentId,
         "worker.id": job.workerId ?? "unknown",
         "duration.run_ms": runDurationMs,
+        "duration.task_ms": taskDurationMs ?? undefined,
       })
 
       return { success: true, job, runDurationMs }
@@ -863,12 +903,22 @@ export async function failJobFromRunner(
       const runDurationMs = job.completedAt && job.startedAt
         ? job.completedAt.getTime() - job.startedAt.getTime()
         : 0
+      const taskDurationMs = job.completedAt && job.dispatchedAt
+        ? job.completedAt.getTime() - job.dispatchedAt.getTime()
+        : null
 
       // Record metrics
       getJobRunDurationHistogram().record(runDurationMs, {
         job_type: job.jobType,
         status: "failed",
       })
+      if (taskDurationMs != null) {
+        getRunnerTaskDurationHistogram().record(taskDurationMs, {
+          job_type: job.jobType,
+          dispatch_mode: "burst",
+          status: "failed",
+        })
+      }
       getJobStateTransitionsCounter().add(1, {
         from_state: "running",
         to_state: "failed",
@@ -884,6 +934,7 @@ export async function failJobFromRunner(
         "deployment.id": job.deploymentId,
         "worker.id": job.workerId ?? "unknown",
         "duration.run_ms": runDurationMs,
+        "duration.task_ms": taskDurationMs ?? undefined,
         "error.message": errorMessage,
       })
 

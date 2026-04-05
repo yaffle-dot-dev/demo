@@ -117,6 +117,40 @@ export async function updateRunStatus(
 }
 
 /**
+ * Get the current log-output state for a run.
+ * Used to detect the first runner output chunk without issuing an extra query
+ * for every subsequent log append.
+ */
+export async function getRunLogState(runId: string): Promise<{
+  startedAt: Date | null
+  runType: string
+  hasLogOutput: boolean
+} | undefined> {
+  return withDbSpan("select", "tf_runs", async () => {
+    const rows = await db
+      .select({
+        startedAt: tfRuns.startedAt,
+        runType: tfRuns.runType,
+        logOutput: tfRuns.logOutput,
+      })
+      .from(tfRuns)
+      .where(eq(tfRuns.id, runId))
+      .limit(1)
+
+    const row = rows[0]
+    if (!row) {
+      return undefined
+    }
+
+    return {
+      startedAt: row.startedAt,
+      runType: row.runType,
+      hasLogOutput: !!row.logOutput,
+    }
+  })
+}
+
+/**
  * Append log output to a run.
  */
 export async function appendRunLog(

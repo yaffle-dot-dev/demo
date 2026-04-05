@@ -138,6 +138,11 @@ function resetMeter(): void {
   // Scheduler metrics
   _schedulerJobsClaimedCounter = null
   _schedulerJobsBlockedCounter = null
+  _schedulerSpawnAttemptsCounter = null
+  _schedulerSpawnSuppressedCounter = null
+  _schedulerSpawnFailuresCounter = null
+  _schedulerPollOverlapCounter = null
+  _schedulerQueueToSpawnHistogram = null
   _schedulerActiveJobsGauge = null
   _schedulerQueuedJobsGauge = null
   _schedulerPollDuration = null
@@ -160,6 +165,16 @@ function resetMeter(): void {
   _jobRunDurationHistogram = null
   _jobHeartbeatsCounter = null
   _jobStateTransitionsCounter = null
+  // Runner execution metrics
+  _runnerTasksStartedCounter = null
+  _runnerDispatchDurationHistogram = null
+  _runnerStartupDurationHistogram = null
+  _runnerFirstOutputDurationHistogram = null
+  _runnerTaskDurationHistogram = null
+  _runnerWarmRunnersActiveGauge = null
+  _runnerWarmSlotsActiveGauge = null
+  _runnerWarmRunnersActiveValue = 0
+  _runnerWarmSlotsActiveValue = 0
 }
 
 let _webhookReceivedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
@@ -384,6 +399,62 @@ export function getSchedulerJobsBlockedCounter(): typeof _schedulerJobsBlockedCo
     })
   }
   return _schedulerJobsBlockedCounter
+}
+
+let _schedulerSpawnAttemptsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: worker spawn attempts initiated by the scheduler. */
+export function getSchedulerSpawnAttemptsCounter(): typeof _schedulerSpawnAttemptsCounter & {} {
+  if (!_schedulerSpawnAttemptsCounter) {
+    _schedulerSpawnAttemptsCounter = getMeter().createCounter("yaffle.scheduler.spawn.attempts", {
+      description: "Worker spawn attempts initiated by the scheduler",
+    })
+  }
+  return _schedulerSpawnAttemptsCounter
+}
+
+let _schedulerSpawnSuppressedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: jobs skipped by the scheduler before spawn, by reason. */
+export function getSchedulerSpawnSuppressedCounter(): typeof _schedulerSpawnSuppressedCounter & {} {
+  if (!_schedulerSpawnSuppressedCounter) {
+    _schedulerSpawnSuppressedCounter = getMeter().createCounter("yaffle.scheduler.spawn.suppressed", {
+      description: "Jobs skipped by the scheduler before spawn",
+    })
+  }
+  return _schedulerSpawnSuppressedCounter
+}
+
+let _schedulerSpawnFailuresCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: scheduler spawn failures, by reason. */
+export function getSchedulerSpawnFailuresCounter(): typeof _schedulerSpawnFailuresCounter & {} {
+  if (!_schedulerSpawnFailuresCounter) {
+    _schedulerSpawnFailuresCounter = getMeter().createCounter("yaffle.scheduler.spawn.failures", {
+      description: "Scheduler spawn failures",
+    })
+  }
+  return _schedulerSpawnFailuresCounter
+}
+
+let _schedulerPollOverlapCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: scheduler poll cycles that started while another poll was already in flight. */
+export function getSchedulerPollOverlapCounter(): typeof _schedulerPollOverlapCounter & {} {
+  if (!_schedulerPollOverlapCounter) {
+    _schedulerPollOverlapCounter = getMeter().createCounter("yaffle.scheduler.poll.overlap", {
+      description: "Scheduler poll cycles that overlapped with an in-flight poll",
+    })
+  }
+  return _schedulerPollOverlapCounter
+}
+
+let _schedulerQueueToSpawnHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: time from queueing to scheduler spawn attempt in ms. */
+export function getSchedulerQueueToSpawnHistogram(): typeof _schedulerQueueToSpawnHistogram & {} {
+  if (!_schedulerQueueToSpawnHistogram) {
+    _schedulerQueueToSpawnHistogram = getMeter().createHistogram("yaffle.scheduler.queue_to_spawn", {
+      description: "Time from job queueing to scheduler spawn attempt in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _schedulerQueueToSpawnHistogram
 }
 
 let _schedulerActiveJobsGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
@@ -642,6 +713,109 @@ export function getJobStateTransitionsCounter(): typeof _jobStateTransitionsCoun
     })
   }
   return _jobStateTransitionsCounter
+}
+
+// ---------------------------------------------------------------------------
+// Runner execution metrics
+// ---------------------------------------------------------------------------
+
+let _runnerTasksStartedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: successful runner task/process starts. */
+export function getRunnerTasksStartedCounter(): typeof _runnerTasksStartedCounter & {} {
+  if (!_runnerTasksStartedCounter) {
+    _runnerTasksStartedCounter = getMeter().createCounter("yaffle.runner.tasks.started", {
+      description: "Successful runner task or process starts",
+    })
+  }
+  return _runnerTasksStartedCounter
+}
+
+let _runnerDispatchDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: time spent in the scheduler spawn call in ms. */
+export function getRunnerDispatchDurationHistogram(): typeof _runnerDispatchDurationHistogram & {} {
+  if (!_runnerDispatchDurationHistogram) {
+    _runnerDispatchDurationHistogram = getMeter().createHistogram("yaffle.runner.dispatch.duration", {
+      description: "Time spent in the scheduler spawn call in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _runnerDispatchDurationHistogram
+}
+
+let _runnerStartupDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: time from successful dispatch to worker claim in ms. */
+export function getRunnerStartupDurationHistogram(): typeof _runnerStartupDurationHistogram & {} {
+  if (!_runnerStartupDurationHistogram) {
+    _runnerStartupDurationHistogram = getMeter().createHistogram("yaffle.runner.startup.duration", {
+      description: "Time from successful dispatch to worker claim in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _runnerStartupDurationHistogram
+}
+
+let _runnerFirstOutputDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: time from worker claim to first tofu output in ms. */
+export function getRunnerFirstOutputDurationHistogram(): typeof _runnerFirstOutputDurationHistogram & {} {
+  if (!_runnerFirstOutputDurationHistogram) {
+    _runnerFirstOutputDurationHistogram = getMeter().createHistogram("yaffle.runner.first_output.duration", {
+      description: "Time from worker claim to first tofu output in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _runnerFirstOutputDurationHistogram
+}
+
+let _runnerTaskDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: proxy for runner task billed lifetime from dispatch to completion in ms. */
+export function getRunnerTaskDurationHistogram(): typeof _runnerTaskDurationHistogram & {} {
+  if (!_runnerTaskDurationHistogram) {
+    _runnerTaskDurationHistogram = getMeter().createHistogram("yaffle.runner.task.duration", {
+      description: "Proxy for runner task billed lifetime from dispatch to completion in milliseconds",
+      unit: "ms",
+    })
+  }
+  return _runnerTaskDurationHistogram
+}
+
+let _runnerWarmRunnersActiveGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _runnerWarmRunnersActiveValue = 0
+/** Observable gauge: current number of warm runners. Placeholder until warm mode ships. */
+export function getRunnerWarmRunnersActiveGauge(): typeof _runnerWarmRunnersActiveGauge & {} {
+  if (!_runnerWarmRunnersActiveGauge) {
+    _runnerWarmRunnersActiveGauge = getMeter().createObservableGauge("yaffle.runner.warm.runners.active", {
+      description: "Current number of warm runners",
+    })
+    _runnerWarmRunnersActiveGauge.addCallback((result) => {
+      result.observe(_runnerWarmRunnersActiveValue)
+    })
+  }
+  return _runnerWarmRunnersActiveGauge
+}
+
+export function setRunnerWarmRunnersActiveValue(count: number): void {
+  _runnerWarmRunnersActiveValue = count
+  getRunnerWarmRunnersActiveGauge()
+}
+
+let _runnerWarmSlotsActiveGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _runnerWarmSlotsActiveValue = 0
+/** Observable gauge: current number of active warm-runner slots. Placeholder until warm mode ships. */
+export function getRunnerWarmSlotsActiveGauge(): typeof _runnerWarmSlotsActiveGauge & {} {
+  if (!_runnerWarmSlotsActiveGauge) {
+    _runnerWarmSlotsActiveGauge = getMeter().createObservableGauge("yaffle.runner.warm.slots.active", {
+      description: "Current number of active warm-runner slots",
+    })
+    _runnerWarmSlotsActiveGauge.addCallback((result) => {
+      result.observe(_runnerWarmSlotsActiveValue)
+    })
+  }
+  return _runnerWarmSlotsActiveGauge
+}
+
+export function setRunnerWarmSlotsActiveValue(count: number): void {
+  _runnerWarmSlotsActiveValue = count
+  getRunnerWarmSlotsActiveGauge()
 }
 
 // ---------------------------------------------------------------------------

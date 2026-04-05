@@ -15,7 +15,7 @@ import { Hono } from "hono"
 import { z } from "zod"
 
 import { verifyJobToken, type JobTokenPayload } from "../lib/job-token.ts"
-import { logger, tracer } from "../lib/telemetry.ts"
+import { getRunnerFirstOutputDurationHistogram, logger, tracer } from "../lib/telemetry.ts"
 import {
   claimJobForRunner,
   heartbeatJob,
@@ -26,7 +26,13 @@ import {
 import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 import { findRunGroupById } from "../db/queries/run-groups.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
-import { createTfRun, appendRunLog, updateRunStatus, findLatestSuccessfulRun } from "../db/queries/tf-runs.ts"
+import {
+  createTfRun,
+  appendRunLog,
+  getRunLogState,
+  updateRunStatus,
+  findLatestSuccessfulRun,
+} from "../db/queries/tf-runs.ts"
 import { insertResourceSpan, completeResourceSpan, closeOrphanedSpans } from "../db/queries/resource-spans.ts"
 import {
   buildWorkspaceName,
@@ -67,6 +73,7 @@ type RunnerVariables = {
 }
 
 export const runnerRoute = new Hono<{ Variables: RunnerVariables }>()
+const firstOutputSeenRuns = new Set<string>()
 
 async function releaseWorkspaceLockForDeployment(deployment: {
   orgId: string
@@ -339,8 +346,42 @@ runnerRoute.post("/logs", async (c) => {
   // Format chunk with source prefix if stderr
   const formattedChunk = source === "stderr" ? `[stderr] ${chunk}` : chunk
 
+  let firstOutputState:
+    | { runType: string; startedAt: Date | null }
+    | undefined
+
+  if (!firstOutputSeenRuns.has(runId)) {
+    const runState = await getRunLogState(runId)
+    if (runState) {
+      firstOutputSeenRuns.add(runId)
+      if (!runState.hasLogOutput) {
+        firstOutputState = {
+          runType: runState.runType,
+          startedAt: runState.startedAt,
+        }
+      }
+    }
+  }
+
   // Append to run logs
   await appendRunLog(runId, auth.jobToken.deployment_id, formattedChunk)
+
+  if (firstOutputState?.startedAt) {
+    const firstOutputMs = Date.now() - firstOutputState.startedAt.getTime()
+    getRunnerFirstOutputDurationHistogram().record(firstOutputMs, {
+      dispatch_mode: "burst",
+      run_type: firstOutputState.runType,
+      source: source ?? "stdout",
+    })
+    logger.info("runner.first_output", {
+      "job.id": jobId,
+      "run.id": runId,
+      "org.id": auth.jobToken.org_id,
+      runType: firstOutputState.runType,
+      source: source ?? "stdout",
+      "duration.first_output_ms": firstOutputMs,
+    })
+  }
 
   return c.json({ data: { success: true } })
 })
@@ -666,6 +707,8 @@ runnerRoute.post("/complete", async (c) => {
     deployment.environmentKind as EnvironmentKind,
     deployment.environmentName,
   )
+
+  firstOutputSeenRuns.delete(runId)
 
   return c.json({ data: { success: true } })
 })

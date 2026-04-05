@@ -28,6 +28,7 @@ import {
   findStaleJobs,
   failStaleJob,
   getJobWithContext,
+  markJobDispatched,
   markJobBlocked,
   clearJobBlocked,
   type ConcurrencyLimits,
@@ -42,12 +43,23 @@ import {
   getSchedulerGroupsQueuedGauge,
   getSchedulerJobsBlockedCounter,
   getSchedulerJobsClaimedCounter,
+  getSchedulerPollOverlapCounter,
   getSchedulerPollDurationHistogram,
   getSchedulerPollGroupsQueriedHistogram,
   getSchedulerPollJobsFetchedHistogram,
   getSchedulerQueuedJobsGauge,
+  getSchedulerQueueToSpawnHistogram,
+  getSchedulerSpawnAttemptsCounter,
+  getSchedulerSpawnFailuresCounter,
+  getSchedulerSpawnSuppressedCounter,
   getSchedulerSkipLockedMissesCounter,
+  getRunnerDispatchDurationHistogram,
+  getRunnerTasksStartedCounter,
+  getRunnerWarmRunnersActiveGauge,
+  getRunnerWarmSlotsActiveGauge,
   logger,
+  setRunnerWarmRunnersActiveValue,
+  setRunnerWarmSlotsActiveValue,
   setSchedulerActiveJobsValue,
   setSchedulerGroupsQueuedValue,
   setSchedulerQueuedJobsValue,
@@ -105,16 +117,24 @@ export interface IacEngineSpawner {
 export { EcsEngineSpawner } from "./ecs-spawner.ts"
 export { LocalChildProcessSpawner } from "./local-spawner.ts"
 
+interface SpawnableJob {
+  job: IacJob
+  orgId: string
+  runGroupId: string | null
+}
+
 export class Scheduler {
   private readonly workerId: string
   private readonly config: Required<SchedulerConfig>
   readonly spawner: IacEngineSpawner
   private readonly limits: ConcurrencyLimits
+  private readonly spawnerType: string
 
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private staleCheckTimer: ReturnType<typeof setInterval> | null = null
   private autoApplyTimer: ReturnType<typeof setInterval> | null = null
   private running = false
+  private activePollCount = 0
   private readonly recentSpawnAttempts = new Map<string, number>()
   private readonly blockedJobs = new Map<string, number>()
   private lastGlobalLimitLogAtMs = 0
@@ -123,9 +143,10 @@ export class Scheduler {
   private static readonly MAX_CONSECUTIVE_FAILURES = 5
   onAbdicate: (() => void) | null = null
 
-  constructor(spawner: IacEngineSpawner, config: SchedulerConfig = {}) {
+  constructor(spawner: IacEngineSpawner, config: SchedulerConfig = {}, spawnerType: string = "unknown") {
     this.workerId = `scheduler-${randomUUID().slice(0, 8)}`
     this.spawner = spawner
+    this.spawnerType = spawnerType
     this.config = {
       pollIntervalMs: config.pollIntervalMs ?? 1000,
       staleCheckIntervalMs: config.staleCheckIntervalMs ?? 30000,
@@ -166,10 +187,21 @@ export class Scheduler {
     getSchedulerGroupsQueuedGauge()
     getSchedulerJobsClaimedCounter()
     getSchedulerJobsBlockedCounter()
+    getSchedulerSpawnAttemptsCounter()
+    getSchedulerSpawnSuppressedCounter()
+    getSchedulerSpawnFailuresCounter()
+    getSchedulerPollOverlapCounter()
     getSchedulerPollDurationHistogram()
     getSchedulerPollGroupsQueriedHistogram()
     getSchedulerPollJobsFetchedHistogram()
+    getSchedulerQueueToSpawnHistogram()
     getSchedulerSkipLockedMissesCounter()
+    getRunnerDispatchDurationHistogram()
+    getRunnerTasksStartedCounter()
+    getRunnerWarmRunnersActiveGauge()
+    getRunnerWarmSlotsActiveGauge()
+    setRunnerWarmRunnersActiveValue(0)
+    setRunnerWarmSlotsActiveValue(0)
 
     // Start polling for jobs
     this.pollTimer = setInterval(() => {
@@ -262,76 +294,96 @@ export class Scheduler {
   private async pollForJobs(): Promise<void> {
     if (!this.running) return
 
-    const pollStart = performance.now()
-
-    // Find jobs ready for spawning (does NOT claim them)
-    const result = await findQueuedJobsForSpawning(this.limits)
-
-    const pollDuration = performance.now() - pollStart
-    getSchedulerPollDurationHistogram().record(pollDuration)
-
-    this.pruneRecentSpawnAttempts()
-    this.pruneBlockedJobs()
-
-    // Update gauge metrics
-    const activeCount = await countActiveJobs()
-    setSchedulerActiveJobsValue(activeCount)
-    setSchedulerQueuedJobsValue(result.totalQueued)
-    setSchedulerGroupsQueuedValue(result.groupsWithQueuedWork)
-
-    // Record blocked jobs metrics
-    if (result.blockedByGlobalLimit > 0) {
-      getSchedulerJobsBlockedCounter().add(result.blockedByGlobalLimit, {
-        reason: "global_limit",
+    if (this.activePollCount > 0) {
+      getSchedulerPollOverlapCounter().add(1, {
+        spawner: this.spawnerType,
+        overlap_depth: this.activePollCount + 1,
       })
-      const now = Date.now()
-      if (now - this.lastGlobalLimitLogAtMs >= 30000) {
-        this.lastGlobalLimitLogAtMs = now
-        logger.info("Jobs blocked by global concurrency limit", {
-          workerId: this.workerId,
-          blocked: result.blockedByGlobalLimit,
-          activeJobs: activeCount,
-          maxConcurrent: this.limits.maxTotal,
-        })
-      }
+      logger.warn("Scheduler poll overlap detected", {
+        workerId: this.workerId,
+        activePollCount: this.activePollCount,
+      })
     }
 
-    if (result.blockedByGroupLimit > 0) {
-      getSchedulerJobsBlockedCounter().add(result.blockedByGroupLimit, {
-        reason: "group_limit",
+    this.activePollCount++
+
+    try {
+      const pollStart = performance.now()
+
+      // Find jobs ready for spawning (does NOT claim them)
+      const result = await findQueuedJobsForSpawning(this.limits)
+
+      const pollDuration = performance.now() - pollStart
+      getSchedulerPollDurationHistogram().record(pollDuration, {
+        spawner: this.spawnerType,
       })
-      const now = Date.now()
-      if (now - this.lastGroupLimitLogAtMs >= 30000) {
-        this.lastGroupLimitLogAtMs = now
-        logger.info("Jobs blocked by per-group concurrency limit", {
-          workerId: this.workerId,
-          blocked: result.blockedByGroupLimit,
-          maxPerGroup: this.limits.maxPerRunGroup,
+
+      this.pruneRecentSpawnAttempts()
+      this.pruneBlockedJobs()
+
+      // Update gauge metrics
+      const activeCount = await countActiveJobs()
+      setSchedulerActiveJobsValue(activeCount)
+      setSchedulerQueuedJobsValue(result.totalQueued)
+      setSchedulerGroupsQueuedValue(result.groupsWithQueuedWork)
+
+      // Record blocked jobs metrics
+      if (result.blockedByGlobalLimit > 0) {
+        getSchedulerJobsBlockedCounter().add(result.blockedByGlobalLimit, {
+          reason: "global_limit",
         })
+        const now = Date.now()
+        if (now - this.lastGlobalLimitLogAtMs >= 30000) {
+          this.lastGlobalLimitLogAtMs = now
+          logger.info("Jobs blocked by global concurrency limit", {
+            workerId: this.workerId,
+            blocked: result.blockedByGlobalLimit,
+            activeJobs: activeCount,
+            maxConcurrent: this.limits.maxTotal,
+          })
+        }
       }
+
+      if (result.blockedByGroupLimit > 0) {
+        getSchedulerJobsBlockedCounter().add(result.blockedByGroupLimit, {
+          reason: "group_limit",
+        })
+        const now = Date.now()
+        if (now - this.lastGroupLimitLogAtMs >= 30000) {
+          this.lastGroupLimitLogAtMs = now
+          logger.info("Jobs blocked by per-group concurrency limit", {
+            workerId: this.workerId,
+            blocked: result.blockedByGroupLimit,
+            maxPerGroup: this.limits.maxPerRunGroup,
+          })
+        }
+      }
+
+      const jobsToSpawn = await this.filterSpawnableJobs(result.jobs)
+
+      if (jobsToSpawn.length === 0) return
+
+      // Record spawned jobs metric
+      getSchedulerJobsClaimedCounter().add(jobsToSpawn.length)
+
+      logger.info("Spawning workers for jobs", {
+        workerId: this.workerId,
+        jobCount: jobsToSpawn.length,
+        jobIds: jobsToSpawn.map((j) => j.job.id),
+        totalQueued: result.totalQueued,
+        groupsWithQueuedWork: result.groupsWithQueuedWork,
+        blockedByGlobalLimit: result.blockedByGlobalLimit,
+        blockedByGroupLimit: result.blockedByGroupLimit,
+        spawner: this.spawnerType,
+      })
+
+      // Spawn workers for each job in parallel
+      await Promise.all(
+        jobsToSpawn.map((job) => this.spawnWorker(job)),
+      )
+    } finally {
+      this.activePollCount = Math.max(0, this.activePollCount - 1)
     }
-
-    const jobsToSpawn = await this.filterSpawnableJobs(result.jobs)
-
-    if (jobsToSpawn.length === 0) return
-
-    // Record spawned jobs metric
-    getSchedulerJobsClaimedCounter().add(jobsToSpawn.length)
-
-    logger.info("Spawning workers for jobs", {
-      workerId: this.workerId,
-      jobCount: jobsToSpawn.length,
-      jobIds: jobsToSpawn.map((j) => j.id),
-      totalQueued: result.totalQueued,
-      groupsWithQueuedWork: result.groupsWithQueuedWork,
-      blockedByGlobalLimit: result.blockedByGlobalLimit,
-      blockedByGroupLimit: result.blockedByGroupLimit,
-    })
-
-    // Spawn workers for each job in parallel
-    await Promise.all(
-      jobsToSpawn.map((job) => this.spawnWorker(job)),
-    )
   }
 
   /**
@@ -340,16 +392,32 @@ export class Scheduler {
    * The job stays "queued" - the worker will claim it via API.
    * If spawn fails, the job remains queued for the next poll cycle.
    */
-  private async spawnWorker(job: IacJob): Promise<void> {
+  private async spawnWorker(spawnableJob: SpawnableJob): Promise<void> {
+    const { job, orgId, runGroupId } = spawnableJob
+    const metricAttrs = {
+      job_type: job.jobType,
+      spawner: this.spawnerType,
+      dispatch_mode: "burst",
+    }
+
     try {
       this.recentSpawnAttempts.set(job.id, Date.now())
+      getSchedulerSpawnAttemptsCounter().add(1, metricAttrs)
+
+      const queueToSpawnMs = Date.now() - job.queuedAt.getTime()
+      getSchedulerQueueToSpawnHistogram().record(queueToSpawnMs, metricAttrs)
 
       // Generate job token for this worker
       const jobToken = await generateJobTokenForJob(job.id)
       if (!jobToken) {
+        getSchedulerSpawnFailuresCounter().add(1, {
+          ...metricAttrs,
+          reason: "job_token_generation",
+        })
         logger.error("Failed to generate job token", {
           workerId: this.workerId,
           jobId: job.id,
+          orgId,
         })
         return // Job stays queued, will be retried next poll
       }
@@ -359,13 +427,52 @@ export class Scheduler {
         jobId: job.id,
         jobType: job.jobType,
         deploymentId: job.deploymentId,
+        orgId,
+        runGroupId: runGroupId ?? undefined,
+        queueToSpawnMs,
+        spawner: this.spawnerType,
+        dispatchMode: "burst",
       })
 
+      const dispatchStart = performance.now()
       await this.spawner.spawn(job.id, jobToken)
+      const dispatchDurationMs = performance.now() - dispatchStart
+
+      getRunnerDispatchDurationHistogram().record(dispatchDurationMs, metricAttrs)
+      getRunnerTasksStartedCounter().add(1, metricAttrs)
+
+      try {
+        await markJobDispatched(job.id)
+      } catch (err) {
+        logger.error("Failed to record dispatched timestamp for job", {
+          workerId: this.workerId,
+          jobId: job.id,
+          orgId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
+
+      logger.info("Worker spawn accepted", {
+        workerId: this.workerId,
+        jobId: job.id,
+        jobType: job.jobType,
+        deploymentId: job.deploymentId,
+        orgId,
+        runGroupId: runGroupId ?? undefined,
+        spawner: this.spawnerType,
+        dispatchMode: "burst",
+        "duration.queue_to_spawn_ms": queueToSpawnMs,
+        "duration.dispatch_ms": dispatchDurationMs,
+      })
     } catch (err) {
+      getSchedulerSpawnFailuresCounter().add(1, {
+        ...metricAttrs,
+        reason: "spawn_error",
+      })
       logger.error("Failed to spawn worker for job", {
         workerId: this.workerId,
         jobId: job.id,
+        orgId,
         error: err instanceof Error ? err.message : String(err),
       })
 
@@ -383,21 +490,36 @@ export class Scheduler {
     return (Date.now() - lastAttemptAt) >= this.config.spawnBackoffMs
   }
 
-  private async filterSpawnableJobs(jobs: IacJob[]): Promise<IacJob[]> {
-    const allowed: IacJob[] = []
+  private async filterSpawnableJobs(jobs: IacJob[]): Promise<SpawnableJob[]> {
+    const allowed: SpawnableJob[] = []
 
     for (const job of jobs) {
       if (!this.shouldAttemptSpawn(job.id)) {
+        getSchedulerSpawnSuppressedCounter().add(1, {
+          reason: "spawn_backoff",
+          job_type: job.jobType,
+          spawner: this.spawnerType,
+        })
         continue
       }
 
       const blockedUntil = this.blockedJobs.get(job.id)
       if (blockedUntil && blockedUntil > Date.now()) {
+        getSchedulerSpawnSuppressedCounter().add(1, {
+          reason: "blocked_waiting_for_connections",
+          job_type: job.jobType,
+          spawner: this.spawnerType,
+        })
         continue
       }
 
       const jobContext = await getJobWithContext(job.id)
       if (!jobContext?.deployment) {
+        getSchedulerSpawnSuppressedCounter().add(1, {
+          reason: "missing_job_context",
+          job_type: job.jobType,
+          spawner: this.spawnerType,
+        })
         continue
       }
 
@@ -414,9 +536,15 @@ export class Scheduler {
 
         this.blockedJobs.set(job.id, Date.now() + 30_000)
         await markJobBlocked(job.id, reason)
+        getSchedulerSpawnSuppressedCounter().add(1, {
+          reason: "connections_not_ready",
+          job_type: job.jobType,
+          spawner: this.spawnerType,
+        })
         logger.info("Job remains queued waiting for connections", {
           jobId: job.id,
           deploymentId: job.deploymentId,
+          orgId: jobContext.deployment.orgId,
           missingProviders: resolution.missingProviders,
           conflictProviders: resolution.conflictProviders,
         })
@@ -425,7 +553,11 @@ export class Scheduler {
 
       await clearJobBlocked(job.id)
 
-      allowed.push(job)
+      allowed.push({
+        job,
+        orgId: jobContext.deployment.orgId,
+        runGroupId: jobContext.deployment.runGroupId,
+      })
     }
 
     return allowed
@@ -718,7 +850,7 @@ export async function getScheduler(): Promise<Scheduler> {
     staleCheckIntervalMs: isProduction ? 60000 : 30000,
     maxConcurrentJobs,
     maxJobsPerRunGroup,
-  })
+  }, spawnerType)
 
   logger.info("Scheduler configured", {
     maxConcurrentJobs,
