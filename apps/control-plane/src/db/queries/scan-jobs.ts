@@ -1,4 +1,4 @@
-import { and, eq, lt } from "drizzle-orm"
+import { and, eq, lt, or, isNull } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { scanJobs } from "../schema.ts"
@@ -193,7 +193,9 @@ export async function findScanJobById(id: string): Promise<ScanJob | undefined> 
 }
 
 /**
- * Find stale scan jobs (running but no heartbeat within threshold).
+ * Find stale scan jobs:
+ * - Running jobs with no heartbeat within threshold
+ * - Queued jobs that were never claimed within threshold (spawner failure)
  */
 export async function findStaleScanJobs(thresholdMs: number): Promise<ScanJob[]> {
   return withDbSpan("select", "scan_jobs", async () => {
@@ -203,9 +205,18 @@ export async function findStaleScanJobs(thresholdMs: number): Promise<ScanJob[]>
       .select()
       .from(scanJobs)
       .where(
-        and(
-          eq(scanJobs.status, "running"),
-          lt(scanJobs.lastHeartbeat, cutoff),
+        or(
+          // Running but heartbeat went stale
+          and(
+            eq(scanJobs.status, "running"),
+            lt(scanJobs.lastHeartbeat, cutoff),
+          ),
+          // Queued but never claimed (no heartbeat, queued before cutoff)
+          and(
+            eq(scanJobs.status, "queued"),
+            isNull(scanJobs.lastHeartbeat),
+            lt(scanJobs.queuedAt, cutoff),
+          ),
         ),
       )
   })
