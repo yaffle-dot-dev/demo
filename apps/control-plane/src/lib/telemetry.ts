@@ -1,4 +1,12 @@
-import { trace, metrics, context, SpanStatusCode } from "@opentelemetry/api"
+import {
+  context,
+  diag,
+  DiagConsoleLogger,
+  DiagLogLevel,
+  metrics,
+  SpanStatusCode,
+  trace,
+} from "@opentelemetry/api"
 import type { Span, SpanOptions, Attributes } from "@opentelemetry/api"
 import { SeverityNumber } from "@opentelemetry/api-logs"
 import type { Logger as OTelLogger } from "@opentelemetry/api-logs"
@@ -10,10 +18,162 @@ const SERVICE_VERSION = "0.0.1"
 // SDK providers -- set by initTelemetry(), null in tests / when OTLP is off
 // ---------------------------------------------------------------------------
 
-let tracerProviderInstance: { shutdown(): Promise<void> } | null = null
-let meterProviderInstance: { shutdown(): Promise<void> } | null = null
-let loggerProviderInstance: { shutdown(): Promise<void> } | null = null
+type FlushableProvider = {
+  shutdown(): Promise<void>
+  forceFlush?(): Promise<void>
+}
+
+let tracerProviderInstance: FlushableProvider | null = null
+let meterProviderInstance: FlushableProvider | null = null
+let loggerProviderInstance: FlushableProvider | null = null
 let otelLogger: OTelLogger | null = null
+let telemetryForceFlushTimer: ReturnType<typeof setInterval> | null = null
+let telemetrySummaryTimer: ReturnType<typeof setInterval> | null = null
+
+const DEFAULT_LOCAL_METRIC_EXPORT_INTERVAL_MS = 5_000
+const DEFAULT_PROD_METRIC_EXPORT_INTERVAL_MS = 30_000
+const DEFAULT_LOCAL_FORCE_FLUSH_INTERVAL_MS = 5_000
+const DEFAULT_LOCAL_SUMMARY_INTERVAL_MS = 30_000
+
+const telemetryStats = {
+  logsEmitted: 0,
+  logsBySeverity: {
+    INFO: 0,
+    WARN: 0,
+    ERROR: 0,
+    DEBUG: 0,
+  },
+  logsEmittedSinceSummary: 0,
+  logsBySeveritySinceSummary: {
+    INFO: 0,
+    WARN: 0,
+    ERROR: 0,
+    DEBUG: 0,
+  },
+  forceFlushCount: 0,
+  forceFlushFailures: 0,
+  forceFlushCountSinceSummary: 0,
+  forceFlushFailuresSinceSummary: 0,
+  lastForceFlushReason: null as string | null,
+  lastForceFlushDurationMs: null as number | null,
+  lastForceFlushError: null as string | null,
+}
+
+function isLocalDevTelemetryMode(): boolean {
+  return process.env.NODE_ENV !== "production"
+}
+
+function parsePositiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (!raw) {
+    return fallback
+  }
+
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    console.warn(`[telemetry] invalid ${name}=${raw}, using ${fallback}`)
+    return fallback
+  }
+
+  return parsed
+}
+
+function resolveDiagLogLevel(raw: string | undefined): DiagLogLevel {
+  switch ((raw ?? "").toLowerCase()) {
+    case "all":
+      return DiagLogLevel.ALL
+    case "debug":
+      return DiagLogLevel.DEBUG
+    case "info":
+      return DiagLogLevel.INFO
+    case "warn":
+      return DiagLogLevel.WARN
+    case "error":
+      return DiagLogLevel.ERROR
+    case "none":
+      return DiagLogLevel.NONE
+    default:
+      return isLocalDevTelemetryMode() ? DiagLogLevel.INFO : DiagLogLevel.WARN
+  }
+}
+
+function extractAxiomDataset(headers: string | undefined): string | null {
+  if (!headers) {
+    return null
+  }
+
+  for (const part of headers.split(",")) {
+    const [rawKey, ...rawValue] = part.split("=")
+    if (rawKey?.trim().toLowerCase() === "x-axiom-dataset") {
+      const value = rawValue.join("=").trim()
+      return value || null
+    }
+  }
+
+  return null
+}
+
+function clearTelemetryTimers(): void {
+  if (telemetryForceFlushTimer) {
+    clearInterval(telemetryForceFlushTimer)
+    telemetryForceFlushTimer = null
+  }
+
+  if (telemetrySummaryTimer) {
+    clearInterval(telemetrySummaryTimer)
+    telemetrySummaryTimer = null
+  }
+}
+
+async function forceFlushTelemetry(reason: string, logSuccess: boolean = false): Promise<void> {
+  const start = performance.now()
+  const results = await Promise.allSettled([
+    tracerProviderInstance?.forceFlush?.(),
+    meterProviderInstance?.forceFlush?.(),
+    loggerProviderInstance?.forceFlush?.(),
+  ])
+  const durationMs = performance.now() - start
+  const failures = results.filter((result) => result.status === "rejected")
+
+  telemetryStats.forceFlushCount++
+  telemetryStats.forceFlushCountSinceSummary++
+  telemetryStats.lastForceFlushReason = reason
+  telemetryStats.lastForceFlushDurationMs = durationMs
+  telemetryStats.lastForceFlushError = null
+
+  if (failures.length > 0) {
+    telemetryStats.forceFlushFailures++
+    telemetryStats.forceFlushFailuresSinceSummary++
+    telemetryStats.lastForceFlushError = failures
+      .map((failure) => String(failure.status === "rejected" ? failure.reason : ""))
+      .join(" | ")
+
+    console.warn(
+      `[telemetry] force flush failed: reason=${reason} duration_ms=${durationMs.toFixed(1)} failures=${telemetryStats.lastForceFlushError}`,
+    )
+    return
+  }
+
+  if (logSuccess) {
+    console.log(
+      `[telemetry] force flush ok: reason=${reason} duration_ms=${durationMs.toFixed(1)} logs_emitted=${telemetryStats.logsEmitted}`,
+    )
+  }
+}
+
+function emitTelemetrySummary(reason: string): void {
+  console.log(
+    `[telemetry] summary: reason=${reason} env=${process.env.YAFFLE_ENV ?? "development"} logs_since_summary=${telemetryStats.logsEmittedSinceSummary} info=${telemetryStats.logsBySeveritySinceSummary.INFO} warn=${telemetryStats.logsBySeveritySinceSummary.WARN} error=${telemetryStats.logsBySeveritySinceSummary.ERROR} debug=${telemetryStats.logsBySeveritySinceSummary.DEBUG} force_flushes=${telemetryStats.forceFlushCountSinceSummary} force_flush_failures=${telemetryStats.forceFlushFailuresSinceSummary} last_force_flush_reason=${telemetryStats.lastForceFlushReason ?? "none"} last_force_flush_duration_ms=${telemetryStats.lastForceFlushDurationMs?.toFixed(1) ?? "n/a"} last_force_flush_error=${telemetryStats.lastForceFlushError ?? "none"}`,
+  )
+
+  telemetryStats.logsEmittedSinceSummary = 0
+  telemetryStats.logsBySeveritySinceSummary.INFO = 0
+  telemetryStats.logsBySeveritySinceSummary.WARN = 0
+  telemetryStats.logsBySeveritySinceSummary.ERROR = 0
+  telemetryStats.logsBySeveritySinceSummary.DEBUG = 0
+  telemetryStats.forceFlushCountSinceSummary = 0
+  telemetryStats.forceFlushFailuresSinceSummary = 0
+}
 
 /**
  * Initialize the OTel SDK with OTLP exporters.
@@ -27,7 +187,15 @@ export async function initTelemetry(): Promise<void> {
     return
   }
 
+  if (tracerProviderInstance || meterProviderInstance || loggerProviderInstance) {
+    console.warn("[telemetry] initTelemetry called after providers were already initialized, skipping")
+    return
+  }
+
   try {
+    const diagLevel = resolveDiagLogLevel(process.env.OTEL_LOG_LEVEL)
+    diag.setLogger(new DiagConsoleLogger(), diagLevel)
+
     const { resourceFromAttributes } = await import("@opentelemetry/resources")
     const {
       ATTR_SERVICE_NAME,
@@ -41,6 +209,20 @@ export async function initTelemetry(): Promise<void> {
     const { LoggerProvider, BatchLogRecordProcessor } = await import("@opentelemetry/sdk-logs")
     const { OTLPLogExporter } = await import("@opentelemetry/exporter-logs-otlp-proto")
 
+    const metricExportIntervalMillis = parsePositiveIntEnv(
+      "OTEL_METRIC_EXPORT_INTERVAL_MS",
+      isLocalDevTelemetryMode() ? DEFAULT_LOCAL_METRIC_EXPORT_INTERVAL_MS : DEFAULT_PROD_METRIC_EXPORT_INTERVAL_MS,
+    )
+    const forceFlushIntervalMillis = parsePositiveIntEnv(
+      "OTEL_FORCE_FLUSH_INTERVAL_MS",
+      isLocalDevTelemetryMode() ? DEFAULT_LOCAL_FORCE_FLUSH_INTERVAL_MS : 0,
+    )
+    const localSummaryIntervalMillis = parsePositiveIntEnv(
+      "OTEL_LOCAL_SUMMARY_INTERVAL_MS",
+      isLocalDevTelemetryMode() ? DEFAULT_LOCAL_SUMMARY_INTERVAL_MS : 0,
+    )
+    const dataset = extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_HEADERS)
+
     const resource = resourceFromAttributes({
       [ATTR_SERVICE_NAME]: SERVICE_NAME,
       [ATTR_SERVICE_VERSION]: SERVICE_VERSION,
@@ -51,7 +233,11 @@ export async function initTelemetry(): Promise<void> {
     const traceExporter = new OTLPTraceExporter()
     const tracerProvider = new BasicTracerProvider({
       resource,
-      spanProcessors: [new BatchSpanProcessor(traceExporter)],
+       spanProcessors: [new BatchSpanProcessor(traceExporter, {
+         scheduledDelayMillis: isLocalDevTelemetryMode() ? 1_000 : undefined,
+         maxQueueSize: isLocalDevTelemetryMode() ? 4_096 : undefined,
+         maxExportBatchSize: isLocalDevTelemetryMode() ? 512 : undefined,
+       })],
     })
     // Register as global tracer provider via the API
     trace.setGlobalTracerProvider(tracerProvider)
@@ -64,7 +250,7 @@ export async function initTelemetry(): Promise<void> {
       readers: [
         new PeriodicExportingMetricReader({
           exporter: metricExporter,
-          exportIntervalMillis: 30_000,
+          exportIntervalMillis: metricExportIntervalMillis,
         }),
       ],
     })
@@ -76,12 +262,30 @@ export async function initTelemetry(): Promise<void> {
     const logExporter = new OTLPLogExporter()
     const logProvider = new LoggerProvider({
       resource,
-      processors: [new BatchLogRecordProcessor(logExporter)],
+      processors: [new BatchLogRecordProcessor(logExporter, {
+        scheduledDelayMillis: isLocalDevTelemetryMode() ? 1_000 : undefined,
+        maxQueueSize: isLocalDevTelemetryMode() ? 4_096 : undefined,
+        maxExportBatchSize: isLocalDevTelemetryMode() ? 512 : undefined,
+      })],
     })
     loggerProviderInstance = logProvider
     otelLogger = logProvider.getLogger(SERVICE_NAME, SERVICE_VERSION)
 
-    console.log(`[telemetry] initialized: endpoint=${endpoint}`)
+    if (forceFlushIntervalMillis > 0) {
+      telemetryForceFlushTimer = setInterval(() => {
+        void forceFlushTelemetry("interval")
+      }, forceFlushIntervalMillis)
+    }
+
+    if (localSummaryIntervalMillis > 0) {
+      telemetrySummaryTimer = setInterval(() => {
+        emitTelemetrySummary("interval")
+      }, localSummaryIntervalMillis)
+    }
+
+    console.log(
+      `[telemetry] initialized: endpoint=${endpoint} dataset=${dataset ?? "unknown"} env=${process.env.YAFFLE_ENV ?? "development"} metric_interval_ms=${metricExportIntervalMillis} force_flush_interval_ms=${forceFlushIntervalMillis} summary_interval_ms=${localSummaryIntervalMillis} diag_level=${DiagLogLevel[diagLevel]}`,
+    )
   } catch (err) {
     console.warn("[telemetry] failed to initialize OTel SDK:", err)
   }
@@ -854,19 +1058,34 @@ function emitLog(
 ): void {
   // Emit OTel log record if SDK is initialized
   if (otelLogger) {
-    otelLogger.emit({
-      severityNumber,
-      severityText,
-      body,
-      attributes: attrs,
-      context: context.active(),
-    })
+    try {
+      otelLogger.emit({
+        severityNumber,
+        severityText,
+        body,
+        attributes: attrs,
+        context: context.active(),
+      })
+    } catch (err) {
+      console.warn(
+        `[telemetry] otelLogger.emit failed: severity=${severityText} body=${body} error=${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
   }
 
+  telemetryStats.logsEmitted++
+  telemetryStats.logsEmittedSinceSummary++
+  telemetryStats.logsBySeverity[severityText as keyof typeof telemetryStats.logsBySeverity]++
+  telemetryStats.logsBySeveritySinceSummary[severityText as keyof typeof telemetryStats.logsBySeveritySinceSummary]++
+
   // Always write to console for local dev / container stdout
-  const prefix = attrs
-    ? `${JSON.stringify(attrs)} `
-    : ""
+  const localLogMeta = {
+    ts: new Date().toISOString(),
+    env: process.env.YAFFLE_ENV ?? "development",
+    service: SERVICE_NAME,
+    ...attrs,
+  }
+  const prefix = `${JSON.stringify(localLogMeta)} `
   switch (severityText) {
     case "ERROR":
       console.error(`[${severityText}] ${prefix}${body}`)
@@ -949,6 +1168,9 @@ export async function withDbSpan<T>(
  * Graceful shutdown -- flush all pending telemetry.
  */
 export async function shutdownTelemetry(): Promise<void> {
+  clearTelemetryTimers()
+  await forceFlushTelemetry("shutdown", true)
+  emitTelemetrySummary("shutdown")
   await Promise.allSettled([
     tracerProviderInstance?.shutdown(),
     meterProviderInstance?.shutdown(),
