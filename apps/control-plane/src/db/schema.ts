@@ -374,9 +374,13 @@ export const iacJobs = pgTable(
     // Worker tracking
     workerId: text("worker_id"),
     lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),
+    spawnLeaseToken: text("spawn_lease_token"),
+    spawnLeaseHolder: text("spawn_lease_holder"),
+    spawnLeaseExpiresAt: timestamp("spawn_lease_expires_at", { withTimezone: true }),
     // Timing
     queuedAt: timestamp("queued_at", { withTimezone: true }).defaultNow().notNull(),
     dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
+    lastSpawnAttemptAt: timestamp("last_spawn_attempt_at", { withTimezone: true }),
     startedAt: timestamp("started_at", { withTimezone: true }),
     blockedAt: timestamp("blocked_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
@@ -386,6 +390,7 @@ export const iacJobs = pgTable(
     errorMessage: text("error_message"),
     // Retry tracking
     attempts: integer("attempts").default(0).notNull(),
+    spawnAttempts: integer("spawn_attempts").default(0).notNull(),
     maxAttempts: integer("max_attempts").default(3).notNull(),
   },
   (t) => [
@@ -393,6 +398,7 @@ export const iacJobs = pgTable(
     // - Filters on status='queued'
     // - Orders by job_type (priority) then queued_at
     index("iac_jobs_queue_priority_idx").on(t.status, t.jobType, t.queuedAt),
+    index("iac_jobs_spawn_lease_idx").on(t.status, t.spawnLeaseExpiresAt),
   ],
 )
 

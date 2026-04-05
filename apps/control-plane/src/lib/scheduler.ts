@@ -23,6 +23,7 @@
 import { randomUUID } from "node:crypto"
 
 import {
+  acquireJobSpawnLease,
   findQueuedJobsForSpawning,
   countActiveJobs,
   findStaleJobs,
@@ -31,6 +32,7 @@ import {
   markJobDispatched,
   markJobBlocked,
   clearJobBlocked,
+  releaseJobSpawnLease,
   type ConcurrencyLimits,
   type IacJob,
 } from "../db/queries/iac-jobs.ts"
@@ -121,6 +123,7 @@ interface SpawnableJob {
   job: IacJob
   orgId: string
   runGroupId: string | null
+  leaseToken: string
 }
 
 export class Scheduler {
@@ -135,7 +138,6 @@ export class Scheduler {
   private autoApplyTimer: ReturnType<typeof setInterval> | null = null
   private running = false
   private activePollCount = 0
-  private readonly recentSpawnAttempts = new Map<string, number>()
   private readonly blockedJobs = new Map<string, number>()
   private lastGlobalLimitLogAtMs = 0
   private lastGroupLimitLogAtMs = 0
@@ -315,6 +317,7 @@ export class Scheduler {
         workerId: this.workerId,
         activePollCount: this.activePollCount,
       })
+      return
     }
 
     this.activePollCount++
@@ -330,7 +333,6 @@ export class Scheduler {
         spawner: this.spawnerType,
       })
 
-      this.pruneRecentSpawnAttempts()
       this.pruneBlockedJobs()
 
       // Update gauge metrics
@@ -405,7 +407,7 @@ export class Scheduler {
    * If spawn fails, the job remains queued for the next poll cycle.
    */
   private async spawnWorker(spawnableJob: SpawnableJob): Promise<void> {
-    const { job, orgId, runGroupId } = spawnableJob
+    const { job, orgId, runGroupId, leaseToken } = spawnableJob
     const metricAttrs = {
       job_type: job.jobType,
       spawner: this.spawnerType,
@@ -413,15 +415,15 @@ export class Scheduler {
     }
 
     try {
-      this.recentSpawnAttempts.set(job.id, Date.now())
       getSchedulerSpawnAttemptsCounter().add(1, metricAttrs)
 
       const queueToSpawnMs = Date.now() - job.queuedAt.getTime()
       getSchedulerQueueToSpawnHistogram().record(queueToSpawnMs, metricAttrs)
 
       // Generate job token for this worker
-      const jobToken = await generateJobTokenForJob(job.id)
+      const jobToken = await generateJobTokenForJob(job.id, leaseToken)
       if (!jobToken) {
+        await releaseJobSpawnLease(job.id, leaseToken)
         getSchedulerSpawnFailuresCounter().add(1, {
           ...metricAttrs,
           reason: "job_token_generation",
@@ -454,7 +456,7 @@ export class Scheduler {
       getRunnerTasksStartedCounter().add(1, metricAttrs)
 
       try {
-        await markJobDispatched(job.id)
+        await markJobDispatched(job.id, leaseToken)
       } catch (err) {
         logger.error("Failed to record dispatched timestamp for job", {
           workerId: this.workerId,
@@ -488,33 +490,16 @@ export class Scheduler {
         error: err instanceof Error ? err.message : String(err),
       })
 
-      // Job stays "queued" - will be picked up on next poll cycle
-      // This is the key improvement: no stuck "dispatched" state
+      // Keep the lease until expiry on ambiguous spawn errors. This avoids
+      // duplicate dispatch when the underlying runner start may have succeeded
+      // but the control plane did not get a clean acknowledgement.
     }
-  }
-
-  private shouldAttemptSpawn(jobId: string): boolean {
-    const lastAttemptAt = this.recentSpawnAttempts.get(jobId)
-    if (!lastAttemptAt) {
-      return true
-    }
-
-    return (Date.now() - lastAttemptAt) >= this.config.spawnBackoffMs
   }
 
   private async filterSpawnableJobs(jobs: IacJob[]): Promise<SpawnableJob[]> {
     const allowed: SpawnableJob[] = []
 
     for (const job of jobs) {
-      if (!this.shouldAttemptSpawn(job.id)) {
-        getSchedulerSpawnSuppressedCounter().add(1, {
-          reason: "spawn_backoff",
-          job_type: job.jobType,
-          spawner: this.spawnerType,
-        })
-        continue
-      }
-
       const blockedUntil = this.blockedJobs.get(job.id)
       if (blockedUntil && blockedUntil > Date.now()) {
         getSchedulerSpawnSuppressedCounter().add(1, {
@@ -535,6 +520,20 @@ export class Scheduler {
         continue
       }
 
+      const lease = await acquireJobSpawnLease(
+        job.id,
+        this.workerId,
+        this.config.spawnBackoffMs,
+      )
+      if (!lease.acquired || !lease.leaseToken) {
+        getSchedulerSpawnSuppressedCounter().add(1, {
+          reason: "active_spawn_lease",
+          job_type: job.jobType,
+          spawner: this.spawnerType,
+        })
+        continue
+      }
+
       const resolution = await resolveExecutionCredentialsForDeployment(jobContext.deployment)
       if (!resolution.ok) {
         const parts: string[] = []
@@ -548,6 +547,7 @@ export class Scheduler {
 
         this.blockedJobs.set(job.id, Date.now() + 30_000)
         await markJobBlocked(job.id, reason)
+        await releaseJobSpawnLease(job.id, lease.leaseToken)
         getSchedulerSpawnSuppressedCounter().add(1, {
           reason: "connections_not_ready",
           job_type: job.jobType,
@@ -569,19 +569,11 @@ export class Scheduler {
         job,
         orgId: jobContext.deployment.orgId,
         runGroupId: jobContext.deployment.runGroupId,
+        leaseToken: lease.leaseToken,
       })
     }
 
     return allowed
-  }
-
-  private pruneRecentSpawnAttempts(): void {
-    const cutoff = Date.now() - (this.config.spawnBackoffMs * 10)
-    for (const [jobId, timestamp] of this.recentSpawnAttempts.entries()) {
-      if (timestamp < cutoff) {
-        this.recentSpawnAttempts.delete(jobId)
-      }
-    }
   }
 
   private pruneBlockedJobs(): void {
@@ -636,7 +628,10 @@ export class Scheduler {
     const { findStaleScanJobs, failScanJob } = await import("../db/queries/scan-jobs.ts")
     const { updateRunGroupStatus } = await import("../db/queries/run-groups.ts")
 
-    const staleScanJobs = await findStaleScanJobs(this.config.staleThresholdMs)
+    // Scans should complete in seconds — use 60s threshold so users don't
+    // stare at a spinner. See YAF-131 for the real event-driven fix.
+    const scanStaleThresholdMs = Math.min(this.config.staleThresholdMs, 60_000)
+    const staleScanJobs = await findStaleScanJobs(scanStaleThresholdMs)
 
     if (staleScanJobs.length === 0) return
 

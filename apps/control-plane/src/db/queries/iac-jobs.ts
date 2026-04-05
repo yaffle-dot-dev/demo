@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import { and, desc, eq, inArray, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
@@ -23,6 +25,8 @@ export type NewIacJob = typeof iacJobs.$inferInsert
 // Infer types from the enum definitions for compile-time safety
 export type IacJobType = (typeof iacJobTypeEnum.enumValues)[number]
 export type IacJobStatus = (typeof iacJobStatusEnum.enumValues)[number]
+
+const SPAWN_LEASE_AVAILABLE_SQL = sql`${iacJobs.spawnLeaseExpiresAt} IS NULL OR ${iacJobs.spawnLeaseExpiresAt} < NOW()`
 
 /**
  * Create a new IaC job in the queue.
@@ -239,20 +243,105 @@ export async function updateJobEcsTask(
   })
 }
 
+export interface AcquireJobSpawnLeaseResult {
+  acquired: boolean
+  leaseToken?: string
+  leaseExpiresAt?: Date
+}
+
+/**
+ * Acquire a short-lived spawn lease for a queued job.
+ *
+ * This prevents multiple scheduler polls from spawning duplicate runners for the
+ * same queued job before any runner claims it.
+ */
+export async function acquireJobSpawnLease(
+  jobId: string,
+  holderId: string,
+  ttlMs: number,
+): Promise<AcquireJobSpawnLeaseResult> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    const leaseToken = randomUUID()
+    const leaseExpiresAt = new Date(Date.now() + ttlMs)
+
+    const rows = await db
+      .update(iacJobs)
+      .set({
+        spawnLeaseToken: leaseToken,
+        spawnLeaseHolder: holderId,
+        spawnLeaseExpiresAt: leaseExpiresAt,
+        lastSpawnAttemptAt: new Date(),
+        spawnAttempts: sql`${iacJobs.spawnAttempts} + 1`,
+      })
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          eq(iacJobs.status, "queued"),
+          sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
+        ),
+      )
+      .returning({ id: iacJobs.id })
+
+    if (rows.length === 0) {
+      return { acquired: false }
+    }
+
+    return {
+      acquired: true,
+      leaseToken,
+      leaseExpiresAt,
+    }
+  })
+}
+
+/**
+ * Release a spawn lease after a fast spawn failure.
+ */
+export async function releaseJobSpawnLease(
+  jobId: string,
+  leaseToken: string,
+): Promise<void> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    await db
+      .update(iacJobs)
+      .set({
+        spawnLeaseToken: null,
+        spawnLeaseHolder: null,
+        spawnLeaseExpiresAt: null,
+      })
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          eq(iacJobs.status, "queued"),
+          eq(iacJobs.spawnLeaseToken, leaseToken),
+        ),
+      )
+  })
+}
+
 /**
  * Record that a job was successfully dispatched to a runner.
  *
  * Jobs remain in `queued` state until a runner claims them, but this timestamp
  * lets us measure startup and task-lifetime proxy metrics.
  */
-export async function markJobDispatched(jobId: string): Promise<void> {
+export async function markJobDispatched(
+  jobId: string,
+  leaseToken: string,
+): Promise<void> {
   return withDbSpan("update", "iac_jobs", async () => {
     await db
       .update(iacJobs)
       .set({
         dispatchedAt: new Date(),
       })
-      .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "queued")))
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          eq(iacJobs.status, "queued"),
+          eq(iacJobs.spawnLeaseToken, leaseToken),
+        ),
+      )
   })
 }
 
@@ -672,7 +761,7 @@ export async function getQueuedJobsByRunGroup(): Promise<Map<string, IacJob[]>> 
       })
       .from(iacJobs)
       .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
-      .where(eq(iacJobs.status, "queued"))
+      .where(and(eq(iacJobs.status, "queued"), sql`(${SPAWN_LEASE_AVAILABLE_SQL})`))
       .orderBy(iacJobs.queuedAt)
 
     const map = new Map<string, IacJob[]>()
@@ -703,6 +792,7 @@ export async function getQueuedJobsByRunGroup(): Promise<Map<string, IacJob[]>> 
 export async function claimJobForRunner(
   jobId: string,
   workerId: string,
+  spawnLeaseToken?: string,
 ): Promise<{ claimed: boolean; job?: IacJob; queueWaitMs?: number }> {
   return withDbSpan("update", "iac_jobs", async () => {
     const rows = await db
@@ -712,12 +802,21 @@ export async function claimJobForRunner(
         workerId,
         startedAt: new Date(),
         lastHeartbeat: new Date(),
+        spawnLeaseToken: null,
+        spawnLeaseHolder: null,
+        spawnLeaseExpiresAt: null,
         attempts: sql`${iacJobs.attempts} + 1`,
       })
       .where(
         and(
           eq(iacJobs.id, jobId),
           eq(iacJobs.status, "queued"), // Only claim if still queued
+          spawnLeaseToken
+            ? and(
+                eq(iacJobs.spawnLeaseToken, spawnLeaseToken),
+                sql`${iacJobs.spawnLeaseExpiresAt} > NOW()`,
+              )
+            : sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
         ),
       )
       .returning()
@@ -1012,7 +1111,7 @@ export async function findQueuedJobsForSpawning(
       const queuedResult = await db
         .select({ count: sql<number>`count(*)::int` })
         .from(iacJobs)
-        .where(eq(iacJobs.status, "queued"))
+        .where(and(eq(iacJobs.status, "queued"), sql`(${SPAWN_LEASE_AVAILABLE_SQL})`))
 
       return {
         jobs: [],
@@ -1031,7 +1130,7 @@ export async function findQueuedJobsForSpawning(
       })
       .from(iacJobs)
       .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
-      .where(eq(iacJobs.status, "queued"))
+      .where(and(eq(iacJobs.status, "queued"), sql`(${SPAWN_LEASE_AVAILABLE_SQL})`))
       .groupBy(workspaceDeployments.runGroupId)
 
     if (groupsWithWork.length === 0) {
@@ -1084,6 +1183,7 @@ export async function findQueuedJobsForSpawning(
         .where(
           and(
             eq(iacJobs.status, "queued"),
+            sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
             runGroupId
               ? eq(workspaceDeployments.runGroupId, runGroupId)
               : sql`${workspaceDeployments.runGroupId} IS NULL`,

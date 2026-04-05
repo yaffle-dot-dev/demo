@@ -12,6 +12,7 @@ export interface JobTokenPayload extends JWTPayload {
   job_id: string
   deployment_id: string
   org_id: string
+  spawn_lease_token?: string
 }
 
 /**
@@ -42,6 +43,7 @@ export async function generateJobToken(
   jobId: string,
   deploymentId: string,
   orgId: string,
+  spawnLeaseToken?: string,
   ttlHours: number = 4,
 ): Promise<string> {
   const secret = getJwtSecret()
@@ -50,6 +52,7 @@ export async function generateJobToken(
     job_id: jobId,
     deployment_id: deploymentId,
     org_id: orgId,
+    spawn_lease_token: spawnLeaseToken,
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(`job:${jobId}`)
@@ -139,7 +142,8 @@ export async function verifyJobToken(token: string): Promise<JobTokenPayload | n
       !payload.sub?.startsWith("job:") ||
       typeof payload.job_id !== "string" ||
       typeof payload.deployment_id !== "string" ||
-      typeof payload.org_id !== "string"
+      typeof payload.org_id !== "string" ||
+      (payload.spawn_lease_token !== undefined && typeof payload.spawn_lease_token !== "string")
     ) {
       log.debug("Job token validation failed: missing required fields", {
         hasSub: !!payload.sub,
@@ -147,6 +151,7 @@ export async function verifyJobToken(token: string): Promise<JobTokenPayload | n
         hasJobId: typeof payload.job_id === "string",
         hasDeploymentId: typeof payload.deployment_id === "string",
         hasOrgId: typeof payload.org_id === "string",
+        hasValidSpawnLeaseToken: payload.spawn_lease_token === undefined || typeof payload.spawn_lease_token === "string",
       })
       return null
     }

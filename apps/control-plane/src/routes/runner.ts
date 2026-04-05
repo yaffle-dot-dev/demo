@@ -224,7 +224,7 @@ runnerRoute.post("/claim", async (c) => {
   }
 
   // Attempt atomic claim
-  const result = await claimJobForRunner(jobId, workerId)
+  const result = await claimJobForRunner(jobId, workerId, auth.jobToken.spawn_lease_token)
 
   if (!result.claimed) {
     // Job was already claimed or doesn't exist

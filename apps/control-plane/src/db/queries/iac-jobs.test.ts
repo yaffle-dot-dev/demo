@@ -22,6 +22,20 @@ interface MockJob {
   jobType: string
   queuedAt: string
   runGroupId: string
+  spawnLeaseExpiresAt?: string | null
+}
+
+function filterSpawnLeaseEligibleJobs(
+  jobs: MockJob[],
+  now: Date,
+): MockJob[] {
+  return jobs.filter((job) => {
+    if (!job.spawnLeaseExpiresAt) {
+      return true
+    }
+
+    return new Date(job.spawnLeaseExpiresAt).getTime() < now.getTime()
+  })
 }
 
 function sortJobsByPriority(jobs: MockJob[]): MockJob[] {
@@ -159,6 +173,64 @@ describe("round-robin with group-local priority", () => {
 
     return claimed
   }
+
+  test("active spawn leases suppress jobs from scheduling", () => {
+    const jobsByGroup = new Map<string, MockJob[]>([
+      ["group-a", filterSpawnLeaseEligibleJobs([
+        {
+          id: "a-plan-leased",
+          jobType: "plan",
+          queuedAt: "2024-01-01T00:00:00Z",
+          runGroupId: "group-a",
+          spawnLeaseExpiresAt: "2024-01-01T00:10:00Z",
+        },
+        {
+          id: "a-plan-ready",
+          jobType: "plan",
+          queuedAt: "2024-01-01T00:01:00Z",
+          runGroupId: "group-a",
+          spawnLeaseExpiresAt: null,
+        },
+      ], new Date("2024-01-01T00:05:00Z"))],
+      ["group-b", filterSpawnLeaseEligibleJobs([
+        {
+          id: "b-apply-ready",
+          jobType: "apply",
+          queuedAt: "2024-01-01T00:02:00Z",
+          runGroupId: "group-b",
+          spawnLeaseExpiresAt: null,
+        },
+      ], new Date("2024-01-01T00:05:00Z"))],
+    ])
+
+    const claimed = simulateRoundRobinClaim(jobsByGroup, 3)
+
+    expect(claimed).toEqual([
+      "a-plan-ready",
+      "b-apply-ready",
+    ])
+  })
+
+  test("expired spawn leases make jobs eligible again", () => {
+    const jobs = filterSpawnLeaseEligibleJobs([
+      {
+        id: "plan-expired-lease",
+        jobType: "plan",
+        queuedAt: "2024-01-01T00:00:00Z",
+        runGroupId: "group-a",
+        spawnLeaseExpiresAt: "2024-01-01T00:01:00Z",
+      },
+      {
+        id: "plan-active-lease",
+        jobType: "plan",
+        queuedAt: "2024-01-01T00:01:00Z",
+        runGroupId: "group-a",
+        spawnLeaseExpiresAt: "2024-01-01T00:10:00Z",
+      },
+    ], new Date("2024-01-01T00:05:00Z"))
+
+    expect(jobs.map((job) => job.id)).toEqual(["plan-expired-lease"])
+  })
 
   test("applies from group B do not skip plans from group A", () => {
     const jobsByGroup = new Map<string, MockJob[]>([

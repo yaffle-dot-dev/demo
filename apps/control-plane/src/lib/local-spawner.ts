@@ -172,12 +172,15 @@ export function createLocalSpawner(config?: LocalSpawnerConfig): IacEngineSpawne
  *
  * This is called by the scheduler before spawning a worker.
  */
-export async function generateJobTokenForJob(jobId: string): Promise<string | null> {
+export async function generateJobTokenForJob(
+  jobId: string,
+  spawnLeaseToken?: string,
+): Promise<string | null> {
   const job = await getJobWithContext(jobId)
   if (!job) {
     logger.error("Cannot generate job token: job not found", { jobId })
     return null
   }
 
-  return generateJobToken(jobId, job.deployment.id, job.deployment.orgId)
+  return generateJobToken(jobId, job.deployment.id, job.deployment.orgId, spawnLeaseToken)
 }
