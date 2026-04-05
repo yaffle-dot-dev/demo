@@ -36,15 +36,16 @@ import {
   type ConcurrencyLimits,
   type IacJob,
 } from "../db/queries/iac-jobs.ts"
+import { hasActiveWarmRunnerForOrg } from "../db/queries/warm-runners.ts"
 import { findDeploymentsReadyForAutoApply } from "../db/queries/workspace-deployments.ts"
 import { queueAutoApply } from "./webhook-handler.ts"
 import { generateJobTokenForJob } from "./local-spawner.ts"
 import { acquireLease, type LeaseHandle } from "./db-lease.ts"
+import { isWarmRunnerWorkspaceExcluded } from "./warm-runner.ts"
 import {
   getSchedulerActiveJobsGauge,
   getSchedulerGroupsQueuedGauge,
   getSchedulerJobsBlockedCounter,
-  getSchedulerJobsClaimedCounter,
   getSchedulerPollOverlapCounter,
   getSchedulerPollDurationHistogram,
   getSchedulerPollGroupsQueriedHistogram,
@@ -83,6 +84,8 @@ export interface SchedulerConfig {
   maxJobsPerRunGroup?: number
   /** Minimum time between spawn attempts for the same queued job in ms. Default: 120000 */
   spawnBackoffMs?: number
+  /** How fresh a warm runner heartbeat must be to suppress cold spawning. Default: 30000 */
+  warmRunnerStaleAfterMs?: number
 }
 
 export interface IacEngineSpawner {
@@ -157,6 +160,7 @@ export class Scheduler {
       maxConcurrentJobs: config.maxConcurrentJobs ?? 50,
       maxJobsPerRunGroup: config.maxJobsPerRunGroup ?? 3,
       spawnBackoffMs: config.spawnBackoffMs ?? 2 * 60 * 1000,
+      warmRunnerStaleAfterMs: config.warmRunnerStaleAfterMs ?? 30_000,
     }
     this.limits = {
       maxTotal: this.config.maxConcurrentJobs,
@@ -187,7 +191,6 @@ export class Scheduler {
     getSchedulerActiveJobsGauge()
     getSchedulerQueuedJobsGauge()
     getSchedulerGroupsQueuedGauge()
-    getSchedulerJobsClaimedCounter()
     getSchedulerJobsBlockedCounter()
     getSchedulerSpawnAttemptsCounter()
     getSchedulerSpawnSuppressedCounter()
@@ -377,9 +380,6 @@ export class Scheduler {
 
       if (jobsToSpawn.length === 0) return
 
-      // Record spawned jobs metric
-      getSchedulerJobsClaimedCounter().add(jobsToSpawn.length)
-
       logger.info("Spawning workers for jobs", {
         workerId: this.workerId,
         jobCount: jobsToSpawn.length,
@@ -528,6 +528,19 @@ export class Scheduler {
       if (!lease.acquired || !lease.leaseToken) {
         getSchedulerSpawnSuppressedCounter().add(1, {
           reason: "active_spawn_lease",
+          job_type: job.jobType,
+          spawner: this.spawnerType,
+        })
+        continue
+      }
+
+      if (
+        !isWarmRunnerWorkspaceExcluded(jobContext.deployment.workspacePath)
+        && await hasActiveWarmRunnerForOrg(jobContext.deployment.orgId, this.config.warmRunnerStaleAfterMs)
+      ) {
+        await releaseJobSpawnLease(job.id, lease.leaseToken)
+        getSchedulerSpawnSuppressedCounter().add(1, {
+          reason: "warm_runner_available",
           job_type: job.jobType,
           spawner: this.spawnerType,
         })
@@ -882,16 +895,7 @@ export async function getScheduler(): Promise<Scheduler> {
     logger.info("Scheduler using local spawner (child process)")
   }
 
-  // Parse concurrency limits from environment
-  const defaultMaxConcurrent = isProduction ? 50 : 5
-  const maxConcurrentJobs = parseInt(
-    process.env.YAFFLE_MAX_CONCURRENT_JOBS ?? String(defaultMaxConcurrent),
-    10,
-  )
-  const maxJobsPerRunGroup = parseInt(
-    process.env.YAFFLE_MAX_JOBS_PER_RUN_GROUP ?? "3",
-    10,
-  )
+  const { maxConcurrentJobs, maxJobsPerRunGroup } = getConfiguredSchedulerConcurrencyLimits()
 
   schedulerState.schedulerInstance = new Scheduler(spawner, {
     // Faster polling in dev, slower in prod
@@ -908,6 +912,25 @@ export async function getScheduler(): Promise<Scheduler> {
   })
 
   return schedulerState.schedulerInstance
+}
+
+export function getConfiguredSchedulerConcurrencyLimits(): {
+  maxConcurrentJobs: number
+  maxJobsPerRunGroup: number
+} {
+  const isProduction = process.env.NODE_ENV === "production"
+  const defaultMaxConcurrent = isProduction ? 50 : 5
+
+  return {
+    maxConcurrentJobs: parseInt(
+      process.env.YAFFLE_MAX_CONCURRENT_JOBS ?? String(defaultMaxConcurrent),
+      10,
+    ),
+    maxJobsPerRunGroup: parseInt(
+      process.env.YAFFLE_MAX_JOBS_PER_RUN_GROUP ?? "3",
+      10,
+    ),
+  }
 }
 
 /** How often a non-leader instance retries acquiring the lock */

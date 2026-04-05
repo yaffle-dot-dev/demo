@@ -1080,6 +1080,52 @@ export interface SpawnResult {
   groupsWithQueuedWork: number
 }
 
+function roundRobinSelectJobs(
+  jobsByGroup: Map<string, IacJob[]>,
+  availableSlots: number,
+): { selected: IacJob[]; blockedByGlobalLimit: number } {
+  const selected: IacJob[] = []
+  let blockedByGlobalLimit = 0
+
+  const groupIds = Array.from(jobsByGroup.keys())
+  const groupIndices = new Map<string, number>()
+  for (const gid of groupIds) {
+    groupIndices.set(gid, 0)
+  }
+
+  let madeProgress = true
+  while (madeProgress && selected.length < availableSlots) {
+    madeProgress = false
+
+    for (const groupId of groupIds) {
+      if (selected.length >= availableSlots) {
+        for (const gid of groupIds) {
+          const jobs = jobsByGroup.get(gid)!
+          const idx = groupIndices.get(gid)!
+          blockedByGlobalLimit += jobs.length - idx
+        }
+        break
+      }
+
+      const jobs = jobsByGroup.get(groupId)!
+      const idx = groupIndices.get(groupId)!
+
+      if (idx >= jobs.length) {
+        continue
+      }
+
+      selected.push(jobs[idx])
+      groupIndices.set(groupId, idx + 1)
+      madeProgress = true
+    }
+  }
+
+  return {
+    selected,
+    blockedByGlobalLimit,
+  }
+}
+
 /**
  * Find queued jobs ready for spawning, respecting concurrency limits.
  *
@@ -1214,42 +1260,7 @@ export async function findQueuedJobsForSpawning(
     }
 
     // 5. Round-robin interleave jobs from all groups
-    const selected: IacJob[] = []
-    let blockedByGlobalLimit = 0
-
-    const groupIds = Array.from(jobsByGroup.keys())
-    const groupIndices = new Map<string, number>()
-    for (const gid of groupIds) {
-      groupIndices.set(gid, 0)
-    }
-
-    let madeProgress = true
-    while (madeProgress && selected.length < availableSlots) {
-      madeProgress = false
-
-      for (const groupId of groupIds) {
-        if (selected.length >= availableSlots) {
-          // Count remaining fetched jobs as blocked
-          for (const gid of groupIds) {
-            const jobs = jobsByGroup.get(gid)!
-            const idx = groupIndices.get(gid)!
-            blockedByGlobalLimit += jobs.length - idx
-          }
-          break
-        }
-
-        const jobs = jobsByGroup.get(groupId)!
-        const idx = groupIndices.get(groupId)!
-
-        if (idx >= jobs.length) {
-          continue
-        }
-
-        selected.push(jobs[idx])
-        groupIndices.set(groupId, idx + 1)
-        madeProgress = true
-      }
-    }
+    const { selected, blockedByGlobalLimit } = roundRobinSelectJobs(jobsByGroup, availableSlots)
 
     return {
       jobs: selected,
@@ -1258,5 +1269,111 @@ export async function findQueuedJobsForSpawning(
       totalQueued,
       groupsWithQueuedWork,
     }
+  })
+}
+
+/**
+ * Find queued jobs an active warm runner may claim for a single org.
+ *
+ * This applies the same global and per-run-group concurrency limits as the
+ * normal scheduler path, but only considers queued jobs that belong to the
+ * provided org.
+ */
+export async function findQueuedJobsForWarmRunner(
+  orgId: string,
+  limits: ConcurrencyLimits,
+): Promise<IacJob[]> {
+  return withDbSpan("select", "iac_jobs", async () => {
+    const activeCountResult = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(iacJobs)
+      .where(eq(iacJobs.status, "running"))
+
+    const activeTotal = activeCountResult[0]?.count ?? 0
+    const availableSlots = Math.max(0, limits.maxTotal - activeTotal)
+
+    if (availableSlots === 0) {
+      return []
+    }
+
+    const groupsWithWork = await db
+      .select({
+        runGroupId: workspaceDeployments.runGroupId,
+        queuedCount: sql<number>`count(*)::int`,
+      })
+      .from(iacJobs)
+      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
+      .where(
+        and(
+          eq(iacJobs.status, "queued"),
+          eq(workspaceDeployments.orgId, orgId),
+          sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
+        ),
+      )
+      .groupBy(workspaceDeployments.runGroupId)
+
+    if (groupsWithWork.length === 0) {
+      return []
+    }
+
+    const activeByGroupResult = await db
+      .select({
+        runGroupId: workspaceDeployments.runGroupId,
+        count: sql<number>`count(*)::int`,
+      })
+      .from(iacJobs)
+      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
+      .where(
+        and(
+          eq(iacJobs.status, "running"),
+          eq(workspaceDeployments.orgId, orgId),
+        ),
+      )
+      .groupBy(workspaceDeployments.runGroupId)
+
+    const activeByGroup = new Map<string, number>()
+    for (const row of activeByGroupResult) {
+      activeByGroup.set(row.runGroupId ?? "no-group", row.count)
+    }
+
+    const jobsByGroup = new Map<string, IacJob[]>()
+
+    for (const { runGroupId } of groupsWithWork) {
+      const groupKey = runGroupId ?? "no-group"
+      const currentActive = activeByGroup.get(groupKey) ?? 0
+      const groupCapacity = Math.max(0, limits.maxPerRunGroup - currentActive)
+
+      if (groupCapacity === 0) {
+        continue
+      }
+
+      const groupJobs = await db
+        .select()
+        .from(iacJobs)
+        .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
+        .where(
+          and(
+            eq(iacJobs.status, "queued"),
+            eq(workspaceDeployments.orgId, orgId),
+            sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
+            runGroupId
+              ? eq(workspaceDeployments.runGroupId, runGroupId)
+              : sql`${workspaceDeployments.runGroupId} IS NULL`,
+          ),
+        )
+        .orderBy(JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
+        .limit(groupCapacity)
+
+      const jobs = groupJobs.map((row) => row.iac_jobs)
+      if (jobs.length > 0) {
+        jobsByGroup.set(groupKey, jobs)
+      }
+    }
+
+    if (jobsByGroup.size === 0) {
+      return []
+    }
+
+    return roundRobinSelectJobs(jobsByGroup, availableSlots).selected
   })
 }

@@ -340,7 +340,6 @@ function resetMeter(): void {
   _sseConnectionsActive = null
   _sseEventsEmitted = null
   // Scheduler metrics
-  _schedulerJobsClaimedCounter = null
   _schedulerJobsBlockedCounter = null
   _schedulerSpawnAttemptsCounter = null
   _schedulerSpawnSuppressedCounter = null
@@ -582,17 +581,6 @@ export function getSseEventsEmittedCounter(): typeof _sseEventsEmitted & {} {
 // ---------------------------------------------------------------------------
 // Scheduler metrics
 // ---------------------------------------------------------------------------
-
-let _schedulerJobsClaimedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
-/** Counter: jobs claimed by the scheduler for dispatch. */
-export function getSchedulerJobsClaimedCounter(): typeof _schedulerJobsClaimedCounter & {} {
-  if (!_schedulerJobsClaimedCounter) {
-    _schedulerJobsClaimedCounter = getMeter().createCounter("yaffle.scheduler.jobs.claimed", {
-      description: "Jobs claimed by scheduler for dispatch",
-    })
-  }
-  return _schedulerJobsClaimedCounter
-}
 
 let _schedulerJobsBlockedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
 /** Counter: jobs blocked due to concurrency limits, by reason (global_limit, group_limit). */

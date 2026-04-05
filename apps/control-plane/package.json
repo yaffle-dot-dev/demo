@@ -12,7 +12,8 @@
     "test": "bun test",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
-    "migrate:org-broker-roles": "bun run src/scripts/migrate-org-broker-roles.ts"
+    "migrate:org-broker-roles": "bun run src/scripts/migrate-org-broker-roles.ts",
+    "token:warm-runner": "bun run src/scripts/generate-warm-runner-token.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch-logs": "^3.1011.0",

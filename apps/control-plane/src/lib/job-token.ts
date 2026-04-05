@@ -15,6 +15,12 @@ export interface JobTokenPayload extends JWTPayload {
   spawn_lease_token?: string
 }
 
+export interface WarmRunnerTokenPayload extends JWTPayload {
+  sub: string // "warm-runner:{org_id}"
+  org_id: string
+  runner_mode: "warm"
+}
+
 /**
  * Get the JWT signing secret for job tokens.
  * Uses YAFFLE_JOB_TOKEN_SECRET if set, falls back to YAFFLE_RUN_TOKEN_SECRET,
@@ -61,6 +67,29 @@ export async function generateJobToken(
     .sign(secret)
 
   log.debug("Job token generated", { jobId, deploymentId, orgId })
+  return token
+}
+
+/**
+ * Generate a warm-runner token (JWT) scoped to a single org.
+ */
+export async function generateWarmRunnerToken(
+  orgId: string,
+  ttlHours: number = 12,
+): Promise<string> {
+  const secret = getJwtSecret()
+
+  const token = await new SignJWT({
+    org_id: orgId,
+    runner_mode: "warm",
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(`warm-runner:${orgId}`)
+    .setIssuedAt()
+    .setExpirationTime(`${ttlHours}h`)
+    .sign(secret)
+
+  log.debug("Warm runner token generated", { orgId })
   return token
 }
 
@@ -159,6 +188,35 @@ export async function verifyJobToken(token: string): Promise<JobTokenPayload | n
     return payload as JobTokenPayload
   } catch (err) {
     log.debug("Job token JWT verification failed", { error: String(err) })
+    return null
+  }
+}
+
+/**
+ * Verify a warm-runner token (JWT).
+ */
+export async function verifyWarmRunnerToken(token: string): Promise<WarmRunnerTokenPayload | null> {
+  try {
+    const secret = getJwtSecret()
+    const { payload } = await jwtVerify(token, secret)
+
+    if (
+      !payload.sub?.startsWith("warm-runner:") ||
+      typeof payload.org_id !== "string" ||
+      payload.runner_mode !== "warm"
+    ) {
+      log.debug("Warm runner token validation failed: missing required fields", {
+        hasSub: !!payload.sub,
+        subStartsWithWarmRunner: payload.sub?.startsWith("warm-runner:"),
+        hasOrgId: typeof payload.org_id === "string",
+        hasWarmMode: payload.runner_mode === "warm",
+      })
+      return null
+    }
+
+    return payload as WarmRunnerTokenPayload
+  } catch (err) {
+    log.debug("Warm runner token JWT verification failed", { error: String(err) })
     return null
   }
 }

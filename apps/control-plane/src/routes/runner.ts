@@ -14,15 +14,27 @@
 import { Hono } from "hono"
 import { z } from "zod"
 
-import { verifyJobToken, type JobTokenPayload } from "../lib/job-token.ts"
+import {
+  generateJobToken,
+  verifyJobToken,
+  verifyWarmRunnerToken,
+  type JobTokenPayload,
+  type WarmRunnerTokenPayload,
+} from "../lib/job-token.ts"
 import { getRunnerFirstOutputDurationHistogram, logger, tracer } from "../lib/telemetry.ts"
 import {
   claimJobForRunner,
+  findQueuedJobsForWarmRunner,
   heartbeatJob,
   completeJobFromRunner,
   failJobFromRunner,
   getJobWithContext,
 } from "../db/queries/iac-jobs.ts"
+import {
+  heartbeatWarmRunner,
+  markWarmRunnerClaimedJob,
+  registerWarmRunner,
+} from "../db/queries/warm-runners.ts"
 import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 import { findRunGroupById } from "../db/queries/run-groups.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
@@ -59,6 +71,8 @@ import {
   notifyDownstreams,
 } from "../lib/deployment-side-effects.ts"
 import { resolveExecutionCredentialsForDeployment } from "../lib/execution-credentials.ts"
+import { getConfiguredSchedulerConcurrencyLimits } from "../lib/scheduler.ts"
+import { isWarmRunnerWorkspaceExcluded } from "../lib/warm-runner.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,12 +82,29 @@ interface RunnerAuthContext {
   jobToken: JobTokenPayload
 }
 
+interface WarmRunnerAuthContext {
+  runnerToken: WarmRunnerTokenPayload
+}
+
 type RunnerVariables = {
   runnerAuth: RunnerAuthContext
 }
 
-export const runnerRoute = new Hono<{ Variables: RunnerVariables }>()
+type WarmRunnerVariables = {
+  warmRunnerAuth: WarmRunnerAuthContext
+}
+
+const runnerJobRoute = new Hono<{ Variables: RunnerVariables }>()
+const warmRunnerRoute = new Hono<{ Variables: WarmRunnerVariables }>()
+export const runnerRoute = new Hono()
 const firstOutputSeenRuns = new Set<string>()
+
+const DEFAULT_WARM_RUNNER_HEARTBEAT_INTERVAL_MS = 10_000
+const DEFAULT_WARM_RUNNER_POLL_INTERVAL_MS = 1_000
+const DEFAULT_WARM_RUNNER_IDLE_SHUTDOWN_MS = 120_000
+const DEFAULT_WARM_RUNNER_STALE_AFTER_MS = 30_000
+
+type ClaimResponseDeployment = NonNullable<Awaited<ReturnType<typeof getJobWithContext>>>["deployment"]
 
 async function releaseWorkspaceLockForDeployment(deployment: {
   orgId: string
@@ -156,11 +187,127 @@ function deriveHasChangesFromSummary(summary: string | undefined): boolean | nul
   return counts.add > 0 || counts.change > 0 || counts.destroy > 0
 }
 
+function getWarmRunnerSettings(): {
+  heartbeatIntervalMs: number
+  pollIntervalMs: number
+  idleShutdownMs: number
+  staleAfterMs: number
+} {
+  return {
+    heartbeatIntervalMs: Number.parseInt(
+      process.env.YAFFLE_WARM_RUNNER_HEARTBEAT_INTERVAL_MS ?? String(DEFAULT_WARM_RUNNER_HEARTBEAT_INTERVAL_MS),
+      10,
+    ),
+    pollIntervalMs: Number.parseInt(
+      process.env.YAFFLE_WARM_RUNNER_POLL_INTERVAL_MS ?? String(DEFAULT_WARM_RUNNER_POLL_INTERVAL_MS),
+      10,
+    ),
+    idleShutdownMs: Number.parseInt(
+      process.env.YAFFLE_WARM_RUNNER_IDLE_SHUTDOWN_MS ?? String(DEFAULT_WARM_RUNNER_IDLE_SHUTDOWN_MS),
+      10,
+    ),
+    staleAfterMs: Number.parseInt(
+      process.env.YAFFLE_WARM_RUNNER_STALE_AFTER_MS ?? String(DEFAULT_WARM_RUNNER_STALE_AFTER_MS),
+      10,
+    ),
+  }
+}
+
+async function createClaimResponse(
+  job: {
+    id: string
+    jobType: "plan" | "apply" | "destroy"
+    deploymentId: string
+    queuedAt: Date
+    startedAt: Date | null
+  },
+  issueJobToken: boolean,
+): Promise<{
+  claimed: true
+  job: {
+    id: string
+    jobType: "plan" | "apply" | "destroy"
+    deploymentId: string
+    queuedAt: Date
+    startedAt: Date | null
+  }
+  runId: string
+  deployment: ClaimResponseDeployment
+  jobToken?: string
+}> {
+  const jobContext = await getJobWithContext(job.id)
+
+  if (!jobContext?.deployment) {
+    logger.error("runner.claim.missing_context", { jobId: job.id })
+    throw new Error("Job context not found after claim")
+  }
+
+  const { deployment } = jobContext
+
+  const tfRun = await createTfRun({
+    deploymentId: deployment.id,
+    runGroupId: deployment.runGroupId ?? undefined,
+    runType: job.jobType,
+    status: "running",
+    startedAt: new Date(),
+  })
+  events.emitRunUpdate(tfRun.id, deployment.id)
+
+  const statusMap: Record<string, "planning" | "applying" | "destroying"> = {
+    plan: "planning",
+    apply: "applying",
+    destroy: "destroying",
+  }
+  const deploymentStatus = statusMap[job.jobType]
+  if (deploymentStatus) {
+    await updateDeploymentStatus(deployment.id, deploymentStatus)
+  }
+
+  events.emitDeploymentUpdate(
+    deployment.id,
+    deployment.orgId,
+    deployment.repo,
+    deployment.environmentKind as EnvironmentKind,
+    deployment.environmentName,
+  )
+
+  const response: {
+    claimed: true
+    job: {
+      id: string
+      jobType: "plan" | "apply" | "destroy"
+      deploymentId: string
+      queuedAt: Date
+      startedAt: Date | null
+    }
+    runId: string
+    deployment: typeof deployment
+    jobToken?: string
+  } = {
+    claimed: true,
+    job: {
+      id: job.id,
+      jobType: job.jobType,
+      deploymentId: job.deploymentId,
+      queuedAt: job.queuedAt,
+      startedAt: job.startedAt,
+    },
+    runId: tfRun.id,
+    deployment,
+  }
+
+  if (issueJobToken) {
+    response.jobToken = await generateJobToken(job.id, deployment.id, deployment.orgId)
+  }
+
+  return response
+}
+
 /**
  * Runner authentication middleware.
  * Verifies job token and sets context.
  */
-runnerRoute.use("*", async (c, next) => {
+runnerJobRoute.use("*", async (c, next) => {
   const token = extractBearerToken(c.req.header("authorization"))
 
   if (!token) {
@@ -182,6 +329,208 @@ runnerRoute.use("*", async (c, next) => {
   return next()
 })
 
+warmRunnerRoute.use("*", async (c, next) => {
+  const token = extractBearerToken(c.req.header("authorization"))
+
+  if (!token) {
+    return c.json(
+      { error: { code: "UNAUTHORIZED", message: "Warm runner token required" } },
+      401,
+    )
+  }
+
+  const payload = await verifyWarmRunnerToken(token)
+  if (!payload) {
+    return c.json(
+      { error: { code: "UNAUTHORIZED", message: "Invalid or expired warm runner token" } },
+      401,
+    )
+  }
+
+  c.set("warmRunnerAuth", { runnerToken: payload } as WarmRunnerAuthContext)
+  return next()
+})
+
+const warmRunnerRegisterSchema = z.object({
+  workerId: z.string().min(1),
+  maxSlots: z.number().int().min(1).max(4).default(1),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+})
+
+warmRunnerRoute.post("/register", async (c) => {
+  const auth = c.get("warmRunnerAuth") as WarmRunnerAuthContext
+  const body = await c.req.json()
+  const parsed = warmRunnerRegisterSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json(
+      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      400,
+    )
+  }
+
+  const settings = getWarmRunnerSettings()
+  const session = await registerWarmRunner(
+    auth.runnerToken.org_id,
+    parsed.data.workerId,
+    parsed.data.maxSlots,
+    parsed.data.metadata,
+    settings.staleAfterMs,
+  )
+
+  return c.json({
+    data: {
+      runnerId: session.id,
+      orgId: session.orgId,
+      maxSlots: session.maxSlots,
+      heartbeatIntervalMs: settings.heartbeatIntervalMs,
+      pollIntervalMs: settings.pollIntervalMs,
+      idleShutdownMs: settings.idleShutdownMs,
+    },
+  })
+})
+
+const warmRunnerHeartbeatSchema = z.object({
+  runnerId: z.string().uuid(),
+  workerId: z.string().min(1),
+  activeSlots: z.number().int().min(0).max(4).default(0),
+})
+
+warmRunnerRoute.post("/heartbeat", async (c) => {
+  const auth = c.get("warmRunnerAuth") as WarmRunnerAuthContext
+  const body = await c.req.json()
+  const parsed = warmRunnerHeartbeatSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json(
+      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      400,
+    )
+  }
+
+  const settings = getWarmRunnerSettings()
+  const session = await heartbeatWarmRunner(
+    parsed.data.runnerId,
+    auth.runnerToken.org_id,
+    parsed.data.workerId,
+    parsed.data.activeSlots,
+    settings.staleAfterMs,
+  )
+
+  if (!session) {
+    return c.json(
+      { error: { code: "NOT_FOUND", message: "Warm runner session not found" } },
+      404,
+    )
+  }
+
+  return c.json({ data: { success: true } })
+})
+
+const warmRunnerClaimNextSchema = z.object({
+  runnerId: z.string().uuid(),
+  workerId: z.string().min(1),
+})
+
+warmRunnerRoute.post("/claim-next", async (c) => {
+  const auth = c.get("warmRunnerAuth") as WarmRunnerAuthContext
+  const body = await c.req.json()
+  const parsed = warmRunnerClaimNextSchema.safeParse(body)
+
+  if (!parsed.success) {
+    return c.json(
+      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      400,
+    )
+  }
+
+  const settings = getWarmRunnerSettings()
+  const heartbeat = await heartbeatWarmRunner(
+    parsed.data.runnerId,
+    auth.runnerToken.org_id,
+    parsed.data.workerId,
+    0,
+    settings.staleAfterMs,
+  )
+
+  if (!heartbeat) {
+    return c.json(
+      { error: { code: "NOT_FOUND", message: "Warm runner session not found" } },
+      404,
+    )
+  }
+
+  const { maxConcurrentJobs, maxJobsPerRunGroup } = getConfiguredSchedulerConcurrencyLimits()
+  const candidates = await findQueuedJobsForWarmRunner(auth.runnerToken.org_id, {
+    maxTotal: maxConcurrentJobs,
+    maxPerRunGroup: maxJobsPerRunGroup,
+  })
+
+  for (const candidate of candidates) {
+    const jobContext = await getJobWithContext(candidate.id)
+    if (!jobContext?.deployment || jobContext.deployment.orgId !== auth.runnerToken.org_id) {
+      continue
+    }
+
+    if (isWarmRunnerWorkspaceExcluded(jobContext.deployment.workspacePath)) {
+      logger.info("warm_runner.workspace_excluded", {
+        "runner.id": parsed.data.runnerId,
+        "worker.id": parsed.data.workerId,
+        "job.id": candidate.id,
+        "org.id": auth.runnerToken.org_id,
+        "workspace.path": jobContext.deployment.workspacePath,
+      })
+      continue
+    }
+
+    const resolution = await resolveExecutionCredentialsForDeployment(jobContext.deployment)
+    if (!resolution.ok) {
+      logger.info("warm_runner.job_waiting_for_connections", {
+        "runner.id": parsed.data.runnerId,
+        "worker.id": parsed.data.workerId,
+        "job.id": candidate.id,
+        "org.id": auth.runnerToken.org_id,
+        missingProviders: resolution.missingProviders,
+        conflictProviders: resolution.conflictProviders,
+      })
+      continue
+    }
+
+    const result = await claimJobForRunner(candidate.id, parsed.data.workerId)
+    if (!result.claimed || !result.job) {
+      continue
+    }
+
+    await markWarmRunnerClaimedJob(
+      parsed.data.runnerId,
+      auth.runnerToken.org_id,
+      parsed.data.workerId,
+      1,
+      settings.staleAfterMs,
+    )
+
+    const claimResponse = await createClaimResponse(result.job, true)
+
+    logger.info("warm_runner.claimed_next", {
+      "runner.id": parsed.data.runnerId,
+      "worker.id": parsed.data.workerId,
+      "job.id": result.job.id,
+      "job.type": result.job.jobType,
+      "org.id": auth.runnerToken.org_id,
+    })
+
+    return c.json({
+      data: claimResponse,
+    })
+  }
+
+  return c.json({
+    data: {
+      claimed: false,
+    },
+  })
+})
+
 // ---------------------------------------------------------------------------
 // POST /api/runner/claim
 // ---------------------------------------------------------------------------
@@ -197,7 +546,7 @@ const claimBodySchema = z.object({
  * Transitions job from "queued" to "running".
  * Returns job details if claimed, or 409 if already claimed.
  */
-runnerRoute.post("/claim", async (c) => {
+runnerJobRoute.post("/claim", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const body = await c.req.json()
 
@@ -241,67 +590,10 @@ runnerRoute.post("/claim", async (c) => {
   // Note: lifecycle log "job.claimed" is emitted by claimJobForRunner()
   // This is just an API-level acknowledgement
 
-  // Emit events for real-time UI updates (job now running)
-  events.emitJobUpdate(jobId, result.job!.deploymentId)
-
-  // Get full job context for the runner
-  const jobContext = await getJobWithContext(jobId)
-
-  if (!jobContext?.deployment) {
-    // Should never happen - claim succeeded but job context not found
-    logger.error("runner.claim.missing_context", { jobId })
-    return c.json(
-      { error: { code: "INTERNAL_ERROR", message: "Job context not found after claim" } },
-      500,
-    )
-  }
-
-  const { deployment } = jobContext
-
-  // Create tf_run record for this job execution
-  // This is where logs will be streamed and results stored
-  const tfRun = await createTfRun({
-    deploymentId: deployment.id,
-    runGroupId: deployment.runGroupId ?? undefined,
-    runType: result.job!.jobType,
-    status: "running",
-    startedAt: new Date(),
-  })
-  events.emitRunUpdate(tfRun.id, deployment.id)
-
-  // Update deployment status based on job type
-  const statusMap: Record<string, "planning" | "applying" | "destroying"> = {
-    plan: "planning",
-    apply: "applying",
-    destroy: "destroying",
-  }
-  const deploymentStatus = statusMap[result.job!.jobType]
-  if (deploymentStatus) {
-    await updateDeploymentStatus(deployment.id, deploymentStatus)
-  }
-
-  // Emit deployment update so the DAG UI shows "running" status
-  events.emitDeploymentUpdate(
-    deployment.id,
-    deployment.orgId,
-    deployment.repo,
-    deployment.environmentKind as EnvironmentKind,
-    deployment.environmentName,
-  )
+  const claimResponse = await createClaimResponse(result.job!, false)
 
   return c.json({
-    data: {
-      claimed: true,
-      job: {
-        id: result.job!.id,
-        jobType: result.job!.jobType,
-        deploymentId: result.job!.deploymentId,
-        queuedAt: result.job!.queuedAt,
-        startedAt: result.job!.startedAt,
-      },
-      runId: tfRun.id,  // Worker needs this for log streaming
-      deployment,
-    },
+    data: claimResponse,
   })
 })
 
@@ -321,7 +613,7 @@ const logsBodySchema = z.object({
  *
  * Appends log output to the tf_run record and emits SSE event for UI.
  */
-runnerRoute.post("/logs", async (c) => {
+runnerJobRoute.post("/logs", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const body = await c.req.json()
 
@@ -414,7 +706,7 @@ const spansBodySchema = z.object({
  * For "progress" events, no-ops (the frontend uses wall-clock for in-progress bars).
  * Also mirrors spans to Axiom via OTel tracer.
  */
-runnerRoute.post("/spans", async (c) => {
+runnerJobRoute.post("/spans", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const body = await c.req.json()
 
@@ -513,7 +805,7 @@ const heartbeatBodySchema = z.object({
  * Called periodically by workers to indicate they're still alive.
  * Returns success: false if job was reclaimed or completed.
  */
-runnerRoute.post("/heartbeat", async (c) => {
+runnerJobRoute.post("/heartbeat", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const body = await c.req.json()
 
@@ -569,7 +861,7 @@ const completeBodySchema = z.object({
  * Called by workers when they finish executing a job.
  * Triggers downstream effects (status updates, notifications).
  */
-runnerRoute.post("/complete", async (c) => {
+runnerJobRoute.post("/complete", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const body = await c.req.json()
 
@@ -722,7 +1014,7 @@ runnerRoute.post("/complete", async (c) => {
  *
  * Returns full job context for execution.
  */
-runnerRoute.get("/job/:jobId", async (c) => {
+runnerJobRoute.get("/job/:jobId", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const jobId = c.req.param("jobId")
 
@@ -766,7 +1058,7 @@ runnerRoute.get("/job/:jobId", async (c) => {
  * The runner uploads the tfplan binary to S3 so apply can use it directly
  * instead of re-planning.
  */
-runnerRoute.post("/plan-file-url", async (c) => {
+runnerJobRoute.post("/plan-file-url", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const body = await c.req.json()
   const { runId } = body
@@ -818,7 +1110,7 @@ runnerRoute.post("/plan-file-url", async (c) => {
  * - TFC token
  * - Plan file URL (for apply jobs, to apply from saved plan)
  */
-runnerRoute.get("/job/:jobId/context", async (c) => {
+runnerJobRoute.get("/job/:jobId/context", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const jobId = c.req.param("jobId")
 
@@ -1042,3 +1334,6 @@ runnerRoute.get("/job/:jobId/context", async (c) => {
     },
   })
 })
+
+runnerRoute.route("/warm", warmRunnerRoute)
+runnerRoute.route("/", runnerJobRoute)

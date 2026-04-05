@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test"
 
-import { generateJobToken, verifyJobToken } from "./job-token.ts"
+import {
+  generateJobToken,
+  generateWarmRunnerToken,
+  verifyJobToken,
+  verifyWarmRunnerToken,
+} from "./job-token.ts"
 
 const originalJobTokenSecret = process.env.YAFFLE_JOB_TOKEN_SECRET
 const originalRunTokenSecret = process.env.YAFFLE_RUN_TOKEN_SECRET
@@ -53,5 +58,27 @@ describe("job token leases", () => {
 
     expect(payload).not.toBeNull()
     expect(payload?.spawn_lease_token).toBeUndefined()
+  })
+})
+
+describe("warm runner tokens", () => {
+  test("generates and verifies a warm runner token", async () => {
+    process.env.YAFFLE_JOB_TOKEN_SECRET = "test-secret"
+
+    const token = await generateWarmRunnerToken("org-warm-123")
+    const payload = await verifyWarmRunnerToken(token)
+
+    expect(payload).not.toBeNull()
+    expect(payload?.org_id).toBe("org-warm-123")
+    expect(payload?.runner_mode).toBe("warm")
+  })
+
+  test("does not accept a regular job token as a warm runner token", async () => {
+    process.env.YAFFLE_JOB_TOKEN_SECRET = "test-secret"
+
+    const token = await generateJobToken("job-789", "deployment-789", "org-789")
+    const payload = await verifyWarmRunnerToken(token)
+
+    expect(payload).toBeNull()
   })
 })

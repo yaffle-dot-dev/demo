@@ -530,3 +530,31 @@ export const leases = pgTable("leases", {
   renewedAt: timestamp("renewed_at", { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
 })
+
+// =============================================================================
+// Warm Runner Sessions
+// =============================================================================
+
+export const warmRunnerSessions = pgTable(
+  "warm_runner_sessions",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    workerId: text("worker_id").notNull(),
+    status: text("status").default("active").notNull(), // 'active' | 'draining' | 'stopped'
+    maxSlots: integer("max_slots").default(1).notNull(),
+    activeSlots: integer("active_slots").default(0).notNull(),
+    metadata: jsonb("metadata"),
+    lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }).defaultNow().notNull(),
+    lastClaimedAt: timestamp("last_claimed_at", { withTimezone: true }),
+    lastIdleAt: timestamp("last_idle_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("warm_runner_sessions_worker_id").on(t.workerId),
+    index("warm_runner_sessions_org_status_idx").on(t.orgId, t.status, t.lastHeartbeatAt),
+  ],
+)

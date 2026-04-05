@@ -22,7 +22,7 @@ dist/
 !actions/*/dist/
 
 # Drizzle
-apps/control-plane/drizzle/
+apps/control-plane/drizzle/meta/*_snapshot.json
 
 # Terraform
 **/.terraform/

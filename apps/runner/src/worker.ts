@@ -22,56 +22,39 @@
 import { randomUUID } from "node:crypto"
 
 import { RunnerApiClient } from "./lib/api-client.ts"
-import { HeartbeatSupervisor } from "./lib/supervisor.ts"
-import { downloadWorkspace, cleanupWorkspace } from "./lib/workspace.ts"
-import { executeTerraform } from "./lib/executor.ts"
-import type { ResourceSpanEvent } from "./lib/span-parser.ts"
-import type { SpanEvent } from "./lib/api-client.ts"
-import type { Subprocess } from "bun"
-
-// Required environment variables
-const JOB_ID = process.env.YAFFLE_JOB_ID
-const JOB_TOKEN = process.env.YAFFLE_JOB_TOKEN
-const API_URL = process.env.YAFFLE_API_URL
-
-function log(message: string, data?: Record<string, unknown>): void {
-  const timestamp = new Date().toISOString()
-  const dataStr = data ? ` ${JSON.stringify(data)}` : ""
-  console.log(`[${timestamp}] [worker] ${message}${dataStr}`)
-}
-
-function error(message: string, data?: Record<string, unknown>): void {
-  const timestamp = new Date().toISOString()
-  const dataStr = data ? ` ${JSON.stringify(data)}` : ""
-  console.error(`[${timestamp}] [worker] ERROR: ${message}${dataStr}`)
-}
+import { runClaimedJob } from "./lib/run-claimed-job.ts"
+import { error, log } from "./lib/runner-log.ts"
 
 async function main(): Promise<void> {
+  const jobId = process.env.YAFFLE_JOB_ID
+  const jobToken = process.env.YAFFLE_JOB_TOKEN
+  const apiUrl = process.env.YAFFLE_API_URL
+
   // Validate environment
-  if (!JOB_ID) {
+  if (!jobId) {
     error("YAFFLE_JOB_ID not set")
     process.exit(1)
   }
 
-  if (!JOB_TOKEN) {
+  if (!jobToken) {
     error("YAFFLE_JOB_TOKEN not set")
     process.exit(1)
   }
 
-  if (!API_URL) {
+  if (!apiUrl) {
     error("YAFFLE_API_URL not set")
     process.exit(1)
   }
 
   const workerId = `worker-${process.pid}-${randomUUID().slice(0, 8)}`
 
-  log("Worker starting", { jobId: JOB_ID, workerId, apiUrl: API_URL })
+  log("Worker starting", { jobId, workerId, apiUrl })
 
   // Create API client
   const apiClient = new RunnerApiClient({
-    apiUrl: API_URL,
-    jobToken: JOB_TOKEN,
-    jobId: JOB_ID,
+    apiUrl,
+    jobToken,
+    jobId,
   })
 
   // 1. Claim job atomically
@@ -97,225 +80,15 @@ async function main(): Promise<void> {
   })
 
   // 2. Start heartbeat supervisor
-  let cancellationRequested = false
-  let activeProcess: Subprocess | null = null
-
-  const supervisor = new HeartbeatSupervisor({
+  const result = await runClaimedJob({
     apiClient,
-    onHeartbeatFailure: () => {
-      cancellationRequested = true
-      error("Heartbeat supervisor detected failure, signalling active tofu process")
-      if (activeProcess) {
-        activeProcess.kill("SIGINT")
-        return
-      }
-      process.exit(1)
-    },
+    jobId,
+    runId,
+    workerId,
   })
 
-  supervisor.start()
-
-  // Buffer for batching log sends
-  let logBuffer = ""
-  let logFlushTimer: Timer | null = null
-  const LOG_FLUSH_INTERVAL = 100 // ms
-
-  const flushLogs = async (): Promise<void> => {
-    if (!logBuffer) return
-    const chunk = logBuffer
-    logBuffer = ""
-
-    try {
-      await apiClient.sendLogs(runId, chunk)
-    } catch (err) {
-      // Log locally but don't fail - logs are best-effort
-      error("Failed to send logs", {
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
-  }
-
-  const queueLog = (chunk: string, source: "stdout" | "stderr"): void => {
-    const formatted = source === "stderr" ? `[stderr] ${chunk}` : chunk
-    logBuffer += formatted
-
-    // Set up periodic flushing
-    if (!logFlushTimer) {
-      logFlushTimer = setTimeout(async () => {
-        logFlushTimer = null
-        await flushLogs()
-      }, LOG_FLUSH_INTERVAL)
-    }
-  }
-
-  // Buffer for batching span event sends
-  let spanBuffer: SpanEvent[] = []
-  let spanFlushTimer: Timer | null = null
-  const SPAN_FLUSH_INTERVAL = 200 // ms
-
-  const flushSpans = async (): Promise<void> => {
-    if (spanBuffer.length === 0) return
-    const batch = spanBuffer
-    spanBuffer = []
-
-    try {
-      await apiClient.sendSpanEvents(runId, batch)
-    } catch (err) {
-      // Span events are best-effort — don't fail the job
-      error("Failed to send span events", {
-        error: err instanceof Error ? err.message : String(err),
-        count: batch.length,
-      })
-    }
-  }
-
-  const queueSpanEvent = (event: ResourceSpanEvent): void => {
-    spanBuffer.push({
-      resourceAddress: event.resourceAddress,
-      resourceType: event.resourceType,
-      action: event.action,
-      event: event.event,
-      timestamp: event.timestamp,
-      elapsedMs: event.elapsedMs,
-      message: event.message,
-    })
-
-    if (!spanFlushTimer) {
-      spanFlushTimer = setTimeout(async () => {
-        spanFlushTimer = null
-        await flushSpans()
-      }, SPAN_FLUSH_INTERVAL)
-    }
-  }
-
-  let workDir: string | undefined
-
-  try {
-    // 3. Fetch execution context
-    log("Fetching execution context...")
-    const context = await apiClient.getContext()
-
-    log("Execution context received", {
-      command: context.command,
-      workspacePath: context.workspacePath,
-      hasBackendConfig: !!context.backendConfig,
-      variableCount: Object.keys(context.variables).length,
-      executionEnvVarCount: Object.keys(context.executionEnv ?? {}).length,
-      executionEnvVarKeys: Object.keys(context.executionEnv ?? {}).sort(),
-    })
-
-    // 4. Download workspace from S3
-    log("Downloading workspace...")
-    workDir = await downloadWorkspace(context.workspaceUrl, context.workspacePath)
-    log("Workspace downloaded", { workDir })
-
-    // 5. Execute terraform
-    log(`Executing tofu ${context.command}...`)
-    const result = await executeTerraform({
-      workDir,
-      context,
-      onOutput: queueLog,
-      onProcess: (proc) => {
-        activeProcess = proc
-        if (cancellationRequested && activeProcess) {
-          activeProcess.kill("SIGINT")
-        }
-      },
-      onSpanEvent: queueSpanEvent,
-    })
-
-    // Flush any remaining logs and span events
-    if (logFlushTimer) {
-      clearTimeout(logFlushTimer)
-      logFlushTimer = null
-    }
-    if (spanFlushTimer) {
-      clearTimeout(spanFlushTimer)
-      spanFlushTimer = null
-    }
-    await Promise.all([flushLogs(), flushSpans()])
-
-    // 6. Report completion
-    log("Reporting completion...")
-
-    if (cancellationRequested) {
-      log("Job cancellation acknowledged by worker")
-    } else if (result.success) {
-      // Upload plan file to S3 if this was a plan run
-      let planFileS3Key: string | undefined
-      if (result.planFilePath) {
-        try {
-          const { uploadUrl, s3Key } = await apiClient.getPlanFileUploadUrl(runId)
-          const planData = await Bun.file(result.planFilePath).arrayBuffer()
-          await apiClient.uploadPlanFile(uploadUrl, planData)
-          planFileS3Key = s3Key
-          log("Plan file uploaded to S3", { s3Key })
-        } catch (err) {
-          // Non-fatal: apply will fall back to re-planning
-          error("Failed to upload plan file", {
-            error: err instanceof Error ? err.message : String(err),
-          })
-        }
-      }
-
-      await apiClient.complete(runId, {
-        output: result.output,
-        hasChanges: result.hasChanges,
-        planSummary: result.planSummary,
-        planJson: result.planJson,
-        planFileS3Key,
-        outputs: result.outputs,
-        durationMs: result.durationMs,
-      })
-      log("Job completed successfully", { durationMs: result.durationMs })
-    } else {
-      await apiClient.fail(runId, result.errorMessage ?? "Unknown error")
-      log("Job failed", { error: result.errorMessage })
-    }
-  } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err)
-    error("Job execution threw exception", { error: errorMessage })
-
-    // Flush any remaining logs and span events
-    if (logFlushTimer) {
-      clearTimeout(logFlushTimer)
-      logFlushTimer = null
-    }
-    if (spanFlushTimer) {
-      clearTimeout(spanFlushTimer)
-      spanFlushTimer = null
-    }
-    await Promise.all([flushLogs(), flushSpans()])
-
-    try {
-      if (!cancellationRequested) {
-        await apiClient.fail(runId, errorMessage)
-      }
-    } catch (reportErr) {
-      error("Failed to report error to API", {
-        error: reportErr instanceof Error ? reportErr.message : String(reportErr),
-      })
-    }
-
-    supervisor.stop()
-
-    // Clean up workspace
-    if (workDir) {
-      await cleanupWorkspace(workDir)
-    }
-
-    process.exit(1)
-  }
-
-  supervisor.stop()
-
-  // Clean up workspace
-  if (workDir) {
-    await cleanupWorkspace(workDir)
-  }
-
-  log("Worker exiting normally")
-  process.exit(0)
+  log("Worker exiting", { jobId, workerId, success: result.success })
+  process.exit(result.success ? 0 : 1)
 }
 
 // Run main

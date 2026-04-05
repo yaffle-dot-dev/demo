@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/worker.ts",
+    "start:warm": "bun run src/warm-runner.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

@@ -35,6 +35,7 @@ import {
 } from "./lib/job-worker.ts"
 import { previewMutex } from "./lib/webhook-handler.ts"
 import { ensureDefaultProviderCredentialSignatures } from "./db/queries/provider-credential-signatures.ts"
+import { getWarmRunnerExcludedWorkspacePaths } from "./lib/warm-runner.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
 await initTelemetry()
@@ -92,6 +93,7 @@ function printStartupBanner(input: {
   const runnerMode = schedulerInfo.spawnerType ?? resolveConfiguredRunnerMode()
   const scannerMode = process.env.YAFFLE_SCANNER_LAMBDA_FUNCTION ? "lambda" : runnerMode
   const scannerDetail = process.env.YAFFLE_SCANNER_LAMBDA_FUNCTION ?? runnerMode
+  const warmRunnerExcludedWorkspaces = getWarmRunnerExcludedWorkspacePaths()
   const otelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? ""
   const otelDataset = extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_HEADERS)
   const lines = [
@@ -105,6 +107,7 @@ function printStartupBanner(input: {
     `database: ${describeDatabase(process.env.DATABASE_URL)}`,
     `otel: ${otelEndpoint || "disabled"}${otelDataset ? ` dataset=${otelDataset}` : ""}`,
     `runner_mode: ${runnerMode}`,
+    `warm_runner_excluded_workspaces: ${warmRunnerExcludedWorkspaces.length > 0 ? warmRunnerExcludedWorkspaces.join(", ") : "none"}`,
     `scanner_mode: ${scannerMode}${scannerMode === "lambda" ? ` (${scannerDetail})` : ""}`,
     `scheduler: ${input.startSchedulerRole && !input.schedulerDisabled ? `enabled worker=${schedulerInfo.workerId ?? "pending"} leader=${schedulerInfo.isLeader} running=${schedulerInfo.isRunning}` : "disabled"}`,
     `job_worker: ${input.startJobWorkerRole ? `enabled worker=${jobWorkerInfo.workerId ?? "pending"} running=${jobWorkerInfo.running}` : "disabled"}`,
@@ -128,6 +131,7 @@ function printStartupBanner(input: {
     otelEndpoint: otelEndpoint || "disabled",
     otelDataset: otelDataset ?? undefined,
     runnerMode,
+    warmRunnerExcludedWorkspaces,
     scannerMode,
     scannerDetail,
     schedulerEnabled: input.startSchedulerRole && !input.schedulerDisabled,
