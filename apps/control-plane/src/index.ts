@@ -23,13 +23,126 @@ import { repoMappingsRoute } from "./routes/repo-mappings.ts"
 import { billingRoute } from "./routes/billing.ts"
 import { stripeWebhooksRoute } from "./routes/stripe-webhooks.ts"
 import { auth } from "./lib/better-auth.ts"
-import { startScheduler, stopScheduler } from "./lib/scheduler.ts"
-import { startJobWorker, stopJobWorker } from "./lib/job-worker.ts"
+import {
+  getSchedulerRuntimeInfo,
+  startScheduler,
+  stopScheduler,
+} from "./lib/scheduler.ts"
+import {
+  getJobWorkerRuntimeInfo,
+  startJobWorker,
+  stopJobWorker,
+} from "./lib/job-worker.ts"
 import { previewMutex } from "./lib/webhook-handler.ts"
 import { ensureDefaultProviderCredentialSignatures } from "./db/queries/provider-credential-signatures.ts"
 
 // Initialize OTel SDK (no-op if OTEL_EXPORTER_OTLP_ENDPOINT not set)
 await initTelemetry()
+
+function extractAxiomDataset(headers: string | undefined): string | null {
+  if (!headers) {
+    return null
+  }
+
+  for (const part of headers.split(",")) {
+    const [rawKey, ...rawValue] = part.split("=")
+    if (rawKey?.trim().toLowerCase() === "x-axiom-dataset") {
+      const value = rawValue.join("=").trim()
+      return value || null
+    }
+  }
+
+  return null
+}
+
+function describeDatabase(urlString: string | undefined): string {
+  if (!urlString) {
+    return "unset"
+  }
+
+  try {
+    const url = new URL(urlString)
+    const dbName = url.pathname.replace(/^\//, "") || "(default)"
+    return `${url.hostname}:${url.port || "default"}/${dbName}`
+  } catch {
+    return "invalid"
+  }
+}
+
+function resolveConfiguredRunnerMode(): "ecs" | "local" {
+  const isProduction = process.env.NODE_ENV === "production"
+  const useEcs = !!process.env.YAFFLE_ECS_CLUSTER
+  const forceEcs = process.env.YAFFLE_USE_ECS_RUNNER === "true"
+
+  return (isProduction || forceEcs) && useEcs ? "ecs" : "local"
+}
+
+function printStartupBanner(input: {
+  hostname: string
+  port: number
+  processRole: ProcessRole
+  schedulerDisabled: boolean
+  startSchedulerRole: boolean
+  startJobWorkerRole: boolean
+}): void {
+  const yaffleEnv = process.env.YAFFLE_ENV ?? "development"
+  const yaffleEnvSource = process.env.YAFFLE_ENV ? "env" : "default"
+  const schedulerInfo = getSchedulerRuntimeInfo()
+  const jobWorkerInfo = getJobWorkerRuntimeInfo()
+  const runnerMode = schedulerInfo.spawnerType ?? resolveConfiguredRunnerMode()
+  const scannerMode = process.env.YAFFLE_SCANNER_LAMBDA_FUNCTION ? "lambda" : runnerMode
+  const scannerDetail = process.env.YAFFLE_SCANNER_LAMBDA_FUNCTION ?? runnerMode
+  const otelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? ""
+  const otelDataset = extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_HEADERS)
+  const lines = [
+    "=== Yaffle Control Plane ===",
+    `env: ${yaffleEnv} (${yaffleEnvSource})`,
+    `node_env: ${process.env.NODE_ENV ?? "development"}`,
+    `process_role: ${input.processRole}`,
+    `bind: ${input.hostname}:${input.port}`,
+    `pid: ${process.pid}`,
+    `cwd: ${process.cwd()}`,
+    `database: ${describeDatabase(process.env.DATABASE_URL)}`,
+    `otel: ${otelEndpoint || "disabled"}${otelDataset ? ` dataset=${otelDataset}` : ""}`,
+    `runner_mode: ${runnerMode}`,
+    `scanner_mode: ${scannerMode}${scannerMode === "lambda" ? ` (${scannerDetail})` : ""}`,
+    `scheduler: ${input.startSchedulerRole && !input.schedulerDisabled ? `enabled worker=${schedulerInfo.workerId ?? "pending"} leader=${schedulerInfo.isLeader} running=${schedulerInfo.isRunning}` : "disabled"}`,
+    `job_worker: ${input.startJobWorkerRole ? `enabled worker=${jobWorkerInfo.workerId ?? "pending"} running=${jobWorkerInfo.running}` : "disabled"}`,
+    `runner_api_url: ${process.env.YAFFLE_RUNNER_API_URL ?? "unset"}`,
+    `tfc_api_host: ${process.env.YAFFLE_TFC_API_HOST ?? "unset"}`,
+    `aws_region: ${process.env.AWS_REGION ?? "unset"}`,
+  ]
+
+  console.log(lines.map((line) => `[startup] ${line}`).join("\n"))
+
+  log.info("Control plane startup summary", {
+    yaffleEnv,
+    yaffleEnvSource,
+    nodeEnv: process.env.NODE_ENV ?? "development",
+    processRole: input.processRole,
+    hostname: input.hostname,
+    port: input.port,
+    pid: process.pid,
+    cwd: process.cwd(),
+    database: describeDatabase(process.env.DATABASE_URL),
+    otelEndpoint: otelEndpoint || "disabled",
+    otelDataset: otelDataset ?? undefined,
+    runnerMode,
+    scannerMode,
+    scannerDetail,
+    schedulerEnabled: input.startSchedulerRole && !input.schedulerDisabled,
+    schedulerWorkerId: schedulerInfo.workerId ?? undefined,
+    schedulerIsLeader: schedulerInfo.isLeader,
+    schedulerIsRunning: schedulerInfo.isRunning,
+    schedulerElectionRunning: schedulerInfo.electionRunning,
+    jobWorkerEnabled: input.startJobWorkerRole,
+    jobWorkerWorkerId: jobWorkerInfo.workerId ?? undefined,
+    jobWorkerRunning: jobWorkerInfo.running,
+    runnerApiUrl: process.env.YAFFLE_RUNNER_API_URL ?? undefined,
+    tfcApiHost: process.env.YAFFLE_TFC_API_HOST ?? undefined,
+    awsRegion: process.env.AWS_REGION ?? undefined,
+  })
+}
 
 const schedulerDisabled = process.env.YAFFLE_DISABLE_SCHEDULER === "true"
 
@@ -146,6 +259,16 @@ app.route("/api/internal/provider-discovery", providerDiscoveryRoute)
 app.route("/api", healthRoute)
 
 const port = Number(process.env.PORT ?? 3000)
+const hostname = process.env.HOST ?? "0.0.0.0"
+
+printStartupBanner({
+  hostname,
+  port,
+  processRole,
+  schedulerDisabled,
+  startSchedulerRole,
+  startJobWorkerRole,
+})
 
 log.info(`yaffle api listening on :${port}`, { port })
 
@@ -170,7 +293,7 @@ process.on("SIGINT", shutdown)
 
 export default {
   port,
-  hostname: "0.0.0.0",
+  hostname,
   fetch: app.fetch,
   // Disable Bun's default 10s idle timeout — SSE connections can be idle
   // for extended periods between events. Our own 30s heartbeat keeps

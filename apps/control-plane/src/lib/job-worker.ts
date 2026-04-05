@@ -50,6 +50,16 @@ function getJobWorkerState(): JobWorkerState {
 
 const state = getJobWorkerState()
 
+export function getJobWorkerRuntimeInfo(): {
+  workerId: string | null
+  running: boolean
+} {
+  return {
+    workerId: state.workerId ?? null,
+    running: !!state.pollInterval,
+  }
+}
+
 /**
  * Start the job worker.
  */

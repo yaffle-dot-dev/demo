@@ -258,6 +258,18 @@ export class Scheduler {
     this.pollForAutoApplies().catch(() => {})
   }
 
+  getWorkerId(): string {
+    return this.workerId
+  }
+
+  getSpawnerType(): string {
+    return this.spawnerType
+  }
+
+  isRunning(): boolean {
+    return this.running
+  }
+
   /**
    * Stop the scheduler.
    * Stops polling but doesn't kill running engines.
@@ -768,6 +780,48 @@ function getSchedulerGlobalState(): SchedulerGlobalState {
 }
 
 const schedulerState = getSchedulerGlobalState()
+
+type SchedulerRuntimeLike = {
+  getWorkerId?: () => string
+  getSpawnerType?: () => string
+  isRunning?: () => boolean
+  workerId?: string
+  spawnerType?: string
+  running?: boolean
+}
+
+export function getSchedulerRuntimeInfo(): {
+  workerId: string | null
+  spawnerType: string | null
+  isLeader: boolean
+  isRunning: boolean
+  electionRunning: boolean
+} {
+  const scheduler = schedulerState.schedulerInstance as SchedulerRuntimeLike | null
+  const workerId = typeof scheduler?.getWorkerId === "function"
+    ? scheduler.getWorkerId()
+    : typeof scheduler?.workerId === "string"
+      ? scheduler.workerId
+      : null
+  const spawnerType = typeof scheduler?.getSpawnerType === "function"
+    ? scheduler.getSpawnerType()
+    : typeof scheduler?.spawnerType === "string"
+      ? scheduler.spawnerType
+      : null
+  const isRunning = typeof scheduler?.isRunning === "function"
+    ? scheduler.isRunning()
+    : typeof scheduler?.running === "boolean"
+      ? scheduler.running
+      : false
+
+  return {
+    workerId,
+    spawnerType,
+    isLeader: !!schedulerLeaderState.leaseHandle,
+    isRunning,
+    electionRunning: !!schedulerLeaderState.electionTimer,
+  }
+}
 
 /**
  * Get or create the scheduler instance.
