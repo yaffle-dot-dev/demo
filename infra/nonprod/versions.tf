@@ -1,8 +1,8 @@
 # =============================================================================
 # Non-Production Infrastructure
 # =============================================================================
-# VPC and EC2-backed ECS cluster for preview environments.
-# Cost-optimized with spot instances, single NAT.
+# VPC and ECS cluster foundation for preview environments.
+# Preview workloads run on Fargate with a single NAT gateway.
 # =============================================================================
 
 terraform {

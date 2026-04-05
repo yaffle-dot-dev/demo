@@ -49,16 +49,6 @@ output "ecs_cluster_name" {
   description = "ECS cluster name"
 }
 
-output "ecs_capacity_provider_name" {
-  value       = aws_ecs_capacity_provider.main.name
-  description = "ECS capacity provider name"
-}
-
-output "ecs_instance_security_group_id" {
-  value       = aws_security_group.ecs_instances.id
-  description = "Security group ID for ECS instances"
-}
-
 # -----------------------------------------------------------------------------
 # ECR
 # -----------------------------------------------------------------------------

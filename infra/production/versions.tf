@@ -1,7 +1,7 @@
 # =============================================================================
 # Production Infrastructure
 # =============================================================================
-# VPC and EC2-backed ECS cluster for production workloads.
+# VPC and ECS cluster foundation for production workloads.
 # =============================================================================
 
 terraform {

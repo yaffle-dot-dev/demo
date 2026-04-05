@@ -2,7 +2,7 @@
 # Production Infrastructure
 # =============================================================================
 # VPC + ECS cluster for production workloads.
-# Uses on-demand instances, HA NAT gateways, container insights.
+# Production workloads run on Fargate with HA NAT gateways and container insights.
 # =============================================================================
 
 module "core" {
@@ -14,10 +14,6 @@ module "core" {
   vpc_cidr    = "10.0.0.0/16"
 
   # Production settings
-  instance_types     = [var.instance_type]
-  min_instances      = var.min_instances
-  max_instances      = var.max_instances
-  use_spot           = false
   ha_nat             = true
   container_insights = true
 }

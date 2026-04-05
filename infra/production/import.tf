@@ -106,61 +106,7 @@ import {
 
 import {
   for_each = local.import_main
-  to       = module.core.aws_security_group.ecs_instances
-  id       = "sg-04542c32e257a32e6"
-}
-
-import {
-  for_each = local.import_main
-  to       = module.core.aws_iam_role.ecs_instance
-  id       = "yaffle-role-ecs-instance-production-main-use1"
-}
-
-import {
-  for_each = local.import_main
-  to       = module.core.aws_iam_instance_profile.ecs_instance
-  id       = "yaffle-profile-ecs-instance-production-main-use1"
-}
-
-import {
-  for_each = local.import_main
-  to       = module.core.aws_iam_role_policy_attachment.ecs_instance
-  id       = "yaffle-role-ecs-instance-production-main-use1/arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
-}
-
-import {
-  for_each = local.import_main
-  to       = module.core.aws_iam_role_policy_attachment.ecs_instance_ssm
-  id       = "yaffle-role-ecs-instance-production-main-use1/arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
-}
-
-import {
-  for_each = local.import_main
-  to       = module.core.aws_launch_template.ecs
-  id       = "lt-09cbcb01f655b9f00"
-}
-
-import {
-  for_each = local.import_main
-  to       = module.core.aws_autoscaling_group.ecs
-  id       = "yaffle-ecs-production-main-use1-20260318025321997900000004"
-}
-
-import {
-  for_each = local.import_main
   to       = module.core.aws_ecs_cluster.main
-  id       = "yaffle-cluster-production-main-use1"
-}
-
-import {
-  for_each = local.import_main
-  to       = module.core.aws_ecs_capacity_provider.main
-  id       = "arn:aws:ecs:us-east-1:870923192739:capacity-provider/yaffle-capacity-production-main-use1"
-}
-
-import {
-  for_each = local.import_main
-  to       = module.core.aws_ecs_cluster_capacity_providers.main
   id       = "yaffle-cluster-production-main-use1"
 }
 

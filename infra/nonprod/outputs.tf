@@ -40,16 +40,6 @@ output "ecs_cluster_name" {
   description = "ECS cluster name"
 }
 
-output "ecs_capacity_provider_name" {
-  value       = module.core.ecs_capacity_provider_name
-  description = "ECS capacity provider name"
-}
-
-output "ecs_instance_security_group_id" {
-  value       = module.core.ecs_instance_security_group_id
-  description = "Security group ID for ECS instances"
-}
-
 output "ecr_control_plane_url" {
   value       = module.core.ecr_control_plane_url
   description = "ECR repository URL for control-plane images"

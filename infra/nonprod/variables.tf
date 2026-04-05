@@ -15,21 +15,3 @@ variable "environment_kind" {
   description = "Environment kind (passed by Yaffle, unused in nonprod)"
   default     = "production"
 }
-
-variable "instance_types" {
-  type        = list(string)
-  description = "EC2 instance types for ECS cluster (multiple for spot diversity)"
-  default     = ["t3.small", "t3.medium", "t3a.small", "t3a.medium"]
-}
-
-variable "min_instances" {
-  type        = number
-  description = "Minimum number of EC2 instances in the cluster"
-  default     = 0
-}
-
-variable "max_instances" {
-  type        = number
-  description = "Maximum number of EC2 instances in the cluster"
-  default     = 5
-}
