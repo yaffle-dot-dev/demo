@@ -3,7 +3,14 @@ import { randomUUID } from "node:crypto"
 import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
-import { iacJobs, iacJobStatusEnum, iacJobTypeEnum, tfRuns, workspaceDeployments } from "../schema.ts"
+import {
+  iacJobs,
+  iacJobStatusEnum,
+  iacJobTypeEnum,
+  organizations,
+  tfRuns,
+  workspaceDeployments,
+} from "../schema.ts"
 import {
   withDbSpan,
   logger,
@@ -570,6 +577,7 @@ export async function getJobWithContext(jobId: string): Promise<
       deployment: {
         id: string
         orgId: string
+        orgSlug: string
         repo: string
         environmentKind: string
         environmentName: string
@@ -585,6 +593,7 @@ export async function getJobWithContext(jobId: string): Promise<
       preview: {
         id: string
         orgId: string
+        orgSlug: string
         repo: string
         prNumber: number | null
         workspacePath: string
@@ -604,6 +613,7 @@ export async function getJobWithContext(jobId: string): Promise<
         deployment: {
           id: workspaceDeployments.id,
           orgId: workspaceDeployments.orgId,
+          orgSlug: organizations.slug,
           repo: workspaceDeployments.repo,
           environmentKind: workspaceDeployments.environmentKind,
           environmentName: workspaceDeployments.environmentName,
@@ -618,6 +628,7 @@ export async function getJobWithContext(jobId: string): Promise<
       })
       .from(iacJobs)
       .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
+      .innerJoin(organizations, eq(workspaceDeployments.orgId, organizations.id))
       .where(eq(iacJobs.id, jobId))
       .limit(1)
 

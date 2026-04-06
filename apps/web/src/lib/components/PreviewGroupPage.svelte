@@ -246,6 +246,33 @@
     return isWorkspaceInProgressStatus(status)
   }
 
+  const staleStatusWorkspacePaths = $derived.by((): string[] => {
+    if (
+      !viewedRunGroup
+      || !isLatestRunGroup
+      || usingFreshPendingDag
+      || (viewedRunGroup.status !== "scanning"
+        && viewedRunGroup.status !== "pending"
+        && viewedRunGroup.status !== "running")
+    ) {
+      return []
+    }
+
+    return filteredWorkspaces
+      .filter((workspace) => {
+        if (workspace.runs.length > 0) {
+          return false
+        }
+
+        const status = workspaceDisplayStatuses[workspace.preview.workspacePath] ?? workspace.preview.status
+        return status === "failed"
+          || status === "cancelled"
+          || status === "ready"
+          || status === "planned"
+      })
+      .map((workspace) => workspace.preview.workspacePath)
+  })
+
   // Follow mode: auto-follow the running workspace unless user manually selected one
   // Starts false if there's a ws param in URL (user navigated to specific workspace)
   // Otherwise starts true to follow running workspaces
@@ -325,6 +352,8 @@
   function handleWorkspaceSelect(path: string) {
     // Disable follow mode when user manually selects
     followMode = false
+    pendingWorkspaceSelectionPath = path
+    workspaceSelectionStartedAtMs = performance.now()
     const url = new URL($page.url)
     url.searchParams.set("ws", path)
     goto(url.toString(), { replaceState: true, noScroll: true })
@@ -519,9 +548,13 @@
   const TERMINAL_STALL_THRESHOLD_MS = 5_000
 
   let firstDagTelemetrySent = $state(false)
+  let firstSelectedWorkspaceTelemetrySent = $state(false)
+  let reportedStaleStatusRunGroupIds = $state<string[]>([])
   let lastObservedLatestRunGroupId = $state<string | null>(null)
   let pendingNewRunGroupId = $state<string | null>(null)
   let newRunDetectedAtMs = $state<number | null>(null)
+  let pendingWorkspaceSelectionPath = $state<string | null>(null)
+  let workspaceSelectionStartedAtMs = $state<number | null>(null)
   let pendingFirstLogByteRunId = $state<string | null>(null)
   let firstLogByteStartedAtMs = $state<number | null>(null)
   let emittedFirstLogByteRunIds = $state<string[]>([])
@@ -583,6 +616,63 @@
     })
 
     firstDagTelemetrySent = true
+  })
+
+  $effect(() => {
+    if (!onTrackRunViewEvent || !viewedRunGroup || !selectedWorkspace) {
+      return
+    }
+
+    const workspacePath = selectedWorkspace.preview.workspacePath
+
+    if (!firstSelectedWorkspaceTelemetrySent && runViewStartMs != null) {
+      onTrackRunViewEvent({
+        name: "run_view_selected_workspace_rendered",
+        runGroupId: viewedRunGroup.id,
+        workspacePath,
+        durationMs: performance.now() - runViewStartMs,
+        selectionSource: "initial",
+      })
+
+      firstSelectedWorkspaceTelemetrySent = true
+    }
+
+    if (
+      pendingWorkspaceSelectionPath === workspacePath
+      && workspaceSelectionStartedAtMs != null
+    ) {
+      onTrackRunViewEvent({
+        name: "run_view_selected_workspace_rendered",
+        runGroupId: viewedRunGroup.id,
+        workspacePath,
+        durationMs: performance.now() - workspaceSelectionStartedAtMs,
+        selectionSource: "manual",
+      })
+
+      pendingWorkspaceSelectionPath = null
+      workspaceSelectionStartedAtMs = null
+    }
+  })
+
+  $effect(() => {
+    if (
+      !onTrackRunViewEvent
+      || !viewedRunGroup
+      || staleStatusWorkspacePaths.length === 0
+      || reportedStaleStatusRunGroupIds.includes(viewedRunGroup.id)
+    ) {
+      return
+    }
+
+    onTrackRunViewEvent({
+      name: "run_view_stale_status_flash",
+      runGroupId: viewedRunGroup.id,
+      workspaceCount: filteredWorkspaces.length,
+      affectedWorkspaceCount: staleStatusWorkspacePaths.length,
+      isVisible: typeof document !== "undefined" ? !document.hidden : undefined,
+    })
+
+    reportedStaleStatusRunGroupIds = [...reportedStaleStatusRunGroupIds, viewedRunGroup.id]
   })
 
   $effect(() => {

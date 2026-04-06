@@ -8,6 +8,9 @@ export interface RunViewCorrelation {
 export type RunViewTelemetryEventName =
   | "run_view_opened"
   | "run_view_first_dag_rendered"
+  | "run_view_selected_workspace_rendered"
+  | "run_view_no_data_flash"
+  | "run_view_stale_status_flash"
   | "run_view_new_run_detected"
   | "run_view_new_run_handoff_rendered"
   | "run_view_env_snapshot_applied"
@@ -16,6 +19,7 @@ export type RunViewTelemetryEventName =
   | "run_view_terminal_first_log_byte"
   | "run_view_terminal_stall_started"
   | "run_view_terminal_stall_ended"
+  | "run_view_long_task"
 
 export interface RunViewTelemetryEvent {
   name: RunViewTelemetryEventName
@@ -26,7 +30,10 @@ export interface RunViewTelemetryEvent {
   runType?: string | null
   durationMs?: number
   workspaceCount?: number
+  affectedWorkspaceCount?: number
   usedPlaceholderDag?: boolean
+  selectionSource?: "initial" | "manual"
+  surface?: "page" | "tab"
   streamType?: "environment" | "run_log"
   sourceEventType?: string | null
   sourceEventAt?: string | null

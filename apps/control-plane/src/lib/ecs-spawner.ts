@@ -33,7 +33,8 @@ import { buildOrgResourceTags } from "./aws-tags.ts"
 import { getAwsClientConfig } from "./aws-client-config.ts"
 import { logger } from "./telemetry.ts"
 import type { IacEngineSpawner } from "./scheduler.ts"
-import { updateJobEcsTask } from "../db/queries/iac-jobs.ts"
+import { getJobWithContext, updateJobEcsTask } from "../db/queries/iac-jobs.ts"
+import { findScanJobById } from "../db/queries/scan-jobs.ts"
 
 /**
  * Configuration for the ECS runner spawner.
@@ -57,6 +58,26 @@ interface RunEcsTaskOptions {
   environment: Array<{ name: string; value: string }>
   command?: string[]
   tags: Tag[]
+}
+
+interface OrgOwnedTaskTagOptions {
+  orgId: string
+  orgSlug?: string
+  resourceClass: string
+  extraTags: Record<string, string>
+}
+
+function buildEcsTaskTags(options: OrgOwnedTaskTagOptions): Tag[] {
+  return buildOrgResourceTags(
+    {
+      orgId: options.orgId,
+      orgSlug: options.orgSlug,
+    },
+    {
+      resourceClass: options.resourceClass,
+      extraTags: options.extraTags,
+    },
+  )
 }
 
 /**
@@ -83,6 +104,7 @@ export class EcsEngineSpawner implements IacEngineSpawner {
       cluster: this.config.clusterArn,
       taskDefinition: this.config.taskDefinition,
       launchType: "FARGATE",
+      enableECSManagedTags: true,
       networkConfiguration: {
         awsvpcConfiguration: {
           subnets: this.config.subnets,
@@ -112,6 +134,38 @@ export class EcsEngineSpawner implements IacEngineSpawner {
     return result.tasks[0].taskArn!
   }
 
+  private async buildRunnerTaskTags(jobId: string): Promise<Tag[]> {
+    const job = await getJobWithContext(jobId)
+    if (!job?.deployment) {
+      throw new Error(`Cannot spawn ECS runner task: job ${jobId} missing deployment context`)
+    }
+
+    return buildEcsTaskTags({
+      orgId: job.deployment.orgId,
+      orgSlug: job.deployment.orgSlug,
+      resourceClass: "runner-task",
+      extraTags: {
+        "yaffle:job-id": jobId,
+      },
+    })
+  }
+
+  private async buildScannerTaskTags(scanJobId: string): Promise<Tag[]> {
+    const scanJob = await findScanJobById(scanJobId)
+    if (!scanJob) {
+      throw new Error(`Cannot spawn ECS scanner task: scan job ${scanJobId} not found`)
+    }
+
+    return buildEcsTaskTags({
+      orgId: scanJob.orgId,
+      orgSlug: scanJob.orgSlug,
+      resourceClass: "scanner-task",
+      extraTags: {
+        "yaffle:scan-job-id": scanJobId,
+      },
+    })
+  }
+
   /**
    * Spawn an ECS task to execute a job.
    *
@@ -134,9 +188,7 @@ export class EcsEngineSpawner implements IacEngineSpawner {
 
     const taskArn = await this.runTask({
       environment: envVars,
-      tags: [
-        { key: "yaffle:job-id", value: jobId },
-      ],
+      tags: await this.buildRunnerTaskTags(jobId),
     })
 
     logger.info("ECS runner task started", {
@@ -167,9 +219,7 @@ export class EcsEngineSpawner implements IacEngineSpawner {
     const taskArn = await this.runTask({
       environment: envVars,
       command: ["bun", "run", "/app/apps/runner/src/scanner.ts"],
-      tags: [
-        { key: "yaffle:scan-job-id", value: scanJobId },
-      ],
+      tags: await this.buildScannerTaskTags(scanJobId),
     })
 
     logger.info("ECS scanner task started", {

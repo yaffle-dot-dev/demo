@@ -30,6 +30,7 @@
   const runViewSessionId = $state(browser ? getOrCreateRunViewSessionId() : null)
   const pageViewId = $state(browser ? createRunViewPageId() : null)
   const runViewStartMs = $state(browser ? performance.now() : null)
+  const LONG_TASK_THRESHOLD_MS = 100
   let lastVisibleAtMs = $state<number | null>(browser ? performance.now() : null)
   const trackRunViewEvent = createRunViewTelemetryClient(() => ({
     org,
@@ -88,6 +89,7 @@
   let hasSeenEnvironmentConnected = $state(false)
   let environmentReconnectCount = $state(0)
   let lastEnvironmentSnapshotMetaKey = $state<string | null>(null)
+  let hasReportedNoDataFlash = $state(false)
 
   $effect(() => {
     initialEnvironment = data.initialEnvironment
@@ -167,10 +169,31 @@
     })
   })
 
+  $effect(() => {
+    if (
+      hasReportedNoDataFlash
+      || displayData
+      || stream.connectionState === "connecting"
+    ) {
+      return
+    }
+
+    trackRunViewEvent({
+      name: "run_view_no_data_flash",
+      surface: "page",
+      connectionState: stream.connectionState,
+      isVisible: typeof document !== "undefined" ? !document.hidden : undefined,
+    })
+
+    hasReportedNoDataFlash = true
+  })
+
   onMount(() => {
     if (!browser) {
       return
     }
+
+    let longTaskObserver: PerformanceObserver | null = null
 
     const handleVisibilityChange = () => {
       if (!document.hidden) {
@@ -179,6 +202,33 @@
     }
 
     document.addEventListener("visibilitychange", handleVisibilityChange)
+
+    if (
+      typeof PerformanceObserver !== "undefined"
+      && PerformanceObserver.supportedEntryTypes?.includes("longtask")
+    ) {
+      longTaskObserver = new PerformanceObserver((list) => {
+        const latestRunGroupId = displayData ? getLatestRunGroup(displayData)?.id ?? null : null
+        const workspaceCount = displayData?.workspaces.length
+
+        for (const entry of list.getEntries()) {
+          if (entry.duration < LONG_TASK_THRESHOLD_MS) {
+            continue
+          }
+
+          trackRunViewEvent({
+            name: "run_view_long_task",
+            runGroupId: latestRunGroupId,
+            durationMs: entry.duration,
+            workspaceCount,
+            connectionState: stream.connectionState,
+            isVisible: !document.hidden,
+          })
+        }
+      })
+
+      longTaskObserver.observe({ entryTypes: ["longtask"] })
+    }
 
     trackRunViewEvent({
       name: "run_view_opened",
@@ -195,6 +245,7 @@
     })()
 
     return () => {
+      longTaskObserver?.disconnect()
       document.removeEventListener("visibilitychange", handleVisibilityChange)
     }
   })
