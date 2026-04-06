@@ -36,12 +36,16 @@ import {
   type ConcurrencyLimits,
   type IacJob,
 } from "../db/queries/iac-jobs.ts"
-import { hasActiveWarmRunnerForOrg } from "../db/queries/warm-runners.ts"
+import { getWarmRunnerCapacityForOrg } from "../db/queries/warm-runners.ts"
 import { findDeploymentsReadyForAutoApply } from "../db/queries/workspace-deployments.ts"
 import { queueAutoApply } from "./webhook-handler.ts"
 import { generateJobTokenForJob } from "./local-spawner.ts"
 import { acquireLease, type LeaseHandle } from "./db-lease.ts"
-import { isWarmRunnerWorkspaceExcluded } from "./warm-runner.ts"
+import {
+  getWarmRunnerBurstAfterMs,
+  isWarmRunnerBurstEnabled,
+  isWarmRunnerWorkspaceExcluded,
+} from "./warm-runner.ts"
 import {
   getSchedulerActiveJobsGauge,
   getSchedulerGroupsQueuedGauge,
@@ -86,6 +90,10 @@ export interface SchedulerConfig {
   spawnBackoffMs?: number
   /** How fresh a warm runner heartbeat must be to suppress cold spawning. Default: 30000 */
   warmRunnerStaleAfterMs?: number
+  /** Whether cold burst fallback is enabled when warm capacity is saturated. Default: true */
+  warmRunnerBurstEnabled?: boolean
+  /** How long to defer cold burst when warm runners exist but are saturated. Default: 10000 */
+  warmRunnerBurstAfterMs?: number
 }
 
 export interface IacEngineSpawner {
@@ -161,6 +169,8 @@ export class Scheduler {
       maxJobsPerRunGroup: config.maxJobsPerRunGroup ?? 3,
       spawnBackoffMs: config.spawnBackoffMs ?? 2 * 60 * 1000,
       warmRunnerStaleAfterMs: config.warmRunnerStaleAfterMs ?? 30_000,
+      warmRunnerBurstEnabled: config.warmRunnerBurstEnabled ?? true,
+      warmRunnerBurstAfterMs: config.warmRunnerBurstAfterMs ?? 10_000,
     }
     this.limits = {
       maxTotal: this.config.maxConcurrentJobs,
@@ -534,17 +544,71 @@ export class Scheduler {
         continue
       }
 
-      if (
-        !isWarmRunnerWorkspaceExcluded(jobContext.deployment.workspacePath)
-        && await hasActiveWarmRunnerForOrg(jobContext.deployment.orgId, this.config.warmRunnerStaleAfterMs)
-      ) {
-        await releaseJobSpawnLease(job.id, lease.leaseToken)
-        getSchedulerSpawnSuppressedCounter().add(1, {
-          reason: "warm_runner_available",
-          job_type: job.jobType,
-          spawner: this.spawnerType,
-        })
-        continue
+      if (!isWarmRunnerWorkspaceExcluded(jobContext.deployment.workspacePath)) {
+        const warmCapacity = await getWarmRunnerCapacityForOrg(
+          jobContext.deployment.orgId,
+          this.config.warmRunnerStaleAfterMs,
+        )
+
+        if (warmCapacity.activeRunners > 0) {
+          const queueAgeMs = Date.now() - job.queuedAt.getTime()
+
+          if (warmCapacity.availableSlots > 0) {
+            await releaseJobSpawnLease(job.id, lease.leaseToken)
+            getSchedulerSpawnSuppressedCounter().add(1, {
+              reason: "warm_runner_capacity_available",
+              job_type: job.jobType,
+              spawner: this.spawnerType,
+            })
+            continue
+          }
+
+          if (!this.config.warmRunnerBurstEnabled) {
+            await releaseJobSpawnLease(job.id, lease.leaseToken)
+            getSchedulerSpawnSuppressedCounter().add(1, {
+              reason: "warm_runner_saturated_no_burst",
+              job_type: job.jobType,
+              spawner: this.spawnerType,
+            })
+            continue
+          }
+
+          if (queueAgeMs < this.config.warmRunnerBurstAfterMs) {
+            await releaseJobSpawnLease(job.id, lease.leaseToken)
+            getSchedulerSpawnSuppressedCounter().add(1, {
+              reason: "warm_runner_burst_deferred",
+              job_type: job.jobType,
+              spawner: this.spawnerType,
+            })
+            logger.info("Hybrid burst deferred while warm runner is saturated", {
+              workerId: this.workerId,
+              jobId: job.id,
+              orgId: jobContext.deployment.orgId,
+              workspacePath: jobContext.deployment.workspacePath,
+              queueAgeMs,
+              warmActiveRunners: warmCapacity.activeRunners,
+              warmTotalSlots: warmCapacity.totalSlots,
+              warmActiveSlots: warmCapacity.activeSlots,
+              warmAvailableSlots: warmCapacity.availableSlots,
+              burstAfterMs: this.config.warmRunnerBurstAfterMs,
+            })
+            continue
+          }
+
+          if (this.config.warmRunnerBurstEnabled) {
+            logger.info("Hybrid burst allowing cold spawn for saturated warm runner org", {
+              workerId: this.workerId,
+              jobId: job.id,
+              orgId: jobContext.deployment.orgId,
+              workspacePath: jobContext.deployment.workspacePath,
+              queueAgeMs,
+              warmActiveRunners: warmCapacity.activeRunners,
+              warmTotalSlots: warmCapacity.totalSlots,
+              warmActiveSlots: warmCapacity.activeSlots,
+              warmAvailableSlots: warmCapacity.availableSlots,
+            })
+          }
+        }
       }
 
       const resolution = await resolveExecutionCredentialsForDeployment(jobContext.deployment)
@@ -903,12 +967,16 @@ export async function getScheduler(): Promise<Scheduler> {
     staleCheckIntervalMs: isProduction ? 60000 : 30000,
     maxConcurrentJobs,
     maxJobsPerRunGroup,
+    warmRunnerBurstEnabled: isWarmRunnerBurstEnabled(),
+    warmRunnerBurstAfterMs: getWarmRunnerBurstAfterMs(),
   }, spawnerType)
 
   logger.info("Scheduler configured", {
     maxConcurrentJobs,
     maxJobsPerRunGroup,
     spawner: spawnerType,
+    warmRunnerBurstEnabled: isWarmRunnerBurstEnabled(),
+    warmRunnerBurstAfterMs: getWarmRunnerBurstAfterMs(),
   })
 
   return schedulerState.schedulerInstance

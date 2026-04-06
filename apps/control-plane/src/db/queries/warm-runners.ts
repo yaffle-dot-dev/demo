@@ -11,6 +11,13 @@ import { warmRunnerSessions } from "../schema.ts"
 
 export type WarmRunnerSession = typeof warmRunnerSessions.$inferSelect
 
+export interface WarmRunnerCapacitySnapshot {
+  activeRunners: number
+  totalSlots: number
+  activeSlots: number
+  availableSlots: number
+}
+
 function getWarmRunnerStaleCutoff(staleAfterMs: number): Date {
   return new Date(Date.now() - staleAfterMs)
 }
@@ -168,6 +175,43 @@ export async function hasActiveWarmRunnerForOrg(
       .limit(1)
 
     return rows.length > 0
+  })
+}
+
+export async function getWarmRunnerCapacityForOrg(
+  orgId: string,
+  staleAfterMs: number = 30_000,
+): Promise<WarmRunnerCapacitySnapshot> {
+  return withDbSpan("select", "warm_runner_sessions", async () => {
+    const staleCutoff = getWarmRunnerStaleCutoff(staleAfterMs)
+
+    const rows = await db
+      .select({
+        activeRunners: sql<number>`count(*)::int`,
+        totalSlots: sql<number>`coalesce(sum(${warmRunnerSessions.maxSlots}), 0)::int`,
+        activeSlots: sql<number>`coalesce(sum(${warmRunnerSessions.activeSlots}), 0)::int`,
+      })
+      .from(warmRunnerSessions)
+      .where(
+        and(
+          eq(warmRunnerSessions.orgId, orgId),
+          eq(warmRunnerSessions.status, "active"),
+          gt(warmRunnerSessions.lastHeartbeatAt, staleCutoff),
+        ),
+      )
+
+    const snapshot = rows[0] ?? {
+      activeRunners: 0,
+      totalSlots: 0,
+      activeSlots: 0,
+    }
+
+    return {
+      activeRunners: snapshot.activeRunners,
+      totalSlots: snapshot.totalSlots,
+      activeSlots: snapshot.activeSlots,
+      availableSlots: Math.max(0, snapshot.totalSlots - snapshot.activeSlots),
+    }
   })
 }
 
