@@ -26,8 +26,10 @@ import {
   RunTaskCommand,
   DescribeTasksCommand,
   type RunTaskCommandInput,
+  type Tag,
 } from "@aws-sdk/client-ecs"
 
+import { buildOrgResourceTags } from "./aws-tags.ts"
 import { getAwsClientConfig } from "./aws-client-config.ts"
 import { logger } from "./telemetry.ts"
 import type { IacEngineSpawner } from "./scheduler.ts"
@@ -51,6 +53,12 @@ export interface EcsSpawnerConfig {
   apiUrl: string
 }
 
+interface RunEcsTaskOptions {
+  environment: Array<{ name: string; value: string }>
+  command?: string[]
+  tags: Tag[]
+}
+
 /**
  * Production engine spawner using ECS Fargate.
  *
@@ -68,6 +76,40 @@ export class EcsEngineSpawner implements IacEngineSpawner {
   constructor(config: EcsSpawnerConfig) {
     this.config = config
     this.ecs = new ECSClient(getAwsClientConfig(config.region))
+  }
+
+  private async runTask(options: RunEcsTaskOptions): Promise<string> {
+    const taskInput: RunTaskCommandInput = {
+      cluster: this.config.clusterArn,
+      taskDefinition: this.config.taskDefinition,
+      launchType: "FARGATE",
+      networkConfiguration: {
+        awsvpcConfiguration: {
+          subnets: this.config.subnets,
+          securityGroups: this.config.securityGroups,
+          assignPublicIp: "DISABLED",
+        },
+      },
+      overrides: {
+        containerOverrides: [
+          {
+            name: "runner",
+            environment: options.environment,
+            ...(options.command ? { command: options.command } : {}),
+          },
+        ],
+      },
+      tags: options.tags,
+    }
+
+    const result = await this.ecs.send(new RunTaskCommand(taskInput))
+
+    if (!result.tasks || result.tasks.length === 0) {
+      const failures = result.failures?.map((f) => f.reason).join(", ") ?? "Unknown error"
+      throw new Error(`Failed to start ECS task: ${failures}`)
+    }
+
+    return result.tasks[0].taskArn!
   }
 
   /**
@@ -90,41 +132,13 @@ export class EcsEngineSpawner implements IacEngineSpawner {
       { name: "YAFFLE_API_URL", value: this.config.apiUrl },
     ]
 
-    // Build task input
-    const taskInput: RunTaskCommandInput = {
-      cluster: this.config.clusterArn,
-      taskDefinition: this.config.taskDefinition,
-      launchType: "FARGATE",
-      networkConfiguration: {
-        awsvpcConfiguration: {
-          subnets: this.config.subnets,
-          securityGroups: this.config.securityGroups,
-          assignPublicIp: "DISABLED",
-        },
-      },
-      overrides: {
-        containerOverrides: [
-          {
-            name: "runner",
-            environment: envVars,
-          },
-        ],
-      },
-      // Tag the task for tracking
+    const taskArn = await this.runTask({
+      environment: envVars,
       tags: [
         { key: "yaffle:job-id", value: jobId },
       ],
-    }
+    })
 
-    // Run the task
-    const result = await this.ecs.send(new RunTaskCommand(taskInput))
-
-    if (!result.tasks || result.tasks.length === 0) {
-      const failures = result.failures?.map((f) => f.reason).join(", ") ?? "Unknown error"
-      throw new Error(`Failed to start ECS task: ${failures}`)
-    }
-
-    const taskArn = result.tasks[0].taskArn!
     logger.info("ECS runner task started", {
       jobId,
       taskArn,
@@ -150,44 +164,68 @@ export class EcsEngineSpawner implements IacEngineSpawner {
       { name: "YAFFLE_API_URL", value: this.config.apiUrl },
     ]
 
-    const taskInput: RunTaskCommandInput = {
-      cluster: this.config.clusterArn,
-      taskDefinition: this.config.taskDefinition,
-      launchType: "FARGATE",
-      networkConfiguration: {
-        awsvpcConfiguration: {
-          subnets: this.config.subnets,
-          securityGroups: this.config.securityGroups,
-          assignPublicIp: "DISABLED",
-        },
-      },
-      overrides: {
-        containerOverrides: [
-          {
-            name: "runner",
-            environment: envVars,
-            command: ["bun", "run", "/app/apps/runner/src/scanner.ts"],
-          },
-        ],
-      },
+    const taskArn = await this.runTask({
+      environment: envVars,
+      command: ["bun", "run", "/app/apps/runner/src/scanner.ts"],
       tags: [
         { key: "yaffle:scan-job-id", value: scanJobId },
       ],
-    }
+    })
 
-    const result = await this.ecs.send(new RunTaskCommand(taskInput))
-
-    if (!result.tasks || result.tasks.length === 0) {
-      const failures = result.failures?.map((f) => f.reason).join(", ") ?? "Unknown error"
-      throw new Error(`Failed to start ECS scanner task: ${failures}`)
-    }
-
-    const taskArn = result.tasks[0].taskArn!
     logger.info("ECS scanner task started", {
       scanJobId,
       taskArn,
       cluster: this.config.clusterArn,
     })
+  }
+
+  async spawnWarmRunner(input: {
+    orgId: string
+    orgSlug?: string
+    runnerToken: string
+    maxSlots: number
+  }): Promise<string> {
+    logger.info("Spawning ECS warm runner task", {
+      orgId: input.orgId,
+      orgSlug: input.orgSlug,
+      maxSlots: input.maxSlots,
+    })
+
+    const envVars = [
+      { name: "YAFFLE_WARM_RUNNER_TOKEN", value: input.runnerToken },
+      { name: "YAFFLE_WARM_RUNNER_MAX_SLOTS", value: String(input.maxSlots) },
+      { name: "YAFFLE_API_URL", value: this.config.apiUrl },
+    ]
+
+    const taskArn = await this.runTask({
+      environment: envVars,
+      command: ["bun", "run", "/app/apps/runner/src/warm-runner.ts"],
+      tags: [
+        ...buildOrgResourceTags(
+          {
+            orgId: input.orgId,
+            orgSlug: input.orgSlug,
+          },
+          {
+            resourceClass: "warm-runner-task",
+            extraTags: {
+              "yaffle:warm-runner": "true",
+              "yaffle:warm-runner-max-slots": String(input.maxSlots),
+            },
+          },
+        ),
+      ],
+    })
+
+    logger.info("ECS warm runner task started", {
+      orgId: input.orgId,
+      orgSlug: input.orgSlug,
+      maxSlots: input.maxSlots,
+      taskArn,
+      cluster: this.config.clusterArn,
+    })
+
+    return taskArn
   }
 
   /**
@@ -224,24 +262,28 @@ export class EcsEngineSpawner implements IacEngineSpawner {
  * Create an ECS spawner from environment configuration.
  */
 export function createEcsSpawner(): EcsEngineSpawner {
-  const clusterArn = process.env.YAFFLE_ECS_CLUSTER_ARN
-  const taskDefinition = process.env.YAFFLE_RUNNER_TASK_DEFINITION
-  const subnets = process.env.YAFFLE_RUNNER_SUBNETS?.split(",") ?? []
-  const securityGroups = process.env.YAFFLE_RUNNER_SECURITY_GROUPS?.split(",") ?? []
+  const clusterArn = process.env.YAFFLE_ECS_CLUSTER_ARN ?? process.env.YAFFLE_ECS_CLUSTER
+  const taskDefinition = process.env.YAFFLE_RUNNER_TASK_DEFINITION ?? process.env.YAFFLE_ECS_TASK_DEFINITION
+  const subnets = (process.env.YAFFLE_RUNNER_SUBNETS ?? process.env.YAFFLE_ECS_SUBNETS ?? "")
+    .split(",")
+    .filter(Boolean)
+  const securityGroups = (process.env.YAFFLE_RUNNER_SECURITY_GROUPS ?? process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "")
+    .split(",")
+    .filter(Boolean)
   const region = process.env.AWS_REGION ?? "us-east-1"
   const apiUrl = process.env.YAFFLE_RUNNER_API_URL
 
   if (!clusterArn) {
-    throw new Error("YAFFLE_ECS_CLUSTER_ARN not configured")
+    throw new Error("YAFFLE_ECS_CLUSTER_ARN or YAFFLE_ECS_CLUSTER not configured")
   }
   if (!taskDefinition) {
-    throw new Error("YAFFLE_RUNNER_TASK_DEFINITION not configured")
+    throw new Error("YAFFLE_RUNNER_TASK_DEFINITION or YAFFLE_ECS_TASK_DEFINITION not configured")
   }
   if (subnets.length === 0) {
-    throw new Error("YAFFLE_RUNNER_SUBNETS not configured")
+    throw new Error("YAFFLE_RUNNER_SUBNETS or YAFFLE_ECS_SUBNETS not configured")
   }
   if (securityGroups.length === 0) {
-    throw new Error("YAFFLE_RUNNER_SECURITY_GROUPS not configured")
+    throw new Error("YAFFLE_RUNNER_SECURITY_GROUPS or YAFFLE_ECS_SECURITY_GROUPS not configured")
   }
   if (!apiUrl) {
     throw new Error("YAFFLE_RUNNER_API_URL not configured")

@@ -37,12 +37,18 @@ import {
   type IacJob,
 } from "../db/queries/iac-jobs.ts"
 import { getWarmRunnerCapacityForOrg } from "../db/queries/warm-runners.ts"
+import { findOrgById } from "../db/queries/organizations.ts"
 import { findDeploymentsReadyForAutoApply } from "../db/queries/workspace-deployments.ts"
 import { queueAutoApply } from "./webhook-handler.ts"
+import { generateWarmRunnerToken } from "./job-token.ts"
 import { generateJobTokenForJob } from "./local-spawner.ts"
 import { acquireLease, type LeaseHandle } from "./db-lease.ts"
 import {
+  getWarmRunnerAutoLaunchMaxRunnersPerOrg,
+  getWarmRunnerAutoLaunchMaxSlots,
   getWarmRunnerBurstAfterMs,
+  getWarmRunnerLaunchGraceMs,
+  isWarmRunnerAutoLaunchEnabled,
   isWarmRunnerBurstEnabled,
   isWarmRunnerWorkspaceExcluded,
 } from "./warm-runner.ts"
@@ -94,6 +100,14 @@ export interface SchedulerConfig {
   warmRunnerBurstEnabled?: boolean
   /** How long to defer cold burst when warm runners exist but are saturated. Default: 10000 */
   warmRunnerBurstAfterMs?: number
+  /** Whether the scheduler auto-launches warm runners in ECS. Default: true */
+  warmRunnerAutoLaunchEnabled?: boolean
+  /** Maximum auto-launched warm runners per org for the MVP. Default: 1 */
+  warmRunnerAutoLaunchMaxRunnersPerOrg?: number
+  /** Slot count for newly auto-launched warm runners. Default: 2 */
+  warmRunnerAutoLaunchMaxSlots?: number
+  /** How long to wait for a launched warm runner to register before allowing cold burst. Default: 45000 */
+  warmRunnerLaunchGraceMs?: number
 }
 
 export interface IacEngineSpawner {
@@ -124,6 +138,16 @@ export interface IacEngineSpawner {
    * 5. Exits
    */
   spawnScanner(scanJobId: string, scanToken: string): Promise<void>
+
+  /**
+   * Spawn a long-lived warm runner for an org, if supported by this spawner.
+   */
+  spawnWarmRunner?(input: {
+    orgId: string
+    orgSlug?: string
+    runnerToken: string
+    maxSlots: number
+  }): Promise<string>
 }
 
 // Re-export spawners
@@ -135,6 +159,13 @@ interface SpawnableJob {
   orgId: string
   runGroupId: string | null
   leaseToken: string
+}
+
+interface PendingWarmRunnerLaunch {
+  startedAtMs: number
+  expiresAtMs: number
+  taskArn?: string
+  releaseTimer: ReturnType<typeof setTimeout>
 }
 
 export class Scheduler {
@@ -150,6 +181,7 @@ export class Scheduler {
   private running = false
   private activePollCount = 0
   private readonly blockedJobs = new Map<string, number>()
+  private readonly pendingWarmRunnerLaunches = new Map<string, PendingWarmRunnerLaunch>()
   private lastGlobalLimitLogAtMs = 0
   private lastGroupLimitLogAtMs = 0
   private consecutivePollFailures = 0
@@ -171,6 +203,10 @@ export class Scheduler {
       warmRunnerStaleAfterMs: config.warmRunnerStaleAfterMs ?? 30_000,
       warmRunnerBurstEnabled: config.warmRunnerBurstEnabled ?? true,
       warmRunnerBurstAfterMs: config.warmRunnerBurstAfterMs ?? 10_000,
+      warmRunnerAutoLaunchEnabled: config.warmRunnerAutoLaunchEnabled ?? true,
+      warmRunnerAutoLaunchMaxRunnersPerOrg: config.warmRunnerAutoLaunchMaxRunnersPerOrg ?? 1,
+      warmRunnerAutoLaunchMaxSlots: config.warmRunnerAutoLaunchMaxSlots ?? 2,
+      warmRunnerLaunchGraceMs: config.warmRunnerLaunchGraceMs ?? 45_000,
     }
     this.limits = {
       maxTotal: this.config.maxConcurrentJobs,
@@ -308,6 +344,121 @@ export class Scheduler {
     if (this.autoApplyTimer) {
       clearInterval(this.autoApplyTimer)
       this.autoApplyTimer = null
+    }
+
+    for (const pending of this.pendingWarmRunnerLaunches.values()) {
+      clearTimeout(pending.releaseTimer)
+    }
+    this.pendingWarmRunnerLaunches.clear()
+  }
+
+  private getPendingWarmRunnerLaunch(orgId: string): PendingWarmRunnerLaunch | null {
+    const pending = this.pendingWarmRunnerLaunches.get(orgId)
+    if (!pending) {
+      return null
+    }
+
+    if (pending.expiresAtMs <= Date.now()) {
+      clearTimeout(pending.releaseTimer)
+      this.pendingWarmRunnerLaunches.delete(orgId)
+      return null
+    }
+
+    return pending
+  }
+
+  private clearPendingWarmRunnerLaunch(orgId: string): void {
+    const pending = this.pendingWarmRunnerLaunches.get(orgId)
+    if (!pending) {
+      return
+    }
+
+    clearTimeout(pending.releaseTimer)
+    this.pendingWarmRunnerLaunches.delete(orgId)
+  }
+
+  private trackPendingWarmRunnerLaunch(orgId: string, taskArn?: string): void {
+    this.clearPendingWarmRunnerLaunch(orgId)
+
+    const startedAtMs = Date.now()
+    const expiresAtMs = startedAtMs + this.config.warmRunnerLaunchGraceMs
+    const releaseTimer = setTimeout(() => {
+      this.pendingWarmRunnerLaunches.delete(orgId)
+    }, this.config.warmRunnerLaunchGraceMs)
+
+    this.pendingWarmRunnerLaunches.set(orgId, {
+      startedAtMs,
+      expiresAtMs,
+      taskArn,
+      releaseTimer,
+    })
+  }
+
+  private async maybeAutoLaunchWarmRunner(input: {
+    orgId: string
+    workspacePath: string
+    queueAgeMs: number
+    currentActiveRunners: number
+  }): Promise<boolean> {
+    if (!this.config.warmRunnerAutoLaunchEnabled) {
+      return false
+    }
+
+    if (this.spawnerType !== "ecs" || !this.spawner.spawnWarmRunner) {
+      return false
+    }
+
+    if (input.currentActiveRunners >= this.config.warmRunnerAutoLaunchMaxRunnersPerOrg) {
+      return false
+    }
+
+    if (this.getPendingWarmRunnerLaunch(input.orgId)) {
+      return true
+    }
+
+    const org = await findOrgById(input.orgId)
+    if (!org) {
+      logger.warn("Warm runner auto-launch skipped: org not found", {
+        workerId: this.workerId,
+        orgId: input.orgId,
+        workspacePath: input.workspacePath,
+      })
+      return false
+    }
+
+    try {
+      const runnerToken = await generateWarmRunnerToken(org.id)
+      const taskArn = await this.spawner.spawnWarmRunner({
+        orgId: org.id,
+        orgSlug: org.slug,
+        runnerToken,
+        maxSlots: this.config.warmRunnerAutoLaunchMaxSlots,
+      })
+
+      this.trackPendingWarmRunnerLaunch(org.id, taskArn)
+
+      logger.info("Warm runner auto-launch started", {
+        workerId: this.workerId,
+        orgId: org.id,
+        orgSlug: org.slug,
+        workspacePath: input.workspacePath,
+        queueAgeMs: input.queueAgeMs,
+        maxSlots: this.config.warmRunnerAutoLaunchMaxSlots,
+        launchGraceMs: this.config.warmRunnerLaunchGraceMs,
+        taskArn,
+      })
+
+      return true
+    } catch (err) {
+      logger.error("Warm runner auto-launch failed", {
+        workerId: this.workerId,
+        orgId: org.id,
+        orgSlug: org.slug,
+        workspacePath: input.workspacePath,
+        queueAgeMs: input.queueAgeMs,
+        error: err instanceof Error ? err.message : String(err),
+      })
+      return false
     }
   }
 
@@ -545,13 +696,14 @@ export class Scheduler {
       }
 
       if (!isWarmRunnerWorkspaceExcluded(jobContext.deployment.workspacePath)) {
+        const queueAgeMs = Date.now() - job.queuedAt.getTime()
         const warmCapacity = await getWarmRunnerCapacityForOrg(
           jobContext.deployment.orgId,
           this.config.warmRunnerStaleAfterMs,
         )
 
         if (warmCapacity.activeRunners > 0) {
-          const queueAgeMs = Date.now() - job.queuedAt.getTime()
+          this.clearPendingWarmRunnerLaunch(jobContext.deployment.orgId)
 
           if (warmCapacity.availableSlots > 0) {
             await releaseJobSpawnLease(job.id, lease.leaseToken)
@@ -606,6 +758,49 @@ export class Scheduler {
               warmTotalSlots: warmCapacity.totalSlots,
               warmActiveSlots: warmCapacity.activeSlots,
               warmAvailableSlots: warmCapacity.availableSlots,
+            })
+          }
+        } else {
+          const pendingLaunch = this.getPendingWarmRunnerLaunch(jobContext.deployment.orgId)
+            ?? (await this.maybeAutoLaunchWarmRunner({
+              orgId: jobContext.deployment.orgId,
+              workspacePath: jobContext.deployment.workspacePath,
+              queueAgeMs,
+              currentActiveRunners: warmCapacity.activeRunners,
+            })
+              ? this.getPendingWarmRunnerLaunch(jobContext.deployment.orgId)
+              : null)
+
+          if (pendingLaunch) {
+            if (queueAgeMs < this.config.warmRunnerLaunchGraceMs || !this.config.warmRunnerBurstEnabled) {
+              await releaseJobSpawnLease(job.id, lease.leaseToken)
+              getSchedulerSpawnSuppressedCounter().add(1, {
+                reason: "warm_runner_launching",
+                job_type: job.jobType,
+                spawner: this.spawnerType,
+              })
+              logger.info("Warm runner launch in progress; deferring cold spawn", {
+                workerId: this.workerId,
+                jobId: job.id,
+                orgId: jobContext.deployment.orgId,
+                workspacePath: jobContext.deployment.workspacePath,
+                queueAgeMs,
+                launchStartedAtMs: pendingLaunch.startedAtMs,
+                launchGraceMs: this.config.warmRunnerLaunchGraceMs,
+                taskArn: pendingLaunch.taskArn,
+              })
+              continue
+            }
+
+            logger.info("Warm runner launch grace elapsed; allowing burst fallback", {
+              workerId: this.workerId,
+              jobId: job.id,
+              orgId: jobContext.deployment.orgId,
+              workspacePath: jobContext.deployment.workspacePath,
+              queueAgeMs,
+              launchStartedAtMs: pendingLaunch.startedAtMs,
+              launchGraceMs: this.config.warmRunnerLaunchGraceMs,
+              taskArn: pendingLaunch.taskArn,
             })
           }
         }
@@ -967,6 +1162,10 @@ export async function getScheduler(): Promise<Scheduler> {
     staleCheckIntervalMs: isProduction ? 60000 : 30000,
     maxConcurrentJobs,
     maxJobsPerRunGroup,
+    warmRunnerAutoLaunchEnabled: isWarmRunnerAutoLaunchEnabled(),
+    warmRunnerAutoLaunchMaxRunnersPerOrg: getWarmRunnerAutoLaunchMaxRunnersPerOrg(),
+    warmRunnerAutoLaunchMaxSlots: getWarmRunnerAutoLaunchMaxSlots(),
+    warmRunnerLaunchGraceMs: getWarmRunnerLaunchGraceMs(),
     warmRunnerBurstEnabled: isWarmRunnerBurstEnabled(),
     warmRunnerBurstAfterMs: getWarmRunnerBurstAfterMs(),
   }, spawnerType)
@@ -975,6 +1174,10 @@ export async function getScheduler(): Promise<Scheduler> {
     maxConcurrentJobs,
     maxJobsPerRunGroup,
     spawner: spawnerType,
+    warmRunnerAutoLaunchEnabled: isWarmRunnerAutoLaunchEnabled(),
+    warmRunnerAutoLaunchMaxRunnersPerOrg: getWarmRunnerAutoLaunchMaxRunnersPerOrg(),
+    warmRunnerAutoLaunchMaxSlots: getWarmRunnerAutoLaunchMaxSlots(),
+    warmRunnerLaunchGraceMs: getWarmRunnerLaunchGraceMs(),
     warmRunnerBurstEnabled: isWarmRunnerBurstEnabled(),
     warmRunnerBurstAfterMs: getWarmRunnerBurstAfterMs(),
   })
