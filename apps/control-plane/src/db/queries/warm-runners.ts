@@ -170,3 +170,25 @@ export async function hasActiveWarmRunnerForOrg(
     return rows.length > 0
   })
 }
+
+export async function getWarmRunnerSession(
+  runnerId: string,
+  orgId: string,
+  workerId: string,
+): Promise<WarmRunnerSession | undefined> {
+  return withDbSpan("select", "warm_runner_sessions", async () => {
+    const rows = await db
+      .select()
+      .from(warmRunnerSessions)
+      .where(
+        and(
+          eq(warmRunnerSessions.id, runnerId),
+          eq(warmRunnerSessions.orgId, orgId),
+          eq(warmRunnerSessions.workerId, workerId),
+        ),
+      )
+      .limit(1)
+
+    return rows[0]
+  })
+}

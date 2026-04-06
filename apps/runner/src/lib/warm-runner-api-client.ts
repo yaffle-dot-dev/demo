@@ -65,11 +65,11 @@ export class WarmRunnerApiClient {
     }
   }
 
-  async claimNext(runnerId: string, workerId: string): Promise<WarmRunnerClaimResponse> {
+  async claimNext(runnerId: string, workerId: string, availableSlots: number): Promise<WarmRunnerClaimResponse> {
     const response = await fetch(`${this.config.apiUrl}/api/runner/warm/claim-next`, {
       method: "POST",
       headers: this.headers,
-      body: JSON.stringify({ runnerId, workerId }),
+      body: JSON.stringify({ runnerId, workerId, availableSlots }),
     })
 
     if (!response.ok) {

@@ -1282,6 +1282,7 @@ export async function findQueuedJobsForSpawning(
 export async function findQueuedJobsForWarmRunner(
   orgId: string,
   limits: ConcurrencyLimits,
+  availableSlots: number = 1,
 ): Promise<IacJob[]> {
   return withDbSpan("select", "iac_jobs", async () => {
     const activeCountResult = await db
@@ -1290,9 +1291,10 @@ export async function findQueuedJobsForWarmRunner(
       .where(eq(iacJobs.status, "running"))
 
     const activeTotal = activeCountResult[0]?.count ?? 0
-    const availableSlots = Math.max(0, limits.maxTotal - activeTotal)
+    const availableGlobalSlots = Math.max(0, limits.maxTotal - activeTotal)
+    const effectiveAvailableSlots = Math.min(availableSlots, availableGlobalSlots)
 
-    if (availableSlots === 0) {
+    if (effectiveAvailableSlots === 0) {
       return []
     }
 
@@ -1374,6 +1376,6 @@ export async function findQueuedJobsForWarmRunner(
       return []
     }
 
-    return roundRobinSelectJobs(jobsByGroup, availableSlots).selected
+    return roundRobinSelectJobs(jobsByGroup, effectiveAvailableSlots).selected
   })
 }

@@ -31,6 +31,7 @@ import {
   getJobWithContext,
 } from "../db/queries/iac-jobs.ts"
 import {
+  getWarmRunnerSession,
   heartbeatWarmRunner,
   markWarmRunnerClaimedJob,
   registerWarmRunner,
@@ -430,6 +431,7 @@ warmRunnerRoute.post("/heartbeat", async (c) => {
 const warmRunnerClaimNextSchema = z.object({
   runnerId: z.string().uuid(),
   workerId: z.string().min(1),
+  availableSlots: z.number().int().min(1).max(4).default(1),
 })
 
 warmRunnerRoute.post("/claim-next", async (c) => {
@@ -461,10 +463,28 @@ warmRunnerRoute.post("/claim-next", async (c) => {
   }
 
   const { maxConcurrentJobs, maxJobsPerRunGroup } = getConfiguredSchedulerConcurrencyLimits()
+  const currentSession = await getWarmRunnerSession(
+    parsed.data.runnerId,
+    auth.runnerToken.org_id,
+    parsed.data.workerId,
+  )
+
+  if (!currentSession) {
+    return c.json(
+      { error: { code: "NOT_FOUND", message: "Warm runner session not found" } },
+      404,
+    )
+  }
+
+  const availableSlots = Math.max(1, Math.min(
+    parsed.data.availableSlots,
+    currentSession.maxSlots,
+  ))
+
   const candidates = await findQueuedJobsForWarmRunner(auth.runnerToken.org_id, {
     maxTotal: maxConcurrentJobs,
     maxPerRunGroup: maxJobsPerRunGroup,
-  })
+  }, availableSlots)
 
   for (const candidate of candidates) {
     const jobContext = await getJobWithContext(candidate.id)
@@ -505,7 +525,7 @@ warmRunnerRoute.post("/claim-next", async (c) => {
       parsed.data.runnerId,
       auth.runnerToken.org_id,
       parsed.data.workerId,
-      1,
+      Math.min(currentSession.maxSlots, currentSession.activeSlots + 1),
       settings.staleAfterMs,
     )
 
@@ -517,6 +537,9 @@ warmRunnerRoute.post("/claim-next", async (c) => {
       "job.id": result.job.id,
       "job.type": result.job.jobType,
       "org.id": auth.runnerToken.org_id,
+      availableSlots,
+      activeSlots: Math.min(currentSession.maxSlots, currentSession.activeSlots + 1),
+      maxSlots: currentSession.maxSlots,
     })
 
     return c.json({

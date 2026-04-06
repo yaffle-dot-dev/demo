@@ -22,8 +22,8 @@ async function main(): Promise<void> {
     process.exit(1)
   }
 
-  if (!Number.isFinite(MAX_SLOTS) || MAX_SLOTS !== 1) {
-    error("Warm runner foundation currently supports only max_slots=1", { maxSlots: MAX_SLOTS })
+  if (!Number.isFinite(MAX_SLOTS) || MAX_SLOTS < 1 || MAX_SLOTS > 4) {
+    error("Invalid warm runner max slots", { maxSlots: MAX_SLOTS })
     process.exit(1)
   }
 
@@ -35,9 +35,9 @@ async function main(): Promise<void> {
 
   const registration = await apiClient.register(workerId, MAX_SLOTS, {
     hostname: process.env.HOSTNAME ?? "unknown",
-    pid: process.pid,
-    mode: "warm-single-slot",
-  })
+      pid: process.pid,
+      mode: MAX_SLOTS === 1 ? "warm-single-slot" : "warm-multi-slot",
+    })
 
   log("Warm runner registered", {
     workerId,
@@ -45,11 +45,30 @@ async function main(): Promise<void> {
     orgId: registration.orgId,
     pollIntervalMs: registration.pollIntervalMs,
     heartbeatIntervalMs: registration.heartbeatIntervalMs,
-    idleShutdownMs: registration.idleShutdownMs,
-  })
+      idleShutdownMs: registration.idleShutdownMs,
+      maxSlots: registration.maxSlots,
+    })
 
   let activeSlots = 0
   let lastWorkAt = Date.now()
+  const activeJobs = new Set<Promise<void>>()
+
+  const waitForSlot = async (): Promise<void> => {
+    while (activeSlots >= registration.maxSlots) {
+      if (activeJobs.size === 0) {
+        break
+      }
+
+      await Promise.race(activeJobs)
+    }
+  }
+
+  const trackJob = (promise: Promise<void>): void => {
+    activeJobs.add(promise)
+    void promise.finally(() => {
+      activeJobs.delete(promise)
+    })
+  }
 
   const heartbeatTimer = setInterval(() => {
     void apiClient.heartbeat(registration.runnerId, workerId, activeSlots).catch((err) => {
@@ -63,10 +82,13 @@ async function main(): Promise<void> {
 
   try {
     while (true) {
-      const claim = await apiClient.claimNext(registration.runnerId, workerId)
+      await waitForSlot()
+
+      const availableSlots = Math.max(1, registration.maxSlots - activeSlots)
+      const claim = await apiClient.claimNext(registration.runnerId, workerId, availableSlots)
 
       if (!claim.claimed || !claim.job || !claim.runId || !claim.jobToken) {
-        if (Date.now() - lastWorkAt >= registration.idleShutdownMs) {
+        if (activeSlots === 0 && Date.now() - lastWorkAt >= registration.idleShutdownMs) {
           log("Warm runner idle shutdown", {
             workerId,
             runnerId: registration.runnerId,
@@ -80,44 +102,61 @@ async function main(): Promise<void> {
         continue
       }
 
-      activeSlots = 1
+      activeSlots += 1
       lastWorkAt = Date.now()
+
+      await apiClient.heartbeat(registration.runnerId, workerId, activeSlots)
+
+      const claimedJob = claim.job
+      const runId = claim.runId
+      const jobToken = claim.jobToken
 
       log("Warm runner claimed job", {
         workerId,
         runnerId: registration.runnerId,
-        jobId: claim.job.id,
-        jobType: claim.job.jobType,
-        runId: claim.runId,
+        jobId: claimedJob.id,
+        jobType: claimedJob.jobType,
+        runId,
+        activeSlots,
+        maxSlots: registration.maxSlots,
       })
 
       const jobApiClient = new RunnerApiClient({
         apiUrl: API_URL,
-        jobToken: claim.jobToken,
-        jobId: claim.job.id,
+        jobToken,
+        jobId: claimedJob.id,
       })
 
-      const result = await runClaimedJob({
-        apiClient: jobApiClient,
-        jobId: claim.job.id,
-        runId: claim.runId,
-        workerId,
-      })
+      const jobPromise = (async () => {
+        const result = await runClaimedJob({
+          apiClient: jobApiClient,
+          jobId: claimedJob.id,
+          runId,
+          workerId,
+        })
 
-      activeSlots = 0
-      lastWorkAt = Date.now()
+        activeSlots = Math.max(0, activeSlots - 1)
+        lastWorkAt = Date.now()
 
-      log("Warm runner finished job", {
-        workerId,
-        runnerId: registration.runnerId,
-        jobId: claim.job.id,
-        success: result.success,
-      })
+        log("Warm runner finished job", {
+          workerId,
+          runnerId: registration.runnerId,
+          jobId: claimedJob.id,
+          success: result.success,
+          activeSlots,
+          maxSlots: registration.maxSlots,
+        })
 
-      await apiClient.heartbeat(registration.runnerId, workerId, activeSlots)
+        await apiClient.heartbeat(registration.runnerId, workerId, activeSlots)
+      })()
+
+      trackJob(jobPromise)
     }
   } finally {
     clearInterval(heartbeatTimer)
+    if (activeJobs.size > 0) {
+      await Promise.allSettled(Array.from(activeJobs))
+    }
   }
 }
 
