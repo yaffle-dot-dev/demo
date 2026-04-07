@@ -1042,12 +1042,81 @@ export class Scheduler {
 /** Lease duration — if the leader doesn't renew within this window, it's dead */
 const SCHEDULER_LEASE_TTL_MS = 15_000
 const SCHEDULER_LEASE_KEY = "scheduler:leader"
+const SCHEDULER_HOLDER_METADATA_TIMEOUT_MS = 1_000
 
 type SchedulerLeaderState = {
   holderId: string
+  holderIdResolved: boolean
+  holderIdResolution: Promise<string> | null
   leaseHandle: LeaseHandle | null
   electionTimer: ReturnType<typeof setInterval> | null
   abdicatedAt: number | null
+}
+
+async function resolveEcsSchedulerHolderId(): Promise<string | null> {
+  const metadataUri = process.env.ECS_CONTAINER_METADATA_URI_V4
+  if (!metadataUri) {
+    return null
+  }
+
+  try {
+    const response = await fetch(`${metadataUri}/task`, {
+      signal: AbortSignal.timeout(SCHEDULER_HOLDER_METADATA_TIMEOUT_MS),
+    })
+
+    if (!response.ok) {
+      logger.warn("Failed to fetch ECS task metadata for scheduler holder", {
+        status: response.status,
+      })
+      return null
+    }
+
+    const payload = await response.json() as {
+      TaskARN?: unknown
+      TaskArn?: unknown
+    }
+    const taskArn = typeof payload.TaskARN === "string"
+      ? payload.TaskARN
+      : typeof payload.TaskArn === "string"
+        ? payload.TaskArn
+        : null
+
+    if (!taskArn) {
+      return null
+    }
+
+    return `scheduler-task:${taskArn}`
+  } catch (error) {
+    logger.warn("Failed to resolve ECS scheduler holder from metadata", {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
+}
+
+async function ensureSchedulerHolderIdResolved(): Promise<string> {
+  if (schedulerLeaderState.holderIdResolved) {
+    return schedulerLeaderState.holderId
+  }
+
+  if (schedulerLeaderState.holderIdResolution) {
+    return schedulerLeaderState.holderIdResolution
+  }
+
+  schedulerLeaderState.holderIdResolution = (async () => {
+    const ecsHolderId = await resolveEcsSchedulerHolderId()
+    if (ecsHolderId) {
+      schedulerLeaderState.holderId = ecsHolderId
+    } else if (process.env.ECS_CONTAINER_METADATA_URI_V4 && process.env.HOSTNAME) {
+      schedulerLeaderState.holderId = `scheduler-host:${process.env.HOSTNAME}`
+    }
+
+    schedulerLeaderState.holderIdResolved = true
+    schedulerLeaderState.holderIdResolution = null
+    return schedulerLeaderState.holderId
+  })()
+
+  return schedulerLeaderState.holderIdResolution
 }
 
 function getSchedulerLeaderState(): SchedulerLeaderState {
@@ -1056,6 +1125,8 @@ function getSchedulerLeaderState(): SchedulerLeaderState {
   if (!globalRef[globalKey]) {
     globalRef[globalKey] = {
       holderId: `scheduler-${randomUUID().slice(0, 8)}`,
+      holderIdResolved: false,
+      holderIdResolution: null,
       leaseHandle: null,
       electionTimer: null,
       abdicatedAt: null,
@@ -1072,9 +1143,11 @@ async function acquireSchedulerLeadership(): Promise<boolean> {
     return true
   }
 
+  const holderId = await ensureSchedulerHolderIdResolved()
+
   const handle = await acquireLease(
     SCHEDULER_LEASE_KEY,
-    schedulerLeaderState.holderId,
+    holderId,
     SCHEDULER_LEASE_TTL_MS,
   )
 
