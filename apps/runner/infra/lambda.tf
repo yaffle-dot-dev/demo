@@ -80,6 +80,11 @@ resource "aws_lambda_function" "scanner" {
     }
   }
 
+  vpc_config {
+    subnet_ids         = local.private_subnet_ids
+    security_group_ids = [aws_security_group.runner.id]
+  }
+
   # Function code is managed by deploy-scanner.ts, not Terraform after first apply
   lifecycle {
     ignore_changes = [filename, source_code_hash]
@@ -118,6 +123,11 @@ resource "aws_iam_role" "scanner_lambda" {
 resource "aws_iam_role_policy_attachment" "scanner_lambda_basic" {
   role       = aws_iam_role.scanner_lambda.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "scanner_lambda_vpc" {
+  role       = aws_iam_role.scanner_lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
 }
 
 # Allow reading the Tailscale auth key from Secrets Manager
