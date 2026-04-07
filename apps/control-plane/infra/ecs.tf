@@ -76,6 +76,18 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "YAFFLE_ECS_TASK_DEFINITION", value = module.runner.task_definition_family },
         { name = "YAFFLE_ECS_SUBNETS", value = join(",", local.private_subnet_ids) },
         { name = "YAFFLE_ECS_SECURITY_GROUPS", value = module.runner.security_group_id },
+        # Warm runners / hybrid burst
+        { name = "YAFFLE_WARM_RUNNER_AUTO_LAUNCH_ENABLED", value = "true" },
+        { name = "YAFFLE_WARM_RUNNER_AUTO_LAUNCH_MAX_RUNNERS_PER_ORG", value = "2" },
+        { name = "YAFFLE_WARM_RUNNER_AUTO_LAUNCH_MAX_SLOTS", value = "2" },
+        { name = "YAFFLE_WARM_RUNNER_LAUNCH_GRACE_MS", value = "45000" },
+        { name = "YAFFLE_WARM_RUNNER_BURST_ENABLED", value = "true" },
+        { name = "YAFFLE_WARM_RUNNER_BURST_AFTER_MS", value = "10000" },
+        { name = "YAFFLE_WARM_RUNNER_HEARTBEAT_INTERVAL_MS", value = "10000" },
+        { name = "YAFFLE_WARM_RUNNER_POLL_INTERVAL_MS", value = "1000" },
+        { name = "YAFFLE_WARM_RUNNER_IDLE_SHUTDOWN_MS", value = "120000" },
+        { name = "YAFFLE_WARM_RUNNER_STALE_AFTER_MS", value = "30000" },
+        { name = "YAFFLE_WARM_RUNNER_EXCLUDED_WORKSPACES", value = "" },
         # Scanner Lambda
         { name = "YAFFLE_SCANNER_LAMBDA_FUNCTION", value = module.runner.scanner_lambda_function_name },
         # Control plane identity
