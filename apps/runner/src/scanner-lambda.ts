@@ -10,7 +10,34 @@ import { execSync, spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { runScanner } from "./scanner-main.ts"
 
+const TAILSCALE_HOST_SUFFIX = ".tail66f312.ts.net"
+
 let tailscaleStarted = false
+
+function shouldUseTailscaleProxy(targetUrl: string): boolean {
+  try {
+    return new URL(targetUrl).hostname.endsWith(TAILSCALE_HOST_SUFFIX)
+  } catch {
+    return false
+  }
+}
+
+async function configureFetchNetworking(targetUrl: string): Promise<void> {
+  try {
+    const { setGlobalDispatcher, ProxyAgent, Agent } = await import("undici")
+
+    if (shouldUseTailscaleProxy(targetUrl)) {
+      setGlobalDispatcher(new ProxyAgent("http://localhost:1056"))
+      console.log(`[lambda] Global fetch proxy set to http://localhost:1056 for ${targetUrl}`)
+      return
+    }
+
+    setGlobalDispatcher(new Agent())
+    console.log(`[lambda] Global fetch proxy disabled for ${targetUrl}`)
+  } catch (err) {
+    console.error("[lambda] Failed to configure global fetch dispatcher:", String(err))
+  }
+}
 
 /**
  * Start Tailscale in userspace networking mode.
@@ -89,15 +116,6 @@ async function ensureTailscale(): Promise<void> {
     process.env.HTTPS_PROXY = "http://localhost:1056"
     process.env.SOCKS_PROXY = "socks5://localhost:1055"
     process.env.NO_PROXY = "127.0.0.1,localhost,169.254.169.254,169.254.170.2,.amazonaws.com"
-
-    // Set global fetch dispatcher to route through Tailscale's HTTP proxy
-    try {
-      const { setGlobalDispatcher, ProxyAgent } = await import("undici")
-      setGlobalDispatcher(new ProxyAgent("http://localhost:1056"))
-      console.log("[lambda] Global fetch proxy set to http://localhost:1056")
-    } catch (err) {
-      console.error("[lambda] Failed to set global proxy dispatcher:", String(err))
-    }
 
     tailscaleStarted = true
     console.log("[lambda] Tailscale connected")
@@ -217,6 +235,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
   process.env.YAFFLE_SCAN_JOB_ID = scanEvent.YAFFLE_SCAN_JOB_ID
   process.env.YAFFLE_JOB_TOKEN = scanEvent.YAFFLE_JOB_TOKEN
   process.env.YAFFLE_API_URL = scanEvent.YAFFLE_API_URL
+  await configureFetchNetworking(scanEvent.YAFFLE_API_URL)
 
   try {
     await runScanner()
