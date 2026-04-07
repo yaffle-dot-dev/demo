@@ -24,6 +24,7 @@ import { randomUUID } from "node:crypto"
 
 import {
   acquireJobSpawnLease,
+  countEligibleQueuedJobsForOrg,
   findQueuedJobsForSpawning,
   countActiveJobs,
   findStaleJobs,
@@ -47,6 +48,7 @@ import {
   getWarmRunnerAutoLaunchMaxRunnersPerOrg,
   getWarmRunnerAutoLaunchMaxSlots,
   getWarmRunnerBurstAfterMs,
+  getWarmRunnerExcludedWorkspacePaths,
   getWarmRunnerLaunchGraceMs,
   isWarmRunnerAutoLaunchEnabled,
   isWarmRunnerBurstEnabled,
@@ -164,6 +166,7 @@ interface SpawnableJob {
 interface PendingWarmRunnerLaunch {
   startedAtMs: number
   expiresAtMs: number
+  baselineActiveRunners: number
   taskArn?: string
   releaseTimer: ReturnType<typeof setTimeout>
 }
@@ -181,7 +184,7 @@ export class Scheduler {
   private running = false
   private activePollCount = 0
   private readonly blockedJobs = new Map<string, number>()
-  private readonly pendingWarmRunnerLaunches = new Map<string, PendingWarmRunnerLaunch>()
+  private readonly pendingWarmRunnerLaunches = new Map<string, PendingWarmRunnerLaunch[]>()
   private lastGlobalLimitLogAtMs = 0
   private lastGroupLimitLogAtMs = 0
   private consecutivePollFailures = 0
@@ -346,52 +349,61 @@ export class Scheduler {
       this.autoApplyTimer = null
     }
 
-    for (const pending of this.pendingWarmRunnerLaunches.values()) {
-      clearTimeout(pending.releaseTimer)
+    for (const pendingLaunches of this.pendingWarmRunnerLaunches.values()) {
+      for (const pending of pendingLaunches) {
+        clearTimeout(pending.releaseTimer)
+      }
     }
     this.pendingWarmRunnerLaunches.clear()
   }
 
-  private getPendingWarmRunnerLaunch(orgId: string): PendingWarmRunnerLaunch | null {
-    const pending = this.pendingWarmRunnerLaunches.get(orgId)
-    if (!pending) {
-      return null
-    }
+  private getPendingWarmRunnerLaunches(orgId: string, activeRunners: number): PendingWarmRunnerLaunch[] {
+    const pendingLaunches = this.pendingWarmRunnerLaunches.get(orgId) ?? []
+    const stillPending = pendingLaunches.filter((pending) => {
+      if (pending.expiresAtMs <= Date.now()) {
+        clearTimeout(pending.releaseTimer)
+        return false
+      }
 
-    if (pending.expiresAtMs <= Date.now()) {
-      clearTimeout(pending.releaseTimer)
+      if (activeRunners > pending.baselineActiveRunners) {
+        clearTimeout(pending.releaseTimer)
+        return false
+      }
+
+      return true
+    })
+
+    if (stillPending.length === 0) {
       this.pendingWarmRunnerLaunches.delete(orgId)
-      return null
+      return []
     }
 
-    return pending
+    this.pendingWarmRunnerLaunches.set(orgId, stillPending)
+    return stillPending
   }
 
-  private clearPendingWarmRunnerLaunch(orgId: string): void {
-    const pending = this.pendingWarmRunnerLaunches.get(orgId)
-    if (!pending) {
-      return
-    }
-
-    clearTimeout(pending.releaseTimer)
-    this.pendingWarmRunnerLaunches.delete(orgId)
-  }
-
-  private trackPendingWarmRunnerLaunch(orgId: string, taskArn?: string): void {
-    this.clearPendingWarmRunnerLaunch(orgId)
-
+  private trackPendingWarmRunnerLaunch(orgId: string, baselineActiveRunners: number, taskArn?: string): void {
     const startedAtMs = Date.now()
     const expiresAtMs = startedAtMs + this.config.warmRunnerLaunchGraceMs
     const releaseTimer = setTimeout(() => {
-      this.pendingWarmRunnerLaunches.delete(orgId)
+      const pendingLaunches = this.pendingWarmRunnerLaunches.get(orgId) ?? []
+      const remaining = pendingLaunches.filter((pending) => pending.releaseTimer !== releaseTimer)
+      if (remaining.length === 0) {
+        this.pendingWarmRunnerLaunches.delete(orgId)
+      } else {
+        this.pendingWarmRunnerLaunches.set(orgId, remaining)
+      }
     }, this.config.warmRunnerLaunchGraceMs)
 
-    this.pendingWarmRunnerLaunches.set(orgId, {
+    const pendingLaunches = this.pendingWarmRunnerLaunches.get(orgId) ?? []
+    pendingLaunches.push({
       startedAtMs,
       expiresAtMs,
+      baselineActiveRunners,
       taskArn,
       releaseTimer,
     })
+    this.pendingWarmRunnerLaunches.set(orgId, pendingLaunches)
   }
 
   private async maybeAutoLaunchWarmRunner(input: {
@@ -399,6 +411,8 @@ export class Scheduler {
     workspacePath: string
     queueAgeMs: number
     currentActiveRunners: number
+    pendingLaunchCount: number
+    desiredWarmRunners: number
   }): Promise<boolean> {
     if (!this.config.warmRunnerAutoLaunchEnabled) {
       return false
@@ -408,12 +422,12 @@ export class Scheduler {
       return false
     }
 
-    if (input.currentActiveRunners >= this.config.warmRunnerAutoLaunchMaxRunnersPerOrg) {
+    if (input.currentActiveRunners + input.pendingLaunchCount >= this.config.warmRunnerAutoLaunchMaxRunnersPerOrg) {
       return false
     }
 
-    if (this.getPendingWarmRunnerLaunch(input.orgId)) {
-      return true
+    if (input.currentActiveRunners + input.pendingLaunchCount >= input.desiredWarmRunners) {
+      return input.pendingLaunchCount > 0
     }
 
     const org = await findOrgById(input.orgId)
@@ -435,7 +449,11 @@ export class Scheduler {
         maxSlots: this.config.warmRunnerAutoLaunchMaxSlots,
       })
 
-      this.trackPendingWarmRunnerLaunch(org.id, taskArn)
+      this.trackPendingWarmRunnerLaunch(
+        org.id,
+        input.currentActiveRunners + input.pendingLaunchCount,
+        taskArn,
+      )
 
       logger.info("Warm runner auto-launch started", {
         workerId: this.workerId,
@@ -443,6 +461,9 @@ export class Scheduler {
         orgSlug: org.slug,
         workspacePath: input.workspacePath,
         queueAgeMs: input.queueAgeMs,
+        currentActiveRunners: input.currentActiveRunners,
+        pendingLaunchCount: input.pendingLaunchCount,
+        desiredWarmRunners: input.desiredWarmRunners,
         maxSlots: this.config.warmRunnerAutoLaunchMaxSlots,
         launchGraceMs: this.config.warmRunnerLaunchGraceMs,
         taskArn,
@@ -701,10 +722,58 @@ export class Scheduler {
           jobContext.deployment.orgId,
           this.config.warmRunnerStaleAfterMs,
         )
+        let pendingLaunches = this.getPendingWarmRunnerLaunches(
+          jobContext.deployment.orgId,
+          warmCapacity.activeRunners,
+        )
+        let pendingLaunchCount = pendingLaunches.length
+        const eligibleQueuedJobs = await countEligibleQueuedJobsForOrg(
+          jobContext.deployment.orgId,
+          getWarmRunnerExcludedWorkspacePaths(),
+        )
+        const rawDesiredWarmRunners = Math.max(
+          0,
+          Math.ceil(eligibleQueuedJobs / Math.max(1, this.config.warmRunnerAutoLaunchMaxSlots)),
+        )
+        const desiredWarmRunners = Math.min(
+          this.config.warmRunnerAutoLaunchMaxRunnersPerOrg,
+          rawDesiredWarmRunners,
+        )
+
+        if (rawDesiredWarmRunners > this.config.warmRunnerAutoLaunchMaxRunnersPerOrg) {
+          logger.info("Warm runner desired capacity exceeds MVP max runners per org", {
+            workerId: this.workerId,
+            orgId: jobContext.deployment.orgId,
+            workspacePath: jobContext.deployment.workspacePath,
+            eligibleQueuedJobs,
+            rawDesiredWarmRunners,
+            cappedDesiredWarmRunners: desiredWarmRunners,
+            maxRunnersPerOrg: this.config.warmRunnerAutoLaunchMaxRunnersPerOrg,
+            autoLaunchMaxSlots: this.config.warmRunnerAutoLaunchMaxSlots,
+          })
+        }
+
+        if (
+          this.config.warmRunnerAutoLaunchEnabled
+          && pendingLaunchCount + warmCapacity.activeRunners < desiredWarmRunners
+          && (warmCapacity.activeRunners === 0 || warmCapacity.availableSlots === 0)
+        ) {
+          await this.maybeAutoLaunchWarmRunner({
+            orgId: jobContext.deployment.orgId,
+            workspacePath: jobContext.deployment.workspacePath,
+            queueAgeMs,
+            currentActiveRunners: warmCapacity.activeRunners,
+            pendingLaunchCount,
+            desiredWarmRunners,
+          })
+          pendingLaunches = this.getPendingWarmRunnerLaunches(
+            jobContext.deployment.orgId,
+            warmCapacity.activeRunners,
+          )
+          pendingLaunchCount = pendingLaunches.length
+        }
 
         if (warmCapacity.activeRunners > 0) {
-          this.clearPendingWarmRunnerLaunch(jobContext.deployment.orgId)
-
           if (warmCapacity.availableSlots > 0) {
             await releaseJobSpawnLease(job.id, lease.leaseToken)
             getSchedulerSpawnSuppressedCounter().add(1, {
@@ -742,6 +811,8 @@ export class Scheduler {
               warmTotalSlots: warmCapacity.totalSlots,
               warmActiveSlots: warmCapacity.activeSlots,
               warmAvailableSlots: warmCapacity.availableSlots,
+              pendingWarmRunnerLaunches: pendingLaunchCount,
+              desiredWarmRunners,
               burstAfterMs: this.config.warmRunnerBurstAfterMs,
             })
             continue
@@ -758,20 +829,14 @@ export class Scheduler {
               warmTotalSlots: warmCapacity.totalSlots,
               warmActiveSlots: warmCapacity.activeSlots,
               warmAvailableSlots: warmCapacity.availableSlots,
+              pendingWarmRunnerLaunches: pendingLaunchCount,
+              desiredWarmRunners,
             })
           }
         } else {
-          const pendingLaunch = this.getPendingWarmRunnerLaunch(jobContext.deployment.orgId)
-            ?? (await this.maybeAutoLaunchWarmRunner({
-              orgId: jobContext.deployment.orgId,
-              workspacePath: jobContext.deployment.workspacePath,
-              queueAgeMs,
-              currentActiveRunners: warmCapacity.activeRunners,
-            })
-              ? this.getPendingWarmRunnerLaunch(jobContext.deployment.orgId)
-              : null)
+          const activePendingLaunch = pendingLaunches[0] ?? null
 
-          if (pendingLaunch) {
+          if (activePendingLaunch) {
             if (queueAgeMs < this.config.warmRunnerLaunchGraceMs || !this.config.warmRunnerBurstEnabled) {
               await releaseJobSpawnLease(job.id, lease.leaseToken)
               getSchedulerSpawnSuppressedCounter().add(1, {
@@ -785,9 +850,12 @@ export class Scheduler {
                 orgId: jobContext.deployment.orgId,
                 workspacePath: jobContext.deployment.workspacePath,
                 queueAgeMs,
-                launchStartedAtMs: pendingLaunch.startedAtMs,
+                pendingWarmRunnerLaunches: pendingLaunchCount,
+                desiredWarmRunners,
+                eligibleQueuedJobs,
+                launchStartedAtMs: activePendingLaunch.startedAtMs,
                 launchGraceMs: this.config.warmRunnerLaunchGraceMs,
-                taskArn: pendingLaunch.taskArn,
+                taskArn: activePendingLaunch.taskArn,
               })
               continue
             }
@@ -798,9 +866,12 @@ export class Scheduler {
               orgId: jobContext.deployment.orgId,
               workspacePath: jobContext.deployment.workspacePath,
               queueAgeMs,
-              launchStartedAtMs: pendingLaunch.startedAtMs,
+              pendingWarmRunnerLaunches: pendingLaunchCount,
+              desiredWarmRunners,
+              eligibleQueuedJobs,
+              launchStartedAtMs: activePendingLaunch.startedAtMs,
               launchGraceMs: this.config.warmRunnerLaunchGraceMs,
-              taskArn: pendingLaunch.taskArn,
+              taskArn: activePendingLaunch.taskArn,
             })
           }
         }

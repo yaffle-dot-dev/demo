@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 
-import { and, desc, eq, inArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { iacJobs, iacJobStatusEnum, iacJobTypeEnum, tfRuns, workspaceDeployments } from "../schema.ts"
@@ -1377,5 +1377,33 @@ export async function findQueuedJobsForWarmRunner(
     }
 
     return roundRobinSelectJobs(jobsByGroup, effectiveAvailableSlots).selected
+  })
+}
+
+export async function countEligibleQueuedJobsForOrg(
+  orgId: string,
+  excludedWorkspacePaths: string[] = [],
+): Promise<number> {
+  return withDbSpan("select", "iac_jobs", async () => {
+    const conditions = [
+      eq(iacJobs.status, "queued"),
+      eq(workspaceDeployments.orgId, orgId),
+      sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
+    ] as const
+
+    const rows = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(iacJobs)
+      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
+      .where(
+        and(
+          ...conditions,
+          excludedWorkspacePaths.length > 0
+            ? notInArray(workspaceDeployments.workspacePath, excludedWorkspacePaths)
+            : sql`TRUE`,
+        ),
+      )
+
+    return rows[0]?.count ?? 0
   })
 }
