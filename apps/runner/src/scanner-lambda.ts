@@ -223,6 +223,7 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
     return { statusCode: 200, body: "ok" }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
+    console.error("[lambda] Scanner invocation failed:", msg)
     return { statusCode: 500, body: msg }
   }
 }
