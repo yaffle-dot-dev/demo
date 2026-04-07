@@ -15,5 +15,5 @@ module "core" {
 
   # Nonprod settings - cost optimized networking
   ha_nat             = false
-  container_insights = false
+  container_insights = "disabled"
 }

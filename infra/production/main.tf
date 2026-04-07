@@ -2,7 +2,7 @@
 # Production Infrastructure
 # =============================================================================
 # VPC + ECS cluster for production workloads.
-# Production workloads run on Fargate with HA NAT gateways and container insights.
+# Production workloads run on Fargate with HA NAT gateways and enhanced container insights.
 # =============================================================================
 
 module "core" {
@@ -15,5 +15,5 @@ module "core" {
 
   # Production settings
   ha_nat             = true
-  container_insights = true
+  container_insights = "enhanced"
 }

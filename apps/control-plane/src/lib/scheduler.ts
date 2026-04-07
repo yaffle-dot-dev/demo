@@ -1423,6 +1423,8 @@ export async function stopScheduler(): Promise<void> {
     schedulerLeaderState.electionTimer = null
   }
 
+  schedulerLeaderState.leaseHandle?.stopRenewing()
+
   if (schedulerState.schedulerInstance) {
     schedulerState.schedulerInstance.stop()
   }

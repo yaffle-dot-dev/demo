@@ -27,8 +27,8 @@ resource "aws_ecs_task_definition" "control_plane" {
   family                   = "yaffle-cp-${local.name_suffix}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = local.is_preview ? 256 : 512
-  memory                   = local.is_preview ? 512 : 1024
+  cpu                      = local.is_preview ? 256 : 1024
+  memory                   = local.is_preview ? 512 : 4096
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.control_plane_task.arn
 

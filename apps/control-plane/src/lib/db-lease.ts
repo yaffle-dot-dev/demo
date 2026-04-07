@@ -28,6 +28,8 @@ const MUTEX_LEASE_TTL_MS = 30_000
 const MUTEX_RETRY_INTERVAL_MS = 200
 
 export interface LeaseHandle {
+  /** Stop renewing the lease but do not delete it yet */
+  stopRenewing(): void
   /** Stop renewing and release the lease */
   release(): Promise<void>
 }
@@ -78,7 +80,21 @@ export async function acquireLease(
   }
 
   const renewInterval = Math.floor(ttlMs / 3)
+  let stopped = false
+  const stopRenewing = () => {
+    if (stopped) {
+      return
+    }
+
+    stopped = true
+    clearInterval(timer)
+  }
+
   const timer = setInterval(() => {
+    if (stopped) {
+      return
+    }
+
     db.update(leases)
       .set({
         renewedAt: new Date(),
@@ -98,8 +114,9 @@ export async function acquireLease(
   }, renewInterval)
 
   return {
+    stopRenewing,
     async release() {
-      clearInterval(timer)
+      stopRenewing()
       try {
         await db.delete(leases).where(eq(leases.holderId, holderId))
       } catch {

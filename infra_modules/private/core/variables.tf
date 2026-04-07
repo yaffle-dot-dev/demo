@@ -35,7 +35,12 @@ variable "ha_nat" {
 }
 
 variable "container_insights" {
-  type        = bool
-  description = "Enable container insights on ECS cluster"
-  default     = false
+  type        = string
+  description = "ECS Container Insights mode: disabled, enabled, or enhanced"
+  default     = "disabled"
+
+  validation {
+    condition     = contains(["disabled", "enabled", "enhanced"], var.container_insights)
+    error_message = "container_insights must be one of: disabled, enabled, enhanced."
+  }
 }
