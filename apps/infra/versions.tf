@@ -57,6 +57,22 @@ provider "aws" {
   }
 }
 
+# Global services like CloudFront WAFv2 must be managed in us-east-1.
+provider "aws" {
+  alias  = "global"
+  region = "us-east-1"
+
+  default_tags {
+    tags = {
+      project     = "yaffle"
+      layer       = "app"
+      app         = "frontend"
+      environment = var.environment
+      managed_by  = "yaffle"
+    }
+  }
+}
+
 # Cloudflare provider for dual DNS
 provider "cloudflare" {
   # API token from CLOUDFLARE_API_TOKEN env var
