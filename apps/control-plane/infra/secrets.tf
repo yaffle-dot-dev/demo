@@ -22,6 +22,8 @@ locals {
     github-oauth-client-id     = "GitHub OAuth app client ID"
     github-oauth-client-secret = "GitHub OAuth app client secret"
     otel-headers               = "OpenTelemetry exporter headers (e.g., Authorization=Bearer xxx,X-Axiom-Dataset=yaffle)"
+    otel-metrics-headers       = "OpenTelemetry metrics exporter headers (e.g., Authorization=Bearer xxx,X-Axiom-Dataset=yaffle)"
+    otel-traces-headers        = "OpenTelemetry traces exporter headers (e.g., Authorization=Bearer xxx,X-Axiom-Dataset=yaffle)"
   }
 }
 

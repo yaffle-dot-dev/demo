@@ -106,6 +106,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "GITHUB_OAUTH_CLIENT_ID", valueFrom = aws_secretsmanager_secret.app["github-oauth-client-id"].arn },
         { name = "GITHUB_OAUTH_CLIENT_SECRET", valueFrom = aws_secretsmanager_secret.app["github-oauth-client-secret"].arn },
         { name = "OTEL_EXPORTER_OTLP_HEADERS", valueFrom = aws_secretsmanager_secret.app["otel-headers"].arn },
+        { name = "OTEL_EXPORTER_OTLP_METRICS_HEADERS", valueFrom = aws_secretsmanager_secret.app["otel-metrics-headers"].arn },
+        { name = "OTEL_EXPORTER_OTLP_TRACES_HEADERS", valueFrom = aws_secretsmanager_secret.app["otel-traces-headers"].arn },
         { name = "STRIPE_API_KEY", valueFrom = local.stripe_api_key_secret_arn },
         { name = "STRIPE_WEBHOOK_SIGNING_SECRET", valueFrom = local.stripe_webhook_signing_secret_arn },
       ]
