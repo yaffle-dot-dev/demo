@@ -18,7 +18,7 @@ COPY apps/control-plane/ apps/control-plane/
 # Bundle the control plane
 # --external minijinja-js: WASM module that doesn't bundle correctly
 RUN mkdir -p /bundle/node_modules && \
-    bun build apps/control-plane/src/index.ts \
+    NODE_ENV=production bun build apps/control-plane/src/index.ts \
       --outdir /bundle \
       --target bun \
       --external minijinja-js && \
@@ -37,4 +37,4 @@ ENV PORT=3000
 ENV NODE_ENV=production
 EXPOSE 3000
 
-CMD ["bun", "run", "index.js"]
+CMD ["bun", "index.js"]

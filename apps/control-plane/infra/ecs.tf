@@ -53,6 +53,7 @@ resource "aws_ecs_task_definition" "control_plane" {
       environment = [
         { name = "PORT", value = "3000" },
         { name = "NODE_ENV", value = local.is_preview ? "development" : "production" },
+        { name = "YAFFLE_ENV", value = var.environment },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "YAFFLE_STATE_BUCKET", value = local.state_bucket_name },
         { name = "YAFFLE_WORKSPACE_CACHE_BUCKET", value = aws_s3_bucket.workspace_cache.id },
