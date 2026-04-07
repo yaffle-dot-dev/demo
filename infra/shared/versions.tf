@@ -34,13 +34,25 @@ terraform {
   # Do not add a backend block here - Yaffle manages state storage
 }
 
+locals {
+  shared_resource_classes = {
+    default     = "shared"
+    dns         = "shared-dns"
+    certificate = "shared-certificate"
+    ci_identity = "shared-ci-identity"
+    secrets     = "shared-secrets"
+    docs        = "shared-docs"
+  }
+}
+
 provider "aws" {
   region = var.aws_region
 
   default_tags {
     tags = {
-      project = "yaffle"
-      layer   = "shared"
+      project                 = "yaffle"
+      layer                   = "shared"
+      "yaffle:resource-class" = local.shared_resource_classes.default
     }
   }
 }

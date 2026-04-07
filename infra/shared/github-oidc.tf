@@ -20,8 +20,9 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
   thumbprint_list = ["ffffffffffffffffffffffffffffffffffffffff"]
 
   tags = {
-    Name      = "github-actions-oidc"
-    ManagedBy = "terraform"
+    Name                    = "github-actions-oidc"
+    ManagedBy               = "terraform"
+    "yaffle:resource-class" = local.shared_resource_classes.ci_identity
   }
 }
 
@@ -67,8 +68,9 @@ resource "aws_iam_role" "github_actions_ci" {
   })
 
   tags = {
-    Name      = "yaffle-github-actions-ci"
-    ManagedBy = "terraform"
+    Name                    = "yaffle-github-actions-ci"
+    ManagedBy               = "terraform"
+    "yaffle:resource-class" = local.shared_resource_classes.ci_identity
   }
 }
 

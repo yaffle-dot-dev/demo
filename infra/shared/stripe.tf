@@ -153,8 +153,9 @@ resource "aws_secretsmanager_secret" "stripe_api_key" {
   description = "Stripe API secret key for the control plane"
 
   tags = {
-    Name      = "yaffle-shared-stripe-api-key"
-    ManagedBy = "terraform"
+    Name                    = "yaffle-shared-stripe-api-key"
+    ManagedBy               = "terraform"
+    "yaffle:resource-class" = local.shared_resource_classes.secrets
   }
 }
 
@@ -163,8 +164,9 @@ resource "aws_secretsmanager_secret" "stripe_webhook_signing_secret" {
   description = "Stripe webhook signing secret for verifying webhook payloads"
 
   tags = {
-    Name      = "yaffle-shared-stripe-webhook-signing-secret"
-    ManagedBy = "terraform"
+    Name                    = "yaffle-shared-stripe-webhook-signing-secret"
+    ManagedBy               = "terraform"
+    "yaffle:resource-class" = local.shared_resource_classes.secrets
   }
 }
 

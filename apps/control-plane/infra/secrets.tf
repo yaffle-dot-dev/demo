@@ -15,11 +15,11 @@ locals {
   # database-url is managed in database.tf (value from PlanetScale).
   # Stripe secrets are managed in infra/shared.
   app_secrets = {
-    github-app-id             = "GitHub App ID"
-    github-app-private-key    = "GitHub App private key (PEM)"
-    github-webhook-secret     = "GitHub webhook HMAC secret"
-    better-auth-secret        = "BetterAuth encryption secret (32+ chars)"
-    github-oauth-client-id    = "GitHub OAuth app client ID"
+    github-app-id              = "GitHub App ID"
+    github-app-private-key     = "GitHub App private key (PEM)"
+    github-webhook-secret      = "GitHub webhook HMAC secret"
+    better-auth-secret         = "BetterAuth encryption secret (32+ chars)"
+    github-oauth-client-id     = "GitHub OAuth app client ID"
     github-oauth-client-secret = "GitHub OAuth app client secret"
     otel-headers               = "OpenTelemetry exporter headers (e.g., Authorization=Bearer xxx,X-Axiom-Dataset=yaffle)"
   }
@@ -32,7 +32,8 @@ resource "aws_secretsmanager_secret" "app" {
   description = "${each.value} for ${var.environment}"
 
   tags = {
-    Name = "yaffle-${each.key}-${local.name_suffix}"
+    Name                    = "yaffle-${each.key}-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.secrets
   }
 }
 

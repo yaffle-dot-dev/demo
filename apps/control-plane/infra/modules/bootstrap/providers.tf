@@ -10,8 +10,12 @@ provider "aws" {
 
   default_tags {
     tags = {
-      project    = "yaffle"
-      managed_by = "bootstrap"
+      project                 = "yaffle"
+      layer                   = "app"
+      app                     = "control-plane"
+      environment             = var.environment
+      managed_by              = "bootstrap"
+      "yaffle:resource-class" = "control-plane-state-storage"
     }
   }
 }

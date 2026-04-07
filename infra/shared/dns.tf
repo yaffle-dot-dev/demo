@@ -9,7 +9,8 @@ resource "aws_route53_zone" "main" {
   name = var.domain
 
   tags = {
-    Name = var.domain
+    Name                    = var.domain
+    "yaffle:resource-class" = local.shared_resource_classes.dns
   }
 }
 
@@ -36,7 +37,8 @@ resource "aws_acm_certificate" "main" {
   }
 
   tags = {
-    Name = "${var.domain}-wildcard"
+    Name                    = "${var.domain}-wildcard"
+    "yaffle:resource-class" = local.shared_resource_classes.certificate
   }
 }
 

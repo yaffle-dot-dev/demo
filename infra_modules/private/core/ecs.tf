@@ -11,6 +11,7 @@ resource "aws_ecs_cluster" "main" {
   }
 
   tags = {
-    Name = "yaffle-cluster-${local.name_suffix}"
+    Name                    = "yaffle-cluster-${local.name_suffix}"
+    "yaffle:resource-class" = local.core_resource_classes.cluster
   }
 }

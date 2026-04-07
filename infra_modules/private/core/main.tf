@@ -33,6 +33,13 @@ locals {
   # Number of AZs/NATs
   az_count  = 2
   nat_count = var.ha_nat ? local.az_count : 1
+
+  core_resource_classes = {
+    default  = "core"
+    network  = "core-network"
+    cluster  = "core-cluster"
+    registry = "core-registry"
+  }
 }
 
 # -----------------------------------------------------------------------------

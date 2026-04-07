@@ -14,7 +14,8 @@ resource "aws_cloudwatch_log_group" "control_plane" {
   retention_in_days = local.is_preview ? 7 : 30
 
   tags = {
-    Name = "yaffle-cp-logs-${local.name_suffix}"
+    Name                    = "yaffle-cp-logs-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.logs
   }
 }
 
@@ -40,7 +41,7 @@ resource "aws_ecs_task_definition" "control_plane" {
     {
       name  = "control-plane"
       image = var.control_plane_image
-      
+
       portMappings = [
         {
           containerPort = 3000
@@ -119,7 +120,8 @@ resource "aws_ecs_task_definition" "control_plane" {
   ])
 
   tags = {
-    Name = "yaffle-cp-task-${local.name_suffix}"
+    Name                    = "yaffle-cp-task-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.compute
   }
 }
 
@@ -162,6 +164,7 @@ resource "aws_ecs_service" "control_plane" {
   depends_on = [aws_lb_listener.https]
 
   tags = {
-    Name = "yaffle-cp-svc-${local.name_suffix}"
+    Name                    = "yaffle-cp-svc-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.compute
   }
 }

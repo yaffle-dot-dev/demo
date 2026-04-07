@@ -68,8 +68,8 @@ locals {
   runner_execution_role_arn = module.runner.execution_role_arn
 
   # Stripe
-  stripe_api_key_secret_arn              = module.shared.stripe_api_key_secret_arn
-  stripe_webhook_signing_secret_arn      = module.shared.stripe_webhook_signing_secret_arn
-  stripe_portal_configuration_id         = module.shared.stripe_portal_configuration_id
-  stripe_pricing                         = module.shared.stripe_pricing
+  stripe_api_key_secret_arn         = module.shared.stripe_api_key_secret_arn
+  stripe_webhook_signing_secret_arn = module.shared.stripe_webhook_signing_secret_arn
+  stripe_portal_configuration_id    = module.shared.stripe_portal_configuration_id
+  stripe_pricing                    = module.shared.stripe_pricing
 }

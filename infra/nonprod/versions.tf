@@ -23,11 +23,12 @@ provider "aws" {
 
   default_tags {
     tags = {
-      project     = "yaffle"
-      layer       = "core"
-      tier        = "nonprod"
-      environment = var.environment
-      managed_by  = "yaffle"
+      project                 = "yaffle"
+      layer                   = "core"
+      tier                    = "nonprod"
+      environment             = var.environment
+      managed_by              = "yaffle"
+      "yaffle:resource-class" = "core"
     }
   }
 }

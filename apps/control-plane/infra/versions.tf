@@ -29,16 +29,32 @@ terraform {
   # Do not add a backend block here - Yaffle manages state storage
 }
 
+locals {
+  control_plane_resource_classes = {
+    default         = "control-plane"
+    compute         = "control-plane-compute"
+    load_balancer   = "control-plane-alb"
+    logs            = "control-plane-logs"
+    dns             = "control-plane-dns"
+    network         = "control-plane-network"
+    secrets         = "control-plane-secrets"
+    state_storage   = "control-plane-state-storage"
+    workspace_cache = "control-plane-workspace-cache"
+    iam             = "control-plane-iam"
+  }
+}
+
 provider "aws" {
   region = var.aws_region
 
   default_tags {
     tags = {
-      project     = "yaffle"
-      layer       = "app"
-      app         = "control-plane"
-      environment = var.environment
-      managed_by  = "yaffle"
+      project                 = "yaffle"
+      layer                   = "app"
+      app                     = "control-plane"
+      environment             = var.environment
+      managed_by              = "yaffle"
+      "yaffle:resource-class" = local.control_plane_resource_classes.default
     }
   }
 }
@@ -55,11 +71,12 @@ provider "aws" {
 
   default_tags {
     tags = {
-      project     = "yaffle"
-      layer       = "app"
-      app         = "control-plane"
-      environment = var.environment
-      managed_by  = "yaffle"
+      project                 = "yaffle"
+      layer                   = "app"
+      app                     = "control-plane"
+      environment             = var.environment
+      managed_by              = "yaffle"
+      "yaffle:resource-class" = local.control_plane_resource_classes.default
     }
   }
 }

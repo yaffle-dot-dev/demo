@@ -10,7 +10,8 @@ resource "aws_s3_bucket" "docs" {
   bucket = "yaffle-docs-${var.aws_region}"
 
   tags = {
-    Name = "yaffle-docs"
+    Name                    = "yaffle-docs"
+    "yaffle:resource-class" = local.shared_resource_classes.docs
   }
 }
 

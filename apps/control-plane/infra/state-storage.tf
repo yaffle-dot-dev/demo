@@ -60,7 +60,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "state" {
     filter {}
 
     noncurrent_version_expiration {
-      noncurrent_days = 30  # 30 days balances recovery needs vs secret exposure window
+      noncurrent_days = 30 # 30 days balances recovery needs vs secret exposure window
     }
 
     abort_incomplete_multipart_upload {

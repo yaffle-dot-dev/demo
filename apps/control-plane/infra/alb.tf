@@ -19,7 +19,8 @@ resource "aws_lb" "main" {
   enable_deletion_protection = !local.is_preview
 
   tags = {
-    Name = "yaffle-alb-${local.name_suffix}"
+    Name                    = "yaffle-alb-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.load_balancer
   }
 }
 
@@ -45,7 +46,8 @@ resource "aws_lb_target_group" "control_plane" {
   }
 
   tags = {
-    Name = "yaffle-cp-tg-${local.name_suffix}"
+    Name                    = "yaffle-cp-tg-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.load_balancer
   }
 }
 

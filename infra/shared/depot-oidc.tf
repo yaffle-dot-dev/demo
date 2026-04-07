@@ -16,8 +16,9 @@ resource "aws_iam_openid_connect_provider" "depot" {
   thumbprint_list = ["ffffffffffffffffffffffffffffffffffffffff"]
 
   tags = {
-    Name      = "depot-oidc"
-    ManagedBy = "terraform"
+    Name                    = "depot-oidc"
+    ManagedBy               = "terraform"
+    "yaffle:resource-class" = local.shared_resource_classes.ci_identity
   }
 }
 
@@ -54,8 +55,9 @@ resource "aws_iam_role" "depot_ci" {
   })
 
   tags = {
-    Name      = "yaffle-depot-ci"
-    ManagedBy = "terraform"
+    Name                    = "yaffle-depot-ci"
+    ManagedBy               = "terraform"
+    "yaffle:resource-class" = local.shared_resource_classes.ci_identity
   }
 }
 

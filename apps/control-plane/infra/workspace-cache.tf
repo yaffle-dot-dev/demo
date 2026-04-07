@@ -21,7 +21,8 @@ resource "aws_s3_bucket" "workspace_cache" {
   force_destroy = local.is_preview
 
   tags = {
-    Name = "yaffle-workspace-cache-${local.name_suffix}"
+    Name                    = "yaffle-workspace-cache-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.workspace_cache
   }
 }
 

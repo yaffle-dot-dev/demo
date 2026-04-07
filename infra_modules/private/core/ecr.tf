@@ -22,8 +22,9 @@ resource "aws_ecr_repository" "control_plane" {
   }
 
   tags = {
-    Name = "yaffle-control-plane-${var.tier}"
-    Tier = var.tier
+    Name                    = "yaffle-control-plane-${var.tier}"
+    Tier                    = var.tier
+    "yaffle:resource-class" = local.core_resource_classes.registry
   }
 }
 
@@ -79,8 +80,9 @@ resource "aws_ecr_repository" "web" {
   }
 
   tags = {
-    Name = "yaffle-web-${var.tier}"
-    Tier = var.tier
+    Name                    = "yaffle-web-${var.tier}"
+    Tier                    = var.tier
+    "yaffle:resource-class" = local.core_resource_classes.registry
   }
 }
 
@@ -136,8 +138,9 @@ resource "aws_ecr_repository" "runner" {
   }
 
   tags = {
-    Name = "yaffle-runner-${var.tier}"
-    Tier = var.tier
+    Name                    = "yaffle-runner-${var.tier}"
+    Tier                    = var.tier
+    "yaffle:resource-class" = local.core_resource_classes.registry
   }
 }
 

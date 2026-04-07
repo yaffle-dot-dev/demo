@@ -48,8 +48,9 @@ resource "aws_secretsmanager_secret" "tailscale_runner_authkey" {
   description = "Tailscale OAuth client secret for ECS runner sidecar auth"
 
   tags = {
-    Name      = "yaffle-shared-tailscale-runner-authkey"
-    ManagedBy = "terraform"
+    Name                    = "yaffle-shared-tailscale-runner-authkey"
+    ManagedBy               = "terraform"
+    "yaffle:resource-class" = local.shared_resource_classes.secrets
   }
 }
 
@@ -74,8 +75,9 @@ resource "aws_secretsmanager_secret" "tailscale_github_actions_oauth" {
   description = "Tailscale OAuth client secret for GitHub Actions ephemeral CI nodes"
 
   tags = {
-    Name      = "yaffle-shared-tailscale-github-actions-oauth"
-    ManagedBy = "terraform"
+    Name                    = "yaffle-shared-tailscale-github-actions-oauth"
+    ManagedBy               = "terraform"
+    "yaffle:resource-class" = local.shared_resource_classes.secrets
   }
 }
 

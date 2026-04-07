@@ -20,7 +20,8 @@ resource "aws_route53_zone" "internal" {
   force_destroy = true
 
   tags = {
-    Name = "internal.${var.domain}"
+    Name                    = "internal.${var.domain}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.dns
   }
 }
 

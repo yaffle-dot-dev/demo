@@ -150,7 +150,8 @@ resource "aws_iam_role" "ecs_execution" {
   })
 
   tags = {
-    Name = "yaffle-ecs-exec-${local.name_suffix}"
+    Name                    = "yaffle-ecs-exec-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.iam
   }
 }
 
@@ -211,7 +212,8 @@ resource "aws_iam_role" "control_plane_task" {
   })
 
   tags = {
-    Name = "yaffle-cp-task-${local.name_suffix}"
+    Name                    = "yaffle-cp-task-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.iam
   }
 }
 
@@ -241,7 +243,8 @@ resource "aws_iam_role" "control_plane_task_local_dev" {
   })
 
   tags = {
-    Name = "yaffle-cp-task-nonprod-${module.naming.region_short}"
+    Name                    = "yaffle-cp-task-nonprod-${module.naming.region_short}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.iam
   }
 }
 

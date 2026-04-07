@@ -38,7 +38,8 @@ resource "aws_security_group" "alb" {
   }
 
   tags = {
-    Name = "yaffle-alb-sg-${local.name_suffix}"
+    Name                    = "yaffle-alb-sg-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.network
   }
 }
 
@@ -68,7 +69,8 @@ resource "aws_security_group" "control_plane" {
   }
 
   tags = {
-    Name = "yaffle-cp-sg-${local.name_suffix}"
+    Name                    = "yaffle-cp-sg-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.network
   }
 }
 

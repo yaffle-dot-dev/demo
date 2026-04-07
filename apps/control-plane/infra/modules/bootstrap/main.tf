@@ -57,7 +57,8 @@ resource "aws_s3_bucket" "state" {
   force_destroy = var.environment_kind == "transient"
 
   tags = {
-    Name = local.bucket_name
+    Name                    = local.bucket_name
+    "yaffle:resource-class" = "control-plane-state-storage"
   }
 }
 

@@ -33,10 +33,10 @@ import {
 }
 
 resource "planetscale_postgres_branch" "main" {
-  organization  = local.planetscale_org
-  database      = data.planetscale_database_postgres.yaffle.name
-  name          = var.environment
-  cluster_size  = "PS_5_AWS_ARM"
+  organization = local.planetscale_org
+  database     = data.planetscale_database_postgres.yaffle.name
+  name         = var.environment
+  cluster_size = "PS_5_AWS_ARM"
 }
 
 # -----------------------------------------------------------------------------
@@ -44,12 +44,12 @@ resource "planetscale_postgres_branch" "main" {
 # -----------------------------------------------------------------------------
 
 resource "planetscale_postgres_branch_role" "app" {
-  organization    = local.planetscale_org
-  database        = data.planetscale_database_postgres.yaffle.name
-  branch          = planetscale_postgres_branch.main.name
+  organization = local.planetscale_org
+  database     = data.planetscale_database_postgres.yaffle.name
+  branch       = planetscale_postgres_branch.main.name
 
-  name            = "yaffle-cp-${var.environment}"
-  
+  name = "yaffle-cp-${var.environment}"
+
   inherited_roles = ["pg_read_all_data", "pg_write_all_data"]
 }
 
@@ -66,7 +66,8 @@ resource "aws_secretsmanager_secret" "database_url" {
   description = "PlanetScale Postgres connection string for ${var.environment}"
 
   tags = {
-    Name = "yaffle-database-url-${local.name_suffix}"
+    Name                    = "yaffle-database-url-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.secrets
   }
 }
 
