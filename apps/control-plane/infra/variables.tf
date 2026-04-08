@@ -26,6 +26,12 @@ variable "domain" {
   default     = "yaffle.dev"
 }
 
+variable "module_registry_host" {
+  type        = string
+  description = "Hostname for the Yaffle Terraform module registry"
+  default     = "yaffle.dev"
+}
+
 
 variable "control_plane_image" {
   type        = string

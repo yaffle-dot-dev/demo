@@ -21,6 +21,12 @@ variable "domain" {
   default     = "yaffle.dev"
 }
 
+variable "module_registry_host" {
+  type        = string
+  description = "Hostname for the Yaffle Terraform module registry"
+  default     = "yaffle.dev"
+}
+
 variable "replica_region" {
   type        = string
   description = "AWS region for replica bucket policies"

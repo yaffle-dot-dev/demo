@@ -17,7 +17,7 @@ resource "aws_cloudfront_distribution" "main" {
   price_class         = var.is_preview ? "PriceClass_100" : "PriceClass_All"
   comment             = "Yaffle frontend - ${var.environment}"
 
-  aliases = [local.site_domain, "www.${local.site_domain}"]
+  aliases    = [local.site_domain, "www.${local.site_domain}"]
   web_acl_id = aws_wafv2_web_acl.cloudfront.arn
 
   # ===========================================================================

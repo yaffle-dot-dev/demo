@@ -18,6 +18,12 @@ variable "aws_region" {
   default     = "us-east-1"
 }
 
+variable "module_registry_host" {
+  type        = string
+  description = "Hostname for the Yaffle Terraform module registry"
+  default     = "yaffle.dev"
+}
+
 variable "runner_cpu" {
   type        = number
   description = "CPU units for runner task (256 = 0.25 vCPU)"

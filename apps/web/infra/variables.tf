@@ -27,6 +27,12 @@ variable "domain" {
   default     = "yaffle.dev"
 }
 
+variable "module_registry_host" {
+  type        = string
+  description = "Hostname for the Yaffle Terraform module registry"
+  default     = "yaffle.dev"
+}
+
 variable "web_image" {
   type        = string
   description = "Docker image for the web app container"
@@ -52,10 +58,10 @@ locals {
   replica_name_suffix = module.naming_replica.suffix
 
   # Control plane outputs (ALB, VPC, ECS cluster)
-  vpc_id               = module.control_plane.vpc_id
-  private_subnet_ids   = module.control_plane.private_subnet_ids
-  ecs_cluster_arn      = module.control_plane.ecs_cluster_arn
-  ecs_cluster_name     = module.control_plane.ecs_cluster_name
-  https_listener_arn   = module.control_plane.https_listener_arn
+  vpc_id                = module.control_plane.vpc_id
+  private_subnet_ids    = module.control_plane.private_subnet_ids
+  ecs_cluster_arn       = module.control_plane.ecs_cluster_arn
+  ecs_cluster_name      = module.control_plane.ecs_cluster_name
+  https_listener_arn    = module.control_plane.https_listener_arn
   alb_security_group_id = module.control_plane.alb_security_group_id
 }

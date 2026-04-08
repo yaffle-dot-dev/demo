@@ -70,10 +70,10 @@ resource "aws_lambda_function" "scanner" {
 
   environment {
     variables = {
-      HOME       = "/tmp"
+      HOME = "/tmp"
       # Tailscale auth key (fetched via secrets extension at runtime)
       TAILSCALE_AUTHKEY_SECRET_ARN = var.tailscale_enabled && local.tailscale_runner_authkey_secret_arn != null ? local.tailscale_runner_authkey_secret_arn : ""
-      TS_HOSTNAME = "yaffle-scanner-lambda"
+      TS_HOSTNAME                  = "yaffle-scanner-lambda"
       # Axiom telemetry
       AXIOM_TOKEN   = var.axiom_token
       AXIOM_DATASET = "yaffle-scanner"

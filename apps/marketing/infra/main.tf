@@ -1,5 +1,5 @@
 module "shared" {
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 module "static_site" {
@@ -20,4 +20,10 @@ variable "environment" {
 variable "environment_kind" {
   type        = string
   description = "Kind of environment ('named' or 'transient')"
+}
+
+variable "module_registry_host" {
+  type        = string
+  description = "Hostname for the Yaffle Terraform module registry"
+  default     = "yaffle.dev"
 }

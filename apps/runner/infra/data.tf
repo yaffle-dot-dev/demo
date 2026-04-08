@@ -9,7 +9,7 @@
 # -----------------------------------------------------------------------------
 
 module "shared" {
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 # -----------------------------------------------------------------------------
@@ -19,12 +19,12 @@ module "shared" {
 
 module "main" {
   count  = local.is_preview ? 0 : 1
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--production/yaffle"
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/infra--production/yaffle"
 }
 
 module "nonprod" {
   count  = local.is_preview ? 1 : 0
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--nonprod/yaffle"
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/infra--nonprod/yaffle"
 }
 
 # -----------------------------------------------------------------------------

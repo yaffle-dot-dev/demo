@@ -13,3 +13,9 @@ variable "aws_region" {
   description = "AWS region for naming and bootstrap resources"
   default     = "us-east-1"
 }
+
+variable "module_registry_host" {
+  type        = string
+  description = "Hostname for the Yaffle Terraform module registry"
+  default     = "yaffle.dev"
+}

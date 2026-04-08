@@ -10,7 +10,7 @@
 # -----------------------------------------------------------------------------
 
 module "shared" {
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 # -----------------------------------------------------------------------------
@@ -18,15 +18,15 @@ module "shared" {
 # -----------------------------------------------------------------------------
 
 module "marketing" {
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/apps--marketing--infra/yaffle"
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/apps--marketing--infra/yaffle"
 }
 
 module "docs" {
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/apps--docs--infra/yaffle"
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/apps--docs--infra/yaffle"
 }
 
 module "control_plane" {
-  source = "yaffle.tail66f312.ts.net:6969/yaffle-dot-dev--yaffle/apps--control-plane--infra/yaffle"
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/apps--control-plane--infra/yaffle"
 }
 
 # -----------------------------------------------------------------------------
@@ -51,6 +51,6 @@ locals {
   docs_replica_bucket_arn    = module.docs.replica_bucket_arn
 
   # Control plane ALB
-  api_domain  = module.control_plane.api_domain
+  api_domain   = module.control_plane.api_domain
   alb_dns_name = module.control_plane.alb_dns_name
 }
