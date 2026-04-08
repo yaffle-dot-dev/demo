@@ -19,18 +19,16 @@ interface YaffleOutputsResponse {
   outputs: Record<string, TerraformOutput>
 }
 
-async function getToken(): Promise<string> {
-  const envToken = process.env.YAFFLE_TOKEN || process.env.GITHUB_TOKEN || process.env.YAFFLE_API_TOKEN
-  if (envToken) return envToken
+function getChildEnv(): Record<string, string> {
+  const env: Record<string, string> = {}
 
-  try {
-    const token = await $`gh auth token`.quiet().text()
-    return token.trim()
-  } catch {
-    throw new Error(
-      "No auth token found. Set GITHUB_TOKEN, YAFFLE_TOKEN, or run 'gh auth login'"
-    )
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === "string") {
+      env[key] = value
+    }
   }
+
+  return env
 }
 
 async function getOrgRepo(): Promise<{ org: string; repo: string }> {
@@ -54,8 +52,6 @@ export interface FetchOutputsOptions {
  * Fetch terraform outputs for a workspace. Returns a flat key→value map.
  */
 export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<string, unknown>> {
-  const token = await getToken()
-
   const args = [
     "--workspace", opts.workspace,
     "--format", "json",
@@ -87,7 +83,7 @@ export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<st
 
   const proc = $`bun run packages/cli/src/main.ts outputs ${args}`
     .env({
-      GITHUB_TOKEN: token,
+      ...getChildEnv(),
       GITHUB_REPOSITORY: `${org}/${repo}`,
       YAFFLE_API_URL,
       NODE_TLS_REJECT_UNAUTHORIZED: YAFFLE_API_URL.includes("localhost") || YAFFLE_API_URL.includes(".local") ? "0" : "1",
