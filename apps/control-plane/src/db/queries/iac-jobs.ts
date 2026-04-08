@@ -166,18 +166,34 @@ export async function findLatestJobsForDeployments(
   if (deploymentIds.length === 0) return new Map()
 
   return withDbSpan("select", "iac_jobs", async () => {
-    const idPlaceholders = sql.join(deploymentIds.map(id => sql`${id}`), sql`,`)
+    const latestQueuedAtByDeployment = db
+      .select({
+        deploymentId: iacJobs.deploymentId,
+        latestQueuedAt: sql<Date>`max(${iacJobs.queuedAt})`.as("latest_queued_at"),
+      })
+      .from(iacJobs)
+      .where(inArray(iacJobs.deploymentId, deploymentIds))
+      .groupBy(iacJobs.deploymentId)
+      .as("latest_queued_at_by_deployment")
+
     const rows = await db
       .select()
       .from(iacJobs)
-      .where(sql`${iacJobs.deploymentId} IN (${idPlaceholders})`)
-      .orderBy(iacJobs.deploymentId, sql`${iacJobs.queuedAt} DESC`)
+      .innerJoin(
+        latestQueuedAtByDeployment,
+        and(
+          eq(iacJobs.deploymentId, latestQueuedAtByDeployment.deploymentId),
+          eq(iacJobs.queuedAt, latestQueuedAtByDeployment.latestQueuedAt),
+        ),
+      )
+      .orderBy(iacJobs.deploymentId, desc(iacJobs.queuedAt), desc(iacJobs.id))
 
     // Keep only the first (latest) row per deployment
     const map = new Map<string, IacJob>()
     for (const row of rows) {
-      if (!map.has(row.deploymentId)) {
-        map.set(row.deploymentId, row)
+      const job = row.iac_jobs
+      if (!map.has(job.deploymentId)) {
+        map.set(job.deploymentId, job)
       }
     }
     return map

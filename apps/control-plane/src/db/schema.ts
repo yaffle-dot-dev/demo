@@ -399,6 +399,7 @@ export const iacJobs = pgTable(
     // - Orders by job_type (priority) then queued_at
     index("iac_jobs_queue_priority_idx").on(t.status, t.jobType, t.queuedAt),
     index("iac_jobs_spawn_lease_idx").on(t.status, t.spawnLeaseExpiresAt),
+    index("iac_jobs_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
   ],
 )
 
