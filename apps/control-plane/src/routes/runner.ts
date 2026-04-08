@@ -65,7 +65,7 @@ import { useTfcBackend } from "../lib/tfc-backend.ts"
 import { ensurePreviewWorkspace, ensureNamedWorkspace } from "../lib/workspace-service.ts"
 import { generateRunToken } from "../lib/run-token.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
-import { getRunnerReachableTfcHost } from "../lib/tfc-host.ts"
+import { getRunnerCredentialHosts, getRunnerReachableTfcHost } from "../lib/tfc-host.ts"
 import {
   cascadeFailure,
   notifyDestroyComplete,
@@ -1263,7 +1263,14 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
   }
 
   // TFC backend setup
-  let backendConfig: { hostname: string; organization: string; workspaceName: string } | undefined
+  let backendConfig:
+    | {
+        hostname: string
+        organization: string
+        workspaceName: string
+        credentialHosts: string[]
+      }
+    | undefined
   let tfcToken: string | undefined
   let executionEnv: Record<string, string> = {}
 
@@ -1317,6 +1324,7 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       hostname: getRunnerReachableTfcHost(),
       organization: org.slug,
       workspaceName: tfcWorkspace.name,
+      credentialHosts: getRunnerCredentialHosts(),
     }
     tfcToken = await generateRunToken(deployment.id, tfcWorkspace.id, org.id)
   }

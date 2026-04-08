@@ -3,6 +3,7 @@ import { join } from "node:path"
 
 import { logger } from "./telemetry.ts"
 import { getTfcApiHost, buildTfTokenEnvName } from "./run-token.ts"
+import { buildTfcCredentialHosts } from "./tfc-credentials.ts"
 
 /**
  * Terraform CLI credentials file structure.
@@ -74,12 +75,15 @@ export function buildTfcEnvVars(
   credentialsPath?: string,
 ): Record<string, string> {
   const hostname = getTfcApiHost()
-  const tokenEnvName = buildTfTokenEnvName(hostname)
+  const credentialHosts = buildTfcCredentialHosts(hostname)
 
   const envVars: Record<string, string> = {
-    [tokenEnvName]: token,
     // Also set YAFFLE_TFC_API_HOST so it's available in the cloud block
     YAFFLE_TFC_API_HOST: hostname,
+  }
+
+  for (const host of credentialHosts) {
+    envVars[buildTfTokenEnvName(host)] = token
   }
 
   // Set TF_CLI_CONFIG_FILE to point to our ephemeral credentials
@@ -110,6 +114,7 @@ export async function writeEphemeralCredentials(
   token: string,
 ): Promise<string> {
   const hostname = getTfcApiHost()
+  const credentialHosts = buildTfcCredentialHosts(hostname)
 
   // Write to a subdirectory to avoid polluting the terraform workspace
   const configDir = join(workDir, ".yaffle")
@@ -117,11 +122,9 @@ export async function writeEphemeralCredentials(
 
   const credentialsPath = join(configDir, "credentials.tfrc.json")
   const credentials: TerraformCredentials = {
-    credentials: {
-      [hostname]: {
-        token,
-      },
-    },
+    credentials: Object.fromEntries(
+      credentialHosts.map((host) => [host, { token }]),
+    ),
   }
 
   await writeFile(credentialsPath, JSON.stringify(credentials, null, 2))
@@ -129,6 +132,7 @@ export async function writeEphemeralCredentials(
   logger.info("Ephemeral credentials written for module registry auth", {
     "credentials.path": credentialsPath,
     "credentials.hostname": hostname,
+    "credentials.hosts": credentialHosts,
   })
 
   return credentialsPath

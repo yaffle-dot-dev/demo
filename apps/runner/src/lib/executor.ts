@@ -262,24 +262,30 @@ async function configureBackend(
     const credsDir = join(workDir, ".yaffle")
     await mkdir(credsDir, { recursive: true })
 
+    const credentialHosts = [
+      context.backendConfig.hostname,
+      ...(context.backendConfig.credentialHosts ?? []),
+    ].filter((host, index, hosts) => host.length > 0 && hosts.indexOf(host) === index)
+
     const credentialsPath = join(credsDir, "credentials.tfrc.json")
     const credsContent = JSON.stringify({
-      credentials: {
-        [context.backendConfig.hostname]: {
-          token: context.tfcToken,
-        },
-      },
+      credentials: Object.fromEntries(
+        credentialHosts.map((host) => [host, { token: context.tfcToken }]),
+      ),
     })
 
     await writeFile(credentialsPath, credsContent)
 
-    // Use per-job env vars instead of mutating global/shared locations.
-    const tokenEnvName = `TF_TOKEN_${context.backendConfig.hostname.replace(/[.:]/g, "_")}`
-    return {
+    const envVars: Record<string, string> = {
       TF_CLI_CONFIG_FILE: credentialsPath,
-      [tokenEnvName]: context.tfcToken,
       YAFFLE_TFC_API_HOST: context.backendConfig.hostname,
     }
+
+    for (const host of credentialHosts) {
+      envVars[`TF_TOKEN_${host.replace(/[.:]/g, "_")}`] = context.tfcToken
+    }
+
+    return envVars
   }
 
   return {}

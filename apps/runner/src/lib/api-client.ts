@@ -52,6 +52,7 @@ export interface ExecutionContext {
     hostname: string
     organization: string
     workspaceName: string
+    credentialHosts?: string[]
   }
   tfcToken?: string
   /** Presigned URL to download the saved plan file (apply only) */
