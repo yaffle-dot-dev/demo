@@ -4,6 +4,7 @@ import { createHash } from "node:crypto"
 
 import { tfcRoute } from "./index.ts"
 import { wellKnownRoute } from "../well-known.ts"
+import { auth } from "../../lib/better-auth.ts"
 import { generateRunToken } from "../../lib/run-token.ts"
 import {
   createApiToken,
@@ -307,6 +308,103 @@ describe("OAuth and Public URL Security", () => {
     const limited = await app.fetch(makeRequest())
     expect(limited.status).toBe(429)
     expect(limited.headers.get("Retry-After")).toBeTruthy()
+  })
+
+  test("exchanges an OAuth authorization code and invalidates it after use", async () => {
+    const redirectUri = "http://localhost:10000/callback"
+    const codeVerifier = "c".repeat(43)
+    const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url")
+    const authApi = auth.api as { getSession: typeof auth.api.getSession }
+    const originalGetSession = authApi.getSession
+
+    authApi.getSession = (async () => ({
+      session: {
+        id: "session-tfc-login",
+        userId: TEST_USER_ID,
+        expiresAt: new Date(Date.now() + 60_000),
+        token: "session-token",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ipAddress: null,
+        userAgent: null,
+      },
+      user: {
+        id: TEST_USER_ID,
+        email: "tfc-test@example.com",
+        name: "TFC Test User",
+        emailVerified: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        image: null,
+      },
+    })) as typeof auth.api.getSession
+
+    try {
+      const authorizeParams = new URLSearchParams({
+        client_id: "terraform-cli",
+        redirect_uri: redirectUri,
+        response_type: "code",
+        code_challenge: codeChallenge,
+        code_challenge_method: "S256",
+        organization: TEST_ORG_SLUG,
+        state: "oauth-state",
+      })
+
+      const authorizeRes = await app.fetch(
+        new Request(`http://localhost/tfc/oauth/authorize?${authorizeParams.toString()}`),
+      )
+
+      expect(authorizeRes.status).toBe(200)
+
+      const authorizeHtml = await authorizeRes.text()
+      const redirectMatch = authorizeHtml.match(
+        /http:\/\/localhost:10000\/callback\?code=([^"&]+)&state=oauth-state/,
+      )
+
+      expect(redirectMatch).toBeTruthy()
+      const code = redirectMatch?.[1] ?? ""
+      expect(code).toBeTruthy()
+
+      const tokenRequestBody = {
+        grant_type: "authorization_code",
+        code,
+        code_verifier: codeVerifier,
+        redirect_uri: redirectUri,
+        client_id: "terraform-cli",
+      }
+
+      const tokenRes = await app.fetch(
+        new Request("http://localhost/tfc/oauth/token", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(tokenRequestBody),
+        }),
+      )
+
+      expect(tokenRes.status).toBe(200)
+      const tokenBody = await tokenRes.json()
+      expect(typeof tokenBody.access_token).toBe("string")
+      expect(tokenBody.token_type).toBe("bearer")
+
+      const secondTokenRes = await app.fetch(
+        new Request("http://localhost/tfc/oauth/token", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(tokenRequestBody),
+        }),
+      )
+
+      expect(secondTokenRes.status).toBe(400)
+      const secondTokenBody = await secondTokenRes.json()
+      expect(secondTokenBody.error).toBe("invalid_grant")
+      expect(secondTokenBody.error_description).toBe("Invalid or expired code")
+    } finally {
+      authApi.getSession = originalGetSession
+    }
   })
 
   test("state version URLs use configured public origin instead of forwarded host", async () => {

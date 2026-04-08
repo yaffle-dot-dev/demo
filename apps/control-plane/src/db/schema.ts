@@ -520,6 +520,25 @@ export const apiTokens = pgTable("api_tokens", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
+export const oauthAuthorizationCodes = pgTable(
+  "oauth_authorization_codes",
+  {
+    codeHash: text("code_hash").primaryKey(),
+    userId: text("user_id")
+      .references(() => user.id, { onDelete: "cascade" })
+      .notNull(),
+    orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }).notNull(),
+    orgSlug: text("org_slug").notNull(),
+    scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`),
+    codeChallenge: text("code_challenge").notNull(),
+    codeChallengeMethod: text("code_challenge_method").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("oauth_authorization_codes_expires_at_idx").on(t.expiresAt)],
+)
+
 // =============================================================================
 // Distributed Leases
 // =============================================================================

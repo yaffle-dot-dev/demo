@@ -11,6 +11,10 @@ import {
   getDefaultTfcTokenExpiry,
   type TfcTokenRole,
 } from "../../db/queries/api-tokens.ts"
+import {
+  createOauthAuthorizationCode,
+  takeOauthAuthorizationCode,
+} from "../../db/queries/oauth-authorization-codes.ts"
 import { listUserOrgs } from "../../db/queries/users.ts"
 import {
   enforceRateLimit,
@@ -45,34 +49,6 @@ const OAUTH_TOKEN_RATE_LIMIT = {
 } as const
 
 const OAUTH_TOKEN_MAX_BYTES = 16 * 1024
-
-// In-memory store for pending authorization codes
-// In production, consider Redis for multi-instance deployments
-interface PendingAuth {
-  userId: string
-  orgId: string
-  orgSlug: string
-  scopes: string[]
-  codeChallenge: string
-  codeChallengeMethod: string
-  redirectUri: string
-  expiresAt: number
-}
-
-const pendingAuths = new Map<string, PendingAuth>()
-
-// Clean up expired auth codes periodically
-setInterval(
-  () => {
-    const now = Date.now()
-    for (const [code, pending] of pendingAuths) {
-      if (pending.expiresAt < now) {
-        pendingAuths.delete(code)
-      }
-    }
-  },
-  60 * 1000,
-) // Every minute
 
 // Validation schemas
 const authorizeQuerySchema = z.object({
@@ -305,7 +281,8 @@ oauthCliRoute.get("/authorize", async (c) => {
   const code = randomBytes(32).toString("base64url")
   const expiresAt = Date.now() + 5 * 60 * 1000 // 5 minutes
 
-  pendingAuths.set(code, {
+  await createOauthAuthorizationCode({
+    code,
     userId: session.user.id,
     orgId: selectedOrg.id,
     orgSlug: selectedOrg.slug,
@@ -313,7 +290,7 @@ oauthCliRoute.get("/authorize", async (c) => {
     codeChallenge: query.code_challenge,
     codeChallengeMethod: query.code_challenge_method,
     redirectUri: query.redirect_uri,
-    expiresAt,
+    expiresAt: new Date(expiresAt),
   })
 
   log.info("OAuth authorization code issued", {
@@ -507,14 +484,13 @@ oauthCliRoute.post("/token", async (c) => {
   const body = parseResult.data
 
   // Look up pending authorization
-  const pending = pendingAuths.get(body.code)
+  const pending = await takeOauthAuthorizationCode(body.code)
   if (!pending) {
     return c.json({ error: "invalid_grant", error_description: "Invalid or expired code" }, 400)
   }
 
   // Check expiration
-  if (pending.expiresAt < Date.now()) {
-    pendingAuths.delete(body.code)
+  if (pending.expiresAt.getTime() < Date.now()) {
     return c.json({ error: "invalid_grant", error_description: "Code expired" }, 400)
   }
 
@@ -530,9 +506,6 @@ oauthCliRoute.post("/token", async (c) => {
     log.warn("PKCE verification failed", { userId: pending.userId })
     return c.json({ error: "invalid_grant", error_description: "PKCE verification failed" }, 400)
   }
-
-  // PKCE verified - delete the code (one-time use)
-  pendingAuths.delete(body.code)
 
   // Generate API token
   const { token, hash } = generateToken()

@@ -1,4 +1,4 @@
-CREATE TABLE "warm_runner_sessions" (
+CREATE TABLE IF NOT EXISTS "warm_runner_sessions" (
   "id" uuid PRIMARY KEY NOT NULL,
   "org_id" uuid NOT NULL REFERENCES "organizations"("id") ON DELETE CASCADE,
   "worker_id" text NOT NULL,
@@ -13,5 +13,5 @@ CREATE TABLE "warm_runner_sessions" (
   "updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 
-CREATE UNIQUE INDEX "warm_runner_sessions_worker_id" ON "warm_runner_sessions" ("worker_id");
-CREATE INDEX "warm_runner_sessions_org_status_idx" ON "warm_runner_sessions" ("org_id", "status", "last_heartbeat_at");
+CREATE UNIQUE INDEX IF NOT EXISTS "warm_runner_sessions_worker_id" ON "warm_runner_sessions" ("worker_id");
+CREATE INDEX IF NOT EXISTS "warm_runner_sessions_org_status_idx" ON "warm_runner_sessions" ("org_id", "status", "last_heartbeat_at");
