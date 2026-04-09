@@ -60,6 +60,16 @@
               exec ${pkgs.bun}/bin/bun run scripts/deploy-marketing.ts "$@"
             '');
           };
+          deploy-docs = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-docs" ''
+              if [ ! -f "scripts/deploy-docs.ts" ]; then
+                echo "Error: Must run from yaffle repo root" >&2
+                exit 1
+              fi
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-docs.ts "$@"
+            '');
+          };
 
           # CI/CD scripts — each independently runnable
           deploy-all = {

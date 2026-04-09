@@ -2,7 +2,7 @@ import { $ } from "bun"
 
 const AWS_REGION = process.env.AWS_REGION || "us-east-1"
 
-export interface AwsSessionEnv {
+export interface AwsSessionEnv extends Record<string, string> {
   AWS_ACCESS_KEY_ID: string
   AWS_SECRET_ACCESS_KEY: string
   AWS_SESSION_TOKEN: string

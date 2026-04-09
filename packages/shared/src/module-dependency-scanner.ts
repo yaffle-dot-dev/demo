@@ -31,7 +31,10 @@ export type DependencyScannerVariableBindingsByPath = Record<
 export interface DependencyScannerOptions {
   allowedHosts?: string[]
   variables?: DependencyScannerVariableBindings
+  currentNamespace?: string
 }
+
+type DependencyScannerFilterOptions = Omit<DependencyScannerOptions, "variables">
 
 /**
  * Result of scanning a single workspace for dependencies.
@@ -98,7 +101,15 @@ function isAllowedModuleHost(host: string, allowedHosts: string[]): boolean {
   })
 }
 
-function parseYaffleModuleWorkspacePath(source: string, allowedHosts: string[]): string | null {
+function normalizeNamespace(namespace: string): string {
+  return namespace.trim().toLowerCase()
+}
+
+function parseYaffleModuleWorkspacePath(
+  source: string,
+  allowedHosts: string[],
+  currentNamespace?: string,
+): string | null {
   if (source.includes("://")) {
     return null
   }
@@ -108,7 +119,8 @@ function parseYaffleModuleWorkspacePath(source: string, allowedHosts: string[]):
     return null
   }
 
-  const [hostWithOptionalPort, namespace, moduleName, provider] = parts
+  const [hostWithOptionalPort, namespace, moduleName, providerWithQuery] = parts
+  const provider = providerWithQuery.split("?")[0]
   if (provider !== "yaffle") {
     return null
   }
@@ -119,6 +131,10 @@ function parseYaffleModuleWorkspacePath(source: string, allowedHosts: string[]):
 
   const host = hostWithOptionalPort.split(":")[0]
   if (!isAllowedModuleHost(host, allowedHosts)) {
+    return null
+  }
+
+  if (currentNamespace && normalizeNamespace(namespace) !== normalizeNamespace(currentNamespace)) {
     return null
   }
 
@@ -287,7 +303,11 @@ export function extractDependenciesFromContent(
       continue
     }
 
-    const workspacePath = parseYaffleModuleWorkspacePath(resolvedSource, hosts)
+    const workspacePath = parseYaffleModuleWorkspacePath(
+      resolvedSource,
+      hosts,
+      normalizedOptions?.currentNamespace,
+    )
     if (!workspacePath) {
       continue
     }
@@ -342,6 +362,7 @@ export async function scanWorkspace(
   workspacePath: string,
   knownWorkspaces: Set<string>,
   workspaceVariables?: DependencyScannerVariableBindings,
+  options?: DependencyScannerFilterOptions,
 ): Promise<WorkspaceDependencies> {
   const workspaceDir = join(repoDir, workspacePath)
   const allDependencies: string[] = []
@@ -369,6 +390,8 @@ export async function scanWorkspace(
   }
 
   const deps = extractDependenciesFromContent(tfContents.join("\n\n"), {
+    allowedHosts: options?.allowedHosts,
+    currentNamespace: options?.currentNamespace,
     variables: workspaceVariables,
   })
 
@@ -398,6 +421,7 @@ export async function scanAllWorkspaceDependencies(
   repoDir: string,
   workspacePaths: string[],
   workspaceVariablesByPath?: DependencyScannerVariableBindingsByPath,
+  options?: DependencyScannerFilterOptions,
 ): Promise<InferredDependencyGraph> {
   const knownWorkspaces = new Set(workspacePaths)
   const edges: [string, string][] = []
@@ -409,6 +433,7 @@ export async function scanAllWorkspaceDependencies(
       wsPath,
       knownWorkspaces,
       workspaceVariablesByPath?.[wsPath],
+      options,
     )
 
     for (const dep of result.dependsOn) {

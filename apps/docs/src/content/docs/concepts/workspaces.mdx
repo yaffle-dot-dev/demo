@@ -20,7 +20,7 @@ path = "infra/compute"
 environments = ["*"]
 ```
 
-Each workspace gets its own state file, runs in its own container, and can have its own variables.
+Each workspace gets its own state file, runs independently, and can have its own variables.
 
 ## Multiple workspaces
 
@@ -75,7 +75,7 @@ Reference another workspace's outputs using the Yaffle module registry:
 ```hcl
 # infra/compute/main.tf
 module "network" {
-  source = "yaffle.dev/api/registry/your-org/infra--network/yaffle"
+  source = "yaffle.dev/acme--platform/infra--network/yaffle"
 }
 
 resource "aws_ecs_service" "app" {
@@ -89,12 +89,72 @@ resource "aws_ecs_service" "app" {
 
 The module source follows this pattern:
 ```
-yaffle.dev/api/registry/ORG/WORKSPACE--PATH/yaffle
+yaffle.dev/YAFFLE-ORG--REPO/WORKSPACE--PATH/yaffle
 ```
 
-Where `WORKSPACE--PATH` uses `--` as path separator:
+Where:
+
+- `YAFFLE-ORG--REPO` identifies the producer repository
+- `WORKSPACE--PATH` uses `--` as the path separator
+
+Examples:
+
 - `infra/network` → `infra--network`
 - `apps/web/infra` → `apps--web--infra`
+
+<Aside type="note">
+Only same-repo Yaffle module references become DAG edges. Cross-repo modules are valid, but they are treated as normal external Terraform modules and do not affect execution order inside the current repo.
+</Aside>
+
+## Internal vs public outputs
+
+A workspace can expose two different output surfaces:
+
+- `internal` outputs are available only to downstream workspaces in the same repo
+- `public` outputs are available to explicitly allowlisted workspaces in other repos in the same Yaffle org
+
+Outputs are internal by default. You only need to configure the outputs you want to make public.
+
+```toml
+[[workspaces]]
+path = "platform/eks"
+environments = ["main"]
+
+outputs.cluster_endpoint = { visibility = "public", consumers = ["applications:apps/*"] }
+outputs.cluster_ca = { visibility = "public", consumers = ["applications:apps/*"] }
+```
+
+This means:
+
+- workspaces in the same repo can still consume the full module surface
+- allowlisted cross-repo consumers only see the `public` outputs
+- cross-org module sharing is not supported
+
+<Aside type="tip">
+Use `public` outputs for stable platform APIs. Keep implementation details and sensitive internals out of that surface.
+</Aside>
+
+## Intra-repo vs cross-repo modules
+
+Yaffle treats module sources differently depending on which repo they point at.
+
+```hcl
+# Same repo -> included in the DAG
+module "shared" {
+  source = "yaffle.dev/acme--applications/infra--shared/yaffle"
+}
+
+# Different repo in the same Yaffle org -> external module, not a DAG edge
+module "cluster" {
+  source = "yaffle.dev/acme--platform/platform--eks/yaffle"
+}
+```
+
+Rules:
+
+- same-repo modules participate in dependency inference, ordering, and blast-radius analysis
+- cross-repo modules resolve through the registry but do not become DAG edges in the current repo
+- cross-org module sharing is denied
 
 ## Execution order
 

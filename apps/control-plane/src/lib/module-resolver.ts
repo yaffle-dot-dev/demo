@@ -69,8 +69,10 @@ export interface ResolveModuleOptions {
  *
  * Resolution algorithm:
  * 1. If no preview context, resolve to production
- * 2. If preview context, check if a preview workspace exists for this PR
- * 3. If preview workspace exists, use it; otherwise fall back to production
+ * 2. If preview context, prefer a preview workspace only when it has a usable
+ *    finalized state version for the requested serial
+ * 3. Fall back to a non-preview workspace when the preview workspace is
+ *    missing or has no finalized state to serve
  *
  * This implements "auto" preview resolution. The "never" and "always" modes
  * will be added when config parsing is implemented (YAF-41).
@@ -80,62 +82,74 @@ export async function resolveModule(
 ): Promise<ResolvedModule | null> {
   const { orgId, repo, workspacePath, serial, previewContext } = options
 
-  let workspace: Workspace | undefined
-  let isPreview = false
+  async function findUsableStateVersion(workspaceId: string): Promise<StateVersion | undefined> {
+    const stateVersion = serial === "latest"
+      ? await getCurrentStateVersion(workspaceId)
+      : await findStateVersionBySerial(workspaceId, serial)
+
+    if (!stateVersion || stateVersion.status !== "finalized") {
+      return undefined
+    }
+
+    return stateVersion
+  }
 
   // Try preview workspace first if we have preview context
   if (previewContext) {
-    workspace = await findPreviewWorkspace(orgId, repo, workspacePath, previewContext.prNumber)
-    if (workspace) {
-      isPreview = true
-      logger.debug("Resolved to preview workspace", {
+    const previewWorkspace = await findPreviewWorkspace(orgId, repo, workspacePath, previewContext.prNumber)
+    if (previewWorkspace) {
+      const previewStateVersion = await findUsableStateVersion(previewWorkspace.id)
+      if (previewStateVersion) {
+        logger.debug("Resolved to preview workspace", {
+          repo,
+          workspacePath,
+          prNumber: previewContext.prNumber,
+          workspaceId: previewWorkspace.id,
+          stateVersionId: previewStateVersion.id,
+          serial: previewStateVersion.serial,
+        })
+
+        return {
+          workspace: previewWorkspace,
+          stateVersion: previewStateVersion,
+          isPreview: true,
+        }
+      }
+
+      logger.info("Preview workspace has no finalized state version, falling back to non-preview workspace", {
         repo,
         workspacePath,
         prNumber: previewContext.prNumber,
-        workspaceId: workspace.id,
+        workspaceId: previewWorkspace.id,
+        requestedSerial: serial,
       })
     }
   }
 
-  // Fall back to non-preview workspace (e.g. main branch) if no preview workspace found
-  if (!workspace) {
-    workspace = await findNonPreviewWorkspace(orgId, repo, workspacePath)
-    if (workspace) {
-      logger.debug("Resolved to non-preview workspace", {
-        repo,
-        workspacePath,
-        workspaceId: workspace.id,
-        environment: workspace.environment,
-        hadPreviewContext: !!previewContext,
-      })
-    }
-  }
-
+  // Fall back to non-preview workspace (e.g. main branch) if no usable preview was found
+  const workspace = await findNonPreviewWorkspace(orgId, repo, workspacePath)
   if (!workspace) {
     return null
   }
 
-  // Get the state version
-  let stateVersion: StateVersion | undefined
-
-  if (serial === "latest") {
-    stateVersion = await getCurrentStateVersion(workspace.id)
-  } else {
-    stateVersion = await findStateVersionBySerial(workspace.id, serial)
-  }
-
+  const stateVersion = await findUsableStateVersion(workspace.id)
   if (!stateVersion) {
     return null
   }
 
-  // Must be finalized
-  if (stateVersion.status !== "finalized") {
-    return null
-  }
+  logger.debug("Resolved to non-preview workspace", {
+    repo,
+    workspacePath,
+    workspaceId: workspace.id,
+    stateVersionId: stateVersion.id,
+    serial: stateVersion.serial,
+    environment: workspace.environment,
+    hadPreviewContext: !!previewContext,
+  })
 
   return {
     workspace,
     stateVersion,
-    isPreview,
+    isPreview: false,
   }
 }

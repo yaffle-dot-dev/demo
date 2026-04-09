@@ -58,7 +58,7 @@ When a product team references the platform's database workspace, they get:
 
 ```hcl
 module "platform_database" {
-  source = "yaffle.dev/api/registry/platform/database/yaffle"
+  source = "yaffle.dev/acme--platform/platform--database/yaffle"
 }
 
 resource "aws_ecs_service" "api" {
@@ -108,6 +108,23 @@ Downstream teams don't need to know:
 
 They just need the connection string and a way to authenticate.
 
+The cross-repo contract is producer-owned in `yaffle.toml`:
+
+```toml
+[[workspaces]]
+path = "platform/database"
+environments = ["*"]
+
+outputs.connection_string = { visibility = "public", consumers = ["applications:apps/*"] }
+outputs.secret_arn = { visibility = "public", consumers = ["applications:apps/*"] }
+```
+
+That gives the platform team a clean product boundary:
+
+- same-repo platform workspaces can still consume all outputs
+- cross-repo product teams only see the curated `public` outputs
+- cross-org module sharing is not supported
+
 ## Environment isolation
 
 Each named environment runs its own copy of the platform infrastructure:
@@ -137,7 +154,7 @@ When a product team's workspace runs in `staging`, they automatically get stagin
 # This resolves to the staging RDS endpoint when running in staging,
 # and the prod RDS endpoint when running in prod
 module "platform_database" {
-  source = "yaffle.dev/api/registry/platform/database/yaffle"
+  source = "yaffle.dev/acme--platform/platform--database/yaffle"
 }
 ```
 
@@ -194,11 +211,11 @@ Product teams compose these outputs into their own infrastructure:
 
 ```hcl
 module "platform" {
-  source = "yaffle.dev/api/registry/platform/network/yaffle"
+  source = "yaffle.dev/acme--platform/platform--network/yaffle"
 }
 
 module "platform_db" {
-  source = "yaffle.dev/api/registry/platform/database/yaffle"
+  source = "yaffle.dev/acme--platform/platform--database/yaffle"
 }
 
 resource "aws_ecs_service" "api" {

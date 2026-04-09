@@ -9,7 +9,7 @@ Platform teams publish infrastructure, app teams consume it like any Terraform m
 
 ```hcl
 module "vpc" {
-  source = "yaffle.dev/acme/core-infrastructure/vpc"
+  source = "yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle"
 }
 
 resource "aws_security_group" "api" {
@@ -22,7 +22,7 @@ resource "aws_security_group" "api" {
 - **Type safety**: Generated modules have typed outputs, IDE autocomplete works
 - **No magic strings**: Reference infrastructure by module, not hardcoded IDs
 - **Preview-aware**: Modules resolve to production or preview state as appropriate
-- **Zero config for publishers**: Just write normal Terraform with outputs
+- **Explicit platform API surface**: Producers choose which outputs are same-repo only vs cross-repo shareable
 - **Standard Terraform**: Uses native module syntax, no custom providers
 
 ---
@@ -32,7 +32,7 @@ resource "aws_security_group" "api" {
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                              Terraform CLI                                   │
-│    module "vpc" { source = "yaffle.dev/acme/core-infrastructure/vpc" }      │
+│    module "vpc" { source = "yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle" } │
 └─────────────────────────────────────────────────────────────────────────────┘
                                       │
                                       ▼
@@ -72,7 +72,11 @@ resource "aws_security_group" "api" {
 
 ### For Platform Teams (Publishers)
 
-Nothing changes. Write normal Terraform with outputs:
+Same-repo modules work automatically from normal Terraform outputs. To share a
+workspace across repos, the producer explicitly exports a curated output surface
+in `yaffle.toml`.
+
+Terraform stays normal:
 
 ```hcl
 # core-infrastructure/vpc/main.tf
@@ -105,7 +109,35 @@ output "cidr_block" {
 ```
 
 When this workspace's state is uploaded, Yaffle automatically makes it available
-as a module at `yaffle.dev/<org>/core-infrastructure/vpc`.
+as a module at `yaffle.dev/<org>--<repo>/core-infrastructure--vpc/yaffle`.
+
+To expose outputs across repos in the same Yaffle org, add export rules:
+
+```toml
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "platform/eks"
+environments = ["main"]
+
+[[workspaces.exports]]
+outputs = ["cluster_endpoint", "cluster_ca"]
+visibility = "public"
+consumers = ["acme/applications/apps/*"]
+
+[[workspaces.exports]]
+outputs = ["cluster_security_group_id", "oidc_provider_arn"]
+visibility = "internal"
+```
+
+Interpretation:
+
+- `internal` outputs are available only to downstream workspaces in the same repo
+- `public` outputs are available only to explicitly allowlisted workspaces in the same Yaffle org
+- cross-org module sharing is not supported
 
 ### For App Teams (Consumers)
 
@@ -114,11 +146,11 @@ Reference infrastructure as modules:
 ```hcl
 # apps/api/infra/main.tf
 module "vpc" {
-  source = "yaffle.dev/acme/core-infrastructure/vpc"
+  source = "yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle"
 }
 
 module "eks" {
-  source = "yaffle.dev/acme/core-infrastructure/eks"
+  source = "yaffle.dev/acme--platform/core-infrastructure--eks/yaffle"
 }
 
 resource "aws_security_group" "api" {
@@ -155,6 +187,12 @@ Benefits:
 - Invalid output references caught by `terraform validate`
 - No hardcoded VPC IDs, subnet IDs, etc.
 
+If the producer uses export rules:
+
+- same-repo consumers still see all outputs
+- cross-repo consumers only see the producer's `public` outputs
+- local/user-token access to export-controlled modules is not yet the polished path; the supported launch flow is Yaffle-managed runs using workspace-scoped run tokens
+
 ---
 
 ## Service Discovery
@@ -176,19 +214,44 @@ Implements the [Terraform Module Registry Protocol](https://developer.hashicorp.
 
 ### URL Structure
 
-Module source `yaffle.dev/acme/core-infrastructure/vpc` maps to:
+Module source `yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle` maps to:
 
 | Component | Value | Source |
 |-----------|-------|--------|
 | hostname | `yaffle.dev` | From module source |
-| namespace | `acme` | Org slug |
+| namespace | `acme--platform` | `{org_slug}--{repo}` |
 | name | `core-infrastructure--vpc` | Workspace path (slashes → `--`) |
 | provider | `yaffle` | Constant (not provider-specific) |
+
+### Intra-Repo vs Inter-Repo Sources
+
+Yaffle uses the module namespace to decide whether a module reference is part of
+the current repo's orchestration graph or just a normal external module.
+
+| Reference type | Namespace compared to current repo | Registry resolution | Included in DAG |
+|----------------|------------------------------------|---------------------|-----------------|
+| Intra-repo | Same namespace | Preview-aware, last-known-good state | Yes |
+| Cross-repo (same org) | Different repo in same org | Normal registry dependency | No |
+| Cross-org | Different Yaffle org | Not supported | No |
+
+Examples:
+
+```hcl
+# Same repo: candidate DAG edge
+module "shared" {
+  source = "yaffle.dev/acme--app/infra--shared/yaffle"
+}
+
+# Cross repo: registry dependency, never a DAG edge in this repo
+module "cluster" {
+  source = "yaffle.dev/acme--platform/platform--eks/yaffle"
+}
+```
 
 ### List Versions
 
 ```http
-GET /tfc/registry/v1/modules/acme/core-infrastructure--vpc/yaffle/versions
+GET /tfc/registry/v1/modules/acme--platform/core-infrastructure--vpc/yaffle/versions
 Authorization: Bearer <token>
 ```
 
@@ -212,17 +275,49 @@ Versions correspond to state version serials: `1.0.{serial}`.
 ### Download Module
 
 ```http
-GET /tfc/registry/v1/modules/acme/core-infrastructure--vpc/yaffle/1.0.42/download
+GET /tfc/registry/v1/modules/acme--platform/core-infrastructure--vpc/yaffle/1.0.42/download
 Authorization: Bearer <token>
 ```
 
 Response:
 ```http
 HTTP/1.1 204 No Content
-X-Terraform-Get: /tfc/registry/v1/modules/acme/core-infrastructure--vpc/yaffle/1.0.42/archive.tar.gz
+X-Terraform-Get: /tfc/registry/v1/modules/acme--platform/core-infrastructure--vpc/yaffle/1.0.42/archive.tar.gz
 ```
 
 The archive contains the generated shim module.
+
+## Export Visibility and Authz
+
+Cross-repo sharing is controlled by the producer workspace.
+
+### Visibility Classes
+
+| Visibility | Who can read it | Included in same-repo module | Included in cross-repo module |
+|------------|-----------------|------------------------------|-------------------------------|
+| `internal` | Same-repo downstream workspaces | Yes | No |
+| `public` | Allowlisted workspaces in the same Yaffle org | Yes | Yes, if allowlisted |
+
+### Authorization Rules
+
+- same-repo consumers are treated as internal platform composition and can read the full module surface
+- cross-repo consumers must be explicitly allowlisted by the producer in `yaffle.toml`
+- consumer identity comes from the Yaffle run token's workspace context
+- if the consumer workspace cannot be resolved, access is denied by default
+- if the producer config cannot be loaded, access is denied by default
+- cross-org module sharing is explicitly denied
+
+### Sensitive Outputs
+
+Terraform outputs marked `sensitive = true` cannot be exported as `public`.
+
+Instead:
+
+1. store the secret value in AWS Secrets Manager or SSM Parameter Store
+2. output the ARN, name, or other stable reference
+3. grant the consuming workload IAM permission to read the secret directly
+
+This keeps the module registry focused on platform API surfaces, not secret distribution.
 
 ---
 
@@ -320,40 +415,38 @@ Invalidation: Automatic when new state version uploaded.
 
 ## Preview-Aware Resolution
 
-When a preview workspace references a module, Yaffle resolves it appropriately.
+When a caller provides preview context, Yaffle resolves the requested module to
+the best available finalized state.
 
 ### The Problem
 
-```hcl
-# apps/api/infra/main.tf (in PR #42)
-module "vpc" {
-  source = "yaffle.dev/acme/core-infrastructure/vpc"
-}
-
-module "shared" {
-  source = "yaffle.dev/acme/apps/shared-lib/infra"
-}
-```
-
-- `module.vpc` should use **production** state (can't duplicate VPC per PR)
-- `module.shared` should use **preview** state if also modified in PR #42
+- A preview workspace may exist before it has uploaded any finalized state
+- The latest attempt may have failed, leaving the last good state unchanged
+- Callers still need a stable module surface while preview runs are in flight
 
 ### Resolution Algorithm
 
 ```
-resolveModule(moduleSource, previewContext):
+resolveModule(moduleSource, previewContext, requestedVersion):
   workspacePath = parseWorkspacePath(moduleSource)
-  
+
   if previewContext is null:
-    return productionState(workspacePath)
-  
-  if workspacePath in previewContext.modifiedWorkspaces:
-    previewState = getPreviewState(workspacePath, previewContext.prNumber)
-    if previewState exists:
-      return previewState
-  
-  return productionState(workspacePath)
+    return nonPreviewFinalizedState(workspacePath, requestedVersion)
+
+  previewWorkspace = findPreviewWorkspace(workspacePath, previewContext.prNumber)
+  if previewWorkspace has a finalized state for requestedVersion:
+    return previewWorkspace.finalizedState
+
+  return nonPreviewFinalizedState(workspacePath, requestedVersion)
 ```
+
+In practice this means:
+
+- preview state wins only when it is finalized and readable
+- if a preview workspace exists but has no finalized state yet, Yaffle falls
+  back to the repo's non-preview workspace
+- module downloads continue to work from the last known good state after a
+  failed preview upload or discarded pending state
 
 ### Preview Context
 
@@ -361,66 +454,56 @@ Pass preview context via query parameter:
 
 ```hcl
 module "vpc" {
-  source = "yaffle.dev/acme/core-infrastructure/vpc?preview=pr-42"
+  source = "yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle?preview=pr-42"
 }
 ```
 
 Or Yaffle injects this when generating the runner's Terraform config.
 
-### Configuration
-
-Explicit control in `.yaffle/config.yml`:
-
-```yaml
-workspaces:
-  - path: apps/api/infra
-    uses:
-      - workspace: core-infrastructure/vpc
-        preview: never    # Always use production
-      - workspace: apps/shared-lib/infra
-        preview: auto     # Use preview if in same PR (default)
-      - workspace: apps/feature-flags/infra
-        preview: always   # Always use preview (for testing)
-```
-
-| Setting | Behavior |
-|---------|----------|
-| `never` | Always resolve to production state |
-| `auto` | Use preview if workspace modified in same PR |
-| `always` | Always resolve to preview state (useful for feature flags) |
-
 ---
 
-## Dependency Declaration
+## Dependency Inference and DAG Construction
 
-Workspaces declare dependencies in `.yaffle/config.yml`:
+`yaffle.toml` declares which workspaces exist in a repo. Yaffle does **not**
+currently store explicit dependency edges there. Instead, it infers edges by
+scanning Terraform files for Yaffle module sources.
 
-```yaml
-workspaces:
-  - path: apps/api/infra
-    uses:
-      - core-infrastructure/vpc
-      - core-infrastructure/eks
-      - apps/shared-lib/infra
+### How Yaffle Builds the DAG
 
-  - path: core-infrastructure/vpc
-    # Control who can consume this workspace
-    consumers:
-      - apps/*
-      - services/*
+For each workspace in the current repo:
+
+1. Read `.tf` files under the workspace path
+2. Parse `module` blocks and extract `source`
+3. Keep only Yaffle module sources on allowlisted hosts
+4. Keep only sources whose namespace matches the current repo's
+   `{org_slug}--{repo}` namespace
+5. Convert the module name back into a workspace path
+6. Add an edge only if that workspace path also exists in the current repo's
+   `yaffle.toml`
+
+This namespace check is what keeps cross-repo module references out of the DAG.
+Two repos can both have a workspace at `infra/shared`, but only the matching
+namespace is treated as an internal dependency.
+
+### Same-Repo vs Cross-Repo Examples
+
+```hcl
+# apps/api/infra/main.tf
+
+# Same repo -> becomes a DAG edge if infra/shared exists in this repo
+module "shared" {
+  source = "yaffle.dev/acme--app/infra--shared/yaffle"
+}
+
+# Cross repo -> registry dependency only, never a DAG edge in acme/app
+module "cluster" {
+  source = "yaffle.dev/acme--platform/platform--eks/yaffle"
+}
 ```
-
-### Validation
-
-On PR/push, Yaffle validates:
-
-1. **Dependency exists**: Referenced workspace must exist
-2. **No cycles**: `A uses B uses A` is an error
-3. **Consumer allowed**: If `consumers` is set, requestor must match
 
 ### Dependency Graph
 
-Yaffle builds a DAG of workspace dependencies:
+For same-repo references, Yaffle builds a DAG of workspace dependencies:
 
 ```
 core-infrastructure/vpc
@@ -441,13 +524,14 @@ Uses:
 - Plan/apply ordering
 - Blast radius analysis
 
-### Security Model
+### What Is Not in the DAG
 
-| Setting | Behavior |
-|---------|----------|
-| No `consumers` | Any workspace in org can use (MVP default) |
-| `consumers: []` | No one can use (private) |
-| `consumers: [apps/*]` | Only matching paths can use |
+- Cross-repo module references
+- Cross-org module references, which are unsupported and denied by the registry
+- Any non-Yaffle Terraform modules (`terraform-aws-modules/*`, git sources, local paths, etc.)
+
+Those still resolve through Terraform/OpenTofu normally, but Yaffle does not
+delay or sequence runs around them.
 
 ---
 
@@ -476,17 +560,17 @@ Generate typed shim modules from workspace outputs:
 ### Phase 3: Preview-Aware Resolution (YAF-40)
 
 Resolve modules to correct state based on context:
-- Production vs preview state
-- PR changeset detection
-- `preview: never/auto/always` config
+- Non-preview vs preview finalized state
+- Last-known-good fallback when preview state is unavailable
+- `?preview=pr-{n}` propagation through registry requests
 
 **Blocked by:** YAF-39
 
-### Phase 4: Dependency Declaration (YAF-41)
+### Phase 4: Dependency Inference and Validation (YAF-41)
 
-Config-driven dependency management:
-- `uses` declarations
-- `consumers` allowlist
+Same-repo dependency management via Terraform source scanning:
+- Infer edges from Yaffle module sources
+- Keep only current-namespace references in the DAG
 - Cycle detection
 - Dependency graph API
 

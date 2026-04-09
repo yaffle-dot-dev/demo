@@ -6,10 +6,12 @@ import {
   findPushTriggerEnvironment,
   getWorkspacesForEnvironment,
   isApprovalRequired,
+  matchConsumerSelector,
   matchBranchPattern,
   matchesPullRequestTrigger,
   matchRefPattern,
   matchWorkspacePattern,
+  parseConsumerSelector,
   parsePrEnvironmentName,
   parseYaffleToml,
   resolveApprovers,
@@ -630,6 +632,96 @@ environments = ["*"]
   })
 })
 
+describe("workspace outputs", () => {
+  test("parses workspace output policies", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "platform/eks"
+environments = ["*"]
+
+outputs.cluster_endpoint = { visibility = "public", consumers = ["apps:apps/*"] }
+outputs.cluster_ca = { visibility = "public", consumers = ["apps:apps/*"] }
+outputs.secret_arn = { visibility = "internal" }
+`
+
+    const config = parseYaffleToml(toml)
+    expect(config.workspaces[0].outputs).toEqual({
+      cluster_endpoint: {
+        visibility: "public",
+        consumers: ["apps:apps/*"],
+      },
+      cluster_ca: {
+        visibility: "public",
+        consumers: ["apps:apps/*"],
+      },
+      secret_arn: {
+        visibility: "internal",
+      },
+    })
+  })
+
+  test("rejects public output policies without consumers", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "platform/eks"
+environments = ["*"]
+
+outputs.cluster_endpoint = { visibility = "public" }
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(/public output policy for "cluster_endpoint" must declare at least one consumer selector/)
+  })
+
+  test("rejects internal output policies with consumers", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "platform/eks"
+environments = ["*"]
+
+outputs.cluster_endpoint = { visibility = "internal", consumers = ["apps:apps/*"] }
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(/internal output policy for "cluster_endpoint" cannot declare consumers/)
+  })
+
+  test("rejects unsupported [[workspaces.exports]] syntax", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "platform/eks"
+environments = ["*"]
+
+[[workspaces.exports]]
+outputs = ["cluster_endpoint"]
+visibility = "public"
+consumers = ["apps:apps/*"]
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow("uses unsupported [[workspaces.exports]] syntax")
+  })
+
+  test("rejects slash-delimited consumer selectors", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "platform/eks"
+environments = ["*"]
+
+outputs.cluster_endpoint = { visibility = "public", consumers = ["apps/apps/*"] }
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(/invalid consumer selector/)
+  })
+})
+
 describe("matchWorkspacePattern", () => {
   test("exact match", () => {
     expect(matchWorkspacePattern("infra/shared", "infra/shared")).toBe(true)
@@ -664,6 +756,51 @@ describe("matchWorkspacePattern", () => {
   test("multiple wildcards", () => {
     expect(matchWorkspacePattern("apps/*/infra/*", "apps/web/infra/production")).toBe(true)
     expect(matchWorkspacePattern("apps/*/infra/*", "apps/a/b/infra/c/d")).toBe(true)
+  })
+})
+
+describe("consumer selectors", () => {
+  test("parses consumer selector format", () => {
+    expect(parseConsumerSelector("platform:apps/*")).toEqual({
+      repoPattern: "platform",
+      workspacePattern: "apps/*",
+    })
+  })
+
+  test("returns null for invalid selector format", () => {
+    expect(parseConsumerSelector("platform")).toBeNull()
+    expect(parseConsumerSelector(":apps/*")).toBeNull()
+    expect(parseConsumerSelector("platform:")).toBeNull()
+  })
+
+  test("matches consumer selectors with workspace globs", () => {
+    expect(matchConsumerSelector("platform:apps/*", {
+      org: "acme",
+      repo: "platform",
+      workspacePath: "apps/api/infra",
+    })).toBe(true)
+
+    expect(matchConsumerSelector("platform:apps/*", {
+      org: "acme",
+      repo: "platform",
+      workspacePath: "services/worker/infra",
+    })).toBe(false)
+  })
+
+  test("supports wildcards in repo segments", () => {
+    expect(matchConsumerSelector("plat*:apps/*", {
+      org: "acme-prod",
+      repo: "platform",
+      workspacePath: "apps/web/infra",
+    })).toBe(true)
+  })
+
+  test("supports exact repo matching", () => {
+    expect(matchConsumerSelector("platform:apps/*", {
+      org: "other-org",
+      repo: "other-platform",
+      workspacePath: "apps/web/infra",
+    })).toBe(false)
   })
 })
 

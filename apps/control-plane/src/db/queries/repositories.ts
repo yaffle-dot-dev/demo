@@ -22,6 +22,20 @@ export async function findRepoByGithubId(githubId: number): Promise<Repository |
 }
 
 /**
+ * Find a repository by its full GitHub name (e.g. "acme/platform").
+ */
+export async function findRepoByFullName(fullName: string): Promise<Repository | undefined> {
+  return withDbSpan("select", "repositories", async () => {
+    const rows = await db
+      .select()
+      .from(repositories)
+      .where(eq(repositories.fullName, fullName))
+      .limit(1)
+    return rows[0]
+  })
+}
+
+/**
  * Find a repository by org ID and name
  */
 export async function findRepoByName(

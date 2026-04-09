@@ -5,19 +5,25 @@ import { logger as log } from "../../lib/telemetry.ts"
 import { getEnv } from "../../lib/env.ts"
 import {
   findOrgBySlug,
+  findOrgById,
   findOrgMembership,
 } from "../../db/queries/organizations.ts"
 import {
   findNonPreviewWorkspace,
   findPreviewWorkspace,
+  findWorkspaceById,
+  type Workspace,
 } from "../../db/queries/workspaces.ts"
 import {
+  findStateVersionById,
   listStateVersionsForModule,
 } from "../../db/queries/state-versions.ts"
 import {
   tfcAuth,
   type TfcAuthContext,
 } from "../../middleware/tfc-auth.ts"
+import { findRepoByFullName, findRepoByName } from "../../db/queries/repositories.ts"
+import { fetchFileContent } from "../../lib/github.ts"
 import {
   generateShimModule,
 } from "../../lib/module-generator.ts"
@@ -28,6 +34,14 @@ import {
   resolveModule,
   parsePreviewContext,
 } from "../../lib/module-resolver.ts"
+import { parseYaffleToml, type YaffleTomlConfig } from "../../lib/config-toml.ts"
+import {
+  filterOutputsForAccess,
+  findSensitiveExportedOutputs,
+  resolveModuleAccessDecision,
+  type ModuleConsumerWorkspace,
+  type ProducerConfigState,
+} from "../../lib/workspace-exports.ts"
 
 // Hono context variables for TFC auth
 type TfcVariables = {
@@ -68,39 +82,67 @@ registryRoute.use("*", async (c, next) => {
 
 const ARCHIVE_TOKEN_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
+interface ArchiveTokenPayload {
+  exp: number
+  stateVersionId: string
+  outputNames?: string[]
+}
+
 /**
  * Generate a signed token for archive downloads.
  * Token format: {expiry_timestamp}.{hmac_signature}
  */
-function signArchiveUrl(path: string): string {
+function signArchiveUrl(
+  path: string,
+  payload: Omit<ArchiveTokenPayload, "exp">,
+): string {
   const env = getEnv()
   const secret = env.betterAuthSecret || "dev-secret"
-  const expiry = Date.now() + ARCHIVE_TOKEN_TTL_MS
-  const data = `${path}:${expiry}`
-  const signature = createHmac("sha256", secret).update(data).digest("base64url")
-  return `${expiry}.${signature}`
+  const encodedPayload = Buffer.from(JSON.stringify({
+    ...payload,
+    exp: Date.now() + ARCHIVE_TOKEN_TTL_MS,
+  })).toString("base64url")
+  const signature = createHmac("sha256", secret).update(`${path}:${encodedPayload}`).digest("base64url")
+  return `${encodedPayload}.${signature}`
 }
 
 /**
  * Verify a signed archive token.
  */
-function verifyArchiveToken(path: string, token: string): boolean {
+function verifyArchiveToken(path: string, token: string): ArchiveTokenPayload | null {
   const env = getEnv()
   const secret = env.betterAuthSecret || "dev-secret"
 
   const parts = token.split(".")
-  if (parts.length !== 2) return false
+  if (parts.length !== 2) return null
 
-  const [expiryStr, signature] = parts
-  const expiry = parseInt(expiryStr, 10)
+  const [encodedPayload, signature] = parts
+  const expectedSig = createHmac("sha256", secret).update(`${path}:${encodedPayload}`).digest("base64url")
+  if (signature !== expectedSig) {
+    return null
+  }
+
+  let payload: ArchiveTokenPayload
+  try {
+    payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf-8")) as ArchiveTokenPayload
+  } catch {
+    return null
+  }
 
   // Check expiry
-  if (isNaN(expiry) || Date.now() > expiry) return false
+  if (typeof payload.exp !== "number" || Date.now() > payload.exp) {
+    return null
+  }
 
-  // Verify signature
-  const data = `${path}:${expiry}`
-  const expectedSig = createHmac("sha256", secret).update(data).digest("base64url")
-  return signature === expectedSig
+  if (typeof payload.stateVersionId !== "string" || payload.stateVersionId.length === 0) {
+    return null
+  }
+
+  if (payload.outputNames && !Array.isArray(payload.outputNames)) {
+    return null
+  }
+
+  return payload
 }
 
 // =============================================================================
@@ -202,6 +244,99 @@ async function checkOrgMembership(
   return { allowed: true }
 }
 
+function parseRepoRef(repoRef: string, fallbackOwner: string): { owner: string; repo: string } {
+  if (repoRef.includes("/")) {
+    const [owner, repo] = repoRef.split("/", 2)
+    return { owner, repo }
+  }
+
+  return { owner: fallbackOwner, repo: repoRef }
+}
+
+async function resolveConsumerWorkspace(auth: TfcAuthContext): Promise<ModuleConsumerWorkspace | null> {
+  if (auth.type !== "run" || !auth.workspaceId) {
+    return null
+  }
+
+  const workspace = await findWorkspaceById(auth.workspaceId)
+  if (!workspace) {
+    return null
+  }
+
+  const org = await findOrgById(workspace.orgId)
+  if (!org) {
+    return null
+  }
+
+  return {
+    orgId: workspace.orgId,
+    orgSlug: org.slug,
+    repo: workspace.repo,
+    workspacePath: workspace.workspacePath,
+  }
+}
+
+async function loadProducerConfig(
+  workspace: Workspace,
+  producerOrgSlug: string,
+): Promise<{ state: ProducerConfigState; config: YaffleTomlConfig | null }> {
+  const { owner, repo } = parseRepoRef(workspace.repo, producerOrgSlug)
+  const repository = workspace.repo.includes("/")
+    ? await findRepoByFullName(`${owner}/${repo}`) ?? await findRepoByName(workspace.orgId, repo)
+    : await findRepoByName(workspace.orgId, repo)
+
+  const resolvedOwner = repository?.fullName.split("/")[0] ?? owner
+  const installationId = repository?.installationId
+  if (!installationId) {
+    return { state: "missing", config: null }
+  }
+
+  try {
+    const rawConfig = await fetchFileContent(
+      installationId,
+      resolvedOwner,
+      repo,
+      "yaffle.toml",
+      workspace.ref,
+    )
+
+    return rawConfig
+      ? { state: "loaded", config: parseYaffleToml(rawConfig) }
+      : { state: "missing", config: null }
+  } catch (err) {
+    log.warn("Failed to load producer yaffle.toml for module registry authz", {
+      workspaceId: workspace.id,
+      repo: workspace.repo,
+      ref: workspace.ref,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    return { state: "unavailable", config: null }
+  }
+}
+
+function jsonApiErrorResponse(status: number, title: string, detail?: string): Response {
+  return new Response(
+    JSON.stringify({
+      errors: [
+        {
+          status: String(status),
+          title,
+          ...(detail ? { detail } : {}),
+        },
+      ],
+    }),
+    {
+      status,
+      headers: { "Content-Type": "application/json" },
+    },
+  )
+}
+
+function sensitivePublicOutputsError(outputNames: string[]): Response {
+  const detail = `The public export includes sensitive Terraform outputs (${outputNames.join(", ")}). Store the secret in AWS Secrets Manager or SSM Parameter Store, output the ARN or name instead of the secret value, and grant the consuming workload IAM access to read it directly.`
+  return jsonApiErrorResponse(422, "Sensitive outputs cannot be exported publicly", detail)
+}
+
 // =============================================================================
 // List Module Versions
 // =============================================================================
@@ -266,14 +401,42 @@ registryRoute.get(
     const previewContext = parsePreviewContext(previewParam ?? null)
 
     // Find the appropriate workspace
-    let workspace
+    let workspace: Workspace | undefined
+    let stateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> = []
+    let previewWorkspace: Workspace | undefined
+    let previewStateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> | undefined
+
     if (previewContext) {
       // Try preview workspace first
-      workspace = await findPreviewWorkspace(org.id, repo, workspacePath, previewContext.prNumber)
+      previewWorkspace = await findPreviewWorkspace(org.id, repo, workspacePath, previewContext.prNumber)
+      if (previewWorkspace) {
+        previewStateVersions = await listStateVersionsForModule(previewWorkspace.id)
+
+        if (previewStateVersions.length > 0) {
+          workspace = previewWorkspace
+          stateVersions = previewStateVersions
+        } else {
+          log.info("Preview workspace has no finalized module versions, falling back to non-preview workspace", {
+            namespace,
+            repo,
+            workspacePath,
+            prNumber: previewContext.prNumber,
+            workspaceId: previewWorkspace.id,
+          })
+        }
+      }
     }
+
     if (!workspace) {
       // Fall back to non-preview (e.g. main branch) workspace
       workspace = await findNonPreviewWorkspace(org.id, repo, workspacePath)
+
+      if (workspace) {
+        stateVersions = await listStateVersionsForModule(workspace.id)
+      } else if (previewWorkspace) {
+        workspace = previewWorkspace
+        stateVersions = previewStateVersions ?? []
+      }
     }
 
     if (!workspace) {
@@ -283,8 +446,25 @@ registryRoute.get(
       )
     }
 
-    // List finalized state versions
-    const stateVersions = await listStateVersionsForModule(workspace.id)
+    const [consumerWorkspace, producerConfigResult] = await Promise.all([
+      resolveConsumerWorkspace(auth),
+      loadProducerConfig(workspace, orgSlug),
+    ])
+
+    const accessDecision = resolveModuleAccessDecision({
+      authType: auth.type,
+      producerWorkspace: workspace,
+      producerConfigState: producerConfigResult.state,
+      producerConfig: producerConfigResult.config,
+      consumerWorkspace,
+    })
+    if (!accessDecision.allowed) {
+      return jsonApiErrorResponse(
+        accessDecision.errorStatus ?? 403,
+        accessDecision.errorTitle ?? "Module access denied",
+        accessDecision.errorDetail,
+      )
+    }
 
     // Map to version format
     const versions = stateVersions.map((sv) => ({
@@ -404,6 +584,43 @@ registryRoute.get(
       )
     }
 
+    const [consumerWorkspace, producerConfigResult] = await Promise.all([
+      resolveConsumerWorkspace(auth),
+      loadProducerConfig(resolved.workspace, orgSlug),
+    ])
+
+    const accessDecision = resolveModuleAccessDecision({
+      authType: auth.type,
+      producerWorkspace: resolved.workspace,
+      producerConfigState: producerConfigResult.state,
+      producerConfig: producerConfigResult.config,
+      consumerWorkspace,
+    })
+    if (!accessDecision.allowed) {
+      return jsonApiErrorResponse(
+        accessDecision.errorStatus ?? 403,
+        accessDecision.errorTitle ?? "Module access denied",
+        accessDecision.errorDetail,
+      )
+    }
+
+    const filteredOutputs = filterOutputsForAccess(
+      resolved.stateVersion.outputs as Record<string, unknown> | null,
+      accessDecision.allowedOutputs,
+    )
+    const sensitivePublicOutputs = findSensitiveExportedOutputs(
+      resolved.stateVersion.outputs as Record<string, unknown> | null,
+      accessDecision.allowedOutputs,
+    )
+    if (sensitivePublicOutputs.length > 0) {
+      return sensitivePublicOutputsError(sensitivePublicOutputs)
+    }
+
+    const canUseSharedArchive = accessDecision.allowedOutputs === null ||
+      Object.keys(filteredOutputs ?? {}).length === Object.keys(
+        (resolved.stateVersion.outputs as Record<string, unknown> | null) ?? {},
+      ).length
+
     log.info("Module download requested", {
       namespace,
       orgSlug,
@@ -418,11 +635,13 @@ registryRoute.get(
 
     // Build archive URL with signed token
     const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
-    const token = signArchiveUrl(archivePath)
+    const token = signArchiveUrl(archivePath, {
+      stateVersionId: resolved.stateVersion.id,
+      ...(canUseSharedArchive || !accessDecision.allowedOutputs
+        ? {}
+        : { outputNames: accessDecision.allowedOutputs }),
+    })
     const params = new URLSearchParams({ token })
-    if (previewParam) {
-      params.set("preview", previewParam)
-    }
     const archiveUrl = `${archivePath}?${params.toString()}`
 
     return new Response(null, {
@@ -446,8 +665,8 @@ registryRoute.get(
  *
  * Namespace format: "{org}--{repo}" (e.g., "yaffle-dot-dev--yaffle")
  *
- * Query parameters:
- * - preview: "pr-{n}" to download from a preview workspace
+     * Query parameters:
+     * - token: signed archive access token issued by the download endpoint
  */
 registryRoute.get(
   "/:namespace/:name/:provider/:version/archive.tar.gz",
@@ -456,23 +675,23 @@ registryRoute.get(
     const moduleName = c.req.param("name")
     const provider = c.req.param("provider")
     const version = c.req.param("version")
-    const previewParam = c.req.query("preview")
     const token = c.req.query("token")
-
-    // Verify signed token (archive downloads don't have auth headers)
-    const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
-    if (!token || !verifyArchiveToken(archivePath, token)) {
-      return c.json(
-        { errors: [{ status: "401", title: "Invalid or expired token" }] },
-        401,
-      )
-    }
 
     // Provider must be "yaffle"
     if (provider !== "yaffle") {
       return c.json(
         { errors: [{ status: "404", title: "Module not found" }] },
         404,
+      )
+    }
+
+    // Verify signed token (archive downloads don't have auth headers)
+    const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
+    const archiveToken = token ? verifyArchiveToken(archivePath, token) : null
+    if (!archiveToken) {
+      return c.json(
+        { errors: [{ status: "401", title: "Invalid or expired token" }] },
+        401,
       )
     }
 
@@ -484,7 +703,7 @@ registryRoute.get(
         400,
       )
     }
-    const { orgSlug, repo } = parsed
+    const { orgSlug } = parsed
 
     // Find the organization
     const org = await findOrgBySlug(orgSlug)
@@ -498,52 +717,43 @@ registryRoute.get(
     // Token was verified, no need for membership check on archive download
     // (membership was checked when the download URL was generated)
 
-    // Parse version
-    let serial: number | "latest"
-    try {
-      serial = versionToSerial(version)
-    } catch {
-      return c.json(
-        { errors: [{ status: "400", title: "Invalid version format" }] },
-        400,
-      )
-    }
-
-    // Convert module name to workspace path
-    const workspacePath = moduleNameToWorkspacePath(moduleName)
-
-    // Parse preview context
-    const previewContext = parsePreviewContext(previewParam ?? null)
-
-    // Resolve the module
-    const resolved = await resolveModule({
-      orgId: org.id,
-      repo,
-      workspacePath,
-      serial,
-      previewContext,
-    })
-
-    if (!resolved) {
+    const stateVersion = await findStateVersionById(archiveToken.stateVersionId)
+    if (!stateVersion || stateVersion.status !== "finalized") {
       return c.json(
         { errors: [{ status: "404", title: "Module not found" }] },
         404,
       )
     }
 
-    const { workspace, stateVersion, isPreview } = resolved
+    const workspace = await findWorkspaceById(stateVersion.workspaceId)
+    if (!workspace || workspace.orgId !== org.id) {
+      return c.json(
+        { errors: [{ status: "404", title: "Module not found" }] },
+        404,
+      )
+    }
 
-    // Get or generate the shim module (with S3 caching)
-    const archive = await getOrGenerateModule(
-      workspace.id,
-      stateVersion.serial,
-      org.id,
-      async () => generateShimModule({
-        workspacePath,
-        serial: stateVersion.serial,
-        outputs: stateVersion.outputs as Record<string, unknown> | null,
-      }),
+    const outputs = filterOutputsForAccess(
+      stateVersion.outputs as Record<string, unknown> | null,
+      archiveToken.outputNames ?? null,
     )
+
+    const archive = archiveToken.outputNames
+      ? await generateShimModule({
+          workspacePath: workspace.workspacePath,
+          serial: stateVersion.serial,
+          outputs,
+        })
+      : await getOrGenerateModule(
+          workspace.id,
+          stateVersion.serial,
+          org.id,
+          async () => generateShimModule({
+            workspacePath: workspace.workspacePath,
+            serial: stateVersion.serial,
+            outputs,
+          }),
+        )
 
     log.info("Module archive served", {
       namespace,
@@ -552,7 +762,7 @@ registryRoute.get(
       workspaceId: workspace.id,
       stateVersionId: stateVersion.id,
       archiveSize: archive.length,
-      isPreview,
+      filteredOutputCount: archiveToken.outputNames?.length,
     })
 
     return new Response(archive.buffer as ArrayBuffer, {

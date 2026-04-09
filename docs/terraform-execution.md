@@ -121,6 +121,10 @@ CREATE TABLE run_groups (
 Edges are `[downstream, upstream]` pairs. `apps/control-plane/infra` depends on
 `infra/shared`.
 
+Only **same-repo** Yaffle module references are stored in this graph. Cross-repo
+module sources are treated as external Terraform dependencies and do not become
+run-group edges. Cross-org module sharing is not supported.
+
 ### Previews (Tasks)
 
 Each preview represents one workspace's execution within a run group.
@@ -202,8 +206,9 @@ CREATE INDEX idx_jobs_queued ON iac_jobs(queued_at)
 ### Phase 1: Webhook Receipt
 
 1. Webhook received (PR opened, push to main, etc.)
-2. Parse `.yaffle/config.yml` from repo
-3. Scan module dependencies, build DAG
+2. Parse `yaffle.toml` from repo to get the workspace list
+3. Scan Terraform files for Yaffle module sources and build a DAG from
+   same-repo references only
 4. Create run group with dependency graph
 5. Create preview records for all workspaces
    - Compute `upstream_ids` from dependency graph

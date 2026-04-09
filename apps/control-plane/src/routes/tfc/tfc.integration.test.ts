@@ -58,6 +58,9 @@ const TEST_VIEWER_USER_ID = "test-user-tfc-viewer"
 const TEST_OTHER_USER_ID = "test-user-tfc-other-org"
 const TEST_WORKSPACE_NAME = "tfc-integration-test-workspace"
 const TEST_CROSS_TENANT_WORKSPACE_NAME = "tfc-cross-tenant-workspace"
+const TEST_MAIN_WORKSPACE_NAME = "tfc-module-main-workspace"
+const TEST_PREVIEW_WORKSPACE_NAME = "tfc-module-preview-workspace"
+const TEST_OUTPUTS_WORKSPACE_NAME = "tfc-last-known-good-outputs-workspace"
 
 let testOrgId: string
 let otherOrgId: string
@@ -205,8 +208,14 @@ beforeEach(async () => {
   const workspacesToDelete = [
     [testOrgId, TEST_WORKSPACE_NAME],
     [testOrgId, TEST_CROSS_TENANT_WORKSPACE_NAME],
+    [testOrgId, TEST_MAIN_WORKSPACE_NAME],
+    [testOrgId, TEST_PREVIEW_WORKSPACE_NAME],
+    [testOrgId, TEST_OUTPUTS_WORKSPACE_NAME],
     [otherOrgId, TEST_WORKSPACE_NAME],
     [otherOrgId, TEST_CROSS_TENANT_WORKSPACE_NAME],
+    [otherOrgId, TEST_MAIN_WORKSPACE_NAME],
+    [otherOrgId, TEST_PREVIEW_WORKSPACE_NAME],
+    [otherOrgId, TEST_OUTPUTS_WORKSPACE_NAME],
   ] as const
 
   for (const [orgId, workspaceName] of workspacesToDelete) {
@@ -1978,6 +1987,121 @@ describe("State Versions", () => {
     expect(body.data.attributes.status).toBe("finalized")
   })
 
+  test("keeps current-state-version outputs available after a failed upload attempt", async () => {
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: {
+              name: TEST_OUTPUTS_WORKSPACE_NAME,
+            },
+          },
+        },
+      ),
+    )
+    expect(createRes.status).toBe(201)
+    const createBody = await createRes.json()
+    const workspaceId = createBody.data.id
+
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${workspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const finalizedStateRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${workspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: md5(testState),
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+    expect(finalizedStateRes.status).toBe(201)
+    const finalizedStateBody = await finalizedStateRes.json()
+    const finalizedUploadPath = new URL(finalizedStateBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    const finalizedUploadRes = await app.fetch(
+      new Request(`http://localhost${finalizedUploadPath}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: testState,
+      }),
+    )
+    expect(finalizedUploadRes.status).toBe(200)
+
+    const pendingStateRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${workspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 2,
+              md5: md5(testState),
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+    expect(pendingStateRes.status).toBe(201)
+    const pendingStateBody = await pendingStateRes.json()
+    const pendingStateId = pendingStateBody.data.id
+    const pendingUploadPath = new URL(pendingStateBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    await db
+      .update(stateVersions)
+      .set({ createdAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .where(eq(stateVersions.id, pendingStateId))
+
+    const expiredUploadRes = await app.fetch(
+      new Request(`http://localhost${pendingUploadPath}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: testState,
+      }),
+    )
+    expect(expiredUploadRes.status).toBe(410)
+
+    const outputsRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/workspaces/${workspaceId}/current-state-version-outputs`,
+        testUserToken,
+      ),
+    )
+
+    expect(outputsRes.status).toBe(200)
+    const outputsBody = await outputsRes.json()
+    expect(outputsBody.data).toHaveLength(1)
+    expect(outputsBody.data[0].attributes.name).toBe("example")
+    expect(outputsBody.data[0].attributes.value).toBe("hello")
+  })
+
   test("downloads state content", async () => {
     // Create workspace, lock, and upload state
     const createRes = await app.fetch(
@@ -2072,6 +2196,83 @@ describe("Module Registry", () => {
     resources: [],
   })
 
+  async function createModuleWorkspace(options: {
+    name: string
+    workspacePath: string
+    environment: string
+    prNumber?: number
+  }): Promise<string> {
+    const createRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        testUserToken,
+        {
+          data: {
+            type: "workspaces",
+            attributes: {
+              name: options.name,
+              repo: TEST_REPO,
+              environment: options.environment,
+              "workspace-path": options.workspacePath,
+              ...(options.prNumber ? { "pr-number": options.prNumber } : {}),
+            },
+          },
+        },
+      ),
+    )
+
+    expect(createRes.status).toBe(201)
+    const createBody = await createRes.json()
+    return createBody.data.id
+  }
+
+  async function uploadModuleState(workspaceId: string, state: string = testState): Promise<void> {
+    await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${workspaceId}/actions/lock`,
+        testUserToken,
+      ),
+    )
+
+    const stateMd5 = md5(state)
+    const svRes = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${workspaceId}/state-versions`,
+        testUserToken,
+        {
+          data: {
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: stateMd5,
+              lineage: "12345678-1234-1234-1234-123456789012",
+            },
+          },
+        },
+      ),
+    )
+
+    expect(svRes.status).toBe(201)
+    const svBody = await svRes.json()
+    const uploadPath = new URL(svBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    const uploadRes = await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: state,
+      }),
+    )
+
+    expect(uploadRes.status).toBe(200)
+  }
+
   test("service discovery includes modules.v1", async () => {
     const res = await app.fetch(new Request("http://localhost/.well-known/terraform.json"))
 
@@ -2158,6 +2359,36 @@ describe("Module Registry", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.modules).toBeDefined()
+    expect(body.modules[0].versions).toHaveLength(1)
+    expect(body.modules[0].versions[0].version).toBe("1.0.1")
+  })
+
+  test("falls back to non-preview module versions when preview workspace has no finalized state", async () => {
+    const workspacePath = "platform/cluster"
+    const mainWorkspaceId = await createModuleWorkspace({
+      name: TEST_MAIN_WORKSPACE_NAME,
+      workspacePath,
+      environment: "main",
+    })
+    await uploadModuleState(mainWorkspaceId)
+
+    await createModuleWorkspace({
+      name: TEST_PREVIEW_WORKSPACE_NAME,
+      workspacePath,
+      environment: "preview",
+      prNumber: 42,
+    })
+
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--cluster/yaffle/versions?preview=pr-42`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
     expect(body.modules[0].versions).toHaveLength(1)
     expect(body.modules[0].versions[0].version).toBe("1.0.1")
   })
@@ -2264,6 +2495,44 @@ describe("Module Registry", () => {
     // The X-Terraform-Get header should include a signed token, so just check the path prefix
     const terraformGet = res.headers.get("X-Terraform-Get")
     expect(terraformGet).toContain(`/tfc/registry/v1/modules/${TEST_NAMESPACE}/infra--networking/yaffle/1.0.1/archive.tar.gz`)
+  })
+
+  test("download falls back to non-preview state when preview workspace has no finalized state", async () => {
+    const workspacePath = "platform/runtime"
+    const mainWorkspaceId = await createModuleWorkspace({
+      name: TEST_MAIN_WORKSPACE_NAME,
+      workspacePath,
+      environment: "main",
+    })
+    await uploadModuleState(mainWorkspaceId)
+
+    await createModuleWorkspace({
+      name: TEST_PREVIEW_WORKSPACE_NAME,
+      workspacePath,
+      environment: "preview",
+      prNumber: 42,
+    })
+
+    const downloadRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--runtime/yaffle/latest/download?preview=pr-42`,
+        testUserToken,
+      ),
+    )
+
+    expect(downloadRes.status).toBe(204)
+    const archiveUrl = downloadRes.headers.get("X-Terraform-Get")
+    expect(archiveUrl).toBeTruthy()
+
+    const archiveRes = await app.fetch(
+      new Request(`http://localhost${archiveUrl}`, {
+        method: "GET",
+      }),
+    )
+
+    expect(archiveRes.status).toBe(200)
+    expect(archiveRes.headers.get("Content-Type")).toBe("application/gzip")
   })
 
   test("archive returns valid tar.gz with generated module", async () => {

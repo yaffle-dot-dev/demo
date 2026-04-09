@@ -41,6 +41,18 @@ function error(message: string, data?: Record<string, unknown>): void {
   console.error(`[${timestamp}] [scanner] ERROR: ${message}${dataStr}`)
 }
 
+function parseRepoInfo(repoUrl: string): { owner: string; repo: string } {
+  const url = new URL(repoUrl)
+  const [, owner, repoWithGit] = url.pathname.split("/")
+  const repo = repoWithGit?.replace(/\.git$/, "")
+
+  if (!owner || !repo) {
+    throw new Error(`Invalid repository URL: ${repoUrl}`)
+  }
+
+  return { owner, repo }
+}
+
 /**
  * Download repository tarball from GitHub.
  * Returns the raw tarball buffer (for S3 upload) without extracting to disk.
@@ -50,9 +62,7 @@ async function downloadTarball(
   headSha: string,
   installationToken?: string,
 ): Promise<Buffer> {
-  const url = new URL(repoUrl)
-  const [, owner, repoWithGit] = url.pathname.split("/")
-  const repo = repoWithGit.replace(/\.git$/, "")
+  const { owner, repo } = parseRepoInfo(repoUrl)
 
   const tarballUrl = `https://api.github.com/repos/${owner}/${repo}/tarball/${headSha}`
 
@@ -88,6 +98,7 @@ async function scanTarball(
   tarballBuffer: Buffer,
   workspacePaths: string[],
   workspaceVariables: DependencyScannerVariableBindingsByPath,
+  currentNamespace: string,
 ): Promise<{ workspaces: string[]; edges: [string, string][] }> {
   const knownWorkspaces = new Set(workspacePaths)
   const edges: [string, string][] = []
@@ -150,6 +161,7 @@ async function scanTarball(
   // Convert to edges
   for (const [workspace, contents] of workspaceContents) {
     const deps = extractDependenciesFromContent(contents.join("\n\n"), {
+      currentNamespace,
       variables: workspaceVariables[workspace],
     })
     for (const dep of deps) {
@@ -271,6 +283,9 @@ export async function runScanner(): Promise<void> {
       claimResult.installationToken,
     )
 
+    const { repo } = parseRepoInfo(claimResult.repoUrl)
+    const currentNamespace = `${claimResult.orgSlug}--${repo}`
+
     // 4. Scan dependencies directly from tarball (no disk extraction)
     const workspacePaths = claimResult.workspacePaths
     log("Scanning dependencies...", { workspaceCount: workspacePaths.length })
@@ -279,6 +294,7 @@ export async function runScanner(): Promise<void> {
       tarballBuffer,
       workspacePaths,
       claimResult.workspaceVariables,
+      currentNamespace,
     )
     const graph = buildGraphFromInferred(inferredGraph.workspaces, inferredGraph.edges)
 

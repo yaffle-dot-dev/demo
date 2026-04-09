@@ -148,6 +148,40 @@ module "shared" {
     expect(deps).toEqual(["infra/shared"])
   })
 
+  it("filters dependencies to the current namespace when provided", () => {
+    const content = `
+module "same_repo" {
+  source = "yaffle.dev/yaffle-dot-dev--platform/core--network/yaffle"
+}
+
+module "cross_repo" {
+  source = "yaffle.dev/yaffle-dot-dev--applications/core--network/yaffle"
+}
+`
+
+    const deps = extractDependenciesFromContent(content, {
+      currentNamespace: "yaffle-dot-dev--platform",
+    })
+
+    expect(deps).toEqual(["core/network"])
+  })
+
+  it("keeps existing behavior when current namespace is not provided", () => {
+    const content = `
+module "platform" {
+  source = "yaffle.dev/yaffle-dot-dev--platform/infra--shared/yaffle"
+}
+
+module "apps" {
+  source = "yaffle.dev/yaffle-dot-dev--applications/apps--shared/yaffle"
+}
+`
+
+    const deps = extractDependenciesFromContent(content)
+
+    expect(deps.sort()).toEqual(["apps/shared", "infra/shared"])
+  })
+
   it("prefers bound variables over terraform defaults", () => {
     const content = `
 variable "registry_host" {

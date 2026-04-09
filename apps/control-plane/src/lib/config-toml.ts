@@ -29,6 +29,13 @@ const environmentSchema = z.object({
 /** Variable value type: string, number, or boolean */
 const variableValueSchema = z.union([z.string(), z.number(), z.boolean()])
 
+const outputVisibilitySchema = z.enum(["internal", "public"])
+
+const workspaceOutputPolicySchema = z.object({
+  visibility: outputVisibilitySchema,
+  consumers: z.array(z.string().min(1, "consumer selector is required")).optional(),
+})
+
 const workspaceSchema = z.object({
   path: z.string().min(1, "workspace path is required"),
   environments: z.union([
@@ -37,6 +44,7 @@ const workspaceSchema = z.object({
     z.string().min(1), // Single environment shorthand
   ]),
   variables: z.record(z.string(), variableValueSchema).optional(),
+  outputs: z.record(z.string().min(1, "output name is required"), workspaceOutputPolicySchema).optional(),
 })
 
 const pushTriggerSchema = z.object({
@@ -113,6 +121,20 @@ export interface Workspace {
   environments: string[] | "*"
   /** Variables to inject into Terraform. Values can be templates. */
   variables?: Record<string, VariableValue>
+  /** Output policy for cross-repo module access within a Yaffle org. */
+  outputs?: Record<string, WorkspaceOutputPolicy>
+}
+
+export type OutputVisibility = z.infer<typeof outputVisibilitySchema>
+
+export interface WorkspaceOutputPolicy {
+  visibility: OutputVisibility
+  consumers?: string[]
+}
+
+export interface ConsumerSelector {
+  repoPattern: string
+  workspacePattern: string
 }
 
 export interface Approval {
@@ -166,6 +188,8 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
     throw new ConfigError(`Failed to parse yaffle.toml: ${msg}`)
   }
 
+  rejectUnsupportedWorkspaceExportSyntax(parsed)
+
   // Validate against schema
   const result = configSchema.safeParse(parsed)
   if (!result.success) {
@@ -180,6 +204,7 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
     path: ws.path,
     environments: normalizeEnvironments(ws.environments),
     variables: ws.variables,
+    outputs: ws.outputs,
   }))
 
   // Build the config
@@ -211,6 +236,35 @@ function normalizeEnvironments(envs: string | string[] | "*"): string[] | "*" {
   }
   // Single string shorthand
   return [envs]
+}
+
+function rejectUnsupportedWorkspaceExportSyntax(parsed: unknown): void {
+  if (!parsed || typeof parsed !== "object") {
+    return
+  }
+
+  const workspaces = (parsed as { workspaces?: unknown }).workspaces
+  if (!Array.isArray(workspaces)) {
+    return
+  }
+
+  for (const workspace of workspaces) {
+    if (!workspace || typeof workspace !== "object") {
+      continue
+    }
+
+    if (!("exports" in workspace)) {
+      continue
+    }
+
+    const path = typeof (workspace as { path?: unknown }).path === "string"
+      ? (workspace as { path: string }).path
+      : "<unknown>"
+
+    throw new ConfigError(
+      `Invalid yaffle.toml:\n  - Workspace "${path}" uses unsupported [[workspaces.exports]] syntax. Use outputs.<name> = { visibility = "public", consumers = ["repo:workspace-pattern"] } instead`,
+    )
+  }
 }
 
 /**
@@ -248,7 +302,28 @@ function validateSemantics(config: YaffleTomlConfig): void {
     }
   }
 
-  // 4. Push trigger environments must reference declared environments
+  // 4. Workspace output policies must be well-formed
+  for (const ws of config.workspaces) {
+    for (const [outputName, policy] of Object.entries(ws.outputs ?? {})) {
+      if (policy.visibility === "public" && (!policy.consumers || policy.consumers.length === 0)) {
+        errors.push(`Workspace "${ws.path}" public output policy for "${outputName}" must declare at least one consumer selector`)
+      }
+
+      if (policy.visibility === "internal" && policy.consumers && policy.consumers.length > 0) {
+        errors.push(`Workspace "${ws.path}" internal output policy for "${outputName}" cannot declare consumers`)
+      }
+
+      for (const selector of policy.consumers ?? []) {
+        if (!parseConsumerSelector(selector)) {
+          errors.push(
+            `Workspace "${ws.path}" has invalid consumer selector "${selector}" for output "${outputName}". Expected format: <repo>:<workspace-pattern>`,
+          )
+        }
+      }
+    }
+  }
+
+  // 5. Push trigger environments must reference declared environments
   const triggeredEnvs = new Set<string>()
   if (config.triggers.github?.push) {
     for (const trigger of config.triggers.github.push) {
@@ -259,7 +334,7 @@ function validateSemantics(config: YaffleTomlConfig): void {
     }
   }
 
-  // 5. Warning if declared environment has no trigger
+  // 6. Warning if declared environment has no trigger
   for (const env of config.environments) {
     if (!triggeredEnvs.has(env.name)) {
       warnings.push(`Environment "${env.name}" has no push trigger`)
@@ -309,6 +384,47 @@ export function matchBranchPattern(pattern: string, branch: string): boolean {
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+/**
+ * Parse an external consumer selector.
+ * Format: <repo>:<workspace-pattern>
+ * The first colon separates the repo selector from the workspace glob.
+ */
+export function parseConsumerSelector(selector: string): ConsumerSelector | null {
+  const trimmed = selector.trim()
+  const separatorIndex = trimmed.indexOf(":")
+  if (separatorIndex <= 0 || separatorIndex === trimmed.length - 1) {
+    return null
+  }
+
+  const repoPattern = trimmed.slice(0, separatorIndex)
+  const workspacePattern = trimmed.slice(separatorIndex + 1)
+
+  if (!repoPattern || !workspacePattern) {
+    return null
+  }
+
+  return {
+    repoPattern,
+    workspacePattern,
+  }
+}
+
+/**
+ * Match an external consumer selector against a concrete workspace reference.
+ */
+export function matchConsumerSelector(
+  selector: string,
+  consumer: { org: string; repo: string; workspacePath: string },
+): boolean {
+  const parsed = parseConsumerSelector(selector)
+  if (!parsed) {
+    return false
+  }
+
+  return matchBranchPattern(parsed.repoPattern, consumer.repo) &&
+    matchWorkspacePattern(parsed.workspacePattern, consumer.workspacePath)
 }
 
 /**
