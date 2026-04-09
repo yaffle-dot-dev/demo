@@ -13,13 +13,19 @@ variable "depot_oidc_provider_arn" {
   description = "ARN of the Depot OIDC provider in AWS for Depot CI authentication"
 }
 
+variable "deployer_role_arns" {
+  type        = list(string)
+  description = "AWS role ARNs allowed to assume the site deploy role"
+  default     = []
+}
+
 variable "environment" {
   type        = string
   description = "Environment name - branch name (e.g., 'main') or preview (e.g., 'prvw-42')"
 }
 
 variable "environment_kind" {
-  type = string
+  type        = string
   description = "Environment kind (either 'named' or 'transient')"
 }
 

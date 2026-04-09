@@ -37,6 +37,11 @@ output "task_role_arn" {
   description = "Runner task IAM role ARN"
 }
 
+output "app_deployer_role_arn" {
+  value       = module.shared.app_deployer_role_arn
+  description = "IAM role ARN for human app deployers"
+}
+
 # -----------------------------------------------------------------------------
 # Networking
 # -----------------------------------------------------------------------------
@@ -92,4 +97,3 @@ output "scanner_lambda_arn" {
   value       = aws_lambda_function.scanner.arn
   description = "Scanner Lambda function ARN"
 }
-

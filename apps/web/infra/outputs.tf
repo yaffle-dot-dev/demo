@@ -57,6 +57,11 @@ output "deploy_role_arn" {
   description = "IAM role ARN for GitHub Actions to deploy web app"
 }
 
+output "app_deployer_role_arn" {
+  value       = module.shared.app_deployer_role_arn
+  description = "IAM role ARN for human app deployers"
+}
+
 # -----------------------------------------------------------------------------
 # ECS Service
 # -----------------------------------------------------------------------------

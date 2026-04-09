@@ -39,3 +39,8 @@ output "deploy_role_arn" {
   value       = module.static_site.deploy_role_arn
   description = "IAM role ARN for GitHub Actions to deploy site"
 }
+
+output "docs_deployer_role_arn" {
+  value       = module.shared.docs_deployer_role_arn
+  description = "IAM role ARN for human docs deployers"
+}

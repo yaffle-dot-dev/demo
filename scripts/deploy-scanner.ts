@@ -8,6 +8,7 @@
 import { readFile } from "node:fs/promises"
 import { LambdaClient, UpdateFunctionCodeCommand } from "@aws-sdk/client-lambda"
 
+import { applyAwsSession, assumeRole } from "./lib/aws-auth"
 import { getConfig } from "./lib/env"
 import { fetchOutputs } from "./lib/outputs"
 
@@ -22,7 +23,12 @@ export async function deployScanner() {
 
   const functionName = process.env.YAFFLE_SCANNER_FUNCTION
     ?? outputs.scanner_lambda_function_name as string
+  const appDeployerRoleArn = outputs.app_deployer_role_arn as string
   const zipPath = process.env.YAFFLE_SCANNER_ZIP ?? "dist/scanner-lambda.zip"
+
+  if (!appDeployerRoleArn) {
+    throw new Error("apps/runner/infra must export app_deployer_role_arn for local deploys")
+  }
 
   console.log(`Deploying scanner Lambda: ${zipPath} → ${functionName}`)
 
@@ -30,6 +36,8 @@ export async function deployScanner() {
     console.log("[dry-run] Would update Lambda function code")
     return
   }
+
+  applyAwsSession(await assumeRole(appDeployerRoleArn, "app-deployer"))
 
   const zipBuffer = await readFile(zipPath)
 

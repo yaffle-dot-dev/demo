@@ -116,6 +116,21 @@ output "depot_oidc_provider_arn" {
   description = "Depot OIDC provider ARN"
 }
 
+output "site_deployer_role_arn" {
+  value       = aws_iam_role.site_deployer.arn
+  description = "IAM role ARN for human site deployers"
+}
+
+output "docs_deployer_role_arn" {
+  value       = aws_iam_role.docs_deployer.arn
+  description = "IAM role ARN for human docs deployers"
+}
+
+output "app_deployer_role_arn" {
+  value       = aws_iam_role.app_deployer.arn
+  description = "IAM role ARN for human app deployers"
+}
+
 # -----------------------------------------------------------------------------
 # ACM Certificate
 # -----------------------------------------------------------------------------

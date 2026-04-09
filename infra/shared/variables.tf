@@ -50,3 +50,9 @@ variable "tailscale_github_actions_tags" {
   description = "Tags allowed for GitHub Actions ephemeral Tailscale nodes"
   default     = ["tag:ci-runner"]
 }
+
+variable "deployer_principal_arns" {
+  type        = list(string)
+  description = "AWS principals allowed to assume the shared human deployer roles"
+  default     = ["arn:aws:iam::870923192739:user/alauni"]
+}

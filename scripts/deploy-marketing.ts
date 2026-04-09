@@ -33,6 +33,7 @@
 import { existsSync } from "node:fs"
 import { $ } from "bun"
 import { parseArgs } from "util"
+import { assumeRole } from "./lib/aws-auth"
 import { fetchOutputs } from "./lib/outputs"
 
 type DeployTarget =
@@ -46,23 +47,8 @@ interface DeployConfig {
   dryRun: boolean
 }
 
-const AWS_REGION = process.env.AWS_REGION || "us-east-1"
 const MARKETING_DIR = `${import.meta.dir}/../apps/marketing`
 const MARKETING_ASTRO_CLI = `${MARKETING_DIR}/node_modules/astro/astro.js`
-
-function printCommandError(err: unknown): void {
-  if (!err || typeof err !== "object") {
-    return
-  }
-
-  if ("stderr" in err) {
-    const stderr = err.stderr
-    const message = typeof stderr === "string" ? stderr.trim() : String(stderr).trim()
-    if (message) {
-      console.error(message)
-    }
-  }
-}
 
 async function getCurrentBranch(): Promise<string> {
   const branch = await $`git rev-parse --abbrev-ref HEAD`.text()
@@ -167,51 +153,10 @@ async function buildSite(siteUrl: string, dryRun: boolean): Promise<void> {
     .cwd(MARKETING_DIR)
 }
 
-async function assumeRole(roleArn: string): Promise<Record<string, string>> {
-  console.log(`Assuming role: ${roleArn}`)
-
-  const proc = $`aws sts assume-role \
-    --role-arn ${roleArn} \
-    --role-session-name deploy-marketing \
-    --duration-seconds 3600 \
-    --region ${AWS_REGION}`.quiet()
-
-  let output: string
-  try {
-    output = await proc.text()
-  } catch (err) {
-    console.error("[error] aws sts assume-role failed:")
-    printCommandError(err)
-    throw err
-  }
-
-  let result: {
-      Credentials: {
-        AccessKeyId: string
-        SecretAccessKey: string
-        SessionToken: string
-      }
-    }
-
-  try {
-    result = JSON.parse(output)
-  } catch {
-    console.error("[error] Failed to parse aws sts assume-role response:")
-    console.error(output)
-    throw new Error("Invalid JSON from aws sts assume-role")
-  }
-
-  return {
-    AWS_ACCESS_KEY_ID: result.Credentials.AccessKeyId,
-    AWS_SECRET_ACCESS_KEY: result.Credentials.SecretAccessKey,
-    AWS_SESSION_TOKEN: result.Credentials.SessionToken,
-    AWS_REGION,
-  }
-}
-
 async function syncToS3(
   bucket: string,
   deployRoleArn: string,
+  deployerSession: Record<string, string> | undefined,
   dryRun: boolean
 ): Promise<void> {
   console.log(`\nSyncing to S3 bucket: ${bucket}...`)
@@ -221,7 +166,7 @@ async function syncToS3(
     return
   }
 
-  const creds = await assumeRole(deployRoleArn)
+  const creds = await assumeRole(deployRoleArn, "deploy-marketing", deployerSession)
 
   // Sync immutable assets with long cache
   await $`aws s3 sync apps/marketing/dist/ s3://${bucket}/ \
@@ -240,6 +185,7 @@ async function syncToS3(
 async function invalidateCloudFront(
   distributionId: string,
   invalidationRoleArn: string,
+  deployerSession: Record<string, string> | undefined,
   dryRun: boolean
 ): Promise<void> {
   console.log(`\nInvalidating CloudFront distribution: ${distributionId}...`)
@@ -249,7 +195,7 @@ async function invalidateCloudFront(
     return
   }
 
-  const creds = await assumeRole(invalidationRoleArn)
+  const creds = await assumeRole(invalidationRoleArn, "deploy-invalidation", deployerSession)
 
   await $`aws cloudfront create-invalidation \
     --distribution-id ${distributionId} \
@@ -275,9 +221,14 @@ async function main(): Promise<void> {
 
   const bucket = marketingOutputs.primary_bucket_name as string
   const deployRoleArn = marketingOutputs.deploy_role_arn as string
+  const siteDeployerRoleArn = marketingOutputs.site_deployer_role_arn as string
   const siteUrl = frontendOutputs.site_url as string
   const distributionId = frontendOutputs.cloudfront_distribution_id as string
   const invalidationRoleArn = frontendOutputs.invalidation_role_arn as string
+
+  if (!siteDeployerRoleArn) {
+    throw new Error("apps/marketing/infra must export site_deployer_role_arn for local deploys")
+  }
 
   console.log("\nInfrastructure:")
   console.log(`  Bucket: ${bucket}`)
@@ -291,11 +242,15 @@ async function main(): Promise<void> {
     console.log("\nSkipping build (--skip-build)")
   }
 
+  const deployerSession = config.dryRun
+    ? undefined
+    : await assumeRole(siteDeployerRoleArn, "site-deployer")
+
   // 3. Sync to S3
-  await syncToS3(bucket, deployRoleArn, config.dryRun)
+  await syncToS3(bucket, deployRoleArn, deployerSession, config.dryRun)
 
   // 4. Invalidate CloudFront
-  await invalidateCloudFront(distributionId, invalidationRoleArn, config.dryRun)
+  await invalidateCloudFront(distributionId, invalidationRoleArn, deployerSession, config.dryRun)
 
   console.log("\n=== Deploy Complete ===")
   console.log(`Site: ${siteUrl}`)

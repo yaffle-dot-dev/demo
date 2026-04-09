@@ -11,13 +11,9 @@
 # Deploy Role
 # -----------------------------------------------------------------------------
 
-resource "aws_iam_role" "deploy" {
-  name        = "yaffle-deploy-${var.site_name}-${local.name_suffix}"
-  description = "Role for GitHub Actions to deploy ${var.site_name} site to S3"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
+locals {
+  deploy_assume_role_statements = concat(
+    [
       {
         Effect = "Allow"
         Principal = {
@@ -29,10 +25,9 @@ resource "aws_iam_role" "deploy" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            # Allow from main branch and PRs in the yaffle repo
             "token.actions.githubusercontent.com:sub" = [
               "repo:yaffle-dot-dev/yaffle:ref:refs/heads/main",
-              "repo:yaffle-dot-dev/yaffle:pull_request"
+              "repo:yaffle-dot-dev/yaffle:pull_request",
             ]
           }
         }
@@ -51,8 +46,27 @@ resource "aws_iam_role" "deploy" {
             "identity.depot.dev:sub" = "spiffe://identity.depot.dev/org/rtlw6kg4g8/ci/github/yaffle-dot-dev/yaffle/*"
           }
         }
-      }
-    ]
+      },
+    ],
+    length(var.deployer_role_arns) > 0 ? [
+      {
+        Effect = "Allow"
+        Principal = {
+          AWS = var.deployer_role_arns
+        }
+        Action = "sts:AssumeRole"
+      },
+    ] : [],
+  )
+}
+
+resource "aws_iam_role" "deploy" {
+  name        = "yaffle-deploy-${var.site_name}-${local.name_suffix}"
+  description = "Role for GitHub Actions to deploy ${var.site_name} site to S3"
+
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = local.deploy_assume_role_statements
   })
 
   tags = {

@@ -13,6 +13,48 @@
 
 locals {
   github_oidc_provider_arn = module.shared.github_actions_oidc_provider_arn
+  web_deploy_assume_role_statements = [
+    {
+      Effect = "Allow"
+      Principal = {
+        Federated = local.github_oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:yaffle-dot-dev/yaffle:ref:refs/heads/main",
+            "repo:yaffle-dot-dev/yaffle:pull_request",
+          ]
+        }
+      }
+    },
+    {
+      Effect = "Allow"
+      Principal = {
+        Federated = module.shared.depot_oidc_provider_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "identity.depot.dev:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "identity.depot.dev:sub" = "spiffe://identity.depot.dev/org/rtlw6kg4g8/ci/github/yaffle-dot-dev/yaffle/*"
+        }
+      }
+    },
+    {
+      Effect = "Allow"
+      Principal = {
+        AWS = [module.shared.app_deployer_role_arn]
+      }
+      Action = "sts:AssumeRole"
+    },
+  ]
 }
 
 # -----------------------------------------------------------------------------
@@ -24,43 +66,8 @@ resource "aws_iam_role" "deploy" {
   description = "Role for GitHub Actions to deploy web app to S3"
 
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = local.github_oidc_provider_arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            # Allow from main branch and PRs in the yaffle repo
-            "token.actions.githubusercontent.com:sub" = [
-              "repo:yaffle-dot-dev/yaffle:ref:refs/heads/main",
-              "repo:yaffle-dot-dev/yaffle:pull_request"
-            ]
-          }
-        }
-      },
-      {
-        Effect = "Allow"
-        Principal = {
-          Federated = module.shared.depot_oidc_provider_arn
-        }
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Condition = {
-          StringEquals = {
-            "identity.depot.dev:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            "identity.depot.dev:sub" = "spiffe://identity.depot.dev/org/rtlw6kg4g8/ci/github/yaffle-dot-dev/yaffle/*"
-          }
-        }
-      }
-    ]
+    Version   = "2012-10-17"
+    Statement = local.web_deploy_assume_role_statements
   })
 
   tags = {

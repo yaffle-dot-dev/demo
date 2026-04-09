@@ -33,6 +33,11 @@ output "control_plane_task_role_arn" {
   description = "Control plane task IAM role ARN"
 }
 
+output "app_deployer_role_arn" {
+  value       = module.shared.app_deployer_role_arn
+  description = "IAM role ARN for human app deployers"
+}
+
 # tf_runner_task_role_arn moved to apps/runner/infra outputs
 
 # -----------------------------------------------------------------------------

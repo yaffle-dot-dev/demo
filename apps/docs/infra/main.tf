@@ -8,6 +8,7 @@ module "static_site" {
   site_name                = "docs"
   environment              = var.environment
   environment_kind         = var.environment_kind
+  deployer_role_arns       = [module.shared.docs_deployer_role_arn]
   github_oidc_provider_arn = module.shared.github_actions_oidc_provider_arn
   depot_oidc_provider_arn  = module.shared.depot_oidc_provider_arn
 }
