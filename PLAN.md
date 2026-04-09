@@ -45,7 +45,7 @@ This is the product. Everything else is layers on top.
 │   └── infra/*.tf                                                │
 │                                                                 │
 │   Option B: Source files + Yaffle codegen                       │
-│   └── dashboards/*.json + .yaffle/config.yml                    │
+│   └── dashboards/*.json + yaffle.toml                           │
 │                                                                 │
 └─────────────────────────────────────────────────────────────────┘
                               │ PR opened
@@ -106,20 +106,27 @@ repo/
 │   ├── main.tf
 │   ├── variables.tf
 │   └── outputs.tf
-└── .yaffle/config.yml
+└── yaffle.toml
 ```
 
-```yaml
-# .yaffle/config.yml
-version: 1
+```toml
+# yaffle.toml
+version = 1
 
-terraform:
-  paths:
-    - infra/**/*.tf
-  preview:
-    workspace_prefix: preview
-  production:
-    workspace: production
+[[environments]]
+name = "main"
+
+[[triggers.github.push]]
+ref = "refs/heads/main"
+environment = "main"
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+variables.environment = "{{ environment }}"
 ```
 
 **PR opened → we run their TF with preview workspace → PR merged → we run with production workspace**
@@ -132,20 +139,12 @@ User has source files, no Terraform. We generate it.
 repo/
 ├── dashboards/
 │   └── revenue.json
-└── .yaffle/config.yml
+└── yaffle.toml
 ```
 
-```yaml
-# .yaffle/config.yml
-version: 1
-
-components:
-  grafana:
-    type: grafana
-    connection: grafana-prod
-    paths:
-      - dashboards/**/*.json
-```
+`yaffle.toml` remains the repo entrypoint. Use the current configuration schema
+documented at `https://yaffle.dev/docs/reference/configuration/`; future
+codegen-specific settings should extend that file.
 
 **PR opened → we generate TF from JSON → run it → same flow**
 
@@ -164,7 +163,7 @@ yaffle/
 ├── apps/
 │   ├── api/
 │   └── web/
-└── .yaffle/config.yml
+└── yaffle.toml
 ```
 
 **Our workflow:**
@@ -390,44 +389,36 @@ Plan: 3 to add, 1 to change, 0 to destroy.
 
 ## Config File Schema
 
-```yaml
-# .yaffle/config.yml
-version: 1
+Configuration now lives in `yaffle.toml` at the repository root. The current
+schema is documented at `https://yaffle.dev/docs/reference/configuration/`.
+Future codegen extensions should build on that file.
 
-# === Option 1: Raw Terraform ===
-terraform:
-  # Which paths contain TF files
-  paths:
-    - infra/**/*.tf
-  
-  # Variables to inject
-  variables:
-    environment: "{{ yaffle.environment }}"  # preview-pr-N or production
-    preview_id: "{{ yaffle.preview_id }}"
-  
-  # Secrets to inject as TF vars (from Secrets Manager)
-  secrets:
-    - name: db_password
-      arn: arn:aws:secretsmanager:...:db-password
-  
-  # Preview settings
-  preview:
-    auto_apply: true      # Apply on PR open, or wait for manual trigger
-    ttl: 72h              # Auto-destroy after
-  
-  # Production settings  
-  production:
-    require_approval: true  # Require check approval before merge applies
+```toml
+# yaffle.toml
+version = 1
 
-# === Option 2: Codegen (can combine with Option 1) ===
-components:
-  grafana:
-    type: grafana
-    connection: grafana-prod
-    paths:
-      - dashboards/**/*.json
-    production:
-      folder_uid: prod-dashboards
+[[environments]]
+name = "main"
+
+[[triggers.github.push]]
+ref = "refs/heads/main"
+environment = "main"
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+[[workspaces]]
+path = "infra/shared"
+environments = ["main"]
+
+[[workspaces]]
+path = "apps/control-plane/infra"
+environments = ["*"]
+
+[[approvals]]
+workspaces = ["infra/shared"]
+environments = ["main"]
+approvers = ["github:team:acme/platform"]
 ```
 
 ---
@@ -647,8 +638,7 @@ yaffle/
 ├── modules/
 │   └── aws-runner/                 # BYOA module (later)
 │
-├── .yaffle/
-│   └── config.yml                  # Yaffle runs itself
+├── yaffle.toml                     # Yaffle runs itself
 │
 └── packages/
     └── shared/
@@ -679,15 +669,24 @@ terraform apply
 ```
 
 ### Phase 2: Dogfooding
-```yaml
-# .yaffle/config.yml
-version: 1
+```toml
+# yaffle.toml
+version = 1
 
-terraform:
-  paths:
-    - infra/**/*.tf
-  variables:
-    environment: "{{ yaffle.environment }}"
+[[environments]]
+name = "main"
+
+[[triggers.github.push]]
+ref = "refs/heads/main"
+environment = "main"
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+variables.environment = "{{ environment }}"
 ```
 
 ```bash
@@ -722,7 +721,7 @@ terraform:
 
 ### Week 3: Dogfooding
 - [ ] Yaffle's infra in `infra/`
-- [ ] `.yaffle/config.yml` for self
+- [ ] `yaffle.toml` for self
 - [ ] Install GitHub App on yaffle repo
 - [ ] First PR through the system
 

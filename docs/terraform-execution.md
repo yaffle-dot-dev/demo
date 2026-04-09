@@ -449,30 +449,57 @@ Engine instances send periodic heartbeats while running:
 
 ### Workspace Settings
 
-```yaml
-# .yaffle/config.yml
-version: 1
-workspaces:
-  - path: infra/shared
-    require_approval: false    # Timer auto-approves after countdown
-    
-  - path: apps/control-plane/infra
-    require_approval: false
-    # Depends on infra/shared via module references (auto-detected)
-    
-  - path: apps/production/infra
-    require_approval: true     # Explicit approval required, no timer
-    approvers:                 # Optional: restrict who can approve
-      - platform-team
-      - oncall-sre
+The current configuration format lives in `yaffle.toml`. See
+`https://yaffle.dev/docs/reference/configuration/` for the full reference.
+
+```toml
+# yaffle.toml
+version = 1
+
+[[environments]]
+name = "main"
+
+[[triggers.github.push]]
+ref = "refs/heads/main"
+environment = "main"
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+
+[[workspaces]]
+path = "infra/shared"
+environments = ["main"]
+
+[[workspaces]]
+path = "apps/control-plane/infra"
+environments = ["*"]
+
+[[workspaces]]
+path = "apps/production/infra"
+environments = ["main"]
+
+[[approvals]]
+workspaces = ["apps/production/infra"]
+environments = ["main"]
+approvers = [
+  "github:team:acme/platform",
+  "github:team:acme/oncall-sre",
+]
 ```
+
+Dependencies such as `apps/control-plane/infra` -> `infra/shared` are still
+auto-detected from Terraform/module references; `yaffle.toml` only declares
+which workspaces and environments Yaffle manages.
 
 ### Approval Behavior
 
-| `require_approval` | UI Behavior | Approval Trigger |
-|--------------------|-------------|------------------|
-| `false` (default) | 10-second countdown timer | Timer expiry OR manual click |
-| `true` | Approve button only | Manual click only |
+`previews.require_approval` is derived from matching `[[approvals]]` rules in
+`yaffle.toml`.
+
+| Config state | UI Behavior | Approval Trigger |
+|--------------|-------------|------------------|
+| No matching `[[approvals]]` rule (or `approvers = []`) | 10-second countdown timer | Timer expiry OR manual click |
+| Matching `[[approvals]]` rule with one or more approvers | Approve button only | Manual click only |
 
 ---
 

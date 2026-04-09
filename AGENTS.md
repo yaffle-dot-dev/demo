@@ -35,7 +35,7 @@ Yaffle's value proposition is safe, incremental infrastructure delivery from 0 t
 ### Practical Rules
 
 - `apps/control-plane/infra/` contains Yaffle's own Terraform (S3 state bucket, etc.)
-- `.yaffle/config.yml` configures Yaffle to manage itself
+- `yaffle.toml` configures Yaffle to manage itself
 - PRs trigger preview plans via Yaffle
 - Merges to `main` trigger production applies
 - If Yaffle can't deploy Yaffle, we're not shipping
@@ -145,8 +145,7 @@ yaffle/
 │   └── shared/            # Shared TypeScript packages
 ├── actions/
 │   └── outputs-action/    # GitHub Action for fetching TF outputs
-└── .yaffle/
-    └── config.yml         # Self-dogfooding config
+└── yaffle.toml            # Self-dogfooding config
 ```
 
 ## Build / Lint / Test Commands

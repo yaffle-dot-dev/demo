@@ -74,7 +74,7 @@ perspective, nothing changes (same hostname, paths, and tokens).
 - **Native integration**: Uses Terraform's built-in `cloud` block, no custom backends
 - **Centralized state**: All state managed by Yaffle with full version history
 - **Audit trail**: Every state change linked to runs, users, and PRs
-- **Automatic workspace management**: Workspaces created from `.yaffle/config.yml`
+- **Automatic workspace management**: Workspaces created from `yaffle.toml`
 - **Secure by default**: Short-lived tokens, workspace-scoped access
 
 ---
@@ -470,7 +470,7 @@ Returns paginated list of all state versions for a workspace.
 Workspaces are created automatically when Yaffle processes webhook events:
 
 1. PR opened/synchronized triggers webhook
-2. Yaffle parses `.yaffle/config.yml` for workspace paths
+2. Yaffle parses `yaffle.toml` for workspace paths
 3. For each workspace path, Yaffle creates a workspace if not exists:
    ```
    name: preview-pr-{pr_number}-{workspace_path_slug}
@@ -795,24 +795,25 @@ resolving the inheritance semantics.
 ### Workspace Variables
 **Status:** MVP, config-driven
 
-Variables stored in `.yaffle/config.yml`, not in UI:
+Variables stored in `yaffle.toml`, not in UI:
 
-```yaml
-# .yaffle/config.yml
-workspaces:
-  - path: apps/control-plane/infra
-    variables:
-      environment: production
-      instance_type: t3.medium
-    preview:
-      variables:
-        environment: preview
-        instance_type: t3.small
+```toml
+# yaffle.toml
+version = 1
+
+[[environments]]
+name = "production"
+
+[[workspaces]]
+path = "apps/control-plane/infra"
+environments = ["*"]
+variables.environment = "{{ environment }}"
+variables.instance_type = "{% if environment_kind == 'transient' %}t3.small{% else %}t3.medium{% endif %}"
 ```
 
 Benefits:
 - Variables reviewable/auditable in PRs
-- Preview environments can override production values
+- Preview and named environments can diverge through templated values
 - No UI needed for MVP
 - Fits Yaffle's PR-centric model
 
