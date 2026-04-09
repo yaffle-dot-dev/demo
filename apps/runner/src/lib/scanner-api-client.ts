@@ -21,6 +21,7 @@ export interface ScanClaimResponse {
   installationToken?: string
   orgSlug: string
   workspacePaths: string[]
+  workspaceVariables: Record<string, Record<string, string | number | boolean>>
   workspaceUploadUrl?: string
 }
 

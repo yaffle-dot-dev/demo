@@ -1,5 +1,7 @@
 import { and, eq, lt, or, isNull } from "drizzle-orm"
 
+import type { WorkspaceVariablesByPath } from "../../lib/workspace-variables.ts"
+
 import { db } from "../../lib/db.ts"
 import { scanJobs } from "../schema.ts"
 import { withDbSpan, logger } from "../../lib/telemetry.ts"
@@ -25,6 +27,7 @@ export async function createScanJob(values: {
   installationToken?: string
   orgSlug: string
   workspacePaths: string[]
+  workspaceVariables?: WorkspaceVariablesByPath
 }): Promise<ScanJob> {
   return withDbSpan("insert", "scan_jobs", async () => {
     const rows = await db
@@ -38,6 +41,7 @@ export async function createScanJob(values: {
         installationToken: values.installationToken ?? null,
         orgSlug: values.orgSlug,
         workspacePaths: values.workspacePaths,
+        workspaceVariables: values.workspaceVariables ?? {},
       })
       .returning()
 

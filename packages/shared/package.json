@@ -11,5 +11,8 @@
   },
   "devDependencies": {
     "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "hcl2-parser": "^1.0.3"
   }
 }

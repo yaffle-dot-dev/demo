@@ -6,6 +6,7 @@
  *
  * Module sources follow the pattern:
  *   source = "HOST[:PORT]/ORG--REPO/WORKSPACE--PATH/yaffle"
+ *   source = "${var.registry_host}/ORG--REPO/WORKSPACE--PATH/yaffle"
  *
  * Where:
  * - ORG--REPO is the namespace (e.g., `yaffle-dot-dev--yaffle`)
@@ -15,6 +16,22 @@
 
 import { readdir, readFile, stat } from "node:fs/promises"
 import { join } from "node:path"
+
+import * as hcl from "hcl2-parser"
+
+export type DependencyScannerVariableValue = string | number | boolean
+
+export type DependencyScannerVariableBindings = Record<string, DependencyScannerVariableValue>
+
+export type DependencyScannerVariableBindingsByPath = Record<
+  string,
+  DependencyScannerVariableBindings
+>
+
+export interface DependencyScannerOptions {
+  allowedHosts?: string[]
+  variables?: DependencyScannerVariableBindings
+}
 
 /**
  * Result of scanning a single workspace for dependencies.
@@ -36,16 +53,23 @@ export interface InferredDependencyGraph {
   edges: [string, string][]
 }
 
-/**
- * Pattern to match Terraform module source values.
- */
-const MODULE_SOURCE_PATTERN = /source\s*=\s*"([^"]+)"/g
-
 const DEFAULT_ALLOWED_MODULE_HOSTS = ["yaffle.dev", "yaffle.local", ".ts.net"]
+const INTERPOLATION_PATTERN = /\$\{\s*(var|local)\.([A-Za-z0-9_]+)\s*\}/g
 
-function getAllowedModuleHosts(allowedHostsOverride?: string[]): string[] {
-  if (allowedHostsOverride) {
-    return allowedHostsOverride
+interface ParsedHclDocument {
+  variable?: Record<string, Array<Record<string, unknown>>>
+  locals?: Array<Record<string, unknown>>
+  module?: Record<string, Array<Record<string, unknown>>>
+}
+
+interface ResolutionContext {
+  variables: Map<string, string>
+  locals: Map<string, string>
+}
+
+function getAllowedModuleHosts(options?: DependencyScannerOptions): string[] {
+  if (options?.allowedHosts) {
+    return options.allowedHosts
   }
 
   const fromEnv = process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS
@@ -101,6 +125,119 @@ function parseYaffleModuleWorkspacePath(source: string, allowedHosts: string[]):
   return moduleNameToWorkspacePath(moduleName)
 }
 
+function parseHclDocument(content: string): ParsedHclDocument | null {
+  try {
+    const parsed = hcl.parseToObject(content)
+    const document = Array.isArray(parsed) ? parsed[0] : parsed
+    if (!document || typeof document !== "object") {
+      return null
+    }
+
+    return document as ParsedHclDocument
+  } catch {
+    return null
+  }
+}
+
+function resolveExpressionValue(value: string, context: ResolutionContext): string | null {
+  const resolvedValue = value.replace(INTERPOLATION_PATTERN, (match, scope, name) => {
+    const resolved = scope === "var" ? context.variables.get(name) : context.locals.get(name)
+    return resolved ?? match
+  })
+
+  return resolvedValue.includes("${") ? null : resolvedValue
+}
+
+function collectStringAssignments(
+  assignments: Record<string, unknown>,
+): Array<[string, string]> {
+  return Object.entries(assignments).flatMap(([name, value]) =>
+    typeof value === "string" ? [[name, value] as [string, string]] : [],
+  )
+}
+
+function optionsVariablesToStrings(
+  variables?: DependencyScannerVariableBindings,
+): Record<string, string> {
+  if (!variables) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    Object.entries(variables).map(([name, value]) => [name, String(value)]),
+  )
+}
+
+function buildResolutionContext(
+  document: ParsedHclDocument,
+  providedVariables?: DependencyScannerVariableBindings,
+): ResolutionContext {
+  const variables = new Map<string, string>(Object.entries(optionsVariablesToStrings(providedVariables)))
+  const locals = new Map<string, string>()
+  const pendingVariables = new Map<string, string>()
+  const pendingLocals = new Map<string, string>()
+
+  for (const [name, entries] of Object.entries(document.variable ?? {})) {
+    if (variables.has(name)) {
+      continue
+    }
+
+    const defaultValue = entries[0]?.default
+    if (typeof defaultValue === "string") {
+      pendingVariables.set(name, defaultValue)
+    }
+  }
+
+  for (const localBlock of document.locals ?? []) {
+    for (const [name, value] of collectStringAssignments(localBlock)) {
+      pendingLocals.set(name, value)
+    }
+  }
+
+  let madeProgress = true
+  while (madeProgress) {
+    madeProgress = false
+
+    for (const [name, value] of Array.from(pendingVariables.entries())) {
+      const resolved = resolveExpressionValue(value, { variables, locals })
+      if (resolved === null) {
+        continue
+      }
+
+      variables.set(name, resolved)
+      pendingVariables.delete(name)
+      madeProgress = true
+    }
+
+    for (const [name, value] of Array.from(pendingLocals.entries())) {
+      const resolved = resolveExpressionValue(value, { variables, locals })
+      if (resolved === null) {
+        continue
+      }
+
+      locals.set(name, resolved)
+      pendingLocals.delete(name)
+      madeProgress = true
+    }
+  }
+
+  return { variables, locals }
+}
+
+function listModuleSources(document: ParsedHclDocument): string[] {
+  const sources: string[] = []
+
+  for (const entries of Object.values(document.module ?? {})) {
+    for (const entry of entries) {
+      if (typeof entry.source === "string") {
+        sources.push(entry.source)
+      }
+    }
+  }
+
+  return sources
+}
+
 /**
  * Convert a module name back to a workspace path.
  *
@@ -127,20 +264,30 @@ export function workspacePathToModuleName(workspacePath: string): string {
  * Extract Yaffle module dependencies from Terraform file content.
  *
  * @param content - The content of a .tf file
- * @param allowedHosts - Optional override for allowed module hosts
+ * @param options - Optional scanner options
  * @returns Array of workspace paths that are referenced as dependencies
  */
-export function extractDependenciesFromContent(content: string, allowedHosts?: string[]): string[] {
+export function extractDependenciesFromContent(
+  content: string,
+  options?: string[] | DependencyScannerOptions,
+): string[] {
   const dependencies: string[] = []
-  const hosts = getAllowedModuleHosts(allowedHosts)
-  let match: RegExpExecArray | null
+  const normalizedOptions = Array.isArray(options) ? { allowedHosts: options } : options
+  const hosts = getAllowedModuleHosts(normalizedOptions)
+  const document = parseHclDocument(content)
+  if (!document) {
+    return dependencies
+  }
 
-  // Reset regex state
-  MODULE_SOURCE_PATTERN.lastIndex = 0
+  const context = buildResolutionContext(document, normalizedOptions?.variables)
 
-  while ((match = MODULE_SOURCE_PATTERN.exec(content)) !== null) {
-    const source = match[1]
-    const workspacePath = parseYaffleModuleWorkspacePath(source, hosts)
+  for (const sourceValue of listModuleSources(document)) {
+    const resolvedSource = resolveExpressionValue(sourceValue, context)
+    if (!resolvedSource) {
+      continue
+    }
+
+    const workspacePath = parseYaffleModuleWorkspacePath(resolvedSource, hosts)
     if (!workspacePath) {
       continue
     }
@@ -194,6 +341,7 @@ export async function scanWorkspace(
   repoDir: string,
   workspacePath: string,
   knownWorkspaces: Set<string>,
+  workspaceVariables?: DependencyScannerVariableBindings,
 ): Promise<WorkspaceDependencies> {
   const workspaceDir = join(repoDir, workspacePath)
   const allDependencies: string[] = []
@@ -211,20 +359,22 @@ export async function scanWorkspace(
   // Find all .tf files
   const tfFiles = await findTerraformFiles(workspaceDir)
 
-  // Extract dependencies from each file
+  const tfContents: string[] = []
   for (const tfFile of tfFiles) {
     try {
-      const content = await readFile(tfFile, "utf-8")
-      const deps = extractDependenciesFromContent(content)
-
-      for (const dep of deps) {
-        // Only include dependencies that are valid workspace paths
-        if (knownWorkspaces.has(dep) && dep !== workspacePath) {
-          allDependencies.push(dep)
-        }
-      }
+      tfContents.push(await readFile(tfFile, "utf-8"))
     } catch {
       // Skip unreadable files
+    }
+  }
+
+  const deps = extractDependenciesFromContent(tfContents.join("\n\n"), {
+    variables: workspaceVariables,
+  })
+
+  for (const dep of deps) {
+    if (knownWorkspaces.has(dep) && dep !== workspacePath) {
+      allDependencies.push(dep)
     }
   }
 
@@ -247,13 +397,19 @@ export async function scanWorkspace(
 export async function scanAllWorkspaceDependencies(
   repoDir: string,
   workspacePaths: string[],
+  workspaceVariablesByPath?: DependencyScannerVariableBindingsByPath,
 ): Promise<InferredDependencyGraph> {
   const knownWorkspaces = new Set(workspacePaths)
   const edges: [string, string][] = []
 
   // Scan each workspace
   for (const wsPath of workspacePaths) {
-    const result = await scanWorkspace(repoDir, wsPath, knownWorkspaces)
+    const result = await scanWorkspace(
+      repoDir,
+      wsPath,
+      knownWorkspaces,
+      workspaceVariablesByPath?.[wsPath],
+    )
 
     for (const dep of result.dependsOn) {
       edges.push([wsPath, dep])

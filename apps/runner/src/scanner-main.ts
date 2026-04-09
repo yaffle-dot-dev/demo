@@ -21,9 +21,9 @@ import { Readable } from "node:stream"
 import * as tar from "tar-stream"
 
 import {
-  scanAllWorkspaceDependencies,
   buildGraphFromInferred,
   extractDependenciesFromContent,
+  type DependencyScannerVariableBindingsByPath,
 } from "@yaffle/shared"
 
 import { ScannerApiClient } from "./lib/scanner-api-client.ts"
@@ -87,14 +87,15 @@ async function downloadTarball(
 async function scanTarball(
   tarballBuffer: Buffer,
   workspacePaths: string[],
+  workspaceVariables: DependencyScannerVariableBindingsByPath,
 ): Promise<{ workspaces: string[]; edges: [string, string][] }> {
   const knownWorkspaces = new Set(workspacePaths)
   const edges: [string, string][] = []
 
-  // Map workspace path → list of dependencies found
-  const workspaceDeps = new Map<string, Set<string>>()
+  // Map workspace path → concatenated Terraform file contents
+  const workspaceContents = new Map<string, string[]>()
   for (const ws of workspacePaths) {
-    workspaceDeps.set(ws, new Set())
+    workspaceContents.set(ws, [])
   }
 
   // Stream through tarball entries, reading only .tf files
@@ -122,13 +123,7 @@ async function scanTarball(
           stream.on("data", (chunk: Buffer) => chunks.push(chunk))
           stream.on("end", () => {
             const content = Buffer.concat(chunks).toString("utf-8")
-            const deps = extractDependenciesFromContent(content)
-
-            for (const dep of deps) {
-              if (knownWorkspaces.has(dep) && dep !== matchingWorkspace) {
-                workspaceDeps.get(matchingWorkspace)!.add(dep)
-              }
-            }
+            workspaceContents.get(matchingWorkspace)!.push(content)
             next()
           })
           stream.resume()
@@ -153,9 +148,14 @@ async function scanTarball(
   await processing
 
   // Convert to edges
-  for (const [workspace, deps] of workspaceDeps) {
+  for (const [workspace, contents] of workspaceContents) {
+    const deps = extractDependenciesFromContent(contents.join("\n\n"), {
+      variables: workspaceVariables[workspace],
+    })
     for (const dep of deps) {
-      edges.push([workspace, dep])
+      if (knownWorkspaces.has(dep) && dep !== workspace) {
+        edges.push([workspace, dep])
+      }
     }
   }
 
@@ -275,7 +275,11 @@ export async function runScanner(): Promise<void> {
     const workspacePaths = claimResult.workspacePaths
     log("Scanning dependencies...", { workspaceCount: workspacePaths.length })
 
-    const inferredGraph = await scanTarball(tarballBuffer, workspacePaths)
+    const inferredGraph = await scanTarball(
+      tarballBuffer,
+      workspacePaths,
+      claimResult.workspaceVariables,
+    )
     const graph = buildGraphFromInferred(inferredGraph.workspaces, inferredGraph.edges)
 
     const cycleCheck = graph.detectCycle()

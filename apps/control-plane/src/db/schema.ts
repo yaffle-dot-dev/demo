@@ -260,6 +260,8 @@ export const scanJobs = pgTable("scan_jobs", {
   orgSlug: text("org_slug").notNull(),
   // Workspace paths to scan (from parsed yaffle.toml)
   workspacePaths: jsonb("workspace_paths"),
+  // Effective workspace variables to bind during dependency scanning
+  workspaceVariables: jsonb("workspace_variables"),
   // Result
   result: jsonb("result"),
   errorMessage: text("error_message"),

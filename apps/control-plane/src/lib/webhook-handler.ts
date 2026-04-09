@@ -53,6 +53,7 @@ import {
   beginWorkspaceArchive,
   getWorkspacesToArchive,
 } from "./workspace-service.ts"
+import { buildWorkspaceVariablesByPath } from "./workspace-variables.ts"
 import { useTfcBackend } from "./tfc-backend.ts"
 import {
   getConfigLoadErrorCounter,
@@ -62,6 +63,7 @@ import {
 import { createScanJob } from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "./job-token.ts"
 import { getScheduler } from "./scheduler.ts"
+import type { WorkspaceVariablesByPath } from "./workspace-variables.ts"
 
 const CHECK_NAME = "Yaffle / terraform"
 
@@ -162,6 +164,7 @@ async function dispatchScan(
   orgSlug: string,
   runGroupId: string,
   workspacePaths: string[],
+  workspaceVariables: WorkspaceVariablesByPath,
   installationToken?: string,
 ): Promise<void> {
   const repoUrl = `https://github.com/${ctx.owner}/${ctx.repo}.git`
@@ -175,6 +178,7 @@ async function dispatchScan(
     installationToken,
     orgSlug,
     workspacePaths,
+    workspaceVariables,
   })
 
   const scanToken = await generateScanJobToken(scanJob.id, orgId)
@@ -754,6 +758,23 @@ async function handlePrOpenedOrUpdated(
     { ...attrs, "yaffle.workspace_count": workspacePaths.length },
   )
 
+  let workspaceVariables: WorkspaceVariablesByPath
+  try {
+    workspaceVariables = buildWorkspaceVariablesByPath(
+      config,
+      workspacePaths,
+      ctx,
+      environmentName,
+      "transient",
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.error(`failed to resolve workspace variables for ${tag}: ${msg}`, attrs)
+    await recordConfigLoadFailure(ctx, org.id, msg)
+    await surfaceConfigError(ctx, msg)
+    return
+  }
+
   // Create a single run group for this PR event (covers both plan and apply)
   const trigger: RunGroupTrigger = ctx.action === "opened" ? "pr_opened" : "pr_sync"
   const runGroup = await createRunGroup({
@@ -773,7 +794,15 @@ async function handlePrOpenedOrUpdated(
   // 2. Scan .tf files for dependencies and build the DAG
   // 3. Upload workspace to S3 cache
   // 4. Call POST /api/scanner/complete which creates deployments and queues plan jobs
-  await dispatchScan(ctx, org.id, org.slug, runGroup.id, workspacePaths, installationToken)
+  await dispatchScan(
+    ctx,
+    org.id,
+    org.slug,
+    runGroup.id,
+    workspacePaths,
+    workspaceVariables,
+    installationToken,
+  )
 }
 
 /**
@@ -1000,6 +1029,22 @@ async function handlePushEvent(
     { ...attrs, "yaffle.workspace_count": workspacePaths.length, environmentName },
   )
 
+  let workspaceVariables: WorkspaceVariablesByPath
+  try {
+    workspaceVariables = buildWorkspaceVariablesByPath(
+      config,
+      workspacePaths,
+      ctx,
+      environmentName,
+      "named",
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    logger.error(`failed to resolve workspace variables for ${tag}: ${msg}`, attrs)
+    await recordConfigLoadFailure(ctx, org.id, msg)
+    return
+  }
+
   // Create a single run group for this push event (covers both plan and apply)
   // Push events to the default branch are "named" environments (e.g., "main", "production")
   const runGroup = await createRunGroup({
@@ -1019,7 +1064,15 @@ async function handlePushEvent(
   // 2. Scan .tf files for dependencies and build the DAG
   // 3. Upload workspace to S3 cache
   // 4. Call POST /api/scanner/complete which creates deployments and queues plan jobs
-  await dispatchScan(ctx, org.id, org.slug, runGroup.id, workspacePaths, installationToken)
+  await dispatchScan(
+    ctx,
+    org.id,
+    org.slug,
+    runGroup.id,
+    workspacePaths,
+    workspaceVariables,
+    installationToken,
+  )
 }
 
 

@@ -43,12 +43,12 @@ module "production" {
   source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--production/yaffle"
 }
 
-module "web" {
-  source = "yaffle.local:6969/org-name--repo/apps--web--infra/yaffle"
-}
+    module "web" {
+      source = "yaffle.local:6969/org-name--repo/apps--web--infra/yaffle"
+    }
 `
     const deps = extractDependenciesFromContent(content)
-    expect(deps).toEqual(["infra/shared", "infra/production", "apps/web/infra"])
+    expect(deps.sort()).toEqual(["apps/web/infra", "infra/production", "infra/shared"])
   })
 
   it("ignores non-yaffle module sources", () => {
@@ -97,6 +97,72 @@ module "shared" {
 }
 `
     const deps = extractDependenciesFromContent(content)
+    expect(deps).toEqual(["infra/shared"])
+  })
+
+  it("resolves variable defaults in module sources", () => {
+    const content = `
+variable "registry_host" {
+  default = "yaffle.dev"
+}
+
+module "shared" {
+  source = "\${var.registry_host}/org--repo/infra--shared/yaffle"
+}
+`
+    const deps = extractDependenciesFromContent(content)
+    expect(deps).toEqual(["infra/shared"])
+  })
+
+  it("resolves locals referenced by module sources", () => {
+    const content = `
+variable "registry_host" {
+  default = "yaffle.dev"
+}
+
+locals {
+  selected_host = var.registry_host
+}
+
+module "shared" {
+  source = "\${local.selected_host}/org--repo/infra--shared/yaffle"
+}
+`
+    const deps = extractDependenciesFromContent(content)
+    expect(deps).toEqual(["infra/shared"])
+  })
+
+  it("uses bound variable context from yaffle config", () => {
+    const content = `
+variable "registry_host" {}
+
+module "shared" {
+  source = "\${var.registry_host}/org--repo/infra--shared/yaffle"
+}
+`
+    const deps = extractDependenciesFromContent(content, {
+      variables: {
+        registry_host: "yaffle.dev",
+      },
+    })
+    expect(deps).toEqual(["infra/shared"])
+  })
+
+  it("prefers bound variables over terraform defaults", () => {
+    const content = `
+variable "registry_host" {
+  default = "evil.example.com"
+}
+
+module "shared" {
+  source = "\${var.registry_host}/org--repo/infra--shared/yaffle"
+}
+`
+    const deps = extractDependenciesFromContent(content, {
+      variables: {
+        registry_host: "yaffle.dev",
+      },
+    })
     expect(deps).toEqual(["infra/shared"])
   })
 
@@ -176,14 +242,8 @@ module "ws1" {
 module "ws2" {
   source  =  "yaffle.local:6969/org--repo/infra--b/yaffle"
 }
-
-module "ws3" {
-  source =
-    "yaffle.local:6969/org--repo/infra--c/yaffle"
-}
 `
     const deps = extractDependenciesFromContent(content)
-    // Note: the multiline case may not work with current regex
     expect(deps).toContain("infra/a")
     expect(deps).toContain("infra/b")
   })

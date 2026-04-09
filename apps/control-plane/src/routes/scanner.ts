@@ -80,6 +80,7 @@ scanner.post("/claim", async (c) => {
     installationToken: job.installationToken,
     orgSlug: job.orgSlug,
     workspacePaths: job.workspacePaths as string[],
+    workspaceVariables: (job.workspaceVariables as Record<string, Record<string, string | number | boolean>>) ?? {},
     workspaceUploadUrl,
   })
 })
