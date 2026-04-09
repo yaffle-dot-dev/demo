@@ -30,14 +30,10 @@
  *   4. Assume the invalidation role and invalidate CloudFront
  */
 
+import { existsSync } from "node:fs"
 import { $ } from "bun"
 import { parseArgs } from "util"
-
-interface YaffleOutputs {
-  previewId: string
-  status: string
-  outputs: Record<string, { value: unknown; sensitive?: boolean }> | null
-}
+import { fetchOutputs } from "./lib/outputs"
 
 type DeployTarget =
   | { type: "pr"; prNumber: number }
@@ -51,7 +47,22 @@ interface DeployConfig {
 }
 
 const AWS_REGION = process.env.AWS_REGION || "us-east-1"
-const YAFFLE_API_URL = process.env.YAFFLE_API_URL || "https://yaffle.local:6969"
+const MARKETING_DIR = `${import.meta.dir}/../apps/marketing`
+const MARKETING_ASTRO_CLI = `${MARKETING_DIR}/node_modules/astro/astro.js`
+
+function printCommandError(err: unknown): void {
+  if (!err || typeof err !== "object") {
+    return
+  }
+
+  if ("stderr" in err) {
+    const stderr = err.stderr
+    const message = typeof stderr === "string" ? stderr.trim() : String(stderr).trim()
+    if (message) {
+      console.error(message)
+    }
+  }
+}
 
 async function getCurrentBranch(): Promise<string> {
   const branch = await $`git rev-parse --abbrev-ref HEAD`.text()
@@ -115,126 +126,80 @@ If neither --pr nor --env is specified, infers from current git branch.
   }
 }
 
-async function getGitHubToken(): Promise<string> {
-  // Check env vars first
-  const envToken = process.env.YAFFLE_TOKEN || process.env.GITHUB_TOKEN
-  if (envToken) return envToken
-
-  // Fall back to gh CLI
-  try {
-    const token = await $`gh auth token`.text()
-    return token.trim()
-  } catch {
-    throw new Error(
-      "No GitHub token found. Set GITHUB_TOKEN, YAFFLE_TOKEN, or run 'gh auth login'"
-    )
-  }
-}
-
 async function getYaffleOutputs(
   workspace: string,
   target: DeployTarget,
   wait: boolean
 ): Promise<Record<string, unknown>> {
-  const token = await getGitHubToken()
-
-  // Get org/repo from git
-  const remote = await $`git remote get-url origin`.text()
-  const match = remote.match(/github\.com[:/]([^/]+)\/([^/.]+)/)
-  if (!match) {
-    throw new Error("Could not determine org/repo from git remote")
-  }
-  const [, org, repo] = match
-
-  const args = [
-    "--workspace", workspace,
-    "--format", "json",
-  ]
-
   if (target.type === "pr") {
-    args.push("--pr", String(target.prNumber))
-  } else {
-    args.push("--env", target.name)
-  }
-
-  if (wait) {
-    args.push("--wait")
-    args.push("--timeout", "600")
-  }
-
-  console.log(`Fetching outputs for ${org}/${repo} workspace=${workspace}...`)
-
-  // Use yaffle-outputs CLI
-  const proc = $`bun run ${import.meta.dir}/../packages/cli/src/outputs.ts ${args}`
-    .env({
-      GITHUB_TOKEN: token,
-      YAFFLE_API_URL,
-      // Allow self-signed certs for local dev
-      NODE_TLS_REJECT_UNAUTHORIZED: YAFFLE_API_URL.includes("localhost") || YAFFLE_API_URL.includes(".local") ? "0" : "1",
+    return fetchOutputs({
+      workspace,
+      prNumber: target.prNumber,
+      wait,
+      waitTimeout: 600,
     })
-    .quiet()
-
-  let output: string
-  try {
-    output = await proc.text()
-  } catch (err: unknown) {
-    // Get stderr for debugging
-    console.error(`[error] yaffle-outputs failed:`)
-    if (err && typeof err === "object" && "stderr" in err) {
-      const stderr = err.stderr
-      console.error(typeof stderr === "string" ? stderr : String(stderr))
-    } else if (err instanceof Error) {
-      console.error(err.message)
-    }
-    throw err
   }
 
-  let result: YaffleOutputs
-  try {
-    result = JSON.parse(output) as YaffleOutputs
-  } catch {
-    console.error(`[error] Failed to parse yaffle-outputs response:`)
-    console.error(output)
-    throw new Error(`Invalid JSON from yaffle-outputs`)
-  }
-
-  if (!result.outputs) {
-    throw new Error(`No outputs from Yaffle for ${workspace}`)
-  }
-
-  // Flatten outputs to just values
-  const flat: Record<string, unknown> = {}
-  for (const [key, output] of Object.entries(result.outputs)) {
-    flat[key] = output.value
-  }
-  return flat
+  return fetchOutputs({
+    workspace,
+    environment: target.name,
+    wait,
+    waitTimeout: 600,
+  })
 }
 
 async function buildSite(siteUrl: string, dryRun: boolean): Promise<void> {
   console.log(`\nBuilding marketing site with SITE_URL=${siteUrl}...`)
 
   if (dryRun) {
-    console.log("[dry-run] Would run: bun run build")
+    console.log(`[dry-run] Would run: ${process.execPath} ${MARKETING_ASTRO_CLI} build`)
     return
   }
 
-  await $`bun run build`.env({ SITE_URL: siteUrl }).cwd("apps/marketing")
+  if (!existsSync(MARKETING_ASTRO_CLI)) {
+    throw new Error(
+      `Marketing build dependency missing at ${MARKETING_ASTRO_CLI}. Run 'bun install' from the repo root.`
+    )
+  }
+
+  await $`${process.execPath} ${MARKETING_ASTRO_CLI} build`
+    .env({ SITE_URL: siteUrl })
+    .cwd(MARKETING_DIR)
 }
 
 async function assumeRole(roleArn: string): Promise<Record<string, string>> {
   console.log(`Assuming role: ${roleArn}`)
 
-  const result = await $`aws sts assume-role \
+  const proc = $`aws sts assume-role \
     --role-arn ${roleArn} \
     --role-session-name deploy-marketing \
     --duration-seconds 3600 \
-    --region ${AWS_REGION}`.json() as {
+    --region ${AWS_REGION}`.quiet()
+
+  let output: string
+  try {
+    output = await proc.text()
+  } catch (err) {
+    console.error("[error] aws sts assume-role failed:")
+    printCommandError(err)
+    throw err
+  }
+
+  let result: {
       Credentials: {
         AccessKeyId: string
         SecretAccessKey: string
         SessionToken: string
       }
     }
+
+  try {
+    result = JSON.parse(output)
+  } catch {
+    console.error("[error] Failed to parse aws sts assume-role response:")
+    console.error(output)
+    throw new Error("Invalid JSON from aws sts assume-role")
+  }
 
   return {
     AWS_ACCESS_KEY_ID: result.Credentials.AccessKeyId,

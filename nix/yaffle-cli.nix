@@ -4,7 +4,7 @@
 # Works both locally and in CI.
 #
 # Usage:
-#   nix run .#yaffle-cli -- --pr 123 --workspace apps/infra --wait
+#   nix run .#yaffle-outputs -- --pr 123 --workspace apps/infra --wait
 #
 { pkgs
 , lib ? pkgs.lib
@@ -67,7 +67,7 @@ pkgs.stdenv.mkDerivation {
     runHook preBuild
 
     cd packages/cli
-    bun build src/outputs.ts --outdir dist --target bun
+    bun build src/main.ts --outdir dist --target bun
 
     runHook postBuild
   '';
@@ -80,10 +80,16 @@ pkgs.stdenv.mkDerivation {
     # Copy the built bundle
     cp -r dist/* $out/app/
 
-    # Create wrapper script
+    # Create wrapper scripts
+    cat > $out/bin/yaffle <<EOF
+#!/bin/sh
+exec ${pkgs.bun}/bin/bun run $out/app/main.js "$@"
+EOF
+    chmod +x $out/bin/yaffle
+
     cat > $out/bin/yaffle-outputs <<EOF
 #!/bin/sh
-exec ${pkgs.bun}/bin/bun run $out/app/outputs.js "\$@"
+exec ${pkgs.bun}/bin/bun run $out/app/main.js outputs "\$@"
 EOF
     chmod +x $out/bin/yaffle-outputs
 

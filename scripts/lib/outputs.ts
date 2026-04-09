@@ -1,7 +1,7 @@
 /**
  * Fetch Yaffle terraform outputs for a workspace.
  *
- * Uses the yaffle-outputs CLI (packages/cli/src/outputs.ts) to query
+ * Uses the yaffle CLI (`packages/cli/src/main.ts outputs`) to query
  * the control plane API for infrastructure outputs.
  */
 
