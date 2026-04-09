@@ -2,6 +2,44 @@
 import Base from "../layouts/Base.astro"
 import { Image } from "astro:assets"
 import yaffleBird from "../images/yaffle-bird.png"
+
+function requiredEnv(name) {
+  const value = import.meta.env[name]
+
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`Missing required marketing build env: ${name}`)
+  }
+
+  return value.trim()
+}
+
+function requiredNumberEnv(name) {
+  const value = Number(requiredEnv(name))
+
+  if (!Number.isFinite(value)) {
+    throw new Error(`Invalid numeric marketing build env: ${name}`)
+  }
+
+  return value
+}
+
+const proAmount = requiredNumberEnv("PUBLIC_STRIPE_PRO_AMOUNT")
+const proInterval = requiredEnv("PUBLIC_STRIPE_PRO_INTERVAL")
+const teamAmount = requiredNumberEnv("PUBLIC_STRIPE_TEAM_AMOUNT")
+const teamInterval = requiredEnv("PUBLIC_STRIPE_TEAM_INTERVAL")
+const freeLimitConcurrentPreviews = requiredNumberEnv(
+  "PUBLIC_YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS"
+)
+const freeLimitMonthlyPreviews = requiredNumberEnv(
+  "PUBLIC_YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS"
+)
+const freeLimitNamedEnvironments = requiredNumberEnv(
+  "PUBLIC_YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS"
+)
+
+function intervalLabel(interval: string): string {
+  return interval === "month" ? "mo" : interval
+}
 ---
 
 <Base title="Yaffle - Preview your whole system">
@@ -356,23 +394,23 @@ href="/docs/"
           <ul class="space-y-2 text-sm text-text-muted mb-6 flex-1">
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              5 workspaces
+              {freeLimitConcurrentPreviews} concurrent preview branches
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              2 team members
+              {freeLimitMonthlyPreviews} preview creations/month
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              50 runs/month
+              {freeLimitNamedEnvironments} named environment{freeLimitNamedEnvironments === 1 ? "" : "s"}
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              GitHub integration
+              Unlimited repos & workspaces
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              State management
+              Unlimited seats
             </li>
           </ul>
           <span 
@@ -382,33 +420,33 @@ href="/docs/"
           </span>
         </div>
         
-        <!-- Team - highlighted -->
+        <!-- Pro -->
         <div class="p-5 rounded-xl bg-surface-raised border-2 border-accent-500 relative flex flex-col">
-          <h3 class="text-lg font-semibold text-text mb-1">Team</h3>
-          <p class="text-text-dim text-sm mb-4">For platform teams</p>
+          <h3 class="text-lg font-semibold text-text mb-1">Pro</h3>
+          <p class="text-text-dim text-sm mb-4">For faster-moving teams</p>
           <div class="text-3xl font-bold text-text mb-4">
-            $299<span class="text-sm font-normal text-text-dim">/mo</span>
+            ${proAmount}<span class="text-sm font-normal text-text-dim">/{intervalLabel(proInterval)}</span>
           </div>
           <ul class="space-y-2 text-sm text-text-muted mb-6 flex-1">
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              25 workspaces
+              Unlimited preview branches
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              10 team members
+              Unlimited preview creations
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              Unlimited runs
+              Unlimited named environments
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              RBAC & approvals
+              Approval workflows
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              Drift detection
+              Everything in Free
             </li>
           </ul>
           <span 
@@ -418,25 +456,25 @@ href="/docs/"
           </span>
         </div>
         
-        <!-- Business -->
+        <!-- Team -->
         <div class="p-5 rounded-xl bg-surface-raised border border-border flex flex-col">
-          <h3 class="text-lg font-semibold text-text mb-1">Business</h3>
-          <p class="text-text-dim text-sm mb-4">For growing orgs</p>
+          <h3 class="text-lg font-semibold text-text mb-1">Team</h3>
+          <p class="text-text-dim text-sm mb-4">For platform teams</p>
           <div class="text-3xl font-bold text-text mb-4">
-            $799<span class="text-sm font-normal text-text-dim">/mo</span>
+            ${teamAmount}<span class="text-sm font-normal text-text-dim">/{intervalLabel(teamInterval)}</span>
           </div>
           <ul class="space-y-2 text-sm text-text-muted mb-6 flex-1">
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              Unlimited workspaces
+              Everything in Pro
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              Unlimited members
+              SSO / SCIM
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              SSO / SAML
+              Bring-your-own-account runners
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>

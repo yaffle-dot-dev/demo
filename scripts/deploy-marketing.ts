@@ -47,6 +47,73 @@ interface DeployConfig {
   dryRun: boolean
 }
 
+interface StripePricing {
+  pro: {
+    amount: number
+    interval: string
+    price_id: string
+    product_id: string
+  }
+  team: {
+    amount: number
+    interval: string
+    price_id: string
+    product_id: string
+  }
+  free_limits: {
+    concurrent_preview_branches: number
+    preview_creations_per_month: number
+    named_environments: number
+  }
+}
+
+function assertNonEmptyString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`Invalid marketing pricing field: ${name}`)
+  }
+
+  return value.trim()
+}
+
+function assertFiniteNumber(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`Invalid marketing pricing field: ${name}`)
+  }
+
+  return value
+}
+
+function validatePricing(pricing: StripePricing): StripePricing {
+  return {
+    pro: {
+      amount: assertFiniteNumber(pricing.pro?.amount, "stripe_pricing.pro.amount"),
+      interval: assertNonEmptyString(pricing.pro?.interval, "stripe_pricing.pro.interval"),
+      price_id: assertNonEmptyString(pricing.pro?.price_id, "stripe_pricing.pro.price_id"),
+      product_id: assertNonEmptyString(pricing.pro?.product_id, "stripe_pricing.pro.product_id"),
+    },
+    team: {
+      amount: assertFiniteNumber(pricing.team?.amount, "stripe_pricing.team.amount"),
+      interval: assertNonEmptyString(pricing.team?.interval, "stripe_pricing.team.interval"),
+      price_id: assertNonEmptyString(pricing.team?.price_id, "stripe_pricing.team.price_id"),
+      product_id: assertNonEmptyString(pricing.team?.product_id, "stripe_pricing.team.product_id"),
+    },
+    free_limits: {
+      concurrent_preview_branches: assertFiniteNumber(
+        pricing.free_limits?.concurrent_preview_branches,
+        "stripe_pricing.free_limits.concurrent_preview_branches"
+      ),
+      preview_creations_per_month: assertFiniteNumber(
+        pricing.free_limits?.preview_creations_per_month,
+        "stripe_pricing.free_limits.preview_creations_per_month"
+      ),
+      named_environments: assertFiniteNumber(
+        pricing.free_limits?.named_environments,
+        "stripe_pricing.free_limits.named_environments"
+      ),
+    },
+  }
+}
+
 const MARKETING_DIR = `${import.meta.dir}/../apps/marketing`
 const MARKETING_ASTRO_CLI = `${MARKETING_DIR}/node_modules/astro/astro.js`
 
@@ -134,7 +201,7 @@ async function getYaffleOutputs(
   })
 }
 
-async function buildSite(siteUrl: string, dryRun: boolean): Promise<void> {
+async function buildSite(siteUrl: string, pricing: StripePricing, dryRun: boolean): Promise<void> {
   console.log(`\nBuilding marketing site with SITE_URL=${siteUrl}...`)
 
   if (dryRun) {
@@ -149,7 +216,22 @@ async function buildSite(siteUrl: string, dryRun: boolean): Promise<void> {
   }
 
   await $`${process.execPath} ${MARKETING_ASTRO_CLI} build`
-    .env({ SITE_URL: siteUrl })
+    .env({
+      SITE_URL: siteUrl,
+      PUBLIC_STRIPE_PRO_AMOUNT: String(pricing.pro.amount),
+      PUBLIC_STRIPE_PRO_INTERVAL: pricing.pro.interval,
+      PUBLIC_STRIPE_TEAM_AMOUNT: String(pricing.team.amount),
+      PUBLIC_STRIPE_TEAM_INTERVAL: pricing.team.interval,
+      PUBLIC_YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS: String(
+        pricing.free_limits.concurrent_preview_branches
+      ),
+      PUBLIC_YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS: String(
+        pricing.free_limits.preview_creations_per_month
+      ),
+      PUBLIC_YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS: String(
+        pricing.free_limits.named_environments
+      ),
+    })
     .cwd(MARKETING_DIR)
 }
 
@@ -214,9 +296,10 @@ async function main(): Promise<void> {
   if (config.dryRun) console.log("(dry-run mode)")
 
   // 1. Fetch infrastructure outputs from Yaffle
-  const [marketingOutputs, frontendOutputs] = await Promise.all([
+  const [marketingOutputs, frontendOutputs, sharedOutputs] = await Promise.all([
     getYaffleOutputs("apps/marketing/infra", config.target, config.wait),
     getYaffleOutputs("apps/infra", config.target, config.wait),
+    getYaffleOutputs("infra/shared", config.target, config.wait),
   ])
 
   const bucket = marketingOutputs.primary_bucket_name as string
@@ -225,10 +308,17 @@ async function main(): Promise<void> {
   const siteUrl = frontendOutputs.site_url as string
   const distributionId = frontendOutputs.cloudfront_distribution_id as string
   const invalidationRoleArn = frontendOutputs.invalidation_role_arn as string
+  const pricing = sharedOutputs.stripe_pricing as StripePricing | undefined
 
   if (!siteDeployerRoleArn) {
     throw new Error("apps/marketing/infra must export site_deployer_role_arn for local deploys")
   }
+
+  if (!pricing) {
+    throw new Error("infra/shared must export stripe_pricing for marketing pricing")
+  }
+
+  const validatedPricing = validatePricing(pricing)
 
   console.log("\nInfrastructure:")
   console.log(`  Bucket: ${bucket}`)
@@ -237,7 +327,7 @@ async function main(): Promise<void> {
 
   // 2. Build the site
   if (!config.skipBuild) {
-    await buildSite(siteUrl, config.dryRun)
+    await buildSite(siteUrl, validatedPricing, config.dryRun)
   } else {
     console.log("\nSkipping build (--skip-build)")
   }
