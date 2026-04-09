@@ -3,6 +3,7 @@ import { and, eq, lt, or, isNull } from "drizzle-orm"
 import { db } from "../../lib/db.ts"
 import { scanJobs } from "../schema.ts"
 import { withDbSpan, logger } from "../../lib/telemetry.ts"
+import { isStaleScanJob } from "./scan-job-staleness.ts"
 
 export type ScanJob = typeof scanJobs.$inferSelect
 
@@ -154,6 +155,65 @@ export async function failScanJob(
     }
 
     return job
+  })
+}
+
+/**
+ * Mark a stale scan job as failed.
+ *
+ * Handles both:
+ * - queued jobs that were never claimed
+ * - running jobs whose heartbeat expired
+ *
+ * Uses a row lock to avoid racing with claim/heartbeat/complete updates.
+ */
+export async function failStaleScanJob(
+  jobId: string,
+  staleThresholdMs: number,
+  errorMessage: string,
+): Promise<{ failed: boolean; job?: ScanJob }> {
+  return withDbSpan("update", "scan_jobs", async () => {
+    return db.transaction(async (tx) => {
+      const rows = await tx
+        .select()
+        .from(scanJobs)
+        .where(eq(scanJobs.id, jobId))
+        .for("update")
+        .limit(1)
+
+      const job = rows[0]
+      if (!job) {
+        return { failed: false }
+      }
+
+      const now = new Date()
+      if (!isStaleScanJob(job, staleThresholdMs, now)) {
+        return { failed: false, job }
+      }
+
+      const updatedRows = await tx
+        .update(scanJobs)
+        .set({
+          status: "failed",
+          errorMessage,
+          completedAt: now,
+        })
+        .where(eq(scanJobs.id, jobId))
+        .returning()
+
+      const updatedJob = updatedRows[0]
+
+      if (!updatedJob) {
+        return { failed: false, job }
+      }
+
+      logger.error("scan_job.failed", {
+        "scan_job.id": updatedJob.id,
+        "scan_job.error": errorMessage,
+      })
+
+      return { failed: true, job: updatedJob }
+    })
   })
 }
 

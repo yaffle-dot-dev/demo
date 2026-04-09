@@ -44,6 +44,7 @@ import { queueAutoApply } from "./webhook-handler.ts"
 import { generateWarmRunnerToken } from "./job-token.ts"
 import { generateJobTokenForJob } from "./local-spawner.ts"
 import { acquireLease, type LeaseHandle } from "./db-lease.ts"
+import { isEcsTaskDrainingOrStopping } from "./ecs-task-lifecycle.ts"
 import {
   getWarmRunnerAutoLaunchMaxRunnersPerOrg,
   getWarmRunnerAutoLaunchMaxSlots,
@@ -968,7 +969,7 @@ export class Scheduler {
   private async checkStaleScanJobs(): Promise<void> {
     if (!this.running) return
 
-    const { findStaleScanJobs, failScanJob } = await import("../db/queries/scan-jobs.ts")
+    const { findStaleScanJobs, failStaleScanJob } = await import("../db/queries/scan-jobs.ts")
     const { updateRunGroupStatus } = await import("../db/queries/run-groups.ts")
 
     // Scans should complete in seconds — use 60s threshold so users don't
@@ -984,7 +985,16 @@ export class Scheduler {
     })
 
     for (const job of staleScanJobs) {
-      await failScanJob(job.id, "Scanner worker stopped responding (stale heartbeat)")
+      const result = await failStaleScanJob(
+        job.id,
+        scanStaleThresholdMs,
+        "Scanner worker stopped responding (stale heartbeat)",
+      )
+
+      if (!result.failed) {
+        continue
+      }
+
       await updateRunGroupStatus(job.runGroupId, "failed", { completedAt: new Date() })
 
       logger.error("Marked stale scan job as failed", {
@@ -1043,6 +1053,7 @@ export class Scheduler {
 const SCHEDULER_LEASE_TTL_MS = 15_000
 const SCHEDULER_LEASE_KEY = "scheduler:leader"
 const SCHEDULER_HOLDER_METADATA_TIMEOUT_MS = 1_000
+const SCHEDULER_DRAIN_CHECK_INTERVAL_MS = 3_000
 
 type SchedulerLeaderState = {
   holderId: string
@@ -1050,6 +1061,7 @@ type SchedulerLeaderState = {
   holderIdResolution: Promise<string> | null
   leaseHandle: LeaseHandle | null
   electionTimer: ReturnType<typeof setInterval> | null
+  drainMonitorTimer: ReturnType<typeof setInterval> | null
   abdicatedAt: number | null
 }
 
@@ -1119,6 +1131,34 @@ async function ensureSchedulerHolderIdResolved(): Promise<string> {
   return schedulerLeaderState.holderIdResolution
 }
 
+async function isCurrentEcsTaskDrainingOrStopping(): Promise<boolean> {
+  const metadataUri = process.env.ECS_CONTAINER_METADATA_URI_V4
+  if (!metadataUri) {
+    return false
+  }
+
+  try {
+    const response = await fetch(`${metadataUri}/task`, {
+      signal: AbortSignal.timeout(SCHEDULER_HOLDER_METADATA_TIMEOUT_MS),
+    })
+
+    if (!response.ok) {
+      logger.warn("Failed to fetch ECS task metadata for drain detection", {
+        status: response.status,
+      })
+      return false
+    }
+
+    const payload = await response.json() as Record<string, unknown>
+    return isEcsTaskDrainingOrStopping(payload)
+  } catch (error) {
+    logger.warn("Failed to inspect ECS task drain state", {
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return false
+  }
+}
+
 function getSchedulerLeaderState(): SchedulerLeaderState {
   const globalKey = "__yaffle_scheduler_leader_state"
   const globalRef = globalThis as Record<string, unknown>
@@ -1129,6 +1169,7 @@ function getSchedulerLeaderState(): SchedulerLeaderState {
       holderIdResolution: null,
       leaseHandle: null,
       electionTimer: null,
+      drainMonitorTimer: null,
       abdicatedAt: null,
     } as SchedulerLeaderState
   }
@@ -1168,6 +1209,33 @@ async function releaseSchedulerLeadership(): Promise<void> {
   const handle = schedulerLeaderState.leaseHandle
   schedulerLeaderState.leaseHandle = null
   await handle.release()
+}
+
+function startSchedulerDrainMonitor(): void {
+  if (schedulerLeaderState.drainMonitorTimer || !process.env.ECS_CONTAINER_METADATA_URI_V4) {
+    return
+  }
+
+  schedulerLeaderState.drainMonitorTimer = setInterval(() => {
+    void (async () => {
+      if (!schedulerLeaderState.leaseHandle) {
+        return
+      }
+
+      const draining = await isCurrentEcsTaskDrainingOrStopping()
+      if (!draining) {
+        return
+      }
+
+      logger.warn("Scheduler task entered ECS drain/stop state, relinquishing leadership")
+      schedulerLeaderState.abdicatedAt = Date.now()
+      await stopScheduler()
+    })().catch((err) => {
+      logger.error("Scheduler drain monitor failed", {
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+  }, SCHEDULER_DRAIN_CHECK_INTERVAL_MS)
 }
 
 // =============================================================================
@@ -1362,6 +1430,8 @@ const ABDICATION_COOLDOWN_MS = 60_000
  * the lease and waits a cooldown period before retrying.
  */
 export async function startScheduler(): Promise<void> {
+  startSchedulerDrainMonitor()
+
   // Try immediately
   await tryBecomeLeader()
 
@@ -1421,6 +1491,11 @@ export async function stopScheduler(): Promise<void> {
   if (schedulerLeaderState.electionTimer) {
     clearInterval(schedulerLeaderState.electionTimer)
     schedulerLeaderState.electionTimer = null
+  }
+
+  if (schedulerLeaderState.drainMonitorTimer) {
+    clearInterval(schedulerLeaderState.drainMonitorTimer)
+    schedulerLeaderState.drainMonitorTimer = null
   }
 
   schedulerLeaderState.leaseHandle?.stopRenewing()
