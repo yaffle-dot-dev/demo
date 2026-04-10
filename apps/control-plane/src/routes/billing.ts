@@ -57,7 +57,17 @@ billingRoute.post("/:slug/billing/checkout", async (c) => {
 
   let { org } = result
 
-  // Auto-create Stripe customer if one doesn't exist yet
+  let body: z.infer<typeof checkoutSchema>
+  try {
+    body = checkoutSchema.parse(await c.req.json())
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: err.errors[0].message } }, 400)
+    }
+    return c.json({ error: { code: "INVALID_JSON", message: "Invalid request body" } }, 400)
+  }
+
+  // Auto-create Stripe customer only after the request is known-valid.
   if (!org.stripeCustomerId) {
     const stripe = requireStripe()
     const customer = await stripe.customers.create({
@@ -69,16 +79,6 @@ billingRoute.post("/:slug/billing/checkout", async (c) => {
       "yaffle.org": org.slug,
       "stripe.customer_id": customer.id,
     })
-  }
-
-  let body: z.infer<typeof checkoutSchema>
-  try {
-    body = checkoutSchema.parse(await c.req.json())
-  } catch (err) {
-    if (err instanceof z.ZodError) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: err.errors[0].message } }, 400)
-    }
-    return c.json({ error: { code: "INVALID_JSON", message: "Invalid request body" } }, 400)
   }
 
   const stripe = requireStripe()

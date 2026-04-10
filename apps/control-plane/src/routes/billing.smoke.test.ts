@@ -288,6 +288,10 @@ describe("billing smoke flow", () => {
     expect(invalidCheckoutRes.status).toBe(400)
     const invalidCheckoutBody = await invalidCheckoutRes.json() as { error: { code: string } }
     expect(invalidCheckoutBody.error.code).toBe("VALIDATION_ERROR")
+    expect(mockCustomersCreate).not.toHaveBeenCalled()
+
+    const orgAfterInvalidCheckout = await getOrgRecord()
+    expect(orgAfterInvalidCheckout?.stripeCustomerId).toBeNull()
 
     const missingSignatureRes = await app.request("/api/webhooks/stripe", {
       method: "POST",
