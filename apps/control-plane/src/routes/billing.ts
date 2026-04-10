@@ -86,7 +86,7 @@ billingRoute.post("/:slug/billing/checkout", async (c) => {
   const appUrl = env.betterAuthUrl // base URL of the app
 
   const session = await stripe.checkout.sessions.create({
-    customer: org.stripeCustomerId,
+    customer: org.stripeCustomerId ?? undefined,
     mode: "subscription",
     line_items: [{ price: body.priceId, quantity: 1 }],
     success_url: `${appUrl}/${org.slug}/settings/billing?checkout=success`,

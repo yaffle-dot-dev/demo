@@ -186,6 +186,23 @@
     keyCopied = false
   }
 
+  function handleModalBackdropKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape" || event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      closeCreateModal()
+    }
+  }
+
+  function handleModalPanelKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") {
+      event.preventDefault()
+      closeCreateModal()
+      return
+    }
+
+    event.stopPropagation()
+  }
+
   function formatDate(date: Date | string | null): string {
     if (!date) return "Never"
     const d = date instanceof Date ? date : new Date(date)
@@ -320,13 +337,28 @@
 
 <!-- Create API Key Modal -->
 {#if showCreateModal}
-  <div class="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onclick={closeCreateModal}>
-    <div class="bg-surface-raised border border-border rounded-lg shadow-xl w-full max-w-md mx-4" onclick={(e) => e.stopPropagation()}>
+  <div
+    class="fixed inset-0 bg-black/50 flex items-center justify-center z-50"
+    role="button"
+    tabindex="0"
+    aria-label="Close API key modal"
+    onclick={closeCreateModal}
+    onkeydown={handleModalBackdropKeydown}
+  >
+    <div
+      class="bg-surface-raised border border-border rounded-lg shadow-xl w-full max-w-md mx-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-api-key-title"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+      onkeydown={handleModalPanelKeydown}
+    >
       {#if newlyCreatedKey}
         <!-- Success state: show the key -->
         <div class="p-6 space-y-4">
           <div>
-            <h3 class="text-lg font-semibold text-text">API Key Created</h3>
+            <h3 id="create-api-key-title" class="text-lg font-semibold text-text">API Key Created</h3>
             <p class="text-sm text-text-muted mt-1">
               Copy this key now. You won't be able to see it again.
             </p>
@@ -380,7 +412,7 @@
         <!-- Create form -->
         <div class="p-6 space-y-4">
           <div>
-            <h3 class="text-lg font-semibold text-text">Create API Key</h3>
+            <h3 id="create-api-key-title" class="text-lg font-semibold text-text">Create API Key</h3>
             <p class="text-sm text-text-muted mt-1">
               Create an org-scoped API key for CLI or CI access.
             </p>

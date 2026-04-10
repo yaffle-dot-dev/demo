@@ -1,4 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
 
 const mockSend = mock(async (_command: unknown) => ({
   tasks: [{ taskArn: "arn:aws:ecs:us-east-1:123456789012:task/cluster/task-123" }],
@@ -21,36 +21,37 @@ class MockECSClient {
   constructor(_config: unknown) {}
 }
 
-mock.module("@aws-sdk/client-ecs", () => ({
-  ECSClient: MockECSClient,
-  RunTaskCommand: MockRunTaskCommand,
-  DescribeTasksCommand: MockDescribeTasksCommand,
-}))
-
-mock.module("./aws-client-config.ts", () => ({
-  getAwsClientConfig: (region: string) => ({ region }),
-}))
-
-mock.module("./telemetry.ts", () => ({
-  logger: {
-    info: () => {},
-    error: () => {},
-    warn: () => {},
-  },
-}))
-
-mock.module("../db/queries/iac-jobs.ts", () => ({
-  getJobWithContext: mockGetJobWithContext,
-  updateJobEcsTask: mockUpdateJobEcsTask,
-}))
-
-mock.module("../db/queries/scan-jobs.ts", () => ({
-  findScanJobById: mockFindScanJobById,
-}))
+afterAll(() => {
+  mock.restore()
+})
 
 let EcsEngineSpawner: typeof import("./ecs-spawner.ts").EcsEngineSpawner
 
 beforeAll(async () => {
+  const actualIacJobsModule = await import("../db/queries/iac-jobs.ts")
+  const actualScanJobsModule = await import("../db/queries/scan-jobs.ts")
+
+  mock.module("@aws-sdk/client-ecs", () => ({
+    ECSClient: MockECSClient,
+    RunTaskCommand: MockRunTaskCommand,
+    DescribeTasksCommand: MockDescribeTasksCommand,
+  }))
+
+  mock.module("./aws-client-config.ts", () => ({
+    getAwsClientConfig: (region: string) => ({ region }),
+  }))
+
+  mock.module("../db/queries/iac-jobs.ts", () => ({
+    ...actualIacJobsModule,
+    getJobWithContext: mockGetJobWithContext,
+    updateJobEcsTask: mockUpdateJobEcsTask,
+  }))
+
+  mock.module("../db/queries/scan-jobs.ts", () => ({
+    ...actualScanJobsModule,
+    findScanJobById: mockFindScanJobById,
+  }))
+
   ;({ EcsEngineSpawner } = await import("./ecs-spawner.ts"))
 })
 

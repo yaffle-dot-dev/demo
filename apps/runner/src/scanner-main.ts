@@ -29,6 +29,13 @@ import {
 import { ScannerApiClient } from "./lib/scanner-api-client.ts"
 import { HeartbeatSupervisor } from "./lib/supervisor.ts"
 
+type TarEntryHeader = {
+  name: string
+  type?: string
+}
+
+type TarEntryNext = (error?: Error | null) => void
+
 function log(message: string, data?: Record<string, unknown>): void {
   const timestamp = new Date().toISOString()
   const dataStr = data ? ` ${JSON.stringify(data)}` : ""
@@ -114,7 +121,7 @@ async function scanTarball(
   let stripPrefix = ""
 
   const processing = new Promise<void>((resolve, reject) => {
-    extract.on("entry", (header, stream, next) => {
+    extract.on("entry", (header: TarEntryHeader, stream: Readable, next: TarEntryNext) => {
       // Determine the prefix to strip (first directory component)
       if (!stripPrefix && header.type === "directory") {
         stripPrefix = header.name
@@ -192,7 +199,7 @@ async function repackageTarball(tarballBuffer: Buffer): Promise<Buffer> {
     const chunks: Buffer[] = []
     let stripPrefix = ""
 
-    extract.on("entry", (header, stream, next) => {
+    extract.on("entry", (header: TarEntryHeader, stream: Readable, next: TarEntryNext) => {
       // Detect the prefix from the first directory entry
       if (!stripPrefix && header.type === "directory") {
         stripPrefix = header.name
@@ -333,7 +340,7 @@ export async function runScanner(): Promise<void> {
 
         const uploadResponse = await fetch(claimResult.workspaceUploadUrl, {
           method: "PUT",
-          body: cleanTarball,
+          body: Uint8Array.from(cleanTarball),
           headers: { "Content-Type": "application/gzip" },
         })
 

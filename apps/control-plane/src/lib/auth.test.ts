@@ -1,9 +1,7 @@
-import { beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
 
+import { apikey as apiKeyTable, user as userTable } from "../db/auth-schema.ts"
 import type { Session } from "./better-auth.ts"
-
-const userTable = { id: "user.id" }
-const apiKeyTable = { id: "apikey.id", metadata: "apikey.metadata", permissions: "apikey.permissions" }
 
 const mockGetSession = mock(async (_args: { headers: Headers }) => null as Session | null)
 const mockVerifyApiKey = mock(async (_args: { body: { key: string; permissions?: unknown } }) => ({ valid: false, key: null as null | { id: string; referenceId: string } }))
@@ -23,63 +21,41 @@ const mockDbSelect = mock((_shape?: unknown): any => ({
   }),
 }))
 
-mock.module("./better-auth.ts", () => ({
-  auth: {
-    api: {
-      getSession: mockGetSession,
-      verifyApiKey: mockVerifyApiKey,
-    },
-  },
-}))
-
-mock.module("./db.ts", () => ({
-  db: {
-    select: mockDbSelect,
-  },
-}))
-
-mock.module("../db/auth-schema.ts", () => ({
-  user: userTable,
-  apikey: apiKeyTable,
-}))
-
-mock.module("./env.ts", () => ({
-  getEnv: () => ({
-    authMode: "required",
-  }),
-}))
-
-mock.module("./telemetry.ts", () => ({
-  logger: {
-    error: () => {},
-    warn: () => {},
-  },
-  withSpan: async (_name: string, fn: (span: { setAttributes: (_v: unknown) => void; setStatus: (_v: unknown) => void }) => Promise<unknown>) =>
-    fn({
-      setAttributes: () => {},
-      setStatus: () => {},
-    }),
-  getAuthDurationHistogram: () => ({
-    record: () => {},
-  }),
-  getAuthCounter: () => ({
-    add: () => {},
-  }),
-  SpanStatusCode: {
-    ERROR: "ERROR",
-  },
-}))
-
 let requireAuth: typeof import("./auth.ts").requireAuth
+let authModule: typeof import("./better-auth.ts")
+let dbModule: typeof import("./db.ts")
+let originalGetSession: typeof import("./better-auth.ts").auth.api.getSession
+let originalVerifyApiKey: typeof import("./better-auth.ts").auth.api.verifyApiKey
+let originalDbSelect: typeof import("./db.ts").db.select
 
 beforeAll(async () => {
+  authModule = await import("./better-auth.ts")
+  dbModule = await import("./db.ts")
   ;({ requireAuth } = await import("./auth.ts"))
+
+  originalGetSession = authModule.auth.api.getSession
+  originalVerifyApiKey = authModule.auth.api.verifyApiKey
+  originalDbSelect = dbModule.db.select
+})
+
+afterAll(() => {
+  mock.restore()
+})
+
+afterEach(() => {
+  authModule.auth.api.getSession = originalGetSession
+  authModule.auth.api.verifyApiKey = originalVerifyApiKey
+  dbModule.db.select = originalDbSelect
 })
 
 beforeEach(() => {
   mockGetSession.mockReset()
   mockVerifyApiKey.mockReset()
   mockDbSelect.mockReset()
+
+  authModule.auth.api.getSession = mockGetSession as typeof authModule.auth.api.getSession
+  authModule.auth.api.verifyApiKey = mockVerifyApiKey as typeof authModule.auth.api.verifyApiKey
+  dbModule.db.select = mockDbSelect as typeof dbModule.db.select
 
   mockGetSession.mockImplementation(async ({ headers }: { headers: Headers }) => {
     const cookie = headers.get("cookie")
@@ -155,7 +131,7 @@ describe("requireAuth transport hardening", () => {
   })
 
   test("accepts API keys with required permissions and metadata", async () => {
-  mockVerifyApiKey.mockImplementation(async ({ body }: { body: { key: string; permissions?: unknown } }) => {
+    mockVerifyApiKey.mockImplementation(async ({ body }: { body: { key: string; permissions?: unknown } }) => {
       if (body.key !== "yfl_valid") {
         return { valid: false, key: null }
       }

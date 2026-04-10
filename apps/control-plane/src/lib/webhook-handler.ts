@@ -122,6 +122,15 @@ function contextAttrs(ctx: WebhookContext): Record<string, string | number> {
  * In tests, we inject a fake loader.
  */
 type ConfigLoader = (ctx: WebhookContext, token?: string) => Promise<YaffleTomlConfig>
+type ScanDispatcher = (
+  ctx: WebhookContext,
+  orgId: string,
+  orgSlug: string,
+  runGroupId: string,
+  workspacePaths: string[],
+  workspaceVariables: WorkspaceVariablesByPath,
+  installationToken?: string,
+) => Promise<void>
 
 interface ConfigSystemErrorLine {
   lineNumber: number
@@ -215,15 +224,16 @@ async function dispatchScan(
  */
 export function createHandler(
   runner: Runner,
-  opts?: { mutex?: Mutex; configLoader?: ConfigLoader },
+  opts?: { mutex?: Mutex; configLoader?: ConfigLoader; scanDispatcher?: ScanDispatcher },
 ): {
   handleWebhookEvent: (ctx: WebhookContext) => Promise<void>
 } {
   const m = opts?.mutex ?? new KeyedMutex()
   const loader = opts?.configLoader ?? fetchConfig
+  const scanDispatcher = opts?.scanDispatcher ?? dispatchScan
   return {
     handleWebhookEvent: (ctx: WebhookContext) =>
-      m.run(mutexKey(ctx), () => handleEvent(ctx, runner, loader)),
+      m.run(mutexKey(ctx), () => handleEvent(ctx, runner, loader, scanDispatcher)),
   }
 }
 
@@ -233,7 +243,7 @@ export function createHandler(
  */
 export async function handleWebhookEvent(ctx: WebhookContext): Promise<void> {
   return previewMutex.run(mutexKey(ctx), () =>
-    handleEvent(ctx, defaultRunner, fetchConfig),
+    handleEvent(ctx, defaultRunner, fetchConfig, dispatchScan),
   )
 }
 
@@ -650,6 +660,7 @@ async function handleEvent(
   ctx: WebhookContext,
   runner: Runner,
   configLoader: ConfigLoader,
+  scanDispatcher: ScanDispatcher,
 ): Promise<void> {
   const spanName = ctx.kind === "pull_request"
     ? `webhook.pull_request.${ctx.action}`
@@ -659,9 +670,9 @@ async function handleEvent(
     span.setAttributes(contextAttrs(ctx))
 
     if (ctx.kind === "pull_request") {
-      await handlePullRequestEvent(ctx, runner, configLoader)
+      await handlePullRequestEvent(ctx, runner, configLoader, scanDispatcher)
     } else {
-      await handlePushEvent(ctx, runner, configLoader)
+      await handlePushEvent(ctx, runner, configLoader, scanDispatcher)
     }
   }, { kind: SpanKind.INTERNAL })
 }
@@ -674,6 +685,7 @@ async function handlePullRequestEvent(
   ctx: PullRequestContext,
   runner: Runner,
   configLoader: ConfigLoader,
+  scanDispatcher: ScanDispatcher,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   const attrs = contextAttrs(ctx)
@@ -683,7 +695,7 @@ async function handlePullRequestEvent(
     case "opened":
     case "reopened":
     case "synchronize":
-      await handlePrOpenedOrUpdated(ctx, runner, configLoader)
+      await handlePrOpenedOrUpdated(ctx, runner, configLoader, scanDispatcher)
       break
 
     case "closed":
@@ -704,6 +716,7 @@ async function handlePrOpenedOrUpdated(
   ctx: PullRequestContext,
   _runner: Runner, // Kept for API compatibility; execution now happens via IaC engine
   configLoader: ConfigLoader,
+  scanDispatcher: ScanDispatcher,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   const attrs = contextAttrs(ctx)
@@ -794,7 +807,7 @@ async function handlePrOpenedOrUpdated(
   // 2. Scan .tf files for dependencies and build the DAG
   // 3. Upload workspace to S3 cache
   // 4. Call POST /api/scanner/complete which creates deployments and queues plan jobs
-  await dispatchScan(
+  await scanDispatcher(
     ctx,
     org.id,
     org.slug,
@@ -971,6 +984,7 @@ async function handlePushEvent(
   ctx: PushContext,
   _runner: Runner, // Kept for API compatibility; execution now happens via IaC engine
   configLoader: ConfigLoader,
+  scanDispatcher: ScanDispatcher,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}@${ctx.ref}`
   const attrs = contextAttrs(ctx)
@@ -1064,7 +1078,7 @@ async function handlePushEvent(
   // 2. Scan .tf files for dependencies and build the DAG
   // 3. Upload workspace to S3 cache
   // 4. Call POST /api/scanner/complete which creates deployments and queues plan jobs
-  await dispatchScan(
+  await scanDispatcher(
     ctx,
     org.id,
     org.slug,

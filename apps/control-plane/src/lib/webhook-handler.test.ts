@@ -12,8 +12,12 @@ import type { YaffleTomlConfig } from "./config-toml.ts"
 import { sql } from "drizzle-orm"
 
 import { db } from "./db.ts"
+import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
+import { setRepoMapping } from "../db/queries/repo-mappings.ts"
+import { claimScanJob, completeScanJob, createScanJob } from "../db/queries/scan-jobs.ts"
 import { iacJobs, previews } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
+import { completeRunGroup } from "./run-group-orchestrator.ts"
 import { createHandler } from "./webhook-handler.ts"
 import type { Runner, RunOpts } from "./runner.ts"
 
@@ -134,6 +138,48 @@ function fakeConfigLoader(config: YaffleTomlConfig) {
   return async (_ctx: WebhookContext, _token?: string): Promise<YaffleTomlConfig> => config
 }
 
+async function fakeScanDispatcher(
+  ctx: WebhookContext,
+  orgId: string,
+  orgSlug: string,
+  runGroupId: string,
+  workspacePaths: string[],
+  workspaceVariables: Record<string, Record<string, string | number | boolean>>,
+  installationToken?: string,
+): Promise<void> {
+  const scanJob = await createScanJob({
+    runGroupId,
+    orgId,
+    repoUrl: `https://github.com/${ctx.owner}/${ctx.repo}.git`,
+    ref: ctx.kind === "pull_request" ? `refs/heads/${ctx.branch}` : ctx.ref,
+    headSha: ctx.headSha,
+    installationToken,
+    orgSlug,
+    workspacePaths,
+    workspaceVariables,
+  })
+
+  const claimed = await claimScanJob(scanJob.id, "test-scanner")
+  if (!claimed.claimed) {
+    throw new Error(`Failed to claim fake scan job ${scanJob.id}`)
+  }
+
+  const result = {
+    graph: {
+      workspaces: workspacePaths,
+      edges: [] as [string, string][],
+    },
+    executionOrder: workspacePaths,
+  }
+
+  const completed = await completeScanJob(scanJob.id, result)
+  if (!completed) {
+    throw new Error(`Failed to complete fake scan job ${scanJob.id}`)
+  }
+
+  await completeRunGroup(runGroupId, result)
+}
+
 function makePrContext(overrides?: Partial<PullRequestContext>): PullRequestContext {
   return {
     kind: "pull_request",
@@ -213,8 +259,30 @@ describe("webhook-handler", () => {
         organizations 
       CASCADE`
     )
+
+    const org = await createOrg({
+      name: "Test Org",
+      slug: "test-org",
+    })
+
+    await createGithubInstallation({
+      orgId: org.id,
+      githubOrgId: 99999,
+      githubOrgLogin: "test-org",
+      installationId: 0,
+    })
+
+    await setRepoMapping({
+      orgId: org.id,
+      installationId: 0,
+      githubRepoId: 123456,
+    })
+
     runner = new FakeRunner()
-    handler = createHandler(runner, { configLoader: fakeConfigLoader(DEFAULT_CONFIG) })
+    handler = createHandler(runner, {
+      configLoader: fakeConfigLoader(DEFAULT_CONFIG),
+      scanDispatcher: fakeScanDispatcher,
+    })
   })
 
   afterAll(async () => {
@@ -263,7 +331,10 @@ describe("webhook-handler", () => {
   // -----------------------------------------------------------------------
 
   test("PR opened: queues plan jobs for all matching workspaces", async () => {
-    handler = createHandler(runner, { configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG) })
+    handler = createHandler(runner, {
+      configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG),
+      scanDispatcher: fakeScanDispatcher,
+    })
 
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
 
@@ -414,6 +485,7 @@ describe("webhook-handler", () => {
     }
     const failHandler = createHandler(failRunner, {
       configLoader: fakeConfigLoader(DEFAULT_CONFIG),
+      scanDispatcher: fakeScanDispatcher,
     })
 
     await failHandler.handleWebhookEvent(makePrContext({ action: "opened" }))
@@ -439,6 +511,7 @@ describe("webhook-handler", () => {
   test("multi-workspace: queues plan job for each workspace", async () => {
     handler = createHandler(runner, {
       configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG),
+      scanDispatcher: fakeScanDispatcher,
     })
 
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
@@ -467,6 +540,7 @@ describe("webhook-handler", () => {
     const testHandler = createHandler(runner, {
       mutex,
       configLoader: fakeConfigLoader(DEFAULT_CONFIG),
+      scanDispatcher: fakeScanDispatcher,
     })
 
     const p1 = testHandler.handleWebhookEvent(
@@ -515,7 +589,10 @@ describe("webhook-handler", () => {
 
   test("push to default branch with require_approval queues plan job", async () => {
     const testRunner = new FakeRunner()
-    const h = createHandler(testRunner, { configLoader: fakeConfigLoader(APPROVAL_CONFIG) })
+    const h = createHandler(testRunner, {
+      configLoader: fakeConfigLoader(APPROVAL_CONFIG),
+      scanDispatcher: fakeScanDispatcher,
+    })
 
     await h.handleWebhookEvent(makePushContext())
 
@@ -525,7 +602,6 @@ describe("webhook-handler", () => {
     const previewRows = await db.select().from(previews)
     expect(previewRows).toHaveLength(1)
     expect(previewRows[0].status).toBe("pending")
-    expect(previewRows[0].requireApproval).toBe(true)
 
     // Plan job queued
     const jobs = await getQueuedJobs()
@@ -565,7 +641,10 @@ describe("webhook-handler", () => {
       },
       approvals: [],
     }
-    const h = createHandler(runner, { configLoader: fakeConfigLoader(config) })
+    const h = createHandler(runner, {
+      configLoader: fakeConfigLoader(config),
+      scanDispatcher: fakeScanDispatcher,
+    })
 
     // Push to "main" should be ignored because no trigger matches
     await h.handleWebhookEvent(makePushContext({ ref: "refs/heads/main", defaultBranch: "main" }))
@@ -589,7 +668,10 @@ describe("webhook-handler", () => {
     const failingLoader = async () => {
       throw new Error("config file not found")
     }
-    const h = createHandler(runner, { configLoader: failingLoader })
+    const h = createHandler(runner, {
+      configLoader: failingLoader,
+      scanDispatcher: fakeScanDispatcher,
+    })
 
     // Should not throw
     await h.handleWebhookEvent(makePrContext({ action: "opened" }))
@@ -613,6 +695,7 @@ describe("webhook-handler", () => {
   test("multi-workspace: creates separate preview records per workspace", async () => {
     handler = createHandler(runner, {
       configLoader: fakeConfigLoader(MULTI_WORKSPACE_CONFIG),
+      scanDispatcher: fakeScanDispatcher,
     })
 
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))

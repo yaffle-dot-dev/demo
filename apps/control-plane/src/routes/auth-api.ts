@@ -15,6 +15,8 @@ const createApiKeySchema = z.object({
   expiresIn: z.number().int().positive().max(365 * 24 * 60 * 60),
 })
 
+type ListedApiKey = NonNullable<Awaited<ReturnType<typeof auth.api.listApiKeys>>["apiKeys"]>[number]
+
 authApiRoute.get("/me", async (c) => {
   try {
     const auth = await requireAuth(c.req.raw.headers)
@@ -49,7 +51,7 @@ authApiRoute.get("/api-keys", async (c) => {
       headers: c.req.raw.headers,
     })
 
-    const items = (result.apiKeys ?? []).map((key) => {
+    const items = (result.apiKeys ?? []).map((key: ListedApiKey) => {
       const metadata = key.metadata && typeof key.metadata === "object"
         ? key.metadata as Record<string, unknown>
         : {}

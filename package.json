@@ -32,7 +32,6 @@
     "@aws-sdk/client-ecs": "^3.1019.0",
     "@aws-sdk/client-lambda": "^3.1019.0",
     "@aws-sdk/client-ssm": "^3.1019.0",
-    "@better-auth/api-key": "1.5.6",
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.1",
     "playwriter": "^0.0.80"

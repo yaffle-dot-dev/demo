@@ -19,6 +19,22 @@ if (process.env.YAFFLE_SKIP_TEST_DB_SETUP === "true") {
     process.env.YAFFLE_TF_BINARY = "tofu"
   }
 
+  if (!process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS) {
+    process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS = "999"
+  }
+
+  if (!process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS) {
+    process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS = "999999"
+  }
+
+  if (!process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS) {
+    process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS = "999"
+  }
+
+  if (!process.env.YAFFLE_RUNNER_TFC_API_HOST) {
+    process.env.YAFFLE_RUNNER_TFC_API_HOST = "yaffle.local:6969"
+  }
+
   console.log("[test-setup] Skipping database setup")
 } else {
 
@@ -31,6 +47,7 @@ if (process.env.YAFFLE_SKIP_TEST_DB_SETUP === "true") {
 
 const TEST_DB_NAME = "yaffle_test"
 const DEV_DB_NAME = "yaffle_dev"
+const TEST_SETUP_LOCK_KEY = 4_270_001
 
 function quoteIdentifier(value: string): string {
   return `"${value.replaceAll("\"", "\"\"")}"`
@@ -90,6 +107,22 @@ if (!process.env.YAFFLE_TF_BINARY) {
   process.env.YAFFLE_TF_BINARY = "tofu"
 }
 
+if (!process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS) {
+  process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS = "999"
+}
+
+if (!process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS) {
+  process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS = "999999"
+}
+
+if (!process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS) {
+  process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS = "999"
+}
+
+if (!process.env.YAFFLE_RUNNER_TFC_API_HOST) {
+  process.env.YAFFLE_RUNNER_TFC_API_HOST = "yaffle.local:6969"
+}
+
 // Get current DATABASE_URL or use default
 const currentUrl = process.env.DATABASE_URL ?? `postgresql://yaffle@localhost:5432/${DEV_DB_NAME}`
 
@@ -122,17 +155,40 @@ const testDbClient = postgres(finalUrl, {
   connect_timeout: 10,
 })
 
-await migrate(drizzle(testDbClient), {
-  migrationsFolder: new URL("../../drizzle", import.meta.url).pathname,
-})
+await testDbClient`SELECT pg_advisory_lock(${TEST_SETUP_LOCK_KEY})`
 
-await testDbClient.end()
+try {
+  const migrationsFolder = new URL("../../drizzle", import.meta.url).pathname
 
-// Import lazily after DATABASE_URL has been forced to a test DB.
-// This module imports the shared db singleton at module-load time.
-const { ensureDefaultProviderCredentialSignatures } = await import(
-  "../db/queries/provider-credential-signatures.ts"
-)
+  try {
+    await migrate(drizzle(testDbClient), {
+      migrationsFolder,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!message.includes("already exists")) {
+      throw error
+    }
 
-await ensureDefaultProviderCredentialSignatures()
+    console.warn("[test-setup] Migration state was inconsistent; resetting test schemas and retrying")
+    await testDbClient.unsafe("DROP SCHEMA IF EXISTS drizzle CASCADE")
+    await testDbClient.unsafe("DROP SCHEMA IF EXISTS public CASCADE")
+    await testDbClient.unsafe("CREATE SCHEMA public")
+
+    await migrate(drizzle(testDbClient), {
+      migrationsFolder,
+    })
+  }
+
+  // Import lazily after DATABASE_URL has been forced to a test DB.
+  // This module imports the shared db singleton at module-load time.
+  const { ensureDefaultProviderCredentialSignatures } = await import(
+    "../db/queries/provider-credential-signatures.ts"
+  )
+
+  await ensureDefaultProviderCredentialSignatures()
+} finally {
+  await testDbClient`SELECT pg_advisory_unlock(${TEST_SETUP_LOCK_KEY})`
+  await testDbClient.end()
+}
 }
