@@ -15,7 +15,7 @@ function makeWorkspace(overrides: Partial<TfcWorkspace> = {}): TfcWorkspace {
     id: "ws-producer",
     orgId: "org-producer",
     name: "producer-workspace",
-    repo: "acme/platform",
+    repo: "yaffle-dot-dev/platform",
     workspacePath: "platform/eks",
     environment: "main",
     prNumber: null,
@@ -37,7 +37,7 @@ function makeConsumer(overrides: Partial<ModuleConsumerWorkspace> = {}): ModuleC
   return {
     orgId: "org-producer",
     orgSlug: "acme",
-    repo: "consumer/applications",
+    repo: "yaffle-dot-dev/applications",
     workspacePath: "apps/api/infra",
     ...overrides,
   }
@@ -47,6 +47,7 @@ function makeCrossOrgConsumer(overrides: Partial<ModuleConsumerWorkspace> = {}):
   return makeConsumer({
     orgId: "org-consumer",
     orgSlug: "consumer-org",
+    repo: "other-org/foo-service",
     ...overrides,
   })
 }
@@ -79,7 +80,7 @@ name = "main"
 path = "platform/eks"
 environments = ["main"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["applications:apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["consumer-org:yaffle-dot-dev/applications:apps/*"] }
 `)
 
     const decision = resolveModuleAccessDecision({
@@ -90,7 +91,7 @@ outputs.cluster_endpoint = { visibility = "public", consumers = ["applications:a
       consumerWorkspace: makeConsumer({
         orgId: producerWorkspace.orgId,
         orgSlug: "acme",
-        repo: "acme/platform",
+        repo: "yaffle-dot-dev/platform",
         workspacePath: "apps/web/infra",
       }),
     })
@@ -123,7 +124,7 @@ environments = ["main"]
     expect(decision.errorTitle).toMatch(/Module not exported/)
   })
 
-  test("denies cross-org consumers even when a public selector matches", () => {
+  test("allows allowlisted cross-org consumers", () => {
     const config = parseYaffleToml(`
 version = 1
 
@@ -134,8 +135,8 @@ name = "main"
 path = "platform/eks"
 environments = ["main"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["applications:apps/*"] }
-outputs.cluster_ca = { visibility = "public", consumers = ["applications:apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["consumer-org:other-org/foo-service:apps/*"] }
+outputs.cluster_ca = { visibility = "public", consumers = ["consumer-org:other-org/foo-service:apps/*"] }
 outputs.internal_secret_arn = { visibility = "internal" }
 `)
 
@@ -147,8 +148,10 @@ outputs.internal_secret_arn = { visibility = "internal" }
       consumerWorkspace: makeCrossOrgConsumer(),
     })
 
-    expect(decision.allowed).toBe(false)
-    expect(decision.errorTitle).toBe("Cross-org modules are not supported")
+    expect(decision).toEqual({
+      allowed: true,
+      allowedOutputs: ["cluster_ca", "cluster_endpoint"],
+    })
   })
 
   test("denies user-token access for workspaces with explicit output policies", () => {
@@ -162,7 +165,7 @@ name = "main"
 path = "platform/eks"
 environments = ["main"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["applications:apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-dot-dev/applications:apps/*"] }
 `)
 
     const decision = resolveModuleAccessDecision({
@@ -188,7 +191,7 @@ name = "main"
 path = "platform/eks"
 environments = ["main"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["applications:services/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-dot-dev/applications:services/*"] }
 `)
 
     const decision = resolveModuleAccessDecision({
@@ -214,8 +217,8 @@ name = "main"
 path = "platform/eks"
 environments = ["main"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["applications:apps/*"] }
-outputs.cluster_ca = { visibility = "public", consumers = ["applications:apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-dot-dev/applications:apps/*"] }
+outputs.cluster_ca = { visibility = "public", consumers = ["acme:yaffle-dot-dev/applications:apps/*"] }
 outputs.internal_secret_arn = { visibility = "internal" }
 `)
 
@@ -231,6 +234,32 @@ outputs.internal_secret_arn = { visibility = "internal" }
       allowed: true,
       allowedOutputs: ["cluster_ca", "cluster_endpoint"],
     })
+  })
+
+  test("denies cross-org consumers that are not allowlisted", () => {
+    const config = parseYaffleToml(`
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "platform/eks"
+environments = ["main"]
+
+outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-dot-dev/applications:apps/*"] }
+`)
+
+    const decision = resolveModuleAccessDecision({
+      authType: "run",
+      producerWorkspace: makeWorkspace(),
+      producerConfigState: "loaded",
+      producerConfig: config,
+      consumerWorkspace: makeCrossOrgConsumer(),
+    })
+
+    expect(decision.allowed).toBe(false)
+    expect(decision.errorTitle).toMatch(/Module not exported/)
   })
 
   test("denies run tokens whose consumer workspace cannot be resolved", () => {

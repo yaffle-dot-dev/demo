@@ -30,23 +30,26 @@ interface TerraformOutput {
 }
 
 function normalizeRepoName(repo: string): string {
-  const parts = repo.split("/")
-  return (parts[parts.length - 1] ?? repo).toLowerCase()
+  return repo.trim().toLowerCase()
+}
+
+function repoBasename(repo: string): string {
+  const parts = normalizeRepoName(repo).split("/")
+  return parts[parts.length - 1] ?? normalizeRepoName(repo)
 }
 
 function isSameRepoConsumer(
   producerWorkspace: TfcWorkspace,
   consumerWorkspace: ModuleConsumerWorkspace,
 ): boolean {
-  return producerWorkspace.orgId === consumerWorkspace.orgId &&
-    normalizeRepoName(producerWorkspace.repo) === normalizeRepoName(consumerWorkspace.repo)
-}
+  if (producerWorkspace.orgId !== consumerWorkspace.orgId) {
+    return false
+  }
 
-function isSameOrgConsumer(
-  producerWorkspace: TfcWorkspace,
-  consumerWorkspace: ModuleConsumerWorkspace,
-): boolean {
-  return producerWorkspace.orgId === consumerWorkspace.orgId
+  const producerRepo = normalizeRepoName(producerWorkspace.repo)
+  const consumerRepo = normalizeRepoName(consumerWorkspace.repo)
+
+  return producerRepo === consumerRepo || repoBasename(producerRepo) === repoBasename(consumerRepo)
 }
 
 function getWorkspaceConfig(
@@ -111,16 +114,6 @@ export function resolveModuleAccessDecision(params: {
     }
   }
 
-  if (!isSameOrgConsumer(params.producerWorkspace, params.consumerWorkspace)) {
-    return {
-      allowed: false,
-      errorStatus: 403,
-      errorTitle: "Cross-org modules are not supported",
-      errorDetail: "Yaffle only supports module sharing within a single Yaffle organization. Use a workspace in the same Yaffle org to consume this module.",
-      allowedOutputs: null,
-    }
-  }
-
   if (params.producerConfigState === "unavailable") {
     return {
       allowed: false,
@@ -136,7 +129,7 @@ export function resolveModuleAccessDecision(params: {
       allowed: false,
       errorStatus: 403,
       errorTitle: "Module not exported to this workspace",
-      errorDetail: "This workspace has no public outputs configured. Cross-repo access within a Yaffle org requires explicit output policies in yaffle.toml.",
+      errorDetail: "This workspace has no public outputs configured. External access requires explicit output policies in yaffle.toml.",
       allowedOutputs: null,
     }
   }

@@ -641,8 +641,8 @@ version = 1
 path = "platform/eks"
 environments = ["*"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["apps:apps/*"] }
-outputs.cluster_ca = { visibility = "public", consumers = ["apps:apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-dot-dev/apps:apps/*"] }
+outputs.cluster_ca = { visibility = "public", consumers = ["acme:yaffle-dot-dev/apps:apps/*"] }
 outputs.secret_arn = { visibility = "internal" }
 `
 
@@ -650,11 +650,11 @@ outputs.secret_arn = { visibility = "internal" }
     expect(config.workspaces[0].outputs).toEqual({
       cluster_endpoint: {
         visibility: "public",
-        consumers: ["apps:apps/*"],
+        consumers: ["acme:yaffle-dot-dev/apps:apps/*"],
       },
       cluster_ca: {
         visibility: "public",
-        consumers: ["apps:apps/*"],
+        consumers: ["acme:yaffle-dot-dev/apps:apps/*"],
       },
       secret_arn: {
         visibility: "internal",
@@ -684,7 +684,7 @@ version = 1
 path = "platform/eks"
 environments = ["*"]
 
-outputs.cluster_endpoint = { visibility = "internal", consumers = ["apps:apps/*"] }
+outputs.cluster_endpoint = { visibility = "internal", consumers = ["acme:yaffle-dot-dev/apps:apps/*"] }
 `
 
     expect(() => parseYaffleToml(toml)).toThrow(/internal output policy for "cluster_endpoint" cannot declare consumers/)
@@ -701,7 +701,7 @@ environments = ["*"]
 [[workspaces.exports]]
 outputs = ["cluster_endpoint"]
 visibility = "public"
-consumers = ["apps:apps/*"]
+consumers = ["acme:yaffle-dot-dev/apps:apps/*"]
 `
 
     expect(() => parseYaffleToml(toml)).toThrow("uses unsupported [[workspaces.exports]] syntax")
@@ -715,7 +715,7 @@ version = 1
 path = "platform/eks"
 environments = ["*"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["apps/apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["apps:apps/*"] }
 `
 
     expect(() => parseYaffleToml(toml)).toThrow(/invalid consumer selector/)
@@ -761,44 +761,47 @@ describe("matchWorkspacePattern", () => {
 
 describe("consumer selectors", () => {
   test("parses consumer selector format", () => {
-    expect(parseConsumerSelector("platform:apps/*")).toEqual({
-      repoPattern: "platform",
+    expect(parseConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*")).toEqual({
+      orgPattern: "acme",
+      repoPattern: "yaffle-dot-dev/yaffle",
       workspacePattern: "apps/*",
     })
   })
 
   test("returns null for invalid selector format", () => {
     expect(parseConsumerSelector("platform")).toBeNull()
-    expect(parseConsumerSelector(":apps/*")).toBeNull()
-    expect(parseConsumerSelector("platform:")).toBeNull()
+    expect(parseConsumerSelector("acme:platform")).toBeNull()
+    expect(parseConsumerSelector(":platform:apps/*")).toBeNull()
+    expect(parseConsumerSelector("acme::apps/*")).toBeNull()
+    expect(parseConsumerSelector("acme:platform:")).toBeNull()
   })
 
   test("matches consumer selectors with workspace globs", () => {
-    expect(matchConsumerSelector("platform:apps/*", {
+    expect(matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
       org: "acme",
-      repo: "platform",
+      repo: "yaffle-dot-dev/yaffle",
       workspacePath: "apps/api/infra",
     })).toBe(true)
 
-    expect(matchConsumerSelector("platform:apps/*", {
+    expect(matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
       org: "acme",
-      repo: "platform",
+      repo: "yaffle-dot-dev/yaffle",
       workspacePath: "services/worker/infra",
     })).toBe(false)
   })
 
-  test("supports wildcards in repo segments", () => {
-    expect(matchConsumerSelector("plat*:apps/*", {
+  test("supports wildcards in org and repo segments", () => {
+    expect(matchConsumerSelector("acme-*:yaffle-dot-dev/*:apps/*", {
       org: "acme-prod",
-      repo: "platform",
+      repo: "yaffle-dot-dev/yaffle",
       workspacePath: "apps/web/infra",
     })).toBe(true)
   })
 
   test("supports exact repo matching", () => {
-    expect(matchConsumerSelector("platform:apps/*", {
+    expect(matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
       org: "other-org",
-      repo: "other-platform",
+      repo: "other-platform/yaffle",
       workspacePath: "apps/web/infra",
     })).toBe(false)
   })

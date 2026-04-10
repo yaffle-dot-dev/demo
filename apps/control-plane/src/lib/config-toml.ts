@@ -133,6 +133,7 @@ export interface WorkspaceOutputPolicy {
 }
 
 export interface ConsumerSelector {
+  orgPattern: string
   repoPattern: string
   workspacePattern: string
 }
@@ -262,7 +263,7 @@ function rejectUnsupportedWorkspaceExportSyntax(parsed: unknown): void {
       : "<unknown>"
 
     throw new ConfigError(
-      `Invalid yaffle.toml:\n  - Workspace "${path}" uses unsupported [[workspaces.exports]] syntax. Use outputs.<name> = { visibility = "public", consumers = ["repo:workspace-pattern"] } instead`,
+      `Invalid yaffle.toml:\n  - Workspace "${path}" uses unsupported [[workspaces.exports]] syntax. Use outputs.<name> = { visibility = "public", consumers = ["org-slug:repo-slug:workspace-pattern"] } instead`,
     )
   }
 }
@@ -316,7 +317,7 @@ function validateSemantics(config: YaffleTomlConfig): void {
       for (const selector of policy.consumers ?? []) {
         if (!parseConsumerSelector(selector)) {
           errors.push(
-            `Workspace "${ws.path}" has invalid consumer selector "${selector}" for output "${outputName}". Expected format: <repo>:<workspace-pattern>`,
+            `Workspace "${ws.path}" has invalid consumer selector "${selector}" for output "${outputName}". Expected format: <org-slug>:<repo-slug>:<workspace-pattern>`,
           )
         }
       }
@@ -388,24 +389,31 @@ function escapeRegex(str: string): string {
 
 /**
  * Parse an external consumer selector.
- * Format: <repo>:<workspace-pattern>
- * The first colon separates the repo selector from the workspace glob.
+ * Format: <org-slug>:<repo-slug>:<workspace-pattern>
+ * The first two colons separate org, repo, and workspace selectors.
  */
 export function parseConsumerSelector(selector: string): ConsumerSelector | null {
   const trimmed = selector.trim()
-  const separatorIndex = trimmed.indexOf(":")
-  if (separatorIndex <= 0 || separatorIndex === trimmed.length - 1) {
+  const firstSeparatorIndex = trimmed.indexOf(":")
+  const secondSeparatorIndex = trimmed.indexOf(":", firstSeparatorIndex + 1)
+  if (
+    firstSeparatorIndex <= 0 ||
+    secondSeparatorIndex <= firstSeparatorIndex + 1 ||
+    secondSeparatorIndex === trimmed.length - 1
+  ) {
     return null
   }
 
-  const repoPattern = trimmed.slice(0, separatorIndex)
-  const workspacePattern = trimmed.slice(separatorIndex + 1)
+  const orgPattern = trimmed.slice(0, firstSeparatorIndex)
+  const repoPattern = trimmed.slice(firstSeparatorIndex + 1, secondSeparatorIndex)
+  const workspacePattern = trimmed.slice(secondSeparatorIndex + 1)
 
-  if (!repoPattern || !workspacePattern) {
+  if (!orgPattern || !repoPattern || !workspacePattern) {
     return null
   }
 
   return {
+    orgPattern,
     repoPattern,
     workspacePattern,
   }
@@ -423,7 +431,8 @@ export function matchConsumerSelector(
     return false
   }
 
-  return matchBranchPattern(parsed.repoPattern, consumer.repo) &&
+  return matchBranchPattern(parsed.orgPattern, consumer.org) &&
+    matchBranchPattern(parsed.repoPattern, consumer.repo) &&
     matchWorkspacePattern(parsed.workspacePattern, consumer.workspacePath)
 }
 

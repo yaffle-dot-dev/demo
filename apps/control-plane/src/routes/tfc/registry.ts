@@ -268,10 +268,14 @@ async function resolveConsumerWorkspace(auth: TfcAuthContext): Promise<ModuleCon
     return null
   }
 
+  const repository = workspace.repo.includes("/")
+    ? await findRepoByFullName(workspace.repo) ?? await findRepoByName(workspace.orgId, workspace.repo.split("/").pop() ?? workspace.repo)
+    : await findRepoByName(workspace.orgId, workspace.repo)
+
   return {
     orgId: workspace.orgId,
     orgSlug: org.slug,
-    repo: workspace.repo,
+    repo: repository?.fullName ?? workspace.repo,
     workspacePath: workspace.workspacePath,
   }
 }

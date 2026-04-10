@@ -115,15 +115,15 @@ The cross-repo contract is producer-owned in `yaffle.toml`:
 path = "platform/database"
 environments = ["*"]
 
-outputs.connection_string = { visibility = "public", consumers = ["applications:apps/*"] }
-outputs.secret_arn = { visibility = "public", consumers = ["applications:apps/*"] }
+outputs.connection_string = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
+outputs.secret_arn = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
 ```
 
 That gives the platform team a clean product boundary:
 
 - same-repo platform workspaces can still consume all outputs
 - cross-repo product teams only see the curated `public` outputs
-- cross-org module sharing is not supported
+- cross-org consumers can also be allowlisted when needed
 
 ## Environment isolation
 

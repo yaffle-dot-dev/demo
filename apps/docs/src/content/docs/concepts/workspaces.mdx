@@ -111,7 +111,7 @@ Only same-repo Yaffle module references become DAG edges. Cross-repo modules are
 A workspace can expose two different output surfaces:
 
 - `internal` outputs are available only to downstream workspaces in the same repo
-- `public` outputs are available to explicitly allowlisted workspaces in other repos in the same Yaffle org
+- `public` outputs are available to explicitly allowlisted workspaces in other repos or orgs
 
 Outputs are internal by default. You only need to configure the outputs you want to make public.
 
@@ -120,15 +120,15 @@ Outputs are internal by default. You only need to configure the outputs you want
 path = "platform/eks"
 environments = ["main"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["applications:apps/*"] }
-outputs.cluster_ca = { visibility = "public", consumers = ["applications:apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
+outputs.cluster_ca = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
 ```
 
 This means:
 
 - workspaces in the same repo can still consume the full module surface
-- allowlisted cross-repo consumers only see the `public` outputs
-- cross-org module sharing is not supported
+- allowlisted external consumers only see the `public` outputs
+- each consumer selector includes the target Yaffle org slug, repo slug, and workspace pattern
 
 <Aside type="tip">
 Use `public` outputs for stable platform APIs. Keep implementation details and sensitive internals out of that surface.
@@ -144,7 +144,7 @@ module "shared" {
   source = "yaffle.dev/acme--applications/infra--shared/yaffle"
 }
 
-# Different repo in the same Yaffle org -> external module, not a DAG edge
+# Different repo or org -> external module, not a DAG edge
 module "cluster" {
   source = "yaffle.dev/acme--platform/platform--eks/yaffle"
 }
@@ -154,7 +154,7 @@ Rules:
 
 - same-repo modules participate in dependency inference, ordering, and blast-radius analysis
 - cross-repo modules resolve through the registry but do not become DAG edges in the current repo
-- cross-org module sharing is denied
+- cross-org modules are valid external dependencies when the producer allowlists them
 
 ## Execution order
 
