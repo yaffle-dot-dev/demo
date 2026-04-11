@@ -294,7 +294,7 @@
               <div class="flex items-start justify-between">
                 <div>
                   <div class="flex items-center gap-2">
-                    <a href="{base}/{org}/{env.repo}/env/{env.environmentName}" class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
+                    <a href={`${base}/${org}/${env.repo}/env/${env.environmentName}`} class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
                     <RefBadge label={env.environmentName} href={githubTreeUrl({ org, repo: env.repo }, refName(env.ref))} />
                     <RunGroupStatusBadge statuses={env.workspaces.map(w => w.status)} />
                     {#if countConnectionBlockedWorkspaces(env) > 0}
@@ -396,7 +396,7 @@
                 <div class="flex items-start justify-between">
                   <div>
                     <div class="flex items-center gap-3">
-                      <a href="{base}/{org}/{group.repo}/env/pr-{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                      <a href={`${base}/${org}/${group.repo}/env/pr-${group.prNumber}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                         {group.repo}
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
@@ -447,7 +447,7 @@
                 <div class="flex items-start justify-between">
                   <div>
                     <div class="flex items-center gap-3">
-                      <a href="{base}/{org}/{group.repo}/env/pr-{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                      <a href={`${base}/${org}/${group.repo}/env/pr-${group.prNumber}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                         {group.repo}
                       </a>
                       <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
@@ -494,7 +494,7 @@
             <div class="flex items-start justify-between">
               <div>
                 <div class="flex items-center gap-3">
-                  <a href="{base}/{org}/{group.repo}/env/pr-{group.prNumber}" class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                  <a href={`${base}/${org}/${group.repo}/env/pr-${group.prNumber}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                     {group.repo}
                   </a>
                   <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>

@@ -237,7 +237,7 @@ Replace the current "install App -> poll for org -> redirect" flow with an org-f
 ### UI changes
 
 - **Homepage "no orgs" state:** CTA becomes "Create an org" instead of "Install the GitHub App".
-- **Install callback page (`/install/callback`):** Simplify to redirect back to the org dashboard where the user initiated the install. No polling needed — the webhook populates inventory in the background, the repo picker shows a loading state until repos appear.
+- **Install callback page (`/_/install/callback`):** Simplify to redirect back to the org dashboard where the user initiated the install. No polling needed — the webhook populates inventory in the background, the repo picker shows a loading state until repos appear.
 
 ### Rationale
 

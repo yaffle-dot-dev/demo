@@ -148,11 +148,11 @@
       <p class="text-text-muted">
         Create an organization to get started. You'll be able to link GitHub repositories after setup.
       </p>
-      <a
-        href="{base}/new"
-        class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
-               bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
-               transition-colors"
+        <a
+          href={`${base}/_/new`}
+          class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
+                 bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
+                 transition-colors"
       >
         Create an org
       </a>

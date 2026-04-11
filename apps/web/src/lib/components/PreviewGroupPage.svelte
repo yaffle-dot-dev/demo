@@ -1076,7 +1076,7 @@ terraform {
         <div class="flex items-center gap-3 mb-1">
           <h1 class="text-lg font-semibold">
             <a 
-              href="{base}/{org}"
+              href={`${base}/${org}`}
               class="text-text-muted hover:text-yaffle-400 transition-colors"
             >{org}</a><span class="text-text-muted">/</span>{repo}
           </h1>

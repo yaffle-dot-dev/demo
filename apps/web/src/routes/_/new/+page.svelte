@@ -13,7 +13,6 @@
   let creating = $state(false)
   let error = $state<string | null>(null)
 
-  // Auto-derive slug from name unless user has manually edited it
   const derivedSlug = $derived(
     slugTouched
       ? slug
@@ -101,7 +100,7 @@
           disabled={creating || !name || !derivedSlug}
           class="w-full px-4 py-2 rounded-lg bg-yaffle-500 hover:bg-yaffle-400
                  text-white font-medium transition-colors
-                 disabled:opacity-50 disabled:cursor-not-allowed"
+                   disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {creating ? "Creating..." : "Create organization"}
         </button>

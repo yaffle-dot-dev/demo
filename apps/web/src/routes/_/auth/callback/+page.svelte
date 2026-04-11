@@ -36,7 +36,7 @@
       <div class="text-status-failed text-center">
         <p class="font-medium">Sign-in failed</p>
         <p class="mt-1">{error}</p>
-        <a href="{base}/" class="mt-4 inline-block text-yaffle-400 hover:underline">Return home</a>
+        <a href={`${base}/`} class="mt-4 inline-block text-yaffle-400 hover:underline">Return home</a>
       </div>
     {:else}
       <AsyncLoader

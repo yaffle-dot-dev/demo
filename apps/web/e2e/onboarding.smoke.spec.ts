@@ -121,7 +121,7 @@ test.describe("onboarding browser smoke", () => {
     await expect(page.getByRole("heading", { name: "Welcome to Yaffle" })).toBeVisible()
     await page.getByRole("link", { name: "Create an org" }).click()
 
-    await expect(page).toHaveURL(/\/app\/new$/)
+    await expect(page).toHaveURL(/\/app\/_\/new$/)
     await expect(page.getByRole("heading", { name: "Create an organization" })).toBeVisible()
 
     await page.getByLabel("Name").fill("Smoke Browser Org")

@@ -15,7 +15,7 @@
   let showUserMenu = $state(false)
   let hasFetchedOrgs = false
 
-  const createOrgUrl = `${base}/new`
+  const createOrgUrl = `${base}/_/new`
 
   // BetterAuth session store
   const session = useSession()
@@ -26,6 +26,10 @@
 
   // Get current org from URL if on an org page, otherwise use last visited org
   const currentOrg = $derived(page.params.org ?? getLastOrg() ?? "")
+  const activeOrgSlug = $derived(
+    orgs.some((org) => org.slug === currentOrg) ? currentOrg : (orgs[0]?.slug ?? ""),
+  )
+  const homeUrl = $derived(activeOrgSlug ? `${base}/${activeOrgSlug}` : `${base}/`)
   
   // Get current org's role (admin check for settings)
   const currentOrgRole = $derived(orgs.find(o => o.slug === currentOrg)?.role ?? "")
@@ -92,7 +96,7 @@
   <nav class="border-b border-border bg-surface-raised">
     <div class="mx-auto max-w-6xl px-4 py-3 flex items-center justify-between gap-6">
       <div class="flex items-center gap-3">
-        <a href="{base}/" class="font-mono text-lg font-bold text-yaffle-400 tracking-tight">
+        <a href={homeUrl} class="font-mono text-lg font-bold text-yaffle-400 tracking-tight">
           yaffle
         </a>
         {#if orgs.length > 0}
@@ -152,7 +156,7 @@
             {#if showUserMenu}
               <div class="absolute top-full right-0 mt-1 py-1 bg-surface-raised border border-border rounded-lg shadow-lg z-50 min-w-[160px]">
                 <a
-                  href="{base}/settings"
+                  href={`${base}/_/settings`}
                   class="block w-full text-left px-3 py-1.5 text-sm text-text-muted hover:bg-surface-overlay hover:text-text transition-colors"
                   onclick={() => showUserMenu = false}
                 >
@@ -160,7 +164,7 @@
                 </a>
                 {#if currentOrg && isOrgAdmin}
                   <a
-                    href="{base}/{currentOrg}/settings"
+                    href={`${base}/${currentOrg}/settings`}
                     class="block w-full text-left px-3 py-1.5 text-sm text-text-muted hover:bg-surface-overlay hover:text-text transition-colors"
                     onclick={() => showUserMenu = false}
                   >

@@ -111,7 +111,7 @@ export async function getSession(): Promise<Awaited<ReturnType<typeof authClient
  * BetterAuth handles the OAuth dance and redirects back to the callback URL.
  */
 export async function startGithubLogin(): Promise<void> {
-  const callbackURL = `${window.location.origin}/app/auth/callback`
+  const callbackURL = `${window.location.origin}/app/_/auth/callback`
   await signIn.social({
     provider: "github",
     callbackURL,

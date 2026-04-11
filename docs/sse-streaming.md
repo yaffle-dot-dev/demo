@@ -536,7 +536,7 @@ class YaffleEvents extends EventEmitter {
 - [x] Implement auto-pin and inline new-run badge
 - [x] Remove old SSE code from pages
 
-Note: `install/callback/+page.svelte` still uses raw `EventSource` inline.
+Note: `_/install/callback/+page.svelte` still uses raw `EventSource` inline.
 This is intentional - it's a one-off installation flow, not a preview stream.
 
 ### Phase 3: Backend Fixes & Instrumentation - MOSTLY COMPLETE

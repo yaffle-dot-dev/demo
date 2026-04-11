@@ -54,7 +54,7 @@ processes:
       http_get:
         host: 127.0.0.1
         port: 5173
-        path: "/app/health"
+        path: "/app/_/health"
       initial_delay_seconds: 5
       period_seconds: 10
       failure_threshold: 3

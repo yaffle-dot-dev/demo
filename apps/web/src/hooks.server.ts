@@ -9,7 +9,7 @@ if (!API_URL) {
 
 export const handle: Handle = async ({ event, resolve }) => {
   // Lightweight health check - no SSR rendering, no auth
-  if (event.url.pathname === "/app/health") {
+  if (event.url.pathname === "/app/_/health") {
     return new Response("ok", { status: 200 })
   }
 
