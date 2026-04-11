@@ -47,13 +47,23 @@ export {
 export type { Config, StoredCredentials } from "./config.js"
 
 export type {
+  DependencyGraph,
+  EnvironmentGroup,
+  EnvironmentPreviewGroup,
+  OrgInfo,
   Preview,
+  PreviewOverviewResponse,
   PreviewStatus,
+  ResourceSpan,
   TerraformOutput,
   Run,
+  RunGroup,
+  RunGroupSystemError,
   RunStatus,
   StreamUpdate,
   Target,
+  WorkspacePreview,
+  WorkspaceWithRuns,
   Credentials,
   DeviceCodeResponse,
   ApiResponse,

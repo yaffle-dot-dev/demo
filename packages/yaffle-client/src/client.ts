@@ -6,8 +6,14 @@ import { EventSource } from "eventsource"
 import type { AuthProvider } from "./auth.js"
 import type {
   ApiResponse,
+  EnvironmentGroup,
+  EnvironmentPreviewGroup,
+  OrgInfo,
   Preview,
+  PreviewOverviewResponse,
   PreviewStatus,
+  ResourceSpan,
+  Run,
   StreamUpdate,
   Target,
   TerraformOutput,
@@ -69,6 +75,29 @@ export class YaffleClient {
     }
 
     return response.json()
+  }
+
+  private async requestText(
+    path: string,
+    options: RequestInit = {},
+  ): Promise<string> {
+    const credentials = await this.auth.getCredentials()
+
+    const response = await fetch(`${this.apiUrl}${path}`, {
+      ...options,
+      headers: {
+        Authorization: `Bearer ${credentials.accessToken}`,
+        Accept: "text/plain, application/json",
+        ...options.headers,
+      },
+    })
+
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(`API request failed: ${response.status} ${text}`)
+    }
+
+    return response.text()
   }
 
   /**
@@ -274,5 +303,131 @@ export class YaffleClient {
       `/api/previews?org=${encodeURIComponent(org)}&repo=${encodeURIComponent(repo)}`
     )
     return data.data || []
+  }
+
+  async listOrgs(): Promise<OrgInfo[]> {
+    const data = await this.request<ApiResponse<OrgInfo[]>>("/api/orgs")
+    return data.data || []
+  }
+
+  async listEnvironments(options: {
+    org: string
+    repo?: string
+    view?: "full" | "dag"
+  }): Promise<EnvironmentGroup[]> {
+    const searchParams = new URLSearchParams({
+      org: options.org,
+    })
+
+    if (options.repo) {
+      searchParams.set("repo", options.repo)
+    }
+
+    if (options.view) {
+      searchParams.set("view", options.view)
+    }
+
+    const data = await this.request<ApiResponse<EnvironmentGroup[]>>(
+      `/api/environments?${searchParams}`,
+    )
+
+    return data.data || []
+  }
+
+  async getPreviewOverview(options: {
+    org: string
+    repo?: string
+    status?: string
+    prNumber?: number
+    limit?: number
+    cursor?: string
+  }): Promise<PreviewOverviewResponse> {
+    const searchParams = new URLSearchParams({
+      org: options.org,
+    })
+
+    if (options.repo) {
+      searchParams.set("repo", options.repo)
+    }
+
+    if (options.status) {
+      searchParams.set("status", options.status)
+    }
+
+    if (options.prNumber != null) {
+      searchParams.set("pr_number", String(options.prNumber))
+    }
+
+    if (options.limit != null) {
+      searchParams.set("limit", String(options.limit))
+    }
+
+    if (options.cursor) {
+      searchParams.set("cursor", options.cursor)
+    }
+
+    return this.request<PreviewOverviewResponse>(`/api/previews/overview?${searchParams}`)
+  }
+
+  async getEnvironment(options: {
+    org: string
+    repo: string
+    environmentName: string
+    view?: "full" | "dag"
+  }): Promise<EnvironmentPreviewGroup> {
+    const searchParams = new URLSearchParams()
+    if (options.view) {
+      searchParams.set("view", options.view)
+    }
+
+    const suffix = searchParams.size > 0 ? `?${searchParams}` : ""
+    const data = await this.request<ApiResponse<EnvironmentPreviewGroup>>(
+      `/api/orgs/${encodeURIComponent(options.org)}/repos/${encodeURIComponent(options.repo)}/environment/${encodeURIComponent(options.environmentName)}${suffix}`,
+    )
+
+    return data.data
+  }
+
+  async getRun(runId: string): Promise<Run> {
+    const data = await this.request<ApiResponse<Run>>(`/api/runs/${encodeURIComponent(runId)}`)
+    return data.data
+  }
+
+  async getRunOutput(runId: string): Promise<string> {
+    return this.requestText(`/api/runs/${encodeURIComponent(runId)}/output`)
+  }
+
+  async getRunSpans(runId: string): Promise<ResourceSpan[]> {
+    const data = await this.request<ApiResponse<ResourceSpan[]>>(
+      `/api/runs/${encodeURIComponent(runId)}/spans`,
+    )
+    return data.data || []
+  }
+
+  async rerunPreview(previewId: string): Promise<{ rerunQueued: boolean; runGroupId: string; jobId: string }> {
+    const data = await this.request<ApiResponse<{ rerunQueued: boolean; runGroupId: string; jobId: string }>>(
+      `/api/previews/${encodeURIComponent(previewId)}/rerun`,
+      { method: "POST" },
+    )
+
+    return data.data
+  }
+
+  async triggerApply(previewId: string): Promise<{ applyStarted: boolean; jobId: string }> {
+    const data = await this.request<ApiResponse<{ applyStarted: boolean; jobId: string }>>(
+      `/api/previews/${encodeURIComponent(previewId)}/apply`,
+      { method: "POST" },
+    )
+
+    return data.data
+  }
+
+  async cancelRun(runId: string): Promise<{ cancelled: boolean }> {
+    const data = await this.request<ApiResponse<{ cancelled: boolean }>>(
+      `/api/runs/${encodeURIComponent(runId)}/cancel`,
+      { method: "POST" },
+    )
+
+    return data.data
   }
 }
