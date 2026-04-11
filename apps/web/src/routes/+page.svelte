@@ -3,7 +3,7 @@
   import { goto } from "$app/navigation"
   import { base } from "$app/paths"
   import { onMount } from "svelte"
-  import { listOrgs } from "$lib/api"
+  import { getPrivateBetaAccess, listOrgs, type PrivateBetaAccess } from "$lib/api"
   import { getLastOrg, useSession, startGithubLogin } from "$lib/auth"
 
   // State flags - use regular variables since we control all mutations
@@ -15,6 +15,8 @@
   let showLoading = $state(true)
   let showLanding = $state(false)
   let showNoOrgs = $state(false)
+  let showInviteOnly = $state(false)
+  let privateBetaAccess = $state<PrivateBetaAccess | null>(null)
 
   const GITHUB_APP_NAME = "yaffle-dot-dev"
   const installUrl = `https://github.com/apps/${GITHUB_APP_NAME}/installations/new`
@@ -39,8 +41,17 @@
         return
       }
       // User is logged in but has no orgs
-      showLoading = false
-      showNoOrgs = true
+      try {
+        const access = await getPrivateBetaAccess()
+        privateBetaAccess = access.data
+        showLoading = false
+        showNoOrgs = access.data.hasAccess || !access.data.invitesRequired
+        showInviteOnly = access.data.invitesRequired && !access.data.hasAccess
+      } catch {
+        showLoading = false
+        showNoOrgs = false
+        showInviteOnly = true
+      }
     } catch {
       // If we can't fetch orgs, show the "no orgs" prompt
       showLoading = false
@@ -148,14 +159,29 @@
       <p class="text-text-muted">
         Create an organization to get started. You'll be able to link GitHub repositories after setup.
       </p>
-        <a
-          href={`${base}/_/new`}
-          class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
-                 bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
-                 transition-colors"
+      <a
+        href={`${base}/_/new`}
+        class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
+               bg-yaffle-500 hover:bg-yaffle-400 text-white font-medium
+               transition-colors"
       >
         Create an org
       </a>
+    </div>
+  </div>
+{:else if showInviteOnly}
+  <div class="min-h-[60vh] flex flex-col items-center justify-center text-center px-4">
+    <div class="max-w-md space-y-4">
+      <h1 class="text-2xl font-semibold text-text">Private beta is invite only</h1>
+      <p class="text-text-muted">
+        Your account is signed in, but it is not yet approved to create a Yaffle organization.
+      </p>
+      <p class="text-sm text-text-dim">
+        Ask Alex for an invite and then reload this page.
+        {#if privateBetaAccess?.invite}
+          Your beta invite is already on file.
+        {/if}
+      </p>
     </div>
   </div>
 {/if}

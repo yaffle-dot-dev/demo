@@ -3,6 +3,14 @@
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import ActionButton from "$lib/components/ActionButton.svelte"
   import { useSession } from "$lib/auth"
+  import {
+    getPrivateBetaAccess,
+    listPrivateBetaInvites,
+    revokePrivateBetaInvite,
+    upsertPrivateBetaInvite,
+    type PrivateBetaAccess,
+    type PrivateBetaInvite,
+  } from "$lib/api"
 
   const session = useSession()
   const user = $derived($session.data?.user)
@@ -23,6 +31,15 @@
   let newlyCreatedSummary = $state<{ access: string; orgName: string; expiresAt: string | null } | null>(null)
   let keyCopied = $state(false)
   let orgs = $state<UserOrg[]>([])
+  let privateBetaAccess = $state<PrivateBetaAccess | null>(null)
+  let privateBetaInvites = $state<PrivateBetaInvite[]>([])
+  let privateBetaLoading = $state(false)
+  let privateBetaError = $state<string | null>(null)
+  let inviteEmail = $state("")
+  let inviteGithubLogin = $state("")
+  let inviteNote = $state("")
+  let savingInvite = $state(false)
+  let revokingInviteId = $state<string | null>(null)
 
   // Expiration options (in days)
   const expirationOptions = [
@@ -69,6 +86,8 @@
     role: string
   }
 
+  const isPrivateBetaOperator = $derived(privateBetaAccess?.isOperator ?? false)
+
   async function loadApiKeys() {
     loading = true
     error = null
@@ -105,6 +124,65 @@
     } catch (e) {
       error = e instanceof Error ? e.message : "Failed to load organizations"
       orgs = []
+    }
+  }
+
+  async function loadPrivateBetaState() {
+    try {
+      const access = await getPrivateBetaAccess()
+      privateBetaAccess = access.data
+
+      if (access.data.isOperator) {
+        privateBetaLoading = true
+        const invites = await listPrivateBetaInvites()
+        privateBetaInvites = invites.data
+      }
+    } catch (e) {
+      privateBetaError = e instanceof Error ? e.message : "Failed to load private beta state"
+      privateBetaInvites = []
+    } finally {
+      privateBetaLoading = false
+    }
+  }
+
+  async function saveInvite() {
+    if (!inviteEmail.trim() && !inviteGithubLogin.trim()) return
+
+    savingInvite = true
+    privateBetaError = null
+
+    try {
+      await upsertPrivateBetaInvite({
+        email: inviteEmail.trim() || undefined,
+        githubLogin: inviteGithubLogin.trim() || undefined,
+        note: inviteNote.trim() || undefined,
+      })
+
+      inviteEmail = ""
+      inviteGithubLogin = ""
+      inviteNote = ""
+
+      const invites = await listPrivateBetaInvites()
+      privateBetaInvites = invites.data
+    } catch (e) {
+      privateBetaError = e instanceof Error ? e.message : "Failed to save invite"
+    } finally {
+      savingInvite = false
+    }
+  }
+
+  async function revokeInvite(inviteId: string) {
+    revokingInviteId = inviteId
+    privateBetaError = null
+
+    try {
+      await revokePrivateBetaInvite(inviteId)
+      const invites = await listPrivateBetaInvites()
+      privateBetaInvites = invites.data
+    } catch (e) {
+      privateBetaError = e instanceof Error ? e.message : "Failed to revoke invite"
+    } finally {
+      revokingInviteId = null
     }
   }
 
@@ -216,6 +294,7 @@
   onMount(() => {
     loadApiKeys()
     loadOrgs()
+    loadPrivateBetaState()
   })
 </script>
 
@@ -245,6 +324,124 @@
         </div>
       </div>
     </section>
+
+    {#if isPrivateBetaOperator}
+      <section class="space-y-4">
+        <div>
+          <h2 class="text-lg font-semibold text-text">Private Beta Invites</h2>
+          <p class="text-sm text-text-muted">Allow specific GitHub users or emails to create their first Yaffle org.</p>
+        </div>
+
+        {#if privateBetaError}
+          <div class="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm text-red-400">
+            {privateBetaError}
+          </div>
+        {/if}
+
+        <div class="bg-surface-raised border border-border rounded-lg p-4 space-y-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label for="inviteEmail" class="block text-sm font-medium text-text mb-1">Invite email</label>
+              <input
+                id="inviteEmail"
+                type="email"
+                bind:value={inviteEmail}
+                placeholder="friend@example.com"
+                class="w-full px-3 py-2 bg-surface border border-border rounded text-text placeholder:text-text-dim focus:outline-none focus:ring-2 focus:ring-yaffle-500/50 focus:border-yaffle-500"
+              />
+            </div>
+            <div>
+              <label for="inviteGithubLogin" class="block text-sm font-medium text-text mb-1">GitHub login</label>
+              <input
+                id="inviteGithubLogin"
+                type="text"
+                bind:value={inviteGithubLogin}
+                placeholder="lamalex"
+                class="w-full px-3 py-2 bg-surface border border-border rounded text-text placeholder:text-text-dim focus:outline-none focus:ring-2 focus:ring-yaffle-500/50 focus:border-yaffle-500"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label for="inviteNote" class="block text-sm font-medium text-text mb-1">Note</label>
+            <input
+              id="inviteNote"
+              type="text"
+              bind:value={inviteNote}
+              placeholder="friend from infra slack"
+              class="w-full px-3 py-2 bg-surface border border-border rounded text-text placeholder:text-text-dim focus:outline-none focus:ring-2 focus:ring-yaffle-500/50 focus:border-yaffle-500"
+            />
+          </div>
+
+          <div class="flex justify-end">
+            <ActionButton disabled={savingInvite || (!inviteEmail.trim() && !inviteGithubLogin.trim())} onclick={saveInvite}>
+              {savingInvite ? "Saving..." : "Save invite"}
+            </ActionButton>
+          </div>
+        </div>
+
+        <div class="bg-surface-raised border border-border rounded-lg overflow-hidden">
+          {#if privateBetaLoading}
+            <div class="p-6">
+              <AsyncLoader
+                title="Loading invites"
+                message="Fetching the current private beta allowlist."
+              />
+            </div>
+          {:else if privateBetaInvites.length === 0}
+            <div class="p-8 text-center text-text-dim">
+              No beta invites yet.
+            </div>
+          {:else}
+            <table class="w-full">
+              <thead class="bg-surface-overlay">
+                <tr class="text-left text-xs text-text-muted uppercase tracking-wider">
+                  <th class="px-4 py-2">Identity</th>
+                  <th class="px-4 py-2">Note</th>
+                  <th class="px-4 py-2">Status</th>
+                  <th class="px-4 py-2">Invited By</th>
+                  <th class="px-4 py-2">Created</th>
+                  <th class="px-4 py-2"></th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border">
+                {#each privateBetaInvites as invite (invite.id)}
+                  <tr class="hover:bg-surface-overlay/50 transition-colors">
+                    <td class="px-4 py-3 text-sm text-text">
+                      <div>{invite.email ?? "-"}</div>
+                      <div class="text-xs text-text-dim">{invite.githubLogin ? `@${invite.githubLogin}` : ""}</div>
+                    </td>
+                    <td class="px-4 py-3 text-sm text-text-muted">{invite.note ?? "-"}</td>
+                    <td class="px-4 py-3 text-sm text-text-muted">
+                      {#if invite.revokedAt}
+                        Revoked
+                      {:else if invite.claimedAt}
+                        Claimed by {invite.claimedByName ?? "user"}
+                      {:else}
+                        Active
+                      {/if}
+                    </td>
+                    <td class="px-4 py-3 text-sm text-text-muted">{invite.invitedByName ?? "Unknown"}</td>
+                    <td class="px-4 py-3 text-sm text-text-muted">{formatDate(invite.createdAt)}</td>
+                    <td class="px-4 py-3 text-right">
+                      {#if !invite.revokedAt}
+                        <button
+                          class="text-xs text-red-400 hover:text-red-300 transition-colors disabled:opacity-50"
+                          disabled={revokingInviteId === invite.id}
+                          onclick={() => revokeInvite(invite.id)}
+                        >
+                          {revokingInviteId === invite.id ? "Revoking..." : "Revoke"}
+                        </button>
+                      {/if}
+                    </td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table>
+          {/if}
+        </div>
+      </section>
+    {/if}
 
     <!-- API Keys Section -->
     <section class="space-y-4">

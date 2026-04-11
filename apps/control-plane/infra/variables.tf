@@ -51,6 +51,18 @@ variable "local_dev_assume_principals" {
   default     = ""
 }
 
+variable "private_beta_invites_required" {
+  type        = bool
+  description = "Whether first-org creation is gated behind a private beta invite"
+  default     = false
+}
+
+variable "private_beta_operator_identifiers" {
+  type        = string
+  description = "Comma-separated operator emails and/or GitHub logins allowed to manage private beta invites"
+  default     = ""
+}
+
 data "aws_caller_identity" "current" {}
 
 module "naming" {

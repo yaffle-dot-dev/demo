@@ -104,6 +104,25 @@ test.describe("onboarding browser smoke", () => {
         })
       }
 
+      if (url.pathname === "/api/users/private-beta/access" && method === "GET") {
+        return fulfillJson(route, {
+          data: {
+            invitesRequired: true,
+            hasAccess: true,
+            isOperator: false,
+            accessReason: "invited",
+            matchedBy: "email",
+            invite: {
+              id: "invite-smoke",
+              email: "smoke@yaffle.dev",
+              githubLogin: "smoke-user",
+              claimedAt: null,
+              revokedAt: null,
+            },
+          },
+        })
+      }
+
       if (url.pathname === `/api/orgs/${createdOrg.slug}/repo-mappings` && method === "GET") {
         return fulfillJson(route, { data: [] })
       }

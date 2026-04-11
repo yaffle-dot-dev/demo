@@ -38,6 +38,8 @@ import {
   workspaces,
 } from "../db/schema.ts"
 import { deprovisionOrgResources } from "../lib/org-provisioning.ts"
+import { claimPrivateBetaInvite } from "../db/queries/private-beta-invites.ts"
+import { getPrivateBetaAccessStatusForUser } from "../lib/private-beta.ts"
 
 export const orgsRoute = new Hono()
 
@@ -252,6 +254,21 @@ orgsRoute.post("/", async (c) => {
     return c.json({ error: { code: "INVALID_JSON", message: "Invalid request body" } }, 400)
   }
 
+  const privateBetaAccess = await getPrivateBetaAccessStatusForUser({
+    userId: auth.userId,
+    email: auth.email,
+    githubLogin: auth.name,
+  })
+
+  if (!privateBetaAccess.hasAccess) {
+    return c.json({
+      error: {
+        code: "PRIVATE_BETA_CLOSED",
+        message: "Yaffle is currently invite-only. Ask for a private beta invite before creating an organization.",
+      },
+    }, 403)
+  }
+
   const slug = body.slug ?? body.name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
   if (!slug) {
     return c.json({ error: { code: "VALIDATION_ERROR", message: "Could not derive a valid slug from the org name" } }, 400)
@@ -276,6 +293,13 @@ orgsRoute.post("/", async (c) => {
     role: "admin",
     source: "admin_bootstrap",
   })
+
+  if (privateBetaAccess.invite?.id && privateBetaAccess.matchedBy !== "claimed") {
+    await claimPrivateBetaInvite({
+      inviteId: privateBetaAccess.invite.id,
+      userId: auth.userId,
+    })
+  }
 
   // Queue async provisioning of AWS resources (KMS key, IAM role)
   await createJob({

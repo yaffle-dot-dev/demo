@@ -63,6 +63,28 @@ export const organizations = pgTable("organizations", {
 })
 
 // =============================================================================
+// Private Beta Invites
+// =============================================================================
+
+export const betaAccessInvites = pgTable("beta_access_invites", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  email: text("email").unique(),
+  githubLogin: text("github_login").unique(),
+  note: text("note"),
+  invitedByUserId: text("invited_by_user_id").references(() => user.id, { onDelete: "set null" }),
+  claimedByUserId: text("claimed_by_user_id").references(() => user.id, { onDelete: "set null" }),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (t) => [
+  index("beta_access_invites_email_idx").on(t.email),
+  index("beta_access_invites_github_login_idx").on(t.githubLogin),
+  index("beta_access_invites_claimed_by_user_id_idx").on(t.claimedByUserId),
+  index("beta_access_invites_revoked_at_idx").on(t.revokedAt),
+])
+
+// =============================================================================
 // GitHub Installations (links Yaffle orgs to GitHub App installations)
 // =============================================================================
 

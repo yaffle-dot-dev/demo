@@ -70,6 +70,9 @@ resource "aws_ecs_task_definition" "control_plane" {
         # Auth
         { name = "BETTER_AUTH_URL", value = "https://${var.domain}" },
         { name = "TRUSTED_ORIGINS", value = "https://${var.domain}" },
+        # Private beta access control
+        { name = "YAFFLE_PRIVATE_BETA_INVITES_REQUIRED", value = tostring(var.private_beta_invites_required) },
+        { name = "YAFFLE_PRIVATE_BETA_OPERATOR_IDENTIFIERS", value = var.private_beta_operator_identifiers },
         # Telemetry
         { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = "https://api.axiom.co" },
         # Runner spawner (ECS)

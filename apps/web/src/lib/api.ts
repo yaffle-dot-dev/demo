@@ -481,11 +481,59 @@ export interface CurrentUser {
   githubId: number | null
 }
 
+export interface PrivateBetaAccess {
+  invitesRequired: boolean
+  hasAccess: boolean
+  isOperator: boolean
+  accessReason: "disabled" | "operator" | "existing_member" | "invited" | "not_invited"
+  matchedBy: "claimed" | "email" | "github_login" | null
+  invite: {
+    id: string
+    email: string | null
+    githubLogin: string | null
+    claimedAt: string | null
+    revokedAt: string | null
+  } | null
+}
+
+export interface PrivateBetaInvite {
+  id: string
+  email: string | null
+  githubLogin: string | null
+  note: string | null
+  invitedByUserId: string | null
+  invitedByName: string | null
+  claimedByUserId: string | null
+  claimedByName: string | null
+  claimedAt: string | null
+  revokedAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
 /**
  * Get the current authenticated user's info, including their GitHub ID.
  */
 export async function getMe(): Promise<DetailResponse<CurrentUser>> {
   return fetchJson("/users/me")
+}
+
+export async function getPrivateBetaAccess(): Promise<DetailResponse<PrivateBetaAccess>> {
+  return fetchJson("/users/private-beta/access")
+}
+
+export async function listPrivateBetaInvites(): Promise<DetailResponse<PrivateBetaInvite[]>> {
+  return fetchJson("/users/private-beta/invites")
+}
+
+export async function upsertPrivateBetaInvite(
+  params: { email?: string; githubLogin?: string; note?: string },
+): Promise<DetailResponse<PrivateBetaInvite>> {
+  return postJson("/users/private-beta/invites", params)
+}
+
+export async function revokePrivateBetaInvite(inviteId: string): Promise<DetailResponse<{ revoked: boolean }>> {
+  return deleteJson(`/users/private-beta/invites/${inviteId}`)
 }
 
 export async function getPreview(id: string): Promise<DetailResponse<Preview>> {

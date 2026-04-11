@@ -1,7 +1,8 @@
 <script lang="ts">
   import { goto } from "$app/navigation"
   import { base } from "$app/paths"
-  import { createOrg } from "$lib/api"
+  import { onMount } from "svelte"
+  import { createOrg, getPrivateBetaAccess, type PrivateBetaAccess } from "$lib/api"
   import { notifyOrgListChanged } from "$lib/org-list-events"
   import { useSession } from "$lib/auth"
 
@@ -12,6 +13,9 @@
   let slugTouched = $state(false)
   let creating = $state(false)
   let error = $state<string | null>(null)
+  let checkingAccess = $state(false)
+  let privateBetaAccess = $state<PrivateBetaAccess | null>(null)
+  let accessLoaded = $state(false)
 
   const derivedSlug = $derived(
     slugTouched
@@ -22,6 +26,12 @@
   async function handleSubmit(e: Event) {
     e.preventDefault()
     error = null
+
+    if (privateBetaAccess?.invitesRequired && !privateBetaAccess.hasAccess) {
+      error = "Yaffle is currently invite-only. Ask for a private beta invite before creating an organization."
+      return
+    }
+
     creating = true
 
     try {
@@ -36,13 +46,60 @@
       creating = false
     }
   }
+
+  async function loadPrivateBetaAccess() {
+    checkingAccess = true
+
+    try {
+      const access = await getPrivateBetaAccess()
+      privateBetaAccess = access.data
+    } catch {
+      privateBetaAccess = {
+        invitesRequired: true,
+        hasAccess: false,
+        isOperator: false,
+        accessReason: "not_invited",
+        matchedBy: null,
+        invite: null,
+      }
+    } finally {
+      checkingAccess = false
+      accessLoaded = true
+    }
+  }
+
+  onMount(() => {
+    if ($session.data?.user && !accessLoaded) {
+      void loadPrivateBetaAccess()
+    }
+  })
+
+  $effect(() => {
+    if ($session.isPending || !$session.data?.user || accessLoaded || checkingAccess) return
+    void loadPrivateBetaAccess()
+  })
 </script>
 
-{#if $session.isPending}
+{#if $session.isPending || checkingAccess}
   <div class="min-h-[60vh]"></div>
 {:else if !$session.data?.user}
   <div class="min-h-[60vh] flex items-center justify-center">
     <p class="text-text-muted">Sign in to create an organization.</p>
+  </div>
+{:else if privateBetaAccess?.invitesRequired && !privateBetaAccess.hasAccess}
+  <div class="min-h-[60vh] flex flex-col items-center justify-center px-4 text-center">
+    <div class="w-full max-w-md space-y-4">
+      <h1 class="text-2xl font-semibold text-text">Private beta is invite only</h1>
+      <p class="text-text-muted text-sm">
+        Your account is signed in, but it is not currently approved to create a Yaffle organization.
+      </p>
+      <a
+        href={`${base}/`}
+        class="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-border text-text-muted hover:text-text hover:bg-surface-overlay transition-colors"
+      >
+        Back to Yaffle
+      </a>
+    </div>
   </div>
 {:else}
   <div class="min-h-[60vh] flex flex-col items-center justify-center px-4">

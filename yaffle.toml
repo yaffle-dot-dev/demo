@@ -51,6 +51,8 @@ environments = ["main"]
 [[workspaces]]
 path = "apps/control-plane/infra"
 environments = ["*"]
+variables.private_beta_invites_required = true
+variables.private_beta_operator_identifiers = "dev@launi.me"
 
 [[workspaces]]
 path = "apps/runner/infra"

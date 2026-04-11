@@ -39,6 +39,15 @@ manual merge requirement.
 - Versioned definition: `docs/private-beta/axiom-private-beta-watch-dashboard.json`
 - Current gap: there are no Axiom monitors configured yet
 
+## Invite-Only Gate
+
+Private beta access is now enforced at org creation time.
+
+- Enable it with `YAFFLE_PRIVATE_BETA_INVITES_REQUIRED=true`
+- Grant operator access with `YAFFLE_PRIVATE_BETA_OPERATOR_IDENTIFIERS`
+- Operators can manage invites in `/app/_/settings`
+- Invited users can sign in, but only invited users can create their first org
+
 ## Documents In This Folder
 
 - `docs/private-beta/onboarding.md` - friend-facing onboarding script
