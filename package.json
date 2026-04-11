@@ -17,6 +17,8 @@
     "lint:fix": "biome check --write .",
     "format": "biome format --write .",
     "format:check": "biome format .",
+    "smoke": "bun run --filter=@yaffle/control-plane smoke",
+    "smoke:browser": "bun run --filter=@yaffle/web smoke",
     "test": "bun run --filter='*' test",
     "db:generate": "bun run --filter=@yaffle/control-plane db:generate",
     "db:migrate": "bun run --filter=@yaffle/control-plane db:migrate",

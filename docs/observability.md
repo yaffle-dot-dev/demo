@@ -280,3 +280,53 @@ The following OTel metrics are available:
    | where body contains "blocked by global"
    | summarize sum(['attributes.blocked']) by bin(_time, 5m)
    ```
+
+## Private Beta Watchlist
+
+For the first outside users, keep these queries pinned in Axiom while someone is
+actively onboarding.
+
+### Provider Discovery Callback Failures
+
+```apl
+['yaffle']
+| where body contains "provider_discovery"
+  and (
+    body contains "queue_failed"
+    or body contains "callback_apply_failed"
+    or body contains "incomplete_result"
+  )
+| order by _time desc
+| take 50
+```
+
+### Stripe Webhook Problems
+
+```apl
+['yaffle']
+| where body contains "stripe webhook"
+   or body contains "payment failed"
+| order by _time desc
+| take 50
+```
+
+### Org Provisioning Problems
+
+```apl
+['yaffle']
+| where body contains "org_provision"
+   or body contains "provision"
+| order by _time desc
+| take 50
+```
+
+### Cleanup Failures After PR Close
+
+```apl
+['yaffle']
+| where body contains "destroy"
+   or body contains "cleanup"
+   or body contains "PR closed"
+| order by _time desc
+| take 50
+```

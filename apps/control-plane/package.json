@@ -8,6 +8,7 @@
     "dev:hot": "bun run --hot src/index.ts",
     "build": "NODE_ENV=production bun build src/index.ts --outdir dist --target bun",
     "start": "bun run dist/index.js",
+    "smoke": "bun test src/routes/*.smoke.test.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "db:generate": "drizzle-kit generate",

@@ -35,6 +35,8 @@ crash.*.log
 # Svelte
 **/.svelte-kit
 **/build/**
+**/playwright-report/
+**/test-results/
 
 tmp/**
 
