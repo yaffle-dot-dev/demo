@@ -14,6 +14,7 @@
     RepoMapping,
   } from "$lib/api"
   import { page } from "$app/state"
+  import { setLastOrg } from "$lib/auth"
 
   const GITHUB_APP_NAME = "yaffle-dot-dev"
   let repoInstallations = $state<GithubInstallation[]>([])
@@ -61,9 +62,8 @@
     repoLoadingRepos = true
     repoSelectedIds = new Set()
     try {
-      const res = await listInstallationRepos(install.installationId)
-      const mappedIds = new Set(repoMappings.map((m) => m.githubRepoId))
-      repoAvailableRepos = res.data.filter((r) => !mappedIds.has(r.githubId))
+      const res = await listInstallationRepos(install.installationId, org)
+      repoAvailableRepos = res.data
     } catch (e) {
       repoError = e instanceof Error ? e.message : String(e)
       repoAvailableRepos = []
@@ -73,9 +73,30 @@
   }
 
   function toggleRepoSelection(githubId: number) {
+    const repo = repoAvailableRepos.find((entry) => entry.githubId === githubId)
+    if (!repo || repo.mappingStatus !== "available") return
+
     const next = new Set(repoSelectedIds)
     if (next.has(githubId)) { next.delete(githubId) } else { next.add(githubId) }
     repoSelectedIds = next
+  }
+
+  function getRepoStatusLabel(repo: GithubRepo): string | null {
+    if (repo.mappingStatus === "linked_current_org") {
+      return "Already linked in this org"
+    }
+
+    if (repo.mappingStatus === "linked_other_org") {
+      return repo.linkedOrgSlug
+        ? `Owned by ${repo.linkedOrgSlug}`
+        : "Already linked to another Yaffle org"
+    }
+
+    return null
+  }
+
+  function rememberCurrentOrg() {
+    setLastOrg(org)
   }
 
   async function addSelectedRepos() {
@@ -147,6 +168,7 @@
               href="https://github.com/apps/{GITHUB_APP_NAME}/installations/new"
               target="_blank"
               rel="noopener noreferrer"
+              onclick={rememberCurrentOrg}
               class="inline-flex items-center gap-2 px-4 py-2 rounded-lg
                      border border-border hover:border-yaffle-500/40
                      text-sm text-text-muted hover:text-text transition-colors"
@@ -175,6 +197,7 @@
               href="https://github.com/apps/{GITHUB_APP_NAME}/installations/new"
               target="_blank"
               rel="noopener noreferrer"
+              onclick={rememberCurrentOrg}
               class="text-xs text-text-dim hover:text-yaffle-400 transition-colors"
             >
               Don't see your account? Install the GitHub App
@@ -200,24 +223,31 @@
           <div class="text-sm text-text-muted py-4 text-center">Loading repositories...</div>
         {:else if repoAvailableRepos.length === 0}
           <div class="text-sm text-text-muted py-4 text-center">
-            All repositories from this installation are already linked.
+            No repositories found for this installation.
           </div>
         {:else}
           <div class="max-h-80 overflow-y-auto space-y-1">
             {#each repoAvailableRepos as repo (repo.githubId)}
+              {@const statusLabel = getRepoStatusLabel(repo)}
               <label
-                class="flex items-center gap-3 p-2 rounded-lg hover:bg-surface-overlay
-                       transition-colors cursor-pointer"
+                class="flex items-center gap-3 p-2 rounded-lg transition-colors
+                       {repo.mappingStatus === 'available'
+                         ? 'hover:bg-surface-overlay cursor-pointer'
+                         : 'opacity-70 cursor-not-allowed'}"
               >
                 <input
                   type="checkbox"
                   checked={repoSelectedIds.has(repo.githubId)}
+                  disabled={repo.mappingStatus !== "available"}
                   onchange={() => toggleRepoSelection(repo.githubId)}
                   class="rounded"
                 />
                 <div>
                   <div class="text-sm text-text">{repo.name}</div>
                   <div class="text-xs text-text-dim">{repo.fullName}</div>
+                  {#if statusLabel}
+                    <div class="text-xs text-amber-300 mt-1">{statusLabel}</div>
+                  {/if}
                 </div>
                 {#if repo.isPrivate}
                   <span class="ml-auto text-xs text-text-dim border border-border rounded px-1.5 py-0.5">private</span>

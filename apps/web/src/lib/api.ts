@@ -284,10 +284,12 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
   }
 }
 
-async function deleteJson<T>(path: string): Promise<T> {
+async function deleteJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: "DELETE",
     credentials: "include",
+    headers: body ? { "Content-Type": "application/json" } : {},
+    body: body ? JSON.stringify(body) : undefined,
   })
   const text = await res.text()
   if (!res.ok) {
@@ -387,6 +389,8 @@ export interface GithubRepo {
   fullName: string
   defaultBranch: string
   isPrivate: boolean
+  mappingStatus: "available" | "linked_current_org" | "linked_other_org"
+  linkedOrgSlug: string | null
 }
 
 export interface RepoMapping {
@@ -404,8 +408,14 @@ export async function listGithubInstallations(): Promise<DetailResponse<GithubIn
   return fetchJson("/integrations/github/installations")
 }
 
-export async function listInstallationRepos(installationId: number): Promise<DetailResponse<GithubRepo[]>> {
-  return fetchJson(`/integrations/github/installations/${installationId}/repositories`)
+export async function listInstallationRepos(
+  installationId: number,
+  org?: string,
+): Promise<DetailResponse<GithubRepo[]>> {
+  const searchParams = new URLSearchParams()
+  if (org) searchParams.set("org", org)
+  const suffix = searchParams.size > 0 ? `?${searchParams}` : ""
+  return fetchJson(`/integrations/github/installations/${installationId}/repositories${suffix}`)
 }
 
 export async function listRepoMappings(org: string): Promise<DetailResponse<RepoMapping[]>> {
@@ -425,6 +435,13 @@ export async function deleteRepoMapping(
   repoId: number,
 ): Promise<DetailResponse<{ removed: boolean }>> {
   return deleteJson(`/orgs/${org}/repo-mappings/${installationId}/${repoId}`)
+}
+
+export async function deleteOrg(
+  org: string,
+  params: { confirmSlug: string },
+): Promise<DetailResponse<{ deleted: boolean }>> {
+  return deleteJson(`/orgs/${org}`, params)
 }
 
 // =============================================================================

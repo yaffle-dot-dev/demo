@@ -2,6 +2,7 @@
   import { goto } from "$app/navigation"
   import { base } from "$app/paths"
   import { createOrg } from "$lib/api"
+  import { notifyOrgListChanged } from "$lib/org-list-events"
   import { useSession } from "$lib/auth"
 
   const session = useSession()
@@ -29,6 +30,7 @@
         name,
         slug: derivedSlug || undefined,
       })
+      notifyOrgListChanged()
       goto(`${base}/${res.data.slug}/settings/repositories`)
     } catch (err) {
       error = err instanceof Error ? err.message : "Failed to create organization"

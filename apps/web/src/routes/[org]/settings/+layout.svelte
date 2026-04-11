@@ -8,6 +8,7 @@
     { label: "Connections", path: "connections" },
     { label: "Billing", path: "billing" },
     { label: "Support", path: "support" },
+    { label: "Danger", path: "danger" },
   ]
 
   let { children } = $props()

@@ -1,8 +1,10 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm"
 import { z } from "zod"
 
 import { requireAuth, AuthError } from "../lib/auth.ts"
+import { db } from "../lib/db.ts"
 import { getEnv } from "../lib/env.ts"
 import { listUserOrgs, ensureMembership } from "../db/queries/users.ts"
 import { findOrgBySlug, findOrgMembership, createOrg, updateOrg } from "../db/queries/organizations.ts"
@@ -24,6 +26,18 @@ import { connectionScopesOverlap, type ConnectionScopeConfig } from "../lib/conn
 import { withSpan } from "../lib/telemetry.ts"
 import { inferProviderTypeFromEnvVarKeys } from "../lib/provider-credential-inference.ts"
 import { listActiveProviderCredentialSignatures } from "../db/queries/provider-credential-signatures.ts"
+import {
+  approvals,
+  connections,
+  githubInstallations,
+  jobs,
+  organizations,
+  repositories,
+  tfRuns,
+  workspaceDeployments,
+  workspaces,
+} from "../db/schema.ts"
+import { deprovisionOrgResources } from "../lib/org-provisioning.ts"
 
 export const orgsRoute = new Hono()
 
@@ -206,6 +220,10 @@ const createOrgSchema = z.object({
   slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens").optional(),
 })
 
+const deleteOrgSchema = z.object({
+  confirmSlug: z.string().min(1),
+})
+
 /**
  * POST /api/orgs
  *
@@ -288,6 +306,125 @@ orgsRoute.post("/", async (c) => {
   }
 
   return c.json({ data: { id: org.id, slug: org.slug, name: org.name } }, 201)
+})
+
+/**
+ * DELETE /api/orgs/:slug
+ *
+ * Delete an organization after explicit slug confirmation.
+ * This removes org-scoped app data and best-effort deprovisions org AWS resources.
+ */
+orgsRoute.delete("/:slug", async (c) => {
+  const slug = c.req.param("slug")
+
+  let auth
+  try {
+    auth = await requireAuth(c.req.raw.headers)
+  } catch (err) {
+    if (err instanceof AuthError) {
+      const status = err.code === "AUTH_REQUIRED" ? 401 : 403
+      return c.json({ error: { code: err.code, message: err.message } }, status)
+    }
+    throw err
+  }
+
+  const org = await findOrgBySlug(slug)
+  if (!org) {
+    return c.json({ error: { code: "NOT_FOUND", message: "Organization not found" } }, 404)
+  }
+
+  const membership = await findOrgMembership(org.id, auth.userId)
+  if (!membership || membership.role !== "admin") {
+    return c.json({ error: { code: "FORBIDDEN", message: "Only org admins can delete organizations" } }, 403)
+  }
+
+  let body: z.infer<typeof deleteOrgSchema>
+  try {
+    body = deleteOrgSchema.parse(await c.req.json())
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return c.json({ error: { code: "VALIDATION_ERROR", message: err.errors[0].message } }, 400)
+    }
+    return c.json({ error: { code: "INVALID_JSON", message: "Invalid request body" } }, 400)
+  }
+
+  if (body.confirmSlug !== slug) {
+    return c.json({
+      error: {
+        code: "CONFIRMATION_MISMATCH",
+        message: "Confirmation slug must exactly match the organization slug",
+      },
+    }, 400)
+  }
+
+  const orgConnections = await listConnectionsForOrg(org.id)
+  const needsBrokerCredentials = orgConnections.some((connection) => (
+    connection.secretStore === "ssm" && !!connection.secretPath
+  ))
+
+  if (needsBrokerCredentials && !org.iamRoleArn) {
+    return c.json({
+      error: {
+        code: "ORG_BROKER_ROLE_NOT_CONFIGURED",
+        message: "Organization broker role is not configured",
+      },
+    }, 409)
+  }
+
+  let brokerCredentials: AwsSessionCredentials | undefined
+  if (needsBrokerCredentials) {
+    brokerCredentials = await getOrgBrokerCredentials(org)
+  }
+
+  for (const connection of orgConnections) {
+    if (connection.secretStore === "ssm" && connection.secretPath) {
+      await deleteConnectionSecret(connection.secretPath, { credentials: brokerCredentials })
+    }
+  }
+
+  await db.transaction(async (tx) => {
+    const deploymentRows = await tx
+      .select({ id: workspaceDeployments.id })
+      .from(workspaceDeployments)
+      .where(eq(workspaceDeployments.orgId, org.id))
+    const deploymentIds = deploymentRows.map((row) => row.id)
+
+    if (deploymentIds.length > 0) {
+      await tx.delete(approvals).where(inArray(approvals.deploymentId, deploymentIds))
+    }
+
+    await tx.delete(workspaces).where(eq(workspaces.orgId, org.id))
+
+    if (deploymentIds.length > 0) {
+      await tx.delete(tfRuns).where(inArray(tfRuns.deploymentId, deploymentIds))
+    }
+
+    await tx.delete(workspaceDeployments).where(eq(workspaceDeployments.orgId, org.id))
+    await tx.delete(jobs).where(eq(jobs.orgId, org.id))
+    await tx.delete(connections).where(eq(connections.orgId, org.id))
+
+    await tx
+      .update(githubInstallations)
+      .set({ orgId: null })
+      .where(eq(githubInstallations.orgId, org.id))
+
+    await tx
+      .update(repositories)
+      .set({ orgId: null })
+      .where(and(eq(repositories.orgId, org.id), isNotNull(repositories.installationId)))
+
+    await tx
+      .delete(repositories)
+      .where(and(eq(repositories.orgId, org.id), isNull(repositories.installationId)))
+
+    await tx.delete(organizations).where(eq(organizations.id, org.id))
+  })
+
+  if (org.kmsKeyArn || org.iamRoleArn) {
+    await deprovisionOrgResources(org.id, org.kmsKeyArn ?? undefined, org.iamRoleArn ?? undefined)
+  }
+
+  return c.json({ data: { deleted: true } })
 })
 
 /**

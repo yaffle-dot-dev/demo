@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
-import { githubRepoMappings, repositories, githubInstallations } from "../schema.ts"
+import { githubRepoMappings, repositories, githubInstallations, organizations } from "../schema.ts"
 import { user } from "../auth-schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 
@@ -19,6 +19,12 @@ export interface EnrichedRepoMapping {
   /** Display name of user who created the mapping */
   createdByName: string | null
   createdAt: Date
+}
+
+export interface InstallationRepoOwner {
+  githubRepoId: number
+  orgId: string
+  orgSlug: string
 }
 
 /**
@@ -120,5 +126,25 @@ export async function listRepoMappingsForOrg(orgId: string): Promise<EnrichedRep
       .where(eq(githubRepoMappings.orgId, orgId))
 
     return rows
+  })
+}
+
+/**
+ * List repo ownership for a GitHub installation.
+ * Used to surface whether repos are already linked elsewhere before selection.
+ */
+export async function listRepoOwnersForInstallation(
+  installationId: number,
+): Promise<InstallationRepoOwner[]> {
+  return withDbSpan("select", "github_repo_mappings", async () => {
+    return db
+      .select({
+        githubRepoId: githubRepoMappings.githubRepoId,
+        orgId: githubRepoMappings.orgId,
+        orgSlug: organizations.slug,
+      })
+      .from(githubRepoMappings)
+      .innerJoin(organizations, eq(organizations.id, githubRepoMappings.orgId))
+      .where(eq(githubRepoMappings.installationId, installationId))
   })
 }

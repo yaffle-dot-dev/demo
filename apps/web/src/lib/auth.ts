@@ -125,7 +125,7 @@ export async function startGithubLogin(): Promise<void> {
 export async function logout(): Promise<void> {
   await signOut()
   // Clear local storage preferences
-  localStorage.removeItem(LAST_ORG_KEY)
+  clearLastOrg()
   window.location.href = "/app/"
 }
 
@@ -174,4 +174,9 @@ export function getLastOrg(): string | null {
 export function setLastOrg(org: string): void {
   if (typeof window === "undefined") return
   localStorage.setItem(LAST_ORG_KEY, org)
+}
+
+export function clearLastOrg(): void {
+  if (typeof window === "undefined") return
+  localStorage.removeItem(LAST_ORG_KEY)
 }

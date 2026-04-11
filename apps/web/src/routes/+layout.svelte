@@ -6,6 +6,7 @@
   import { base } from "$app/paths"
   import { onMount } from "svelte"
   import { logout, startGithubLogin, useSession, setLastOrg, getLastOrg } from "$lib/auth"
+  import { onOrgListChanged } from "$lib/org-list-events"
   import { listOrgs, type OrgInfo } from "$lib/api"
 
   let { children } = $props()
@@ -30,8 +31,14 @@
   const currentOrgRole = $derived(orgs.find(o => o.slug === currentOrg)?.role ?? "")
   const isOrgAdmin = $derived(currentOrgRole === "admin")
 
-  async function fetchOrgs(): Promise<void> {
-    if (hasFetchedOrgs) return
+  $effect(() => {
+    if (!browser) return
+    if (!page.params.org) return
+    setLastOrg(page.params.org)
+  })
+
+  async function fetchOrgs(force = false): Promise<void> {
+    if (hasFetchedOrgs && !force) return
     hasFetchedOrgs = true
     try {
       const res = await listOrgs()
@@ -44,6 +51,16 @@
   onMount(() => {
     if (!browser) return
 
+    const stopOrgListListener = onOrgListChanged((nextOrgs) => {
+      if (nextOrgs) {
+        orgs = nextOrgs
+        hasFetchedOrgs = true
+        return
+      }
+
+      void fetchOrgs(true)
+    })
+
     // Subscribe to session changes and fetch orgs when logged in
     const unsubscribe = session.subscribe((state) => {
       if (state.isPending) return
@@ -52,7 +69,10 @@
       }
     })
 
-    return unsubscribe
+    return () => {
+      stopOrgListListener()
+      unsubscribe()
+    }
   })
 
   function signOut() {
@@ -102,7 +122,7 @@
                   href={createOrgUrl}
                   class="block w-full text-left px-3 py-1.5 text-sm text-text-dim hover:bg-surface-overlay hover:text-text transition-colors"
                 >
-                  + Create organization
+                  + Add organization
                 </a>
               </div>
             {/if}
@@ -113,7 +133,7 @@
             href={createOrgUrl}
             class="flex items-center gap-1.5 px-2 py-1 rounded text-sm font-medium text-text-muted hover:bg-surface-overlay hover:text-text transition-colors"
           >
-            + Create organization
+            + Add organization
           </a>
         {/if}
       </div>

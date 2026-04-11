@@ -133,5 +133,7 @@ test.describe("onboarding browser smoke", () => {
     await expect(page.getByRole("heading", { name: "Repositories" })).toBeVisible()
     await expect(page.getByText("No repositories linked yet.")).toBeVisible()
     await expect(page.getByText("Link GitHub repositories to start receiving webhook events and running infrastructure previews.")).toBeVisible()
+    await expect(page.getByRole("button", { name: /smoke-browser-org/i })).toBeVisible()
   })
+
 })

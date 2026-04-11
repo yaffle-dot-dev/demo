@@ -5,6 +5,9 @@ import { getEnv } from "../lib/env.ts"
 import { db } from "../lib/db.ts"
 import { account } from "../db/auth-schema.ts"
 import { eq, and } from "drizzle-orm"
+import { findOrgBySlug, findOrgMembership } from "../db/queries/organizations.ts"
+import { listRepoOwnersForInstallation } from "../db/queries/repo-mappings.ts"
+import { listUserOrgs } from "../db/queries/users.ts"
 
 export const integrationsRoute = new Hono()
 
@@ -182,6 +185,7 @@ integrationsRoute.get("/github/installations/:id/repositories", async (c) => {
   }
 
   const installationId = c.req.param("id")
+  const orgSlug = c.req.query("org")
 
   const tokenResult = await getValidGithubToken(auth.userId)
   if ("error" in tokenResult) {
@@ -220,12 +224,47 @@ integrationsRoute.get("/github/installations/:id/repositories", async (c) => {
     }>
   }
 
+  let targetOrgId: string | null = null
+  let visibleOwnerSlugs = new Set<string>()
+
+  if (orgSlug) {
+    const org = await findOrgBySlug(orgSlug)
+    if (!org) {
+      return c.json({ error: { code: "NOT_FOUND", message: "Organization not found" } }, 404)
+    }
+
+    const membership = await findOrgMembership(org.id, auth.userId)
+    if (!membership || membership.role !== "admin") {
+      return c.json({ error: { code: "FORBIDDEN", message: "Admin access required" } }, 403)
+    }
+
+    targetOrgId = org.id
+    const userOrgs = await listUserOrgs(auth.userId)
+    visibleOwnerSlugs = new Set(userOrgs.map((entry) => entry.slug))
+  }
+
+  const repoOwners = targetOrgId
+    ? await listRepoOwnersForInstallation(Number(installationId))
+    : []
+  const repoOwnerByGithubId = new Map(repoOwners.map((owner) => [owner.githubRepoId, owner]))
+
   const repositories = body.repositories.map((r) => ({
     githubId: r.id,
     name: r.name,
     fullName: r.full_name,
     defaultBranch: r.default_branch,
     isPrivate: r.private,
+    mappingStatus: (() => {
+      const owner = repoOwnerByGithubId.get(r.id)
+      if (!owner || !targetOrgId) return "available"
+      return owner.orgId === targetOrgId ? "linked_current_org" : "linked_other_org"
+    })(),
+    linkedOrgSlug: (() => {
+      const owner = repoOwnerByGithubId.get(r.id)
+      if (!owner || !targetOrgId) return null
+      if (owner.orgId === targetOrgId) return orgSlug ?? owner.orgSlug
+      return visibleOwnerSlugs.has(owner.orgSlug) ? owner.orgSlug : null
+    })(),
   }))
 
   return c.json({ data: repositories })

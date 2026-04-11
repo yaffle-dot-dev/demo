@@ -210,19 +210,23 @@ describe("onboarding and repo linking smoke flow", () => {
       expect(installations.data[0]?.githubOrgLogin).toBe("smoke-acme")
       expect(installations.data[0]?.accountType).toBe("Organization")
 
-      const repositoriesRes = await req("/api/integrations/github/installations/4242/repositories")
+      const repositoriesRes = await req(`/api/integrations/github/installations/4242/repositories?org=${orgSlug}`)
       expect(repositoriesRes.status).toBe(200)
       const repositories = await repositoriesRes.json() as {
         data: Array<{
           githubId: number
           fullName: string
           isPrivate: boolean
+          mappingStatus: string
+          linkedOrgSlug: string | null
         }>
       }
       expect(repositories.data).toHaveLength(1)
       expect(repositories.data[0]?.githubId).toBe(9001)
       expect(repositories.data[0]?.fullName).toBe("smoke-acme/infra")
       expect(repositories.data[0]?.isPrivate).toBe(true)
+      expect(repositories.data[0]?.mappingStatus).toBe("available")
+      expect(repositories.data[0]?.linkedOrgSlug).toBeNull()
 
       const createMappingRes = await req(`/api/orgs/${orgSlug}/repo-mappings`, {
         method: "POST",
@@ -259,12 +263,29 @@ describe("onboarding and repo linking smoke flow", () => {
       expect(mappings.data[0]?.githubRepoId).toBe(9001)
       expect(mappings.data[0]?.createdByName).toBe(smokeUser.name)
 
+      const linkedRepositoriesRes = await req(
+        `/api/integrations/github/installations/4242/repositories?org=${orgSlug}`,
+      )
+      expect(linkedRepositoriesRes.status).toBe(200)
+      const linkedRepositories = await linkedRepositoriesRes.json() as {
+        data: Array<{
+          githubId: number
+          mappingStatus: string
+          linkedOrgSlug: string | null
+        }>
+      }
+      expect(linkedRepositories.data[0]?.githubId).toBe(9001)
+      expect(linkedRepositories.data[0]?.mappingStatus).toBe("linked_current_org")
+      expect(linkedRepositories.data[0]?.linkedOrgSlug).toBe(orgSlug)
+
       expect(calls).toEqual([
         "HEAD /user",
         "GET /user/installations?per_page=100",
         "HEAD /user",
         "GET /user/installations/4242/repositories?per_page=100",
         "GET /user/installations/4242/repositories?per_page=1",
+        "HEAD /user",
+        "GET /user/installations/4242/repositories?per_page=100",
       ])
     } finally {
       restore()
@@ -341,16 +362,32 @@ describe("onboarding and repo linking smoke flow", () => {
         method: "POST",
         body: {
           installationId: 4242,
-          githubRepoId: 9002,
+          githubRepoId: 9001,
         },
       })
       expect(firstMappingRes.status).toBe(201)
+
+      const repositoriesForSecondOrgRes = await req(
+        `/api/integrations/github/installations/4242/repositories?org=${secondOrgSlug}`,
+      )
+      expect(repositoriesForSecondOrgRes.status).toBe(200)
+      const repositoriesForSecondOrg = await repositoriesForSecondOrgRes.json() as {
+        data: Array<{
+          githubId: number
+          mappingStatus: string
+          linkedOrgSlug: string | null
+        }>
+      }
+      expect(repositoriesForSecondOrg.data).toHaveLength(1)
+      expect(repositoriesForSecondOrg.data[0]?.githubId).toBe(9001)
+      expect(repositoriesForSecondOrg.data[0]?.mappingStatus).toBe("linked_other_org")
+      expect(repositoriesForSecondOrg.data[0]?.linkedOrgSlug).toBe(firstOrgSlug)
 
       const duplicateMappingRes = await req(`/api/orgs/${secondOrgSlug}/repo-mappings`, {
         method: "POST",
         body: {
           installationId: 4242,
-          githubRepoId: 9002,
+          githubRepoId: 9001,
         },
       })
       expect(duplicateMappingRes.status).toBe(409)
@@ -364,6 +401,8 @@ describe("onboarding and repo linking smoke flow", () => {
         "GET /user/installations/7777/repositories?per_page=100",
         "GET /user/installations/7777/repositories?per_page=1",
         "GET /user/installations/4242/repositories?per_page=1",
+        "HEAD /user",
+        "GET /user/installations/4242/repositories?per_page=100",
         "GET /user/installations/4242/repositories?per_page=1",
       ])
     } finally {
