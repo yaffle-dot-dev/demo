@@ -139,10 +139,10 @@
   <div class="rounded-xl border border-border bg-surface-raised p-5 space-y-4">
     {#if !repoSelectedInstallation}
       <div class="space-y-3">
-        <h3 class="text-sm font-medium text-text">Select a GitHub organization</h3>
+        <h3 class="text-sm font-medium text-text">Select a GitHub account</h3>
         {#if repoInstallations.length === 0}
           <div class="text-sm text-text-muted py-4 text-center space-y-3">
-            <p>No GitHub App installations found.</p>
+            <p>No GitHub App installations found for your GitHub user or orgs.</p>
             <a
               href="https://github.com/apps/{GITHUB_APP_NAME}/installations/new"
               target="_blank"
@@ -177,7 +177,7 @@
               rel="noopener noreferrer"
               class="text-xs text-text-dim hover:text-yaffle-400 transition-colors"
             >
-              Don't see your org? Install the GitHub App
+              Don't see your account? Install the GitHub App
             </a>
           </div>
         {/if}

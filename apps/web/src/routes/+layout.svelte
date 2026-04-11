@@ -14,10 +14,7 @@
   let showUserMenu = $state(false)
   let hasFetchedOrgs = false
 
-  // GitHub App name for installation URL
-  const GITHUB_APP_NAME = "yaffle-dot-dev"
-  // Use installations/new/permissions with state param to get redirected back properly
-  const installUrl = `https://github.com/apps/${GITHUB_APP_NAME}/installations/new`
+  const createOrgUrl = `${base}/new`
 
   // BetterAuth session store
   const session = useSession()
@@ -102,10 +99,10 @@
                 {/each}
                 <hr class="my-1 border-border" />
                 <a
-                  href={installUrl}
+                  href={createOrgUrl}
                   class="block w-full text-left px-3 py-1.5 text-sm text-text-dim hover:bg-surface-overlay hover:text-text transition-colors"
                 >
-                  + Add organization
+                  + Create organization
                 </a>
               </div>
             {/if}
@@ -113,10 +110,10 @@
         {:else if isLoggedIn}
           <span class="text-text-dim">/</span>
           <a
-            href={installUrl}
+            href={createOrgUrl}
             class="flex items-center gap-1.5 px-2 py-1 rounded text-sm font-medium text-text-muted hover:bg-surface-overlay hover:text-text transition-colors"
           >
-            + Add organization
+            + Create organization
           </a>
         {/if}
       </div>

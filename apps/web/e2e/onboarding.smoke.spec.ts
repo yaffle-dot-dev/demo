@@ -59,7 +59,7 @@ async function installBrowserSmokeFixtures(page: Page): Promise<void> {
 }
 
 test.describe("onboarding browser smoke", () => {
-  test("signed-in user with no orgs can create an org and land on the dashboard", async ({ page }) => {
+  test("signed-in user with no orgs can create an org and land on repository linking", async ({ page }) => {
     await installBrowserSmokeFixtures(page)
 
     const createdOrg = {
@@ -104,16 +104,8 @@ test.describe("onboarding browser smoke", () => {
         })
       }
 
-      if (url.pathname === "/api/environments" && method === "GET") {
+      if (url.pathname === `/api/orgs/${createdOrg.slug}/repo-mappings` && method === "GET") {
         return fulfillJson(route, { data: [] })
-      }
-
-      if (url.pathname === "/api/previews/overview" && method === "GET") {
-        return fulfillJson(route, {
-          data: [],
-          dependencyGraphs: {},
-          nextCursor: null,
-        })
       }
 
       return fulfillJson(route, {
@@ -137,9 +129,9 @@ test.describe("onboarding browser smoke", () => {
 
     await page.getByRole("button", { name: "Create organization" }).click()
 
-    await page.waitForURL(/\/app\/smoke-browser-org$/)
-    await expect(page.getByRole("heading", { name: "Named environments" })).toBeVisible()
-    await expect(page.getByText("No environments yet.")).toBeVisible()
-    await expect(page.getByText("No active PR environments.")).toBeVisible()
+    await page.waitForURL(/\/app\/smoke-browser-org\/settings\/repositories$/)
+    await expect(page.getByRole("heading", { name: "Repositories" })).toBeVisible()
+    await expect(page.getByText("No repositories linked yet.")).toBeVisible()
+    await expect(page.getByText("Link GitHub repositories to start receiving webhook events and running infrastructure previews.")).toBeVisible()
   })
 })

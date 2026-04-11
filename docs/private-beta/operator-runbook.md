@@ -51,6 +51,8 @@ Then check, in order:
 
 Use `docs/observability.md` as the query reference. For beta, watch these first:
 
+- Open the `Private Beta Watch` dashboard in Axiom (`private-beta-watch`)
+
 - webhook ingest failures or missing deliveries
 - jobs stuck in queue or stale timeout events
 - org provisioning failures or long-lived provisioning states

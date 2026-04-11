@@ -32,7 +32,15 @@ because the API returned:
 Until that changes, treat a green `Smoke Tests / Run smoke tests` check as a
 manual merge requirement.
 
+## Axiom
+
+- Dashboard created: `Private Beta Watch`
+- Dashboard UID: `private-beta-watch`
+- Versioned definition: `docs/private-beta/axiom-private-beta-watch-dashboard.json`
+- Current gap: there are no Axiom monitors configured yet
+
 ## Documents In This Folder
 
 - `docs/private-beta/onboarding.md` - friend-facing onboarding script
 - `docs/private-beta/operator-runbook.md` - internal support, alerts, and invite flow
+- `docs/private-beta/axiom-private-beta-watch-dashboard.json` - versioned Axiom dashboard definition for beta operations

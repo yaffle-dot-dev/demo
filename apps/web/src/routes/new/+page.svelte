@@ -29,7 +29,7 @@
         name,
         slug: derivedSlug || undefined,
       })
-      goto(`${base}/${res.data.slug}`)
+      goto(`${base}/${res.data.slug}/settings/repositories`)
     } catch (err) {
       error = err instanceof Error ? err.message : "Failed to create organization"
       creating = false
