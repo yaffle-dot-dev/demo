@@ -15,7 +15,7 @@ import { db } from "./db.ts"
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
 import { setRepoMapping } from "../db/queries/repo-mappings.ts"
 import { claimScanJob, completeScanJob, createScanJob } from "../db/queries/scan-jobs.ts"
-import { iacJobs, previews } from "../db/schema.ts"
+import { iacJobHistory, iacJobs, previews } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
 import { completeRunGroup } from "./run-group-orchestrator.ts"
 import { createHandler } from "./webhook-handler.ts"
@@ -61,7 +61,12 @@ async function getQueuedJobs() {
 
 /** Helper to get all jobs from the database */
 async function getAllJobs() {
-  return db.select().from(iacJobs)
+  const [activeJobs, historicalJobs] = await Promise.all([
+    db.select().from(iacJobs),
+    db.select().from(iacJobHistory),
+  ])
+
+  return [...activeJobs, ...historicalJobs]
 }
 
 /** Minimal config with one workspace for both PR and push. */

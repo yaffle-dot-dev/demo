@@ -396,9 +396,8 @@ export const jobs = pgTable(
 // IaC Jobs (terraform plan/apply/destroy execution queue)
 // =============================================================================
 
-export const iacJobs = pgTable(
-  "iac_jobs",
-  {
+function buildIacJobColumns() {
+  return {
     id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     deploymentId: uuid("deployment_id")
       .references(() => workspaceDeployments.id, { onDelete: "cascade" })
@@ -426,7 +425,12 @@ export const iacJobs = pgTable(
     attempts: integer("attempts").default(0).notNull(),
     spawnAttempts: integer("spawn_attempts").default(0).notNull(),
     maxAttempts: integer("max_attempts").default(3).notNull(),
-  },
+  }
+}
+
+export const iacJobs = pgTable(
+  "iac_jobs",
+  buildIacJobColumns(),
   (t) => [
     // Index for efficient job queue claiming:
     // - Filters on status='queued'
@@ -434,6 +438,20 @@ export const iacJobs = pgTable(
     index("iac_jobs_queue_priority_idx").on(t.status, t.jobType, t.queuedAt),
     index("iac_jobs_spawn_lease_idx").on(t.status, t.spawnLeaseExpiresAt),
     index("iac_jobs_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
+  ],
+)
+
+export const iacJobHistory = pgTable(
+  "iac_job_history",
+  buildIacJobColumns(),
+  (t) => [
+    index("iac_job_history_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
+    index("iac_job_history_deployment_type_queued_at_idx").on(
+      t.deploymentId.asc(),
+      t.jobType.asc(),
+      t.queuedAt.desc(),
+    ),
+    index("iac_job_history_completed_at_idx").on(t.completedAt.desc()),
   ],
 )
 
