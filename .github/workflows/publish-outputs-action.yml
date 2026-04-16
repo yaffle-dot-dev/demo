@@ -1,0 +1,32 @@
+name: Publish Outputs Action
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "actions/outputs-action/**"
+      - ".github/workflows/publish-outputs-action.yml"
+      - ".github/workflows/publish-project.yml"
+      - "publishing/templates/outputs-action/**"
+      - "scripts/publish-project.sh"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Validate the split and standalone tree without pushing"
+        required: false
+        type: boolean
+        default: true
+
+jobs:
+  publish:
+    uses: ./.github/workflows/publish-project.yml
+    with:
+      project: outputs-action
+      source_path: actions/outputs-action
+      target_repository: yaffle-dot-dev/outputs-action
+      target_branch: main
+      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+    secrets:
+      yaffle_internal_gh_app_id: ${{ secrets.YAFFLE_INTERNAL_GH_APP_ID }}
+      yaffle_internal_gh_app_private_key: ${{ secrets.YAFFLE_INTERNAL_GH_APP_PRIVATE_KEY }}

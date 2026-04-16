@@ -1,0 +1,110 @@
+name: Publish Project
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        required: true
+        type: string
+      source_path:
+        required: true
+        type: string
+      target_repository:
+        required: false
+        type: string
+        default: ""
+      target_branch:
+        required: false
+        type: string
+        default: "main"
+      dry_run:
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      publish_token:
+        required: false
+      yaffle_internal_gh_app_id:
+        required: false
+      yaffle_internal_gh_app_private_key:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.project }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: publish-${{ inputs.project }}-${{ github.ref_name }}
+      cancel-in-progress: true
+    steps:
+      - name: Check out monorepo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve target repository
+        id: target
+        shell: bash
+        run: |
+          owner="${TARGET_REPOSITORY%%/*}"
+          repo="${TARGET_REPOSITORY#*/}"
+          echo "owner=$owner" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+        env:
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+
+      - name: Resolve publish auth mode
+        id: auth
+        shell: bash
+        run: |
+          if [[ -n "$PUBLISH_TOKEN" ]]; then
+            echo "use_app_token=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -n "$YAFFLE_INTERNAL_GH_APP_ID" && -n "$YAFFLE_INTERNAL_GH_APP_PRIVATE_KEY" ]]; then
+            echo "use_app_token=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "use_app_token=false" >> "$GITHUB_OUTPUT"
+        env:
+          PUBLISH_TOKEN: ${{ secrets.publish_token }}
+          YAFFLE_INTERNAL_GH_APP_ID: ${{ secrets.yaffle_internal_gh_app_id }}
+          YAFFLE_INTERNAL_GH_APP_PRIVATE_KEY: ${{ secrets.yaffle_internal_gh_app_private_key }}
+
+      - name: Create GitHub App token
+        id: app-token
+        if: ${{ !inputs.dry_run && steps.auth.outputs.use_app_token == 'true' }}
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.yaffle_internal_gh_app_id }}
+          private-key: ${{ secrets.yaffle_internal_gh_app_private_key }}
+          owner: ${{ steps.target.outputs.owner }}
+          repositories: ${{ steps.target.outputs.repo }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Bun
+        if: inputs.project == 'cli'
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Publish standalone repo
+        env:
+          PROJECT: ${{ inputs.project }}
+          SOURCE_PATH: ${{ inputs.source_path }}
+          TARGET_REPOSITORY: ${{ inputs.target_repository }}
+          TARGET_BRANCH: ${{ inputs.target_branch }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PUBLISH_TOKEN: ${{ secrets.publish_token || steps.app-token.outputs.token }}
+        run: bash scripts/publish-project.sh
