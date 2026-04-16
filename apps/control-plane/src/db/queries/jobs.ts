@@ -4,7 +4,7 @@
  * Simple job queue for async tasks like org provisioning.
  */
 
-import { and, eq, inArray, lte, isNull, sql } from "drizzle-orm"
+import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { jobs } from "../schema.ts"
@@ -61,30 +61,44 @@ export async function claimJob(
   jobTypes?: string[],
 ): Promise<Job | undefined> {
   return withDbSpan("update", "jobs", async () => {
-    // Build conditions
-    const conditions = [
-      eq(jobs.status, "pending"),
-      lte(jobs.runAt, new Date()),
-      isNull(jobs.lockedBy),
-    ]
+    const now = new Date()
 
-    // Optionally filter by job type
-    if (jobTypes && jobTypes.length > 0) {
-      // Use inArray for proper array handling
-      conditions.push(inArray(jobs.jobType, jobTypes))
-    }
+    return db.transaction(async (tx) => {
+      const conditions = [
+        eq(jobs.status, "pending"),
+        lte(jobs.runAt, now),
+        isNull(jobs.lockedBy),
+      ]
 
-    const rows = await db
-      .update(jobs)
-      .set({
-        status: "running",
-        lockedBy: workerId,
-        attempts: sql`${jobs.attempts} + 1`,
-      })
-      .where(and(...conditions))
-      .returning()
+      if (jobTypes && jobTypes.length > 0) {
+        conditions.push(inArray(jobs.jobType, jobTypes))
+      }
 
-    return rows[0]
+      const candidates = await tx
+        .select()
+        .from(jobs)
+        .where(and(...conditions))
+        .orderBy(asc(jobs.runAt), asc(jobs.createdAt), asc(jobs.id))
+        .limit(1)
+        .for("update", { skipLocked: true })
+
+      const job = candidates[0]
+      if (!job) {
+        return undefined
+      }
+
+      const rows = await tx
+        .update(jobs)
+        .set({
+          status: "running",
+          lockedBy: workerId,
+          attempts: sql`${jobs.attempts} + 1`,
+        })
+        .where(eq(jobs.id, job.id))
+        .returning()
+
+      return rows[0]
+    })
   })
 }
 

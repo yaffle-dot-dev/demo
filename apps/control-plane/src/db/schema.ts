@@ -368,19 +368,29 @@ export const approvals = pgTable("approvals", {
 // Jobs (generic background job queue)
 // =============================================================================
 
-export const jobs = pgTable("jobs", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  orgId: uuid("org_id")
-    .references(() => organizations.id)
-    .notNull(),
-  jobType: text("job_type").notNull(),
-  payload: jsonb("payload").notNull(),
-  status: text("status").default("pending").notNull(),
-  runAt: timestamp("run_at", { withTimezone: true }).defaultNow().notNull(),
-  lockedBy: text("locked_by"),
-  attempts: integer("attempts").default(0).notNull(),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-})
+export const jobs = pgTable(
+  "jobs",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    orgId: uuid("org_id")
+      .references(() => organizations.id)
+      .notNull(),
+    jobType: text("job_type").notNull(),
+    payload: jsonb("payload").notNull(),
+    status: text("status").default("pending").notNull(),
+    runAt: timestamp("run_at", { withTimezone: true }).defaultNow().notNull(),
+    lockedBy: text("locked_by"),
+    attempts: integer("attempts").default(0).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    // Optimizes ordered claims of the oldest runnable pending job without
+    // bloating the index with terminal rows.
+    index("jobs_pending_claim_idx")
+      .on(t.runAt.asc(), t.createdAt.asc(), t.id.asc())
+      .where(sql`${t.status} = 'pending' and ${t.lockedBy} is null`),
+  ],
+)
 
 // =============================================================================
 // IaC Jobs (terraform plan/apply/destroy execution queue)
