@@ -6,6 +6,7 @@ This repo is the source of truth for the standalone `outputs-action` and `cli` r
 
 - `actions/outputs-action` -> `yaffle-dot-dev/outputs-action`
 - `packages/cli` -> `yaffle-dot-dev/cli`
+- `demo` -> `yaffle-dot-dev/demo`
 
 Both publishes are one-way. Maintainers should treat the standalone repos as mirrors, not places for primary development.
 

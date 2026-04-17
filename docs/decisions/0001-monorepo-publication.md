@@ -12,6 +12,7 @@ Target repos:
 
 - `yaffle-dot-dev/outputs-action`
 - `yaffle-dot-dev/cli`
+- `yaffle-dot-dev/demo`
 
 Requirements:
 

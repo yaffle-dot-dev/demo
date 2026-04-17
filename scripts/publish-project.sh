@@ -189,6 +189,9 @@ materialize_project() {
     cli)
       materialize_cli
       ;;
+    demo)
+      copy_target_workflows
+      ;;
     *)
       fail "unsupported project: $PROJECT"
       ;;
@@ -200,10 +203,15 @@ validate_publish_tree() {
 
   require_file "$SPLIT_DIR/README.md"
   require_file "$SPLIT_DIR/LICENSE"
-  require_file "$SPLIT_DIR/package.json"
   require_file "$SPLIT_DIR/.gitignore"
   require_file "$SPLIT_DIR/.github/workflows/ci.yml"
   require_file "$SPLIT_DIR/.github/workflows/edge.yml"
+
+  case "$PROJECT" in
+    outputs-action|cli)
+      require_file "$SPLIT_DIR/package.json"
+      ;;
+  esac
 
   if find "$SPLIT_DIR" -path "$SPLIT_DIR/.git" -prune -o -type l -print | grep -q .; then
     fail "publish tree contains symlinks"
@@ -242,6 +250,13 @@ validate_publish_tree() {
 
       if grep -n 'workspace:' "$SPLIT_DIR/package.json" >/dev/null; then
         fail "standalone CLI package.json still contains workspace dependencies"
+      fi
+      ;;
+    demo)
+      require_file "$SPLIT_DIR/yaffle.toml"
+
+      if [[ ! -d "$SPLIT_DIR/infra" ]]; then
+        fail "standalone demo is missing infra/"
       fi
       ;;
   esac
@@ -294,6 +309,13 @@ validate_runtime() {
       ;;
     cli)
       validate_cli_runtime
+      ;;
+    demo)
+      echo "::group::Validate demo"
+      if ! grep -q '^version = 1$' "$SPLIT_DIR/yaffle.toml"; then
+        fail "demo yaffle.toml must declare version = 1"
+      fi
+      echo "::endgroup::"
       ;;
     *)
       fail "unsupported project: $PROJECT"
