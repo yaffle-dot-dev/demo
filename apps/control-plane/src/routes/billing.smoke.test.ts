@@ -50,6 +50,7 @@ const mockSubscriptionsRetrieve = mock(async (subscriptionId: string, _input: un
 const mockRequeuePlanLimitedDeployments = mock(async (_org: unknown) => 0)
 
 mock.module("../lib/stripe.ts", () => ({
+  getStripe: () => null,
   requireStripe: () => ({
     customers: {
       create: mockCustomersCreate,
