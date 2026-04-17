@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Validate demo layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f README.md
+          test -f LICENSE
+          test -f yaffle.toml
+          test -d infra
+
+          shopt -s globstar nullglob
+          tf_files=(infra/**/*.tf)
+
+          if [ "${#tf_files[@]}" -eq 0 ]; then
+            echo "::error::expected Terraform files under infra/"
+            exit 1
+          fi
+
+          if ! grep -q '^version = 1$' yaffle.toml; then
+            echo "::error::expected yaffle.toml to declare version = 1"
+            exit 1
+          fi

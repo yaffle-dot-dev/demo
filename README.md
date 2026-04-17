@@ -2,7 +2,7 @@
 
 This repository is a standalone demo of a `yaffle.toml` configuration with multiple Terraform workspaces.
 
-> Source of truth: this demo lives in the main Yaffle monorepo. The standalone public repo is a one-way publish of this directory, and changes should land in the monorepo first.
+> Source of truth: this demo lives in the main Yaffle monorepo. The public repo is a one-way published example of this directory.
 
 ## Contents
 
