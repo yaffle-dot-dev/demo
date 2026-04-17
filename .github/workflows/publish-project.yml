@@ -17,6 +17,10 @@ on:
         required: false
         type: string
         default: "main"
+      push_mode:
+        required: false
+        type: string
+        default: "force"
       dry_run:
         required: false
         type: boolean
@@ -42,7 +46,7 @@ jobs:
       cancel-in-progress: true
     steps:
       - name: Check out monorepo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -81,7 +85,7 @@ jobs:
       - name: Create GitHub App token
         id: app-token
         if: ${{ !inputs.dry_run && steps.auth.outputs.use_app_token == 'true' }}
-        uses: actions/create-github-app-token@v1
+        uses: actions/create-github-app-token@v3
         with:
           app-id: ${{ secrets.yaffle_internal_gh_app_id }}
           private-key: ${{ secrets.yaffle_internal_gh_app_private_key }}
@@ -89,7 +93,7 @@ jobs:
           repositories: ${{ steps.target.outputs.repo }}
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20
 
@@ -105,6 +109,7 @@ jobs:
           SOURCE_PATH: ${{ inputs.source_path }}
           TARGET_REPOSITORY: ${{ inputs.target_repository }}
           TARGET_BRANCH: ${{ inputs.target_branch }}
+          PUSH_MODE: ${{ inputs.push_mode }}
           DRY_RUN: ${{ inputs.dry_run }}
           PUBLISH_TOKEN: ${{ secrets.publish_token || steps.app-token.outputs.token }}
         run: bash scripts/publish-project.sh

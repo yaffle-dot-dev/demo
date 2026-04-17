@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out successful commit
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
@@ -55,12 +55,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           NOTES=$(cat <<EOF
-          Rolling snapshot of the Yaffle demo repository.
+          Rolling build from main.
 
           - commit: `${{ github.event.workflow_run.head_sha }}`
           - workflow run: ${{ github.event.workflow_run.html_url }}
 
-          Use `@edge` for the latest demo repository state.
+          Use this action as `yaffle-dot-dev/outputs-action@edge`.
           EOF
           )
 

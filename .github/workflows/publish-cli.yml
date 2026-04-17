@@ -27,6 +27,7 @@ jobs:
       source_path: packages/cli
       target_repository: yaffle-dot-dev/cli
       target_branch: main
+      push_mode: force
       dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
     secrets:
       yaffle_internal_gh_app_id: ${{ secrets.YAFFLE_INTERNAL_GH_APP_ID }}

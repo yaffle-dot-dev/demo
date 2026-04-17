@@ -6,6 +6,7 @@ PROJECT="${PROJECT:-}"
 SOURCE_PATH="${SOURCE_PATH:-}"
 TARGET_REPOSITORY="${TARGET_REPOSITORY:-}"
 TARGET_BRANCH="${TARGET_BRANCH:-main}"
+PUSH_MODE="${PUSH_MODE:-force}"
 PUBLISH_TOKEN="${PUBLISH_TOKEN:-}"
 DRY_RUN="${DRY_RUN:-false}"
 
@@ -58,6 +59,10 @@ validate_inputs() {
 
   if [[ ! "$TARGET_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
     fail "TARGET_REPOSITORY must look like owner/repo"
+  fi
+
+  if [[ "$PUSH_MODE" != "force" && "$PUSH_MODE" != "ff-only" ]]; then
+    fail "PUSH_MODE must be force or ff-only"
   fi
 
   if [[ "$DRY_RUN" != "true" && -z "$PUBLISH_TOKEN" ]]; then
@@ -161,11 +166,6 @@ walk(srcDir)
 JS
 }
 
-materialize_outputs_action() {
-  copy_target_workflows
-  update_package_json "$SPLIT_DIR" "$PROJECT" "$TARGET_REPOSITORY"
-}
-
 materialize_cli() {
   copy_target_workflows
 
@@ -184,13 +184,13 @@ materialize_cli() {
 materialize_project() {
   case "$PROJECT" in
     outputs-action)
-      materialize_outputs_action
+      :
       ;;
     cli)
       materialize_cli
       ;;
     demo)
-      copy_target_workflows
+      :
       ;;
     *)
       fail "unsupported project: $PROJECT"
@@ -210,6 +210,14 @@ validate_publish_tree() {
   case "$PROJECT" in
     outputs-action|cli)
       require_file "$SPLIT_DIR/package.json"
+      ;;
+  esac
+
+  case "$PROJECT" in
+    outputs-action|demo)
+      require_file "$SPLIT_DIR/CONTRIBUTING.md"
+      require_file "$SPLIT_DIR/CODE_OF_CONDUCT.md"
+      require_file "$SPLIT_DIR/SECURITY.md"
       ;;
   esac
 
@@ -339,6 +347,7 @@ commit_generated_tree() {
 
 push_tree() {
   local remote_url="https://x-access-token:${PUBLISH_TOKEN}@github.com/${TARGET_REPOSITORY}.git"
+  local remote_ref
 
   if [[ "$DRY_RUN" == "true" ]]; then
     echo "dry run complete for ${PROJECT} -> ${TARGET_REPOSITORY}:${TARGET_BRANCH}"
@@ -348,8 +357,73 @@ push_tree() {
   echo "::group::Push ${PROJECT}"
   git -C "$ROOT_DIR" config --local --unset-all http.https://github.com/.extraheader >/dev/null 2>&1 || true
   git -C "$SPLIT_DIR" remote add publish "$remote_url"
-  git -C "$SPLIT_DIR" push --force publish "HEAD:refs/heads/${TARGET_BRANCH}"
+
+  if [[ "$PUSH_MODE" == "force" ]]; then
+    git -C "$SPLIT_DIR" push --force publish "HEAD:refs/heads/${TARGET_BRANCH}"
+    echo "::endgroup::"
+    return
+  fi
+
+  remote_ref="refs/remotes/publish/${TARGET_BRANCH}"
+
+  if ! git -C "$SPLIT_DIR" fetch publish "refs/heads/${TARGET_BRANCH}:${remote_ref}" >/dev/null 2>&1; then
+    git -C "$SPLIT_DIR" push publish "HEAD:refs/heads/${TARGET_BRANCH}"
+    echo "::endgroup::"
+    return
+  fi
+
+  if git -C "$SPLIT_DIR" merge-base --is-ancestor "$remote_ref" HEAD; then
+    git -C "$SPLIT_DIR" push publish "HEAD:refs/heads/${TARGET_BRANCH}"
+    echo "::endgroup::"
+    return
+  fi
+
+  if [[ "$(git -C "$SPLIT_DIR" rev-parse HEAD^{tree})" == "$(git -C "$SPLIT_DIR" rev-parse ${remote_ref}^{tree})" ]]; then
+    echo "remote tree already matches local export; skipping push"
+    echo "::endgroup::"
+    return
+  fi
+
+  if remote_changes_are_already_in_local "$remote_ref"; then
+    reconcile_remote_history "$remote_ref"
+    git -C "$SPLIT_DIR" push publish "HEAD:refs/heads/${TARGET_BRANCH}"
+    echo "::endgroup::"
+    return
+  fi
+
+  fail "push was rejected for ${TARGET_REPOSITORY}:${TARGET_BRANCH}. Import upstream public changes into the monorepo first, then rerun publish."
   echo "::endgroup::"
+}
+
+remote_changes_are_already_in_local() {
+  local remote_ref="$1"
+  local merge_base patch_file
+
+  merge_base="$(git -C "$SPLIT_DIR" merge-base HEAD "$remote_ref" 2>/dev/null || true)"
+  if [[ -z "$merge_base" ]]; then
+    return 1
+  fi
+
+  patch_file="$TMP_DIR/${PROJECT}-remote.patch"
+  git -C "$SPLIT_DIR" diff --binary "$merge_base" "$remote_ref" > "$patch_file"
+
+  if [[ ! -s "$patch_file" ]]; then
+    return 0
+  fi
+
+  git -C "$SPLIT_DIR" apply --check --reverse "$patch_file" >/dev/null 2>&1
+}
+
+reconcile_remote_history() {
+  local remote_ref="$1"
+
+  echo "remote history diverged but its changes are already present locally; creating reconciliation merge"
+
+  GIT_AUTHOR_NAME="github-actions[bot]" \
+  GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+  GIT_COMMITTER_NAME="github-actions[bot]" \
+  GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
+    git -C "$SPLIT_DIR" merge --no-edit -s ours "$remote_ref" >/dev/null
 }
 
 main() {
