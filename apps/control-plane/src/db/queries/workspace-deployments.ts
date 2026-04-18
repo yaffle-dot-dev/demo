@@ -246,10 +246,16 @@ export async function updateDeploymentStatus(
         repo: workspaceDeployments.repo,
         environmentKind: workspaceDeployments.environmentKind,
         environmentName: workspaceDeployments.environmentName,
+        runGroupId: workspaceDeployments.runGroupId,
       })
     if (updated.length > 0) {
-      const { orgId, repo, environmentKind, environmentName } = updated[0]
+      const { orgId, repo, environmentKind, environmentName, runGroupId } = updated[0]
       events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+
+      if (runGroupId) {
+        const { syncRunGroupCheckFromDeployments } = await import("../../lib/run-group-checks.ts")
+        await syncRunGroupCheckFromDeployments(runGroupId)
+      }
     }
   })
 }

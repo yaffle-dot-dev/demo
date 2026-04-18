@@ -20,6 +20,8 @@ import {
   heartbeatScanJob,
   type ScanJobResult,
 } from "../db/queries/scan-jobs.ts"
+import { updateRunGroupStatus } from "../db/queries/run-groups.ts"
+import { completeRunGroupCheck } from "../lib/run-group-checks.ts"
 import { completeRunGroup } from "../lib/run-group-orchestrator.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
 
@@ -118,7 +120,16 @@ scanner.post("/complete", async (c) => {
 
   if (body.error) {
     // Scanner failed
-    await failScanJob(scanJobId, body.error)
+    const failedJob = await failScanJob(scanJobId, body.error)
+
+    if (failedJob) {
+      await updateRunGroupStatus(failedJob.runGroupId, "failed", { completedAt: new Date() })
+      await completeRunGroupCheck({
+        runGroupId: failedJob.runGroupId,
+        conclusion: "failure",
+        summary: body.error,
+      })
+    }
 
     logger.error("Scanner reported failure", {
       scanJobId,
@@ -144,10 +155,18 @@ scanner.post("/complete", async (c) => {
   try {
     await completeRunGroup(job.runGroupId, result)
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    await updateRunGroupStatus(job.runGroupId, "failed", { completedAt: new Date() })
+    await completeRunGroupCheck({
+      runGroupId: job.runGroupId,
+      conclusion: "failure",
+      summary: message,
+    })
+
     logger.error("Failed to complete run group after scan", {
       scanJobId,
       runGroupId: job.runGroupId,
-      error: err instanceof Error ? err.message : String(err),
+      error: message,
     })
     // Don't fail the scanner response — the scan itself succeeded
   }

@@ -971,6 +971,7 @@ export class Scheduler {
 
     const { findStaleScanJobs, failStaleScanJob } = await import("../db/queries/scan-jobs.ts")
     const { updateRunGroupStatus } = await import("../db/queries/run-groups.ts")
+    const { completeRunGroupCheck } = await import("./run-group-checks.ts")
 
     // Scans should complete in seconds — use 60s threshold so users don't
     // stare at a spinner. See YAF-131 for the real event-driven fix.
@@ -996,6 +997,11 @@ export class Scheduler {
       }
 
       await updateRunGroupStatus(job.runGroupId, "failed", { completedAt: new Date() })
+      await completeRunGroupCheck({
+        runGroupId: job.runGroupId,
+        conclusion: "failure",
+        summary: "Scanner worker stopped responding (stale heartbeat)",
+      })
 
       logger.error("Marked stale scan job as failed", {
         workerId: this.workerId,

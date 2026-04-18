@@ -54,6 +54,7 @@ export interface CheckRunParams {
   name: string
   status: "queued" | "in_progress" | "completed"
   conclusion?: "success" | "failure" | "cancelled" | "action_required"
+  detailsUrl?: string
   title: string
   summary: string
   text?: string
@@ -75,6 +76,7 @@ export async function createCheckRun(
     head_sha: params.headSha,
     status: params.status,
     conclusion: params.conclusion,
+    details_url: params.detailsUrl,
     output: {
       title: params.title,
       summary: params.summary,
@@ -136,6 +138,7 @@ export async function updateCheckRun(
     check_run_id: checkRunId,
     status: params.status,
     conclusion: params.conclusion,
+    details_url: params.detailsUrl,
     output: params.title
       ? {
           title: params.title,

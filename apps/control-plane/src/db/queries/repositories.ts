@@ -53,6 +53,24 @@ export async function findRepoByName(
 }
 
 /**
+ * Find a repository by installation ID and name.
+ * Useful when repo inventory exists before an org-scoped repository row does.
+ */
+export async function findRepoByInstallationAndName(
+  installationId: number,
+  name: string,
+): Promise<Repository | undefined> {
+  return withDbSpan("select", "repositories", async () => {
+    const rows = await db
+      .select()
+      .from(repositories)
+      .where(and(eq(repositories.installationId, installationId), eq(repositories.name, name)))
+      .limit(1)
+    return rows[0]
+  })
+}
+
+/**
  * List all active repositories for an org
  */
 export async function listReposForOrg(orgId: string): Promise<Repository[]> {

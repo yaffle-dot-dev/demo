@@ -26,6 +26,7 @@
   const org = $derived($page.params.org ?? "")
   const repo = $derived($page.params.repo ?? "")
   const environmentName = $derived($page.params.name ?? "")
+  const requestedRunGroupId = $derived($page.url.searchParams.get("runGroupId"))
 
   const runViewSessionId = $state(browser ? getOrCreateRunViewSessionId() : null)
   const pageViewId = $state(browser ? createRunViewPageId() : null)
@@ -93,6 +94,21 @@
 
   $effect(() => {
     initialEnvironment = data.initialEnvironment
+  })
+
+  $effect(() => {
+    const runGroupId = requestedRunGroupId
+    const runGroups = displayData?.runGroups ?? []
+    if (!runGroupId) {
+      return
+    }
+
+    const exists = runGroups.some((runGroup) => runGroup.id === runGroupId)
+    if (!exists || stream.viewedRunGroupId === runGroupId) {
+      return
+    }
+
+    stream.pinToRunGroup(runGroupId)
   })
 
   function shouldIgnoreVisibilityReconnect(): boolean {

@@ -119,6 +119,7 @@ export function usePreviewStream(
     get viewedRunGroupId() { return store.viewedRunGroupId },
     get hasNewerRunGroup() { return store.hasNewerRunGroup },
     get pinnedHeadSha() { return store.pinnedHeadSha },
+    pinToRunGroup: (runGroupId) => store.pinToRunGroup(runGroupId),
     switchToLatest: () => store.switchToLatest(),
   }
 }

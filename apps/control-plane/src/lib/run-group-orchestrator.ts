@@ -25,6 +25,8 @@ import {
 } from "../db/queries/workspace-deployments.ts"
 import { createIacJob, cancelJobsForPreview } from "../db/queries/iac-jobs.ts"
 import { checkOrgEntitlements } from "./entitlements.ts"
+import { getEnv } from "./env.ts"
+import { completeRunGroupCheck } from "./run-group-checks.ts"
 import { buildStateKey, previewStatePrefix, environmentStatePrefix } from "./runner.ts"
 import { events } from "./events.ts"
 import { logger } from "./telemetry.ts"
@@ -146,6 +148,12 @@ export async function completeRunGroup(
     for (const { deploymentId } of deploymentData) {
       await updateDeploymentStatus(deploymentId, "plan_limited")
     }
+    await completeRunGroupCheck({
+      runGroupId,
+      conclusion: "failure",
+      title: "Failed due to plan limits",
+      summary: withBillingUrl(org.slug, entitlement.message),
+    })
     logger.warn("Run group plan-limited", {
       runGroupId,
       code: entitlement.code,
@@ -198,4 +206,22 @@ export async function completeRunGroup(
     deploymentCount: deploymentData.length,
     rootCount: deploymentData.filter((d) => d.isRoot).length,
   })
+}
+
+function buildBillingUrl(orgSlug: string): string | undefined {
+  const appUrl = getEnv().betterAuthUrl.trim().replace(/\/$/, "")
+  if (!appUrl) {
+    return undefined
+  }
+
+  return `${appUrl}/${orgSlug}/settings/billing`
+}
+
+function withBillingUrl(orgSlug: string, message: string): string {
+  const billingUrl = buildBillingUrl(orgSlug)
+  if (!billingUrl) {
+    return message
+  }
+
+  return message.replace(`/${orgSlug}/settings/billing`, billingUrl)
 }

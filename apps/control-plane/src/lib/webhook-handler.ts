@@ -34,10 +34,13 @@ import {
 } from "../db/queries/run-groups.ts"
 import { events } from "./events.ts"
 import {
-  createCheckRun,
   fetchFileContent,
   getInstallationToken,
 } from "./github.ts"
+import {
+  createPendingRunGroupCheck,
+  surfaceConfigErrorCheck,
+} from "./run-group-checks.ts"
 import {
   type CheckRunRef,
   checkRunUrl,
@@ -64,8 +67,6 @@ import { createScanJob } from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "./job-token.ts"
 import { getScheduler } from "./scheduler.ts"
 import type { WorkspaceVariablesByPath } from "./workspace-variables.ts"
-
-const CHECK_NAME = "Yaffle / terraform"
 
 /** Default runner for production use. Override via createHandler() for tests. */
 const defaultRunner: Runner = new LocalRunner()
@@ -744,7 +745,7 @@ async function handlePrOpenedOrUpdated(
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
     getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
     await recordConfigLoadFailure(ctx, org.id, msg)
-    await surfaceConfigError(ctx, msg)
+    await surfaceConfigErrorCheck(ctx, msg)
     return
   }
 
@@ -784,7 +785,7 @@ async function handlePrOpenedOrUpdated(
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`failed to resolve workspace variables for ${tag}: ${msg}`, attrs)
     await recordConfigLoadFailure(ctx, org.id, msg)
-    await surfaceConfigError(ctx, msg)
+    await surfaceConfigErrorCheck(ctx, msg)
     return
   }
 
@@ -800,6 +801,12 @@ async function handlePrOpenedOrUpdated(
     headSha: ctx.headSha,
     trigger,
     status: "pending",
+  })
+
+  await createPendingRunGroupCheck(ctx, {
+    runGroupId: runGroup.id,
+    orgSlug: org.slug,
+    environmentName,
   })
 
   // Dispatch scan to scanner worker — the scanner will:
@@ -857,7 +864,7 @@ async function handlePrClosed(
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
     getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
     await recordConfigLoadFailure(ctx, org.id, msg)
-    await surfaceConfigError(ctx, msg)
+    await surfaceConfigErrorCheck(ctx, msg)
     return
   }
 
@@ -1013,6 +1020,7 @@ async function handlePushEvent(
     logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
     getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
     await recordConfigLoadFailure(ctx, org.id, msg)
+    await surfaceConfigErrorCheck(ctx, msg)
     return
   }
 
@@ -1056,6 +1064,7 @@ async function handlePushEvent(
     const msg = err instanceof Error ? err.message : String(err)
     logger.error(`failed to resolve workspace variables for ${tag}: ${msg}`, attrs)
     await recordConfigLoadFailure(ctx, org.id, msg)
+    await surfaceConfigErrorCheck(ctx, msg)
     return
   }
 
@@ -1071,6 +1080,12 @@ async function handlePushEvent(
     headSha: ctx.headSha,
     trigger: "push",
     status: "pending",
+  })
+
+  await createPendingRunGroupCheck(ctx, {
+    runGroupId: runGroup.id,
+    orgSlug: org.slug,
+    environmentName,
   })
 
   // Dispatch scan to scanner worker — the scanner will:
@@ -1090,36 +1105,6 @@ async function handlePushEvent(
 }
 
 
-
-/**
- * Create a failed check run to surface a config error on a PR.
- * Only creates a check run for pull_request events with an installation.
- */
-async function surfaceConfigError(
-  ctx: WebhookContext,
-  message: string,
-): Promise<void> {
-  if (ctx.kind !== "pull_request" || !ctx.installationId) return
-
-  try {
-    await createCheckRun(ctx.installationId, {
-      owner: ctx.owner,
-      repo: ctx.repo,
-      headSha: ctx.headSha,
-      name: CHECK_NAME,
-      status: "completed",
-      conclusion: "failure",
-      title: "Configuration error",
-      summary: message,
-    })
-  } catch (err) {
-    logger.warn("failed to create config error check run", {
-      "yaffle.owner": ctx.owner,
-      "yaffle.repo": ctx.repo,
-      "error": err instanceof Error ? err.message : String(err),
-    })
-  }
-}
 
 /**
  * Build a CheckRunRef from a context and check run ID, or undefined if

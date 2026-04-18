@@ -92,6 +92,8 @@ export interface PreviewStreamState {
   readonly hasNewerRunGroup: boolean
   /** The headSha at the time auto-pin activated (null when not pinned) */
   readonly pinnedHeadSha: string | null
+  /** Pin to a specific run group ID */
+  pinToRunGroup: (runGroupId: string) => void
   /** Switch viewedRunGroupId back to the latest run group */
   switchToLatest: () => void
 }

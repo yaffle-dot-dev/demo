@@ -239,6 +239,8 @@ export const runGroups = pgTable("run_groups", {
   prNumber: integer("pr_number"), // NULL for named environments, PR number for transient
   ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
   headSha: text("head_sha").notNull(),
+  checkRunId: bigint("check_run_id", { mode: "number" }),
+  checkCompletedAt: timestamp("check_completed_at", { withTimezone: true }),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
   status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
   // Inferred dependency graph for this run group
