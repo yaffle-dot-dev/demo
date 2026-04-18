@@ -8,6 +8,7 @@ on:
         required: true
         type: choice
         options:
+          - cli
           - outputs-action
       source_branch:
         description: "Branch to import from"
@@ -36,6 +37,10 @@ jobs:
         shell: bash
         run: |
           case "${PROJECT}" in
+            cli)
+              echo "source_path=packages/cli" >> "$GITHUB_OUTPUT"
+              echo "source_repository=yaffle-dot-dev/cli" >> "$GITHUB_OUTPUT"
+              ;;
             outputs-action)
               echo "source_path=actions/outputs-action" >> "$GITHUB_OUTPUT"
               echo "source_repository=yaffle-dot-dev/outputs-action" >> "$GITHUB_OUTPUT"
@@ -92,6 +97,12 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: 20
+
+      - name: Install Bun
+        if: inputs.project == 'cli'
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
       - name: Import public changes
         id: import

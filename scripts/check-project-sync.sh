@@ -25,7 +25,7 @@ cleanup() {
 trap cleanup EXIT
 
 validate_inputs() {
-  if [[ "$PROJECT" != "outputs-action" ]]; then
+  if [[ "$PROJECT" != "outputs-action" && "$PROJECT" != "cli" ]]; then
     fail "unsupported project for check-project-sync.sh: $PROJECT"
   fi
 
@@ -55,7 +55,7 @@ clone_public_repo() {
 }
 
 latest_sync_commit() {
-  git -C "$PUBLIC_DIR" log --format=%H --grep="^sync outputs-action from monorepo " -n 1 HEAD
+  git -C "$PUBLIC_DIR" log --format=%H --grep="^sync ${PROJECT} from monorepo " -n 1 HEAD
 }
 
 check_pending_public_commits() {
@@ -69,7 +69,7 @@ check_pending_public_commits() {
       return
     fi
 
-    fail "no prior sync commit found in ${TARGET_REPOSITORY}. Run Publish Outputs Action once to establish a sync baseline before merging more monorepo changes."
+    fail "no prior sync commit found in ${TARGET_REPOSITORY}. Run the publish workflow once to establish a sync baseline before merging more monorepo changes."
   fi
 
   git -C "$PUBLIC_DIR" log --format='%H %s' "${latest_sync}..HEAD" > "$commit_log"
@@ -91,7 +91,7 @@ check_pending_public_commits() {
 
   echo "public-only commits in ${TARGET_REPOSITORY}:${TARGET_BRANCH} are not yet present in ${SOURCE_PATH}:"
   cat "$commit_log"
-  fail "import accepted public outputs-action changes before merging or exporting new monorepo changes"
+  fail "import accepted public ${PROJECT} changes before merging or exporting new monorepo changes"
 }
 
 main() {

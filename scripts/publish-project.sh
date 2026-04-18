@@ -77,117 +77,13 @@ split_subtree() {
   echo "::endgroup::"
 }
 
-copy_target_workflows() {
-  mkdir -p "$SPLIT_DIR/.github/workflows"
-
-  local workflow_template
-  for workflow_template in "$ROOT_DIR/publishing/templates/$PROJECT"/*.yml; do
-    if [[ -f "$workflow_template" ]]; then
-      cp "$workflow_template" "$SPLIT_DIR/.github/workflows/$(basename "$workflow_template")"
-    fi
-  done
-}
-
-update_package_json() {
-  local project_dir="$1"
-  local project_name="$2"
-  local target_repo="$3"
-
-  node - "$ROOT_DIR" "$project_dir" "$project_name" "$target_repo" <<'JS'
-const fs = require("node:fs")
-const path = require("node:path")
-
-const [, , rootDir, projectDir, projectName, targetRepo] = process.argv
-
-const packagePath = path.join(projectDir, "package.json")
-const packageData = JSON.parse(fs.readFileSync(packagePath, "utf8"))
-packageData.repository = {
-  type: "git",
-  url: `git+https://github.com/${targetRepo}.git`,
-}
-packageData.homepage = `https://github.com/${targetRepo}`
-packageData.bugs = {
-  url: `https://github.com/${targetRepo}/issues`,
-}
-
-if (projectName === "cli") {
-  const clientPackagePath = path.join(rootDir, "packages", "yaffle-client", "package.json")
-  const clientPackage = JSON.parse(fs.readFileSync(clientPackagePath, "utf8"))
-  const eventsourceVersion = clientPackage.dependencies?.eventsource
-  if (!eventsourceVersion) {
-    throw new Error("missing eventsource dependency version in packages/yaffle-client/package.json")
-  }
-
-  packageData.dependencies = packageData.dependencies ?? {}
-  delete packageData.dependencies["@yaffle/client"]
-  packageData.dependencies.eventsource = eventsourceVersion
-}
-
-fs.writeFileSync(packagePath, `${JSON.stringify(packageData, null, 2)}\n`)
-JS
-}
-
-rewrite_cli_imports() {
-  node - "$SPLIT_DIR" <<'JS'
-const fs = require("node:fs")
-const path = require("node:path")
-
-const [, , projectDir] = process.argv
-const srcDir = path.join(projectDir, "src")
-const vendorIndex = path.join(srcDir, "lib", "yaffle-client", "index.js")
-
-function walk(dir) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    const nextPath = path.join(dir, entry.name)
-    if (entry.isDirectory()) {
-      walk(nextPath)
-      continue
-    }
-
-    if (!entry.isFile() || !/\.(ts|tsx)$/.test(entry.name)) {
-      continue
-    }
-
-    const text = fs.readFileSync(nextPath, "utf8")
-    if (!text.includes("@yaffle/client")) {
-      continue
-    }
-
-    let relativeImport = path.relative(path.dirname(nextPath), vendorIndex).split(path.sep).join("/")
-    if (!relativeImport.startsWith(".")) {
-      relativeImport = `./${relativeImport}`
-    }
-
-    fs.writeFileSync(nextPath, text.replaceAll("@yaffle/client", relativeImport))
-  }
-}
-
-walk(srcDir)
-JS
-}
-
-materialize_cli() {
-  copy_target_workflows
-
-  rm -rf "$SPLIT_DIR/src/lib/yaffle-client"
-  mkdir -p "$SPLIT_DIR/src/lib/yaffle-client"
-  mkdir -p "$SPLIT_DIR/nix"
-  cp "$ROOT_DIR"/packages/yaffle-client/src/*.ts "$SPLIT_DIR/src/lib/yaffle-client/"
-  cp "$ROOT_DIR/publishing/templates/cli/flake.nix" "$SPLIT_DIR/flake.nix"
-  cp "$ROOT_DIR/flake.lock" "$SPLIT_DIR/flake.lock"
-  cp "$ROOT_DIR/publishing/templates/cli/nix/yaffle-cli.nix" "$SPLIT_DIR/nix/yaffle-cli.nix"
-
-  rewrite_cli_imports
-  update_package_json "$SPLIT_DIR" "$PROJECT" "$TARGET_REPOSITORY"
-}
-
 materialize_project() {
   case "$PROJECT" in
     outputs-action)
       :
       ;;
     cli)
-      materialize_cli
+      fail "cli now uses scripts/export-project.sh instead of subtree publish"
       ;;
     demo)
       :

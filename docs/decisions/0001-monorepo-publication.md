@@ -28,27 +28,30 @@ Requirements:
 Use a mixed model:
 
 - `actions/outputs-action` uses file-tree sync between the monorepo path and the public repo
-- `demo` and `packages/cli` still use subtree-based export for now
+- `packages/cli` also uses file-tree sync between the monorepo path and the public repo
+- `demo` still uses subtree-based export for now
 
 Cross-repo publication authenticates with a short-lived GitHub App installation token derived at workflow runtime via `actions/create-github-app-token` instead of a long-lived PAT.
 
-Shared CI logic is implemented with:
+Publish automation is implemented with:
 
-- a reusable workflow: `.github/workflows/publish-project.yml`
-- thin per-project wrappers for path-based triggers
-- a shared shell script: `scripts/publish-project.sh`
+- dedicated tree-sync scripts for writable public repos: `scripts/export-project.sh`, `scripts/import-project.sh`, `scripts/check-project-sync.sh`
+- thin per-project workflow wrappers for path-based triggers
+- a reusable subtree-publish workflow for one-way repos: `.github/workflows/publish-project.yml`
 
-The standalone CLI repo also gets its own generated packaging files (`flake.nix`, `flake.lock`, `nix/yaffle-cli.nix`) and a release workflow for GitHub-hosted binary builds.
+The standalone CLI repo also gets its own checked-in packaging files (`flake.nix`, `flake.lock`, `nix/yaffle-cli.nix`) and a release workflow for GitHub-hosted binary builds.
 
 `outputs-action` keeps its standalone repo files directly inside its source path in the monorepo so public PRs can sync back cleanly as file-tree updates.
+
+`packages/cli` also keeps its standalone repo files directly inside its source path in the monorepo, including the local client layer it needs to stay self-contained.
 
 `demo` also keeps its standalone repo files under `demo/`, but it remains a one-way published example repo.
 
 All standalone repos publish a rolling `edge` build after CI succeeds on `main`.
 
-For the CLI, do not create a third public `@yaffle/client` repo right now. Instead, vendor `packages/yaffle-client/src/*` into the standalone CLI publish tree.
+For the CLI, do not create a third public `@yaffle/client` repo right now. Instead, keep the client layer directly under `packages/cli/src/lib/yaffle-client/` so the public CLI repo stays self-contained.
 
-For now, only `outputs-action` uses the bidirectional model, and it does so with tree-sync commits instead of shared git ancestry. `demo` remains one-way, and `cli` remains monorepo-first until its standalone repo shape stops depending on publish-time materialization.
+For now, `outputs-action` and `packages/cli` use the bidirectional model, and they do so with tree-sync commits instead of shared git ancestry. `demo` remains one-way.
 
 ## Why this over full extraction
 
@@ -69,16 +72,19 @@ For now, only `outputs-action` uses the bidirectional model, and it does so with
 
 - the current `@yaffle/client` usage is effectively CLI-internal
 - a third repo would add another compatibility and release surface
-- vendoring the client into the published CLI repo is simpler and keeps the public surface area smaller
+- moving the client layer directly under `packages/cli` is simpler and keeps the public surface area smaller
 
 ## Consequences
 
 - `outputs-action` exports by cloning the public repo, syncing the monorepo tree into it, and pushing a normal sync commit on top of public `main`
+- `cli` exports by cloning the public repo, syncing the monorepo tree into it, and pushing a normal sync commit on top of public `main`
 - accepted public `outputs-action` changes are imported back into the monorepo as bot-authored tree-sync commits on a stable import branch
+- accepted public `cli` changes are imported back into the monorepo as bot-authored tree-sync commits on a stable import branch
 - standalone repo CI for `outputs-action` lives inside the project path in the monorepo
+- standalone repo CI for `cli` lives inside the project path in the monorepo
 - monorepo PRs that touch `outputs-action` are guarded by a sync-check workflow so unimported public changes block merge before export can overwrite them
-- standalone CLI packaging and release workflows are also generated from monorepo templates
+- monorepo PRs that touch `cli` are guarded by a sync-check workflow so unimported public changes block merge before export can overwrite them
+- standalone CLI packaging and release workflows live inside the project path in the monorepo
 - standalone repos publish a rolling `edge` channel after CI passes on `main`
 - cross-repo publish credentials come from the Yaffle GitHub App secrets rather than per-repo PATs
-- CLI standalone history is subtree history plus a generated publish tip commit
 - standalone releases remain a separate concern from branch publishing

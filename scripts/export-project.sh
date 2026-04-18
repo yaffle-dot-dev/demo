@@ -34,7 +34,7 @@ require_file() {
 }
 
 validate_inputs() {
-  if [[ "$PROJECT" != "outputs-action" ]]; then
+  if [[ "$PROJECT" != "outputs-action" && "$PROJECT" != "cli" ]]; then
     fail "unsupported project for export-project.sh: $PROJECT"
   fi
 
@@ -124,6 +124,81 @@ validate_outputs_action_tree() {
   echo "::endgroup::"
 }
 
+validate_cli_tree() {
+  local project_dir="$1"
+
+  echo "::group::Validate cli"
+
+  require_file "$project_dir" "README.md"
+  require_file "$project_dir" "LICENSE"
+  require_file "$project_dir" ".gitignore"
+  require_file "$project_dir" "package.json"
+  require_file "$project_dir" "bun.lock"
+  require_file "$project_dir" "tsconfig.json"
+  require_file "$project_dir" "flake.nix"
+  require_file "$project_dir" "flake.lock"
+  require_file "$project_dir" "nix/yaffle-cli.nix"
+  require_file "$project_dir" "src/main.ts"
+  require_file "$project_dir" "src/client.ts"
+  require_file "$project_dir" "src/lib/yaffle-client/index.ts"
+  require_file "$project_dir" ".github/workflows/ci.yml"
+  require_file "$project_dir" ".github/workflows/edge.yml"
+  require_file "$project_dir" ".github/workflows/release.yml"
+  require_file "$project_dir" "CONTRIBUTING.md"
+  require_file "$project_dir" "CODE_OF_CONDUCT.md"
+  require_file "$project_dir" "SECURITY.md"
+
+  if find "$project_dir" -path "$project_dir/.git" -prune -o -type l -print | grep -q .; then
+    fail "publish tree contains symlinks"
+  fi
+
+  while IFS= read -r file_path; do
+    local relative_path="${file_path#$project_dir/}"
+    case "$relative_path" in
+      *.env|*.env.*|*.pem|*.p12|*.key|*.tfstate|*.tfstate.*|*.dump|*.bak|*.sqlite|*.db|node_modules/*|backups/*)
+        fail "publish tree includes blocked file: $relative_path"
+        ;;
+      *credentials*.json|*secret*|*secrets*)
+        fail "publish tree includes suspicious secret-like file: $relative_path"
+        ;;
+    esac
+  done < <(find "$project_dir" -path "$project_dir/.git" -prune -o -type f -print)
+
+  if grep -R -n -E "from [\"']@yaffle/client[\"']" "$project_dir/src" >/dev/null; then
+    fail "standalone CLI still contains @yaffle/client imports"
+  fi
+
+  if grep -n 'workspace:' "$project_dir/package.json" >/dev/null; then
+    fail "standalone CLI package.json still contains workspace dependencies"
+  fi
+
+  pushd "$project_dir" >/dev/null
+  bun install --frozen-lockfile
+  bun run typecheck
+  bun test
+  bun run build
+  rm -rf node_modules dist
+  popd >/dev/null
+
+  echo "::endgroup::"
+}
+
+validate_project_tree() {
+  local project_dir="$1"
+
+  case "$PROJECT" in
+    outputs-action)
+      validate_outputs_action_tree "$project_dir"
+      ;;
+    cli)
+      validate_cli_tree "$project_dir"
+      ;;
+    *)
+      fail "unsupported project for export validation: $PROJECT"
+      ;;
+  esac
+}
+
 commit_and_push() {
   if git -C "$TARGET_DIR" diff --quiet && [[ -z "$(git -C "$TARGET_DIR" status --short --untracked-files=normal)" ]]; then
     echo "target repository already matches monorepo tree"
@@ -137,7 +212,7 @@ commit_and_push() {
   GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
   GIT_COMMITTER_NAME="github-actions[bot]" \
   GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com" \
-    git -C "$TARGET_DIR" commit -m "sync outputs-action from monorepo ${GITHUB_SHA:-local}" >/dev/null
+    git -C "$TARGET_DIR" commit -m "sync ${PROJECT} from monorepo ${GITHUB_SHA:-local}" >/dev/null
 
   if [[ "$DRY_RUN" == "true" ]]; then
     echo "dry run complete for ${PROJECT} -> ${TARGET_REPOSITORY}:${TARGET_BRANCH}"
@@ -160,7 +235,7 @@ main() {
   ALLOW_BOOTSTRAP="true" \
     bash "$ROOT_DIR/scripts/check-project-sync.sh"
   sync_tree
-  validate_outputs_action_tree "$TARGET_DIR"
+  validate_project_tree "$TARGET_DIR"
   commit_and_push
 }
 

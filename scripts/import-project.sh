@@ -35,7 +35,7 @@ require_file() {
 }
 
 validate_inputs() {
-  if [[ "$PROJECT" != "outputs-action" ]]; then
+  if [[ "$PROJECT" != "outputs-action" && "$PROJECT" != "cli" ]]; then
     fail "unsupported project for import-project.sh: $PROJECT"
   fi
 
@@ -109,6 +109,65 @@ validate_outputs_action_import() {
   echo "::endgroup::"
 }
 
+validate_cli_import() {
+  local project_dir="$1"
+
+  echo "::group::Validate imported cli"
+
+  require_file "$project_dir" "README.md"
+  require_file "$project_dir" "LICENSE"
+  require_file "$project_dir" ".gitignore"
+  require_file "$project_dir" "package.json"
+  require_file "$project_dir" "bun.lock"
+  require_file "$project_dir" "tsconfig.json"
+  require_file "$project_dir" "flake.nix"
+  require_file "$project_dir" "flake.lock"
+  require_file "$project_dir" "nix/yaffle-cli.nix"
+  require_file "$project_dir" "src/main.ts"
+  require_file "$project_dir" "src/client.ts"
+  require_file "$project_dir" "src/lib/yaffle-client/index.ts"
+  require_file "$project_dir" ".github/workflows/ci.yml"
+  require_file "$project_dir" ".github/workflows/edge.yml"
+  require_file "$project_dir" ".github/workflows/release.yml"
+  require_file "$project_dir" "CONTRIBUTING.md"
+  require_file "$project_dir" "CODE_OF_CONDUCT.md"
+  require_file "$project_dir" "SECURITY.md"
+
+  if grep -R -n -E "from [\"']@yaffle/client[\"']" "$project_dir/src" >/dev/null; then
+    fail "imported CLI still contains @yaffle/client imports"
+  fi
+
+  if grep -n 'workspace:' "$project_dir/package.json" >/dev/null; then
+    fail "imported CLI package.json still contains workspace dependencies"
+  fi
+
+  pushd "$project_dir" >/dev/null
+  bun install --frozen-lockfile
+  bun run typecheck
+  bun test
+  bun run build
+  rm -rf node_modules dist
+  popd >/dev/null
+
+  echo "::endgroup::"
+}
+
+validate_import() {
+  local project_dir="$1"
+
+  case "$PROJECT" in
+    outputs-action)
+      validate_outputs_action_import "$project_dir"
+      ;;
+    cli)
+      validate_cli_import "$project_dir"
+      ;;
+    *)
+      fail "unsupported project for import validation: $PROJECT"
+      ;;
+  esac
+}
+
 commit_and_push() {
   local source_sha="$1"
   local monorepo_url="https://x-access-token:${MONOREPO_PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
@@ -120,13 +179,13 @@ commit_and_push() {
     return
   fi
 
-  validate_outputs_action_import "$ROOT_DIR/$SOURCE_PATH"
+  validate_import "$PUBLIC_DIR"
 
   git -C "$ROOT_DIR" config --local --unset-all http.https://github.com/.extraheader >/dev/null 2>&1 || true
   git -C "$ROOT_DIR" config user.name "github-actions[bot]"
   git -C "$ROOT_DIR" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
   git -C "$ROOT_DIR" add "$SOURCE_PATH"
-  git -C "$ROOT_DIR" commit -m "sync outputs-action from ${SOURCE_REPOSITORY}@${source_sha}" >/dev/null
+  git -C "$ROOT_DIR" commit -m "sync ${PROJECT} from ${SOURCE_REPOSITORY}@${source_sha}" >/dev/null
   git -C "$ROOT_DIR" push --force-with-lease "$monorepo_url" "HEAD:refs/heads/${BRANCH_NAME}"
 
   echo "changed=true" >> "$GITHUB_OUTPUT"

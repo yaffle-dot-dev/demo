@@ -11,15 +11,16 @@ This repo is the integration home for the published `outputs-action`, `cli`, and
 Current sync model:
 
 - `actions/outputs-action`: tree-sync bidirectional; public repo accepts community PRs
+- `packages/cli`: tree-sync bidirectional; public repo accepts community PRs
 - `demo`: one-way publish; public repo is a published example repo
-- `packages/cli`: monorepo-first publish for now; public repo shape is still partly materialized during publish
 
 ## How publish works
 
 Current export models:
 
 1. `actions/outputs-action` uses direct tree-sync export to `yaffle-dot-dev/outputs-action`
-2. `packages/cli` and `demo` still use subtree-based publish flows
+2. `packages/cli` uses direct tree-sync export to `yaffle-dot-dev/cli`
+3. `demo` still uses a subtree-based publish flow
 
 For subtree-based publish flows, each export does the same sequence:
 
@@ -29,13 +30,13 @@ For subtree-based publish flows, each export does the same sequence:
 4. validate the standalone tree
 5. push the result to the configured target repo branch
 
-The shared subtree-publish entrypoint is `.github/workflows/publish-project.yml`. Thin wrappers live in:
+Publish workflows live in:
 
 - `.github/workflows/publish-outputs-action.yml`
 - `.github/workflows/publish-cli.yml`
 - `.github/workflows/publish-demo.yml`
 
-Shared subtree publish logic lives in `scripts/publish-project.sh`.
+The subtree-specific reusable workflow for `demo` is `.github/workflows/publish-project.yml`, and its logic lives in `scripts/publish-project.sh`.
 
 `actions/outputs-action` uses dedicated tree-sync scripts:
 
@@ -43,15 +44,15 @@ Shared subtree publish logic lives in `scripts/publish-project.sh`.
 - import: `scripts/import-project.sh`
 - guard: `scripts/check-project-sync.sh`
 
+`packages/cli` uses the same dedicated tree-sync scripts.
+
 ## Standalone-only materialization
 
 We do not symlink workflow files.
 
 - `actions/outputs-action` keeps its standalone repo files directly under its own path in the monorepo, including `.github/workflows/*` and community docs, so public contributions can sync back cleanly as file-tree updates
+- `packages/cli` now also keeps its standalone repo files directly under its own path in the monorepo, including `.github/workflows/*`, Nix packaging, and the local client layer it needs to stay self-contained
 - `demo` also keeps its standalone repo files directly under `demo/`, but it is treated as a one-way published example repo
-- The CLI standalone repo vendors `packages/yaffle-client/src/*` into `src/lib/yaffle-client/` during publish and rewrites imports so the public CLI repo is self-contained
-- The CLI standalone repo also generates its own `bun.lock` during validation so its CI can use a frozen lockfile
-- The CLI standalone repo also receives its own `flake.nix`, `flake.lock`, `nix/yaffle-cli.nix`, and release workflow so it can be packaged independently and attach binaries to GitHub releases
 
 ## Triggers
 
@@ -63,11 +64,9 @@ We do not symlink workflow files.
 `publish-cli.yml` runs for changes under:
 
 - `packages/cli/**`
-- `packages/yaffle-client/**`
 - publish workflow plumbing
-- `publishing/templates/cli/**`
-
-That extra `packages/yaffle-client/**` trigger matters because the public CLI repo materializes that code even though it is not stored under `packages/cli/` in the monorepo.
+- `scripts/export-project.sh`
+- `scripts/check-project-sync.sh`
 
 `publish-demo.yml` runs for changes under:
 
@@ -115,16 +114,21 @@ The publish script fails if the standalone tree contains:
 - remaining `workspace:` dependencies in the standalone CLI `package.json`
 - missing required standalone files like `README.md`, `.gitignore`, or target-repo CI workflow files
 
-For `actions/outputs-action`, export clones the public repo, replaces its working tree with the monorepo path contents, validates the result, creates a normal sync commit on top of public `main`, and pushes it directly. This avoids subtree ancestry drift.
+For `actions/outputs-action` and `packages/cli`, export clones the public repo, replaces its working tree with the monorepo path contents, validates the result, creates a normal sync commit on top of public `main`, and pushes it directly. This avoids subtree ancestry drift.
 
-That also means maintainers must import accepted public changes back into the monorepo before merging new internal changes for `outputs-action`. The monorepo sync-check workflow is there to enforce that before merge so the next export cannot silently overwrite public-only changes.
+That also means maintainers must import accepted public changes back into the monorepo before merging new internal changes for tree-synced projects. The monorepo sync-check workflows are there to enforce that before merge so the next export cannot silently overwrite public-only changes.
 
-To protect against that, `.github/workflows/check-outputs-action-sync.yml` runs on monorepo PRs that touch `actions/outputs-action/**`. It fails if the public repo contains accepted changes that are not yet present in the monorepo content.
+To protect against that:
+
+- `.github/workflows/check-outputs-action-sync.yml` runs on monorepo PRs that touch `actions/outputs-action/**`
+- `.github/workflows/check-cli-sync.yml` runs on monorepo PRs that touch `packages/cli/**`
+
+Each check fails if the public repo contains accepted changes that are not yet present in the monorepo content.
 
 Project validation also runs before push:
 
 - `outputs-action`: `npm ci`, `npm run typecheck`, `npm run build`, and a committed `dist/index.js` freshness check
-- `cli`: `bun install`, `bun run typecheck`, `bun test`, `bun run build`
+- `cli`: `bun install --frozen-lockfile`, `bun run typecheck`, `bun test`, `bun run build`
 - `demo`: structural validation for `yaffle.toml` and `infra/`
 
 ## Public contributions
@@ -133,13 +137,13 @@ The intended workflow is:
 
 1. Yaffle maintainers work primarily in the monorepo
 2. exports publish those changes to the public repo
-3. community PRs land in writable public repos like `outputs-action`
+3. community PRs land in writable public repos like `outputs-action` and `cli`
 4. maintainers run `Import Public Project` to sync the public repo tree back into the monorepo path on a stable PR branch
 5. later exports push a new sync commit from the updated monorepo state
 
 This avoids overwriting accepted public contributions while keeping the monorepo as the integration home.
 
-The import workflow reuses a stable branch (`sync/import-outputs-action`) so repeated imports update the same PR instead of opening duplicates.
+The import workflow reuses stable branches (`sync/import-outputs-action` and `sync/import-cli`) so repeated imports update the same PR instead of opening duplicates.
 
 The first direct export commit can also serve as a one-time normalization/reset of the public repo tree if its historical content drifted from the monorepo.
 
@@ -152,7 +156,7 @@ Recommended approach for now:
 1. let the export workflow sync `main` to the target repo
 2. each standalone repo updates its rolling `edge` release after CI passes on `main`
 3. create versioned tags and GitHub releases in the target repo when you want a stable cut
-4. for the standalone CLI repo, publishing a versioned release triggers its generated release workflow to build and upload binaries
+4. for the standalone CLI repo, publishing a versioned release triggers its checked-in release workflow to build and upload binaries
 
 Do not assume a monorepo tag will appear in the standalone repos automatically.
 
@@ -165,14 +169,12 @@ Before pointing at a real public repo:
 1. run the wrapper workflow with `workflow_dispatch` and `dry_run: true`
 2. if you want a full push rehearsal, temporarily change the hardcoded target repo in the wrapper workflow to a scratch private repo
 3. rerun with `dry_run: false`
-4. inspect the published tree, root workflows, edge workflow, and CLI vendored client
+4. inspect the published tree, root workflows, edge workflow, and the checked-in CLI client layer
 5. switch the wrapper workflow back to the real target repo before merging
 
 ## Known limitations
 
-- `outputs-action` tree-sync import/export preserves public repo usability, but monorepo commits remain bot-authored sync commits rather than replayed public git history
+- `outputs-action` and `cli` tree-sync import/export preserve public repo usability, but monorepo commits remain bot-authored sync commits rather than replayed public git history
 - `demo` is intentionally one-way and exported with force push semantics
-- the public CLI repo contains generated vendored client code that must still be edited in the monorepo source package
-- the CLI repo is not yet ready for clean bidirectional subtree sync because its standalone repo shape is still partly generated at publish time
 - this setup does not currently create standalone repo tags or releases automatically
 - stable semver tags still need to be created in the standalone repos when you want a durable release channel

@@ -6,7 +6,7 @@ import {
   loadConfig,
   TokenAuth,
   YaffleClient,
-} from "@yaffle/client"
+} from "../client.js"
 
 import { DEFAULT_API_URL, resolveApiUrl } from "./api-url.js"
 

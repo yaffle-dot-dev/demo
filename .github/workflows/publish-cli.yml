@@ -6,29 +6,53 @@ on:
       - main
     paths:
       - "packages/cli/**"
-      - "packages/yaffle-client/**"
       - ".github/workflows/publish-cli.yml"
-      - ".github/workflows/publish-project.yml"
-      - "publishing/templates/cli/**"
-      - "scripts/publish-project.sh"
+      - "scripts/check-project-sync.sh"
+      - "scripts/export-project.sh"
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Validate the split and standalone tree without pushing"
+        description: "Validate the standalone tree sync without pushing"
         required: false
         type: boolean
         default: true
 
 jobs:
   publish:
-    uses: ./.github/workflows/publish-project.yml
-    with:
-      project: cli
-      source_path: packages/cli
-      target_repository: yaffle-dot-dev/cli
-      target_branch: main
-      push_mode: force
-      dry_run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
-    secrets:
-      yaffle_internal_gh_app_id: ${{ secrets.YAFFLE_INTERNAL_GH_APP_ID }}
-      yaffle_internal_gh_app_private_key: ${{ secrets.YAFFLE_INTERNAL_GH_APP_PRIVATE_KEY }}
+    name: Publish CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: publish-cli-${{ github.ref_name }}
+      cancel-in-progress: true
+    steps:
+      - name: Check out monorepo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create source repo GitHub App token
+        id: app-token
+        if: ${{ !(github.event_name == 'workflow_dispatch' && inputs.dry_run) }}
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.YAFFLE_INTERNAL_GH_APP_ID }}
+          private-key: ${{ secrets.YAFFLE_INTERNAL_GH_APP_PRIVATE_KEY }}
+          owner: yaffle-dot-dev
+          repositories: cli
+
+      - name: Install Bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: Sync CLI to public repo
+        env:
+          PROJECT: cli
+          SOURCE_PATH: packages/cli
+          TARGET_REPOSITORY: yaffle-dot-dev/cli
+          TARGET_BRANCH: main
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+          PUBLISH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/export-project.sh
