@@ -43,12 +43,12 @@ Triggers connect Git events to environments:
 ```toml
 # Push to main applies to production
 [[triggers.github.push]]
-branch = "main"
+ref_patterns = ["refs/heads/main"]
 environment = "production"
 
 # PRs create preview environments
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 ```
 
 ## Run execution

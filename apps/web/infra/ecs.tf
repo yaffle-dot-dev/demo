@@ -116,8 +116,9 @@ resource "aws_ecs_service" "web" {
   enable_ecs_managed_tags = true
   propagate_tags          = "TASK_DEFINITION"
 
+  # The deploy script owns the active task definition revision.
   lifecycle {
-    ignore_changes = [desired_count]
+    ignore_changes = [desired_count, task_definition]
   }
 
   depends_on = [aws_lb_listener_rule.web]

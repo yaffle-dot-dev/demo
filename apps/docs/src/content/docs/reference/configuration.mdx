@@ -16,11 +16,11 @@ version = 1
 name = "production"
 
 [[triggers.github.push]]
-ref = "refs/heads/main"
+ref_patterns = ["refs/heads/main"]
 environment = "production"
 
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 
 [[workspaces]]
 path = "infra"
@@ -41,17 +41,17 @@ name = "staging"
 
 # Push to main → production
 [[triggers.github.push]]
-ref = "refs/heads/main"
+ref_patterns = ["refs/heads/main"]
 environment = "production"
 
 # Push to staging → staging
 [[triggers.github.push]]
-ref = "refs/heads/staging"
+ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
 # All PRs create transient previews
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 
 # Shared infra runs in both environments
 [[workspaces]]
@@ -120,26 +120,30 @@ Run workspaces when a ref (branch or tag) is pushed.
 
 | Field | Description |
 |-------|-------------|
-| `ref` | Full git ref pattern (must start with `refs/heads/` or `refs/tags/`) |
+| `ref_patterns` | Include globs for full refs (must start with `refs/heads/` or `refs/tags/`) |
+| `exclude_ref_patterns` | Optional exclude globs applied after includes |
 | `environment` | Which environment to target |
 
 ```toml
 # Trigger on branch push
 [[triggers.github.push]]
-ref = "refs/heads/main"
+ref_patterns = ["refs/heads/main"]
 environment = "production"
 
 [[triggers.github.push]]
-ref = "refs/heads/staging/*"
+ref_patterns = ["refs/heads/staging/*"]
+exclude_ref_patterns = ["refs/heads/staging/archive/**"]
 environment = "staging"
 
 # Trigger on tag push
 [[triggers.github.push]]
-ref = "refs/tags/v*"
+ref_patterns = ["refs/tags/v*"]
 environment = "release"
 ```
 
-The `ref` field supports glob patterns. The `*` wildcard matches any characters except `/`.
+`ref_patterns` uses OR semantics: a push matches if it matches any include pattern and no exclude pattern. Legacy `ref = "refs/heads/main"` remains supported as a shorthand for a single include pattern.
+
+Ref globs use `*` for a single path segment and `**` to match across `/`.
 
 ### `[[triggers.github.pull_request]]`
 
@@ -147,12 +151,16 @@ Create transient previews for PRs.
 
 | Field | Description |
 |-------|-------------|
-| `branch_pattern` | Glob for head branch (`*` = all PRs) |
+| `branch_patterns` | Include globs for the head branch (`["*"]` = all PRs) |
+| `exclude_branch_patterns` | Optional exclude globs applied after includes |
 
 ```toml
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
+exclude_branch_patterns = ["dependabot/**"]
 ```
+
+`branch_patterns` uses OR semantics: a PR matches if it matches any include pattern and no exclude pattern. Legacy `branch_pattern = "*"` remains supported as a shorthand for a single include pattern.
 
 ### `[[workspaces]]`
 
@@ -305,11 +313,13 @@ variables.domain = "{% if environment_kind == 'transient' %}preview-{{ pr_number
 
 ## Glob patterns
 
-Globs work in `ref`, `branch_pattern`, `workspaces`, and `environments`:
+Globs work in `ref`, `branch_patterns`, `exclude_branch_patterns`, `workspaces`, and `environments`:
 
 | Pattern | Matches |
 |---------|---------|
-| `*` | Anything (but not `/`) |
+| `*` | Anything within a single path segment |
+| `**` | Anything, including `/` |
 | `refs/heads/feature/*` | `refs/heads/feature/login`, but not `refs/heads/feature/a/b` |
+| `dependabot/**` | `dependabot/npm_and_yarn/foo` |
 | `refs/tags/v*` | `refs/tags/v1`, `refs/tags/v1.0.0` |
 | `infra/*` | `infra/foo`, `infra/foo/bar` (workspace patterns match across `/`) |

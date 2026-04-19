@@ -35,8 +35,8 @@ variable "module_registry_host" {
 
 variable "web_image" {
   type        = string
-  description = "Docker image for the web app container"
-  default     = "870923192739.dkr.ecr.us-east-1.amazonaws.com/yaffle-web-production:latest"
+  description = "Bootstrap Docker image for the web app container"
+  default     = "870923192739.dkr.ecr.us-east-1.amazonaws.com/yaffle-web-production@sha256:f6afd16e7c192417ec19d03dc901240dae0b9004dbc37211134d7b7a445b562e"
 }
 
 module "naming" {

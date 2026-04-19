@@ -36,6 +36,12 @@ variable "runner_memory" {
   default     = 1024
 }
 
+variable "runner_image" {
+  type        = string
+  description = "Bootstrap Docker image for the runner container"
+  default     = "870923192739.dkr.ecr.us-east-1.amazonaws.com/yaffle-runner-production@sha256:327224189b9808da82ccc91ab2a2219ba83e64ae9fcd7c9fa4ceb44ce994c413"
+}
+
 variable "tailscale_enabled" {
   type        = bool
   description = "Enable Tailscale sidecar for ECS runner to reach local control plane"

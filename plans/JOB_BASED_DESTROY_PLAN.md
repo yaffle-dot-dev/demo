@@ -374,7 +374,7 @@ test("multi-workspace destroy: queues leaf workspaces first", async () => {
     triggers: {
       github: {
         push: [{ branch: "main", environment: "main" }],
-        pull_request: [{ branch_pattern: "*" }],
+        pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
       },
     },
     approvals: [],

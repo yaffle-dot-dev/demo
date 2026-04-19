@@ -72,37 +72,31 @@ variables.sandbox_mode = true
 
 [triggers.github]
 
-# Push triggers - map branches to environments
-# When a push happens to a matching branch, the environment is deployed
+# Push triggers - map refs to environments
+# When a push happens to a matching ref, the environment is deployed
 [[triggers.github.push]]
-ref = "refs/heads/main"
+ref_patterns = ["refs/heads/main"]
 environment = "production"
 
 [[triggers.github.push]]
-ref = "refs/heads/staging"
+ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
 [[triggers.github.push]]
-ref = "refs/heads/develop"
+ref_patterns = ["refs/heads/develop"]
 environment = "development"
 
-# Glob patterns work for branch matching
-# Note: "*" in branch patterns matches single path segments only
+# Glob patterns work for ref matching
+# Note: "*" matches a single path segment and "**" matches across "/"
 [[triggers.github.push]]
-ref = "refs/heads/release/*"
+ref_patterns = ["refs/heads/release/*"]
 environment = "staging"
 
 # Pull request triggers - create transient environments
 # When a PR is opened with a head branch matching the pattern,
 # a transient environment (e.g., "pr-123") is created
 [[triggers.github.pull_request]]
-branch_pattern = "*"
-
-[[triggers.github.pull_request]]
-branch_pattern = "feature/*"
-
-[[triggers.github.pull_request]]
-branch_pattern = "bugfix/*"
+branch_patterns = ["*"]
 
 # =============================================================================
 # APPROVALS

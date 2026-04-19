@@ -47,22 +47,98 @@ const workspaceSchema = z.object({
   outputs: z.record(z.string().min(1, "output name is required"), workspaceOutputPolicySchema).optional(),
 })
 
+const refPatternSchema = z.string().min(1, "ref pattern is required")
+
 const pushTriggerSchema = z.object({
-  ref: z.string().min(1, "ref is required"),
+  ref: refPatternSchema.optional(),
+  ref_patterns: z.array(refPatternSchema).min(1, "ref_patterns must contain at least one pattern").optional(),
+  exclude_ref_patterns: z.array(refPatternSchema).optional(),
   environment: z.string().min(1, "environment is required"),
-}).refine(
-  (data) => data.ref.startsWith("refs/heads/") || data.ref.startsWith("refs/tags/"),
-  { message: "ref must start with \"refs/heads/\" or \"refs/tags/\"", path: ["ref"] },
-).refine(
-  (data) => {
-    const prefix = data.ref.startsWith("refs/heads/") ? "refs/heads/" : "refs/tags/"
-    return data.ref.length > prefix.length
-  },
-  { message: "ref must have a name after the prefix", path: ["ref"] },
-)
+}).superRefine((data, ctx) => {
+  const hasLegacyRef = data.ref !== undefined
+  const hasRefPatterns = data.ref_patterns !== undefined
+
+  if (!hasLegacyRef && !hasRefPatterns) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["ref_patterns"],
+      message: "ref or ref_patterns is required",
+    })
+  }
+
+  if (hasLegacyRef && hasRefPatterns) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["ref_patterns"],
+      message: "ref and ref_patterns cannot both be set",
+    })
+  }
+
+  addRefPatternValidationIssues(ctx, "ref", data.ref)
+  addRefPatternValidationIssues(ctx, "ref_patterns", data.ref_patterns)
+  addRefPatternValidationIssues(ctx, "exclude_ref_patterns", data.exclude_ref_patterns)
+})
+
+function addRefPatternValidationIssues(
+  ctx: z.RefinementCtx,
+  field: "ref" | "ref_patterns" | "exclude_ref_patterns",
+  value: string | string[] | undefined,
+): void {
+  const patterns = typeof value === "string" ? [value] : value ?? []
+
+  for (const [index, pattern] of patterns.entries()) {
+    const message = getRefPatternValidationError(pattern, field === "ref" ? "ref" : "ref pattern")
+    if (!message) {
+      continue
+    }
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: field === "ref" ? [field] : [field, index],
+      message,
+    })
+  }
+}
+
+function getRefPatternValidationError(pattern: string, label: "ref" | "ref pattern"): string | null {
+  if (!pattern.startsWith("refs/heads/") && !pattern.startsWith("refs/tags/")) {
+    return `${label} must start with "refs/heads/" or "refs/tags/"`
+  }
+
+  const prefix = pattern.startsWith("refs/heads/") ? "refs/heads/" : "refs/tags/"
+  if (pattern.length <= prefix.length) {
+    return `${label} must have a name after the prefix`
+  }
+
+  return null
+}
+
+const triggerPatternSchema = z.string().min(1, "branch pattern is required")
 
 const pullRequestTriggerSchema = z.object({
-  branch_pattern: z.string().min(1, "branch_pattern is required"),
+  branch_pattern: triggerPatternSchema.optional(),
+  branch_patterns: z.array(triggerPatternSchema).min(1, "branch_patterns must contain at least one pattern")
+    .optional(),
+  exclude_branch_patterns: z.array(triggerPatternSchema).optional(),
+}).superRefine((data, ctx) => {
+  const hasLegacyPattern = data.branch_pattern !== undefined
+  const hasBranchPatterns = data.branch_patterns !== undefined
+
+  if (!hasLegacyPattern && !hasBranchPatterns) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["branch_patterns"],
+      message: "branch_pattern or branch_patterns is required",
+    })
+  }
+
+  if (hasLegacyPattern && hasBranchPatterns) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["branch_patterns"],
+      message: "branch_pattern and branch_patterns cannot both be set",
+    })
+  }
 })
 
 const githubTriggersSchema = z.object({
@@ -161,15 +237,19 @@ export interface GitHubTriggers {
 }
 
 export interface PushTrigger {
-  /** Full ref pattern: refs/heads/main, refs/tags/v*, etc. */
-  ref: string
+  /** Include globs for full refs like refs/heads/main or refs/tags/v*. */
+  ref_patterns: string[]
+  /** Glob patterns to exclude after include matching. Excludes always win. */
+  exclude_ref_patterns: string[]
   /** Must reference a declared environment */
   environment: string
 }
 
 export interface PullRequestTrigger {
-  /** Glob pattern for head branch */
-  branch_pattern: string
+  /** Glob patterns for head branch. Any include match is sufficient. */
+  branch_patterns: string[]
+  /** Glob patterns to exclude after include matching. Excludes always win. */
+  exclude_branch_patterns: string[]
 }
 
 /**
@@ -208,13 +288,29 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
     outputs: ws.outputs,
   }))
 
+  const pushTriggers = raw.triggers?.github?.push?.map((trigger) => ({
+    ref_patterns: trigger.ref_patterns ?? [trigger.ref!],
+    exclude_ref_patterns: trigger.exclude_ref_patterns ?? [],
+    environment: trigger.environment,
+  }))
+
+  const pullRequestTriggers = raw.triggers?.github?.pull_request?.map((trigger) => ({
+    branch_patterns: trigger.branch_patterns ?? [trigger.branch_pattern!],
+    exclude_branch_patterns: trigger.exclude_branch_patterns ?? [],
+  }))
+
   // Build the config
   const config: YaffleTomlConfig = {
     version: 1,
     environments: raw.environments,
     workspaces,
     triggers: {
-      github: raw.triggers?.github,
+      github: raw.triggers?.github
+        ? {
+          push: pushTriggers,
+          pull_request: pullRequestTriggers,
+        }
+        : undefined,
     },
     approvals: raw.approvals,
   }
@@ -329,7 +425,9 @@ function validateSemantics(config: YaffleTomlConfig): void {
   if (config.triggers.github?.push) {
     for (const trigger of config.triggers.github.push) {
       if (!declaredEnvs.has(trigger.environment)) {
-        errors.push(`Push trigger for ref "${trigger.ref}" references undeclared environment "${trigger.environment}"`)
+        errors.push(
+          `Push trigger for refs "${trigger.ref_patterns.join(", ")}" references undeclared environment "${trigger.environment}"`,
+        )
       }
       triggeredEnvs.add(trigger.environment)
     }
@@ -359,6 +457,7 @@ function validateSemantics(config: YaffleTomlConfig): void {
  * Supported patterns:
  * - "*" matches any string (full match)
  * - "prefix/*" matches any branch starting with "prefix/" (one segment after)
+ * - "prefix/**" matches any branch starting with "prefix/" (any depth)
  * - "exact" matches exactly "exact"
  */
 export function matchBranchPattern(pattern: string, branch: string): boolean {
@@ -372,15 +471,37 @@ export function matchBranchPattern(pattern: string, branch: string): boolean {
     return true
   }
 
-  // Convert glob to regex
-  // * matches anything except / (single path segment)
-  const regexPattern = pattern
-    .split("*")
-    .map(escapeRegex)
-    .join("[^/]*")
-
+  const regexPattern = globToRegexPattern(pattern, { asteriskMatchesSlash: false })
   const regex = new RegExp(`^${regexPattern}$`)
   return regex.test(branch)
+}
+
+function globToRegexPattern(
+  pattern: string,
+  options: { asteriskMatchesSlash: boolean },
+): string {
+  let regex = ""
+
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i]
+
+    if (char !== "*") {
+      regex += escapeRegex(char)
+      continue
+    }
+
+    const isDoubleWildcard = pattern[i + 1] === "*"
+
+    if (isDoubleWildcard) {
+      regex += ".*"
+      i += 1
+      continue
+    }
+
+    regex += options.asteriskMatchesSlash ? ".*" : "[^/]*"
+  }
+
+  return regex
 }
 
 function escapeRegex(str: string): string {
@@ -449,17 +570,7 @@ export function matchWorkspacePattern(pattern: string, workspacePath: string): b
     return pattern === workspacePath
   }
 
-  // Special case: lone "*" matches everything
-  if (pattern === "*") {
-    return true
-  }
-
-  // Convert glob to regex where * matches any characters (including /)
-  const regexPattern = pattern
-    .split("*")
-    .map(escapeRegex)
-    .join(".*")
-
+  const regexPattern = globToRegexPattern(pattern, { asteriskMatchesSlash: true })
   const regex = new RegExp(`^${regexPattern}$`)
   return regex.test(workspacePath)
 }
@@ -478,7 +589,7 @@ export function findPushTriggerEnvironment(
   const pushTriggers = config.triggers.github?.push ?? []
 
   for (const trigger of pushTriggers) {
-    if (matchRefPattern(trigger.ref, ref)) {
+    if (matchesPatternSet(ref, trigger.ref_patterns, trigger.exclude_ref_patterns, matchRefPattern)) {
       return trigger.environment
     }
   }
@@ -504,12 +615,31 @@ export function matchesPullRequestTrigger(
   const prTriggers = config.triggers.github?.pull_request ?? []
 
   for (const trigger of prTriggers) {
-    if (matchBranchPattern(trigger.branch_pattern, headBranch)) {
+    if (matchesPatternSet(
+      headBranch,
+      trigger.branch_patterns,
+      trigger.exclude_branch_patterns,
+      matchBranchPattern,
+    )) {
       return true
     }
   }
 
   return false
+}
+
+function matchesPatternSet(
+  value: string,
+  includePatterns: string[],
+  excludePatterns: string[],
+  matcher: (pattern: string, value: string) => boolean,
+): boolean {
+  const matchesIncludePattern = includePatterns.some((pattern) => matcher(pattern, value))
+  if (!matchesIncludePattern) {
+    return false
+  }
+
+  return !excludePatterns.some((pattern) => matcher(pattern, value))
 }
 
 /**

@@ -39,6 +39,5 @@ locals {
   private_subnet_ids                  = local._core.private_subnet_ids
   ecs_cluster_arn                     = local._core.ecs_cluster_arn
   ecs_cluster_name                    = local._core.ecs_cluster_name
-  ecr_runner_url                      = local._core.ecr_runner_url
   tailscale_runner_authkey_secret_arn = try(module.shared.tailscale_runner_authkey_secret_arn, null)
 }

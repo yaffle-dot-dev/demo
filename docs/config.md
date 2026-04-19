@@ -34,15 +34,15 @@ path = "apps/control-plane/infra"
 environments = ["*"]
 
 [[triggers.github.push]]
-branch = "main"
+ref_patterns = ["refs/heads/main"]
 environment = "main"
 
 [[triggers.github.push]]
-branch = "staging"
+ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 ```
 
 ## Reference
@@ -111,36 +111,41 @@ environments = ["*"]
 
 ### `[[triggers.github.push]]`
 
-Triggers a plan/apply cycle when a branch is pushed.
+Triggers a plan/apply cycle when a ref is pushed.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `branch` | string | Yes | Branch name or glob pattern |
+| `ref_patterns` | array | Yes | Include globs for full refs |
+| `exclude_ref_patterns` | array | No | Exclude globs applied after include matching |
 | `environment` | string | Yes | Named environment to deploy |
 
 ```toml
 [[triggers.github.push]]
-branch = "main"
+ref_patterns = ["refs/heads/main"]
 environment = "main"
 
 [[triggers.github.push]]
-branch = "staging"
+ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
 [[triggers.github.push]]
-branch = "release/*"
+ref_patterns = ["refs/heads/release/*"]
+exclude_ref_patterns = ["refs/heads/release/archive/**"]
 environment = "release"
 ```
 
 **Behavior:**
 
-- When the specified branch is pushed, Yaffle runs `plan` then `apply` for all workspaces that include the named environment
+- When a pushed ref matches any `ref_patterns` entry and none of the `exclude_ref_patterns` entries, Yaffle runs `plan` then `apply` for all workspaces that include the named environment
 - The `environment` must reference a declared `[[environments]]` name
 
 **Glob patterns:**
 
 - `*` matches any characters except `/`
-- `release/*` matches `release/v1`, `release/hotfix`, etc.
+- `**` matches across `/`
+- `refs/heads/release/*` matches `refs/heads/release/v1`, `refs/heads/release/hotfix`, etc.
+
+Legacy `ref = "refs/heads/main"` remains supported as shorthand for a single include pattern.
 
 ### `[[triggers.github.pull_request]]`
 
@@ -148,16 +153,18 @@ Triggers a transient environment when a pull request is opened or updated.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `branch_pattern` | string | Yes | Glob pattern for the PR's head (source) branch |
+| `branch_patterns` | array | Yes | Include globs for the PR's head (source) branch |
+| `exclude_branch_patterns` | array | No | Exclude globs applied after include matching |
 
 ```toml
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
+exclude_branch_patterns = ["dependabot/**"]
 ```
 
 **Behavior:**
 
-- When a PR is opened from a branch matching `branch_pattern`, Yaffle creates a transient environment named `pr-{number}` (e.g., `pr-123`)
+- When a PR is opened from a branch matching any `branch_patterns` entry and none of the `exclude_branch_patterns` entries, Yaffle creates a transient environment named `pr-{number}` (e.g., `pr-123`)
 - Yaffle runs `plan` for all workspaces that include `"*"` in their environments
 - Apply requires explicit approval
 - When the PR is closed (merged or abandoned), Yaffle destroys the transient environment
@@ -166,6 +173,9 @@ branch_pattern = "*"
 
 - `*` matches any branch
 - `feature/*` matches only branches starting with `feature/`
+- `dependabot/**` matches `dependabot/` branches at any depth
+
+Legacy `branch_pattern = "*"` remains supported as shorthand for a single include pattern.
 
 ## Environments
 

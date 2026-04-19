@@ -282,11 +282,11 @@ environments = ["*"]
 
 # Triggers
 [[triggers.github.push]]
-branch = "main"
+ref_patterns = ["refs/heads/main"]
 environment = "staging"
 
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 ```
 
 ## Summary

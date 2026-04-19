@@ -174,9 +174,10 @@ resource "aws_ecs_service" "control_plane" {
   enable_ecs_managed_tags = true
   propagate_tags          = "TASK_DEFINITION"
 
+  # The deploy script owns the active task definition revision.
   # Ignore changes to desired_count so autoscaling can manage it
   lifecycle {
-    ignore_changes = [desired_count]
+    ignore_changes = [desired_count, task_definition]
   }
 
   depends_on = [aws_lb_listener.https]

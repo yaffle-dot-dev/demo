@@ -61,7 +61,8 @@ branch_pattern = "*"
     expect(config.workspaces[1].path).toBe("apps/web/infra")
     expect(config.workspaces[1].environments).toBe("*")
     expect(config.triggers.github?.push).toHaveLength(2)
-    expect(config.triggers.github?.push?.[0].ref).toBe("refs/heads/main")
+    expect(config.triggers.github?.push?.[0].ref_patterns).toEqual(["refs/heads/main"])
+    expect(config.triggers.github?.push?.[0].exclude_ref_patterns).toEqual([])
     expect(config.triggers.github?.pull_request).toHaveLength(1)
   })
 
@@ -257,7 +258,104 @@ environment = "release"
 `
 
     const config = parseYaffleToml(toml)
-    expect(config.triggers.github?.push?.[0].ref).toBe("refs/tags/v*")
+    expect(config.triggers.github?.push?.[0].ref_patterns).toEqual(["refs/tags/v*"])
+  })
+
+  test("parses ref pattern arrays with excludes", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+[[triggers.github.push]]
+ref_patterns = ["refs/heads/**"]
+exclude_ref_patterns = ["refs/heads/dependabot/**"]
+environment = "main"
+`
+
+    const config = parseYaffleToml(toml)
+
+    expect(config.triggers.github?.push).toEqual([
+      {
+        ref_patterns: ["refs/heads/**"],
+        exclude_ref_patterns: ["refs/heads/dependabot/**"],
+        environment: "main",
+      },
+    ])
+  })
+
+  test("allows legacy ref with exclude_ref_patterns", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+[[triggers.github.push]]
+ref = "refs/heads/main"
+exclude_ref_patterns = ["refs/heads/main"]
+environment = "main"
+`
+
+    const config = parseYaffleToml(toml)
+
+    expect(config.triggers.github?.push).toEqual([
+      {
+        ref_patterns: ["refs/heads/main"],
+        exclude_ref_patterns: ["refs/heads/main"],
+        environment: "main",
+      },
+    ])
+  })
+
+  test("rejects push trigger with only exclude ref patterns", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+[[triggers.github.push]]
+exclude_ref_patterns = ["refs/heads/main"]
+environment = "main"
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(ConfigError)
+    expect(() => parseYaffleToml(toml)).toThrow(/ref or ref_patterns/)
+  })
+
+  test("rejects push trigger with both ref and ref_patterns", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+[[triggers.github.push]]
+ref = "refs/heads/main"
+ref_patterns = ["refs/heads/release/**"]
+environment = "main"
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(ConfigError)
+    expect(() => parseYaffleToml(toml)).toThrow(/ref and ref_patterns/)
   })
 
   test("allows workspaces with no triggers (using '*' for PR environments)", () => {
@@ -275,6 +373,85 @@ branch_pattern = "*"
     const config = parseYaffleToml(toml)
     expect(config.workspaces).toHaveLength(1)
     expect(config.triggers.github?.pull_request).toHaveLength(1)
+  })
+
+  test("parses branch pattern arrays with excludes", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
+[[triggers.github.pull_request]]
+branch_patterns = ["*"]
+exclude_branch_patterns = ["dependabot/**"]
+`
+
+    const config = parseYaffleToml(toml)
+
+    expect(config.triggers.github?.pull_request).toEqual([
+      {
+        branch_patterns: ["*"],
+        exclude_branch_patterns: ["dependabot/**"],
+      },
+    ])
+  })
+
+  test("allows legacy branch_pattern with exclude_branch_patterns", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+exclude_branch_patterns = ["dependabot/**"]
+`
+
+    const config = parseYaffleToml(toml)
+
+    expect(config.triggers.github?.pull_request).toEqual([
+      {
+        branch_patterns: ["*"],
+        exclude_branch_patterns: ["dependabot/**"],
+      },
+    ])
+  })
+
+  test("rejects pull request trigger with only exclude patterns", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
+[[triggers.github.pull_request]]
+exclude_branch_patterns = ["dependabot/**"]
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(ConfigError)
+    expect(() => parseYaffleToml(toml)).toThrow(/branch_pattern or branch_patterns/)
+  })
+
+  test("rejects pull request trigger with both branch_pattern and branch_patterns", () => {
+    const toml = `
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
+[[triggers.github.pull_request]]
+branch_pattern = "*"
+branch_patterns = ["main"]
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(ConfigError)
+    expect(() => parseYaffleToml(toml)).toThrow(/branch_pattern and branch_patterns/)
   })
 
   test("handles invalid TOML syntax", () => {
@@ -321,6 +498,12 @@ describe("matchBranchPattern", () => {
     expect(matchBranchPattern("release/*", "release/v1/hotfix")).toBe(false)
   })
 
+  test("double wildcard crosses path separators", () => {
+    expect(matchBranchPattern("dependabot/**", "dependabot/npm_and_yarn/foo")).toBe(true)
+    expect(matchBranchPattern("feature/**", "feature/login/v2")).toBe(true)
+    expect(matchBranchPattern("feature/**", "bugfix/login")).toBe(false)
+  })
+
   test("multiple wildcards", () => {
     expect(matchBranchPattern("*/fix/*", "bug/fix/login")).toBe(true)
     expect(matchBranchPattern("*/fix/*", "feature/fix/")).toBe(true)
@@ -346,16 +529,21 @@ path = "infra"
 environments = ["main", "staging", "release"]
 
 [[triggers.github.push]]
-ref = "refs/heads/main"
+ref_patterns = ["refs/heads/main"]
 environment = "main"
 
 [[triggers.github.push]]
-ref = "refs/heads/staging"
+ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
 [[triggers.github.push]]
-ref = "refs/tags/v*"
+ref_patterns = ["refs/tags/v*"]
 environment = "release"
+
+[[triggers.github.push]]
+ref_patterns = ["refs/heads/dependabot/**"]
+exclude_ref_patterns = ["refs/heads/dependabot/**"]
+environment = "main"
 `)
 
   test("finds exact branch match", () => {
@@ -372,6 +560,10 @@ environment = "release"
     expect(findPushTriggerEnvironment(config, "refs/heads/develop")).toBeUndefined()
     expect(findPushTriggerEnvironment(config, "refs/heads/feature/login")).toBeUndefined()
     expect(findPushTriggerEnvironment(config, "refs/tags/release-1")).toBeUndefined()
+  })
+
+  test("exclude patterns win over includes", () => {
+    expect(findPushTriggerEnvironment(config, "refs/heads/dependabot/npm")).toBeUndefined()
   })
 })
 
@@ -398,6 +590,12 @@ describe("matchRefPattern", () => {
     expect(matchRefPattern("refs/tags/v*", "refs/tags/v1/beta")).toBe(false)
     expect(matchRefPattern("refs/heads/feature/*", "refs/heads/feature/a/b")).toBe(false)
   })
+
+  test("double wildcard crosses path segments", () => {
+    expect(matchRefPattern("refs/heads/feature/**", "refs/heads/feature/a/b")).toBe(true)
+    expect(matchRefPattern("refs/tags/releases/**", "refs/tags/releases/v1/candidate")).toBe(true)
+    expect(matchRefPattern("refs/heads/feature/**", "refs/heads/bugfix/a/b")).toBe(false)
+  })
 })
 
 describe("matchesPullRequestTrigger", () => {
@@ -409,10 +607,9 @@ path = "infra"
 environments = ["*"]
 
 [[triggers.github.pull_request]]
-branch_pattern = "feature/*"
+branch_patterns = ["feature/*", "bugfix/*"]
+exclude_branch_patterns = ["feature/internal/**"]
 
-[[triggers.github.pull_request]]
-branch_pattern = "bugfix/*"
 `)
 
   test("matches feature branches", () => {
@@ -427,6 +624,10 @@ branch_pattern = "bugfix/*"
   test("does not match other branches", () => {
     expect(matchesPullRequestTrigger(config, "main")).toBe(false)
     expect(matchesPullRequestTrigger(config, "release/v1")).toBe(false)
+  })
+
+  test("exclude patterns win over includes", () => {
+    expect(matchesPullRequestTrigger(config, "feature/internal/dependabot")).toBe(false)
   })
 
   test("handles config with no PR triggers", () => {

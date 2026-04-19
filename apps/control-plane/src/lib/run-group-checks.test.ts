@@ -55,8 +55,8 @@ const DEFAULT_CONFIG: YaffleTomlConfig = {
   ],
   triggers: {
     github: {
-      push: [{ ref: "refs/heads/main", environment: "main" }],
-      pull_request: [{ branch_pattern: "*" }],
+      push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+      pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
     },
   },
   approvals: [],

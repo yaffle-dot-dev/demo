@@ -48,7 +48,7 @@ environments = ["*"]
 
 # Only trigger on PRs, not pushes
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 
 # No push triggers—production stays with your existing tool
 ```
@@ -114,7 +114,7 @@ path = "infra"
 environments = ["*"]
 
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 ```
 
 Both tools can coexist:
@@ -138,7 +138,7 @@ path = "infra"
 environments = ["*"]
 
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 ```
 
 TFC runs speculative plans on PRs. Yaffle creates real preview infrastructure. Different purposes, no conflict.
@@ -177,7 +177,7 @@ name = "staging"
 
 ```toml
 [[triggers.github.push]]
-branch = "main"
+ref_patterns = ["refs/heads/main"]
 environment = "production"
 ```
 

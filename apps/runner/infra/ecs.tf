@@ -86,7 +86,7 @@ resource "aws_ecs_task_definition" "runner" {
     [
       {
         name      = "runner"
-        image     = "${local.ecr_runner_url}:latest"
+        image     = var.runner_image
         essential = true
 
         dependsOn = var.tailscale_enabled ? [

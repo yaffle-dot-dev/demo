@@ -35,8 +35,8 @@ variable "module_registry_host" {
 
 variable "control_plane_image" {
   type        = string
-  description = "Docker image for the control plane container"
-  default     = "870923192739.dkr.ecr.us-east-1.amazonaws.com/yaffle-control-plane-production:latest"
+  description = "Bootstrap Docker image for the control plane container"
+  default     = "870923192739.dkr.ecr.us-east-1.amazonaws.com/yaffle-control-plane-production@sha256:41c49a13b022b20308afc18b7996cb3f38167e45ee36da145e00629a8eae7801"
 }
 
 variable "secrets_arn_prefix" {

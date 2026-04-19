@@ -117,11 +117,11 @@ version = 1
 name = "main"
 
 [[triggers.github.push]]
-ref = "refs/heads/main"
+ref_patterns = ["refs/heads/main"]
 environment = "main"
 
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 
 [[workspaces]]
 path = "infra"
@@ -401,11 +401,11 @@ version = 1
 name = "main"
 
 [[triggers.github.push]]
-ref = "refs/heads/main"
+ref_patterns = ["refs/heads/main"]
 environment = "main"
 
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 
 [[workspaces]]
 path = "infra/shared"
@@ -677,11 +677,11 @@ version = 1
 name = "main"
 
 [[triggers.github.push]]
-ref = "refs/heads/main"
+ref_patterns = ["refs/heads/main"]
 environment = "main"
 
 [[triggers.github.pull_request]]
-branch_pattern = "*"
+branch_patterns = ["*"]
 
 [[workspaces]]
 path = "infra"
