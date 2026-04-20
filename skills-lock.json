@@ -21,6 +21,11 @@
       "sourceType": "github",
       "computedHash": "747d7f73bd9e2ec5317b8ef88dc70f97df716d00e3d02de4051feebaa48b062d"
     },
+    "github-webhooks": {
+      "source": "hookdeck/webhook-skills",
+      "sourceType": "github",
+      "computedHash": "0ba535c122c5e218e125b08f639154aec22b826dba28e48c3b9b6c53d2d41b8c"
+    },
     "organization-best-practices": {
       "source": "better-auth/skills",
       "sourceType": "github",
@@ -31,10 +36,20 @@
       "sourceType": "github",
       "computedHash": "7e38f668dcd0280f7dba0c5ec9eb88f14f4e2bc1345d4e5703e03a85402379d3"
     },
+    "stripe-webhooks": {
+      "source": "hookdeck/webhook-skills",
+      "sourceType": "github",
+      "computedHash": "562d314bd4dc0c2bc7591c1e5e2a709403997fde9d1e214262bfc7d668c79ee4"
+    },
     "two-factor-authentication-best-practices": {
       "source": "better-auth/skills",
       "sourceType": "github",
       "computedHash": "7e297aaf887e11fdc03e52bdbf44974e161e8f7c393170ced7dc66cace4f6d46"
+    },
+    "webhook-handler-patterns": {
+      "source": "hookdeck/webhook-skills",
+      "sourceType": "github",
+      "computedHash": "512aef08d8e024d31b09b118745e80bd575c40e3435be94e810c20cbb7dd282d"
     }
   }
 }
