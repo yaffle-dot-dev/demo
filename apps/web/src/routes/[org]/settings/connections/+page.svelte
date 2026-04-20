@@ -50,6 +50,15 @@
     workspaceScope: string[]
   }
 
+  type ScopeExpansionSuggestion = {
+    connectionId: string
+    provider: string
+    environmentScope: string[]
+    workspaceScope: string[]
+    repoList: string[]
+    count: number
+  }
+
   let { data }: { data: PageData } = $props()
 
   let showCreateModal = $state(false)
@@ -104,6 +113,24 @@
     }
 
     return [...keys]
+  }
+
+  function normalizeConnectionProvider(connection: OrgConnection): string {
+    const config = typeof connection.config === "object" && connection.config !== null
+      ? connection.config as Record<string, unknown>
+      : {}
+
+    const provider = typeof config.providerType === "string"
+      ? config.providerType
+      : connection.providerType ?? connection.type
+
+    return provider.trim().toLowerCase()
+  }
+
+  function summarizeScope(environmentScope: string[], workspaceScope: string[]): string {
+    const environments = environmentScope.length > 0 ? environmentScope.join(", ") : "all environments"
+    const workspaces = workspaceScope.length > 0 ? workspaceScope.join(", ") : "all workspaces"
+    return `${environments} / ${workspaces}`
   }
 
   const knownProviderSetup = $derived.by((): Record<string, { label: string; suggestedConnectionType: ConnectionType }> =>
@@ -171,6 +198,61 @@
     }),
   )
 
+  const scopeExpansionSuggestionsByConnectionId = $derived.by((): Map<string, ScopeExpansionSuggestion> => {
+    const suggestions = new Map<string, ScopeExpansionSuggestion>()
+
+    const connectionsByProvider = new Map<string, OrgConnection[]>()
+    for (const connection of connectionsState) {
+      const provider = normalizeConnectionProvider(connection)
+      const existing = connectionsByProvider.get(provider)
+      if (existing) {
+        existing.push(connection)
+      } else {
+        connectionsByProvider.set(provider, [connection])
+      }
+    }
+
+    const groupedRequirements = new Map<string, MissingRequirement[]>()
+    for (const requirement of missingRequirements) {
+      const provider = requirement.provider.trim().toLowerCase()
+      const existing = groupedRequirements.get(provider)
+      if (existing) {
+        existing.push(requirement)
+      } else {
+        groupedRequirements.set(provider, [requirement])
+      }
+    }
+
+    for (const [provider, requirements] of groupedRequirements) {
+      const existingConnectionsForProvider = connectionsByProvider.get(provider) ?? []
+      if (existingConnectionsForProvider.length !== 1) {
+        continue
+      }
+
+      const connection = existingConnectionsForProvider[0]
+      const environments = new Set<string>()
+      const workspaces = new Set<string>()
+      const repos = new Set<string>()
+
+      for (const requirement of requirements) {
+        environments.add(requirement.environment)
+        workspaces.add(requirement.workspace)
+        repos.add(requirement.repo)
+      }
+
+      suggestions.set(connection.id, {
+        connectionId: connection.id,
+        provider,
+        environmentScope: [...environments].sort(),
+        workspaceScope: [...workspaces].sort(),
+        repoList: [...repos].sort(),
+        count: requirements.length,
+      })
+    }
+
+    return suggestions
+  })
+
   const aggregatedUnconfiguredConnections = $derived.by((): UnconfiguredConnectionRow[] => {
     const grouped = new Map<string, {
       provider: string
@@ -183,6 +265,13 @@
     for (const requirement of missingRequirements) {
       const key = requirement.provider.toLowerCase()
       if (!knownProviderSetup[key]) {
+        continue
+      }
+
+      const existingConnectionsForProvider = connectionsState.filter((connection) =>
+        normalizeConnectionProvider(connection) === key
+      )
+      if (existingConnectionsForProvider.length === 1) {
         continue
       }
 
@@ -516,6 +605,24 @@ aws iam attach-role-policy \
     connectionName = connection.name
     selectedEnvironments = [...connection.environmentScope]
     selectedWorkspaces = [...connection.workspaceScope]
+  }
+
+  function buildScopeExpansionNote(suggestion: ScopeExpansionSuggestion): string {
+    const repoList = suggestion.repoList.join(", ")
+    return `${suggestion.count} workspace${suggestion.count === 1 ? "" : "s"} from ${repoList} are waiting outside this connection's current scope. Add ${summarizeScope(suggestion.environmentScope, suggestion.workspaceScope)}.`
+  }
+
+  async function expandConnectionScope(connection: OrgConnection): Promise<void> {
+    const suggestion = scopeExpansionSuggestionsByConnectionId.get(connection.id)
+    if (!suggestion) {
+      await editConnection(connection)
+      return
+    }
+
+    await editConnection(connection)
+
+    selectedEnvironments = [...new Set([...selectedEnvironments, ...suggestion.environmentScope])]
+    selectedWorkspaces = [...new Set([...selectedWorkspaces, ...suggestion.workspaceScope])]
   }
 
   function parseLines(value: string): string[] {
@@ -1001,6 +1108,9 @@ aws iam attach-role-policy \
     {:else}
       <div class="mt-3 divide-y divide-border border-y border-border">
         {#each displayedConnections as connection}
+          {@const scopeExpansionSuggestion = "raw" in connection
+            ? scopeExpansionSuggestionsByConnectionId.get(connection.id) ?? null
+            : null}
           <div class="flex flex-col gap-4 py-4 md:flex-row md:items-start md:justify-between">
             <div class="min-w-0">
               <div class="flex flex-wrap items-center gap-2">
@@ -1019,10 +1129,24 @@ aws iam attach-role-policy \
                   {connection.inferenceDetail}
                 </div>
               {/if}
+              {#if scopeExpansionSuggestion}
+                <div class="mt-2 text-xs text-amber-300">
+                  {buildScopeExpansionNote(scopeExpansionSuggestion)}
+                </div>
+              {/if}
             </div>
 
             <div class="flex gap-2">
               {#if "raw" in connection}
+                {#if scopeExpansionSuggestion}
+                  <button
+                    class="rounded-md border border-amber-500/40 px-2.5 py-1.5 text-xs text-amber-200 transition hover:bg-amber-500/10 disabled:opacity-50"
+                    onclick={() => expandConnectionScope(connection.raw)}
+                    disabled={loadingConnectionDetails}
+                  >
+                    Expand scope
+                  </button>
+                {/if}
                 <button
                   class="rounded-md border border-border px-2.5 py-1.5 text-xs text-text-muted transition hover:bg-surface-raised disabled:opacity-50"
                   onclick={() => editConnection(connection.raw)}

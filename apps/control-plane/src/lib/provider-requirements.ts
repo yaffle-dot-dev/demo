@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path"
 
 import { cleanupWorkspace } from "./workspace.ts"
 import { createWorkspaceCache } from "./workspace-cache.ts"
+import { scopeListAllows } from "./connection-scope.ts"
 import type { Connection } from "../db/queries/connections.ts"
 import {
   findRunGroupById,
@@ -217,8 +218,8 @@ export function connectionMatches(
     ? config.workspaceScope.filter((value): value is string => typeof value === "string")
     : []
 
-  const environmentAllowed = environments.length === 0 || environments.includes(environment) || environments.includes("*")
-  const workspaceAllowed = workspaces.length === 0 || workspaces.includes(workspace) || workspaces.includes("*") || workspaces.includes("infra/*") && workspace.startsWith("infra/")
+  const environmentAllowed = scopeListAllows(environments, environment)
+  const workspaceAllowed = scopeListAllows(workspaces, workspace)
 
   return environmentAllowed && workspaceAllowed
 }

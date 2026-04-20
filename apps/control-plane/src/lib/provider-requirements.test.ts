@@ -52,6 +52,18 @@ describe("provider requirements", () => {
     expect(connectionMatches(connection, "cloudflare", "production", "infra/app")).toBe(false)
   })
 
+  test("matches wildcard environment and workspace scopes", () => {
+    const connection = mockConnection({
+      providerType: "aws",
+      environmentScope: ["pr-*"],
+      workspaceScope: ["apps/*"],
+    })
+
+    expect(connectionMatches(connection, "aws", "pr-7", "apps/runner/infra")).toBe(true)
+    expect(connectionMatches(connection, "aws", "main", "apps/runner/infra")).toBe(false)
+    expect(connectionMatches(connection, "aws", "pr-7", "infra/shared")).toBe(false)
+  })
+
   test("dedupes provider extraction work per runGroup/workspace pair", async () => {
     clearWorkspaceProviderCacheForTests()
 

@@ -30,7 +30,7 @@ export function getConnectionScopeConfig(connection: Pick<Connection, "type" | "
   }
 }
 
-function matchesPattern(pattern: string, value: string): boolean {
+export function matchesScopePattern(pattern: string, value: string): boolean {
   if (pattern === "*") {
     return true
   }
@@ -41,6 +41,14 @@ function matchesPattern(pattern: string, value: string): boolean {
 
   const regex = new RegExp(`^${pattern.split("*").map(escapeRegex).join(".*")}$`)
   return regex.test(value)
+}
+
+export function scopeListAllows(scopes: string[], value: string): boolean {
+  if (scopes.length === 0) {
+    return true
+  }
+
+  return scopes.some((scope) => matchesScopePattern(scope, value))
 }
 
 function escapeRegex(value: string): string {
@@ -54,7 +62,7 @@ function scopesOverlap(a: string[], b: string[]): boolean {
 
   for (const left of a) {
     for (const right of b) {
-      if (matchesPattern(left, right) || matchesPattern(right, left)) {
+      if (matchesScopePattern(left, right) || matchesScopePattern(right, left)) {
         return true
       }
     }
