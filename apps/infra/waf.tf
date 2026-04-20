@@ -120,12 +120,163 @@ resource "aws_wafv2_web_acl" "cloudfront" {
       managed_rule_group_statement {
         vendor_name = "AWS"
         name        = "AWSManagedRulesCommonRuleSet"
+
+        # Terraform/OpenTofu CLI login uses a localhost redirect_uri, which trips
+        # this managed SSRF query-argument rule. Count it here, then re-block it
+        # everywhere except the exact TFC OAuth authorize route below.
+        rule_action_override {
+          name = "EC2MetaDataSSRF_QUERYARGUMENTS"
+
+          action_to_use {
+            count {}
+          }
+        }
+
+        rule_action_override {
+          name = "EC2MetaDataSSRF_BODY"
+
+          action_to_use {
+            count {}
+          }
+        }
       }
     }
 
     visibility_config {
       cloudwatch_metrics_enabled = true
       metric_name                = "awsManagedCommon"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "block-ec2-metadata-ssrf-except-tfc-oauth-authorize"
+    priority = 31
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          label_match_statement {
+            scope = "LABEL"
+            key   = "awswaf:managed:aws:core-rule-set:EC2MetaDataSSRF_QueryArguments"
+          }
+        }
+
+        statement {
+          not_statement {
+            statement {
+              and_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = "/tfc/oauth/authorize"
+                    positional_constraint = "EXACTLY"
+
+                    field_to_match {
+                      uri_path {}
+                    }
+
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+
+                statement {
+                  byte_match_statement {
+                    search_string         = "GET"
+                    positional_constraint = "EXACTLY"
+
+                    field_to_match {
+                      method {}
+                    }
+
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "blockEc2MetadataSsrfExceptTfcOauthAuthorize"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "block-ec2-metadata-ssrf-body-except-tfc-oauth-token"
+    priority = 32
+
+    action {
+      block {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          label_match_statement {
+            scope = "LABEL"
+            key   = "awswaf:managed:aws:core-rule-set:EC2MetaDataSSRF_Body"
+          }
+        }
+
+        statement {
+          not_statement {
+            statement {
+              and_statement {
+                statement {
+                  byte_match_statement {
+                    search_string         = "/tfc/oauth/token"
+                    positional_constraint = "EXACTLY"
+
+                    field_to_match {
+                      uri_path {}
+                    }
+
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+
+                statement {
+                  byte_match_statement {
+                    search_string         = "POST"
+                    positional_constraint = "EXACTLY"
+
+                    field_to_match {
+                      method {}
+                    }
+
+                    text_transformation {
+                      priority = 0
+                      type     = "NONE"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "blockEc2MetadataSsrfBodyExceptTfcOauthToken"
       sampled_requests_enabled   = true
     }
   }
