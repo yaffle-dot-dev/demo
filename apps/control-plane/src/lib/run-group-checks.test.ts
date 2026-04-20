@@ -9,6 +9,7 @@ import type {
 } from "@yaffle/shared"
 
 import type { YaffleTomlConfig } from "./config-toml.ts"
+import { getRunGroupCheckSummary } from "./run-group-check-copy.ts"
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
 import { setRepoMapping } from "../db/queries/repo-mappings.ts"
 import { completeJob } from "../db/queries/iac-jobs.ts"
@@ -248,9 +249,12 @@ describe("run-group-checks", () => {
       headSha: "abc123def456",
       name: "Yaffle / run",
       status: "in_progress",
-      detailsUrl: "https://yaffle.local:6969/test-org/test-repo/env/pr-42?runGroupId=" + groups[0].id,
+      detailsUrl:
+        "https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=" + groups[0].id,
       title: "Pending",
-      summary: "Yaffle accepted this commit and is preparing Terraform runs.",
+      summary:
+        `${getRunGroupCheckSummary("pending")}\n\n` +
+        `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${groups[0].id})`,
     })
 
     expect(groups[0].checkRunId).toBe(123)
@@ -270,9 +274,12 @@ describe("run-group-checks", () => {
       headSha: "abc123def456",
       name: "Yaffle / run",
       status: "in_progress",
-      detailsUrl: "https://yaffle.local:6969/test-org/test-repo/env/main?runGroupId=" + groups[0].id,
+      detailsUrl:
+        "https://yaffle.local:6969/app/test-org/test-repo/env/main?runGroupId=" + groups[0].id,
       title: "Pending",
-      summary: "Yaffle accepted this commit and is preparing Terraform runs.",
+      summary:
+        `${getRunGroupCheckSummary("pending")}\n\n` +
+        `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/main?runGroupId=${groups[0].id})`,
     })
   })
 
@@ -331,9 +338,12 @@ describe("run-group-checks", () => {
     expect(mockUpdateCheckRun).toHaveBeenCalledWith(0, "test-org", "test-repo", 123, {
       status: "completed",
       conclusion: "success",
-      detailsUrl: "https://yaffle.local:6969/test-org/test-repo/env/pr-42?runGroupId=" + groups[0].id,
+      detailsUrl:
+        "https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=" + groups[0].id,
       title: "Succeeded",
-      summary: "Yaffle completed all Terraform runs for this commit.",
+      summary:
+        `${getRunGroupCheckSummary("success")}\n\n` +
+        `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${groups[0].id})`,
     })
 
     const updatedGroups = await db.select().from(runGroups)
@@ -359,9 +369,12 @@ describe("run-group-checks", () => {
     expect(mockUpdateCheckRun).toHaveBeenCalledWith(0, "test-org", "test-repo", 123, {
       status: "completed",
       conclusion: "failure",
-      detailsUrl: "https://yaffle.local:6969/test-org/test-repo/env/main?runGroupId=" + groups[0].id,
+      detailsUrl:
+        "https://yaffle.local:6969/app/test-org/test-repo/env/main?runGroupId=" + groups[0].id,
       title: "Failed",
-      summary: "Yaffle failed while processing this commit.",
+      summary:
+        `${getRunGroupCheckSummary("failure")}\n\n` +
+        `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/main?runGroupId=${groups[0].id})`,
     })
   })
 })

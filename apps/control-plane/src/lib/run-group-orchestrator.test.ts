@@ -118,9 +118,11 @@ describe("run-group-orchestrator", () => {
       name: "Yaffle / run",
       status: "completed",
       conclusion: "failure",
-      detailsUrl: `https://yaffle.local:6969/test-org/test-repo/env/pr-42?runGroupId=${runGroup.id}`,
+      detailsUrl: `https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${runGroup.id}`,
       title: "Failed due to plan limits",
-      summary: "Free tier limit: 1 concurrent preview branches. You have 1 active. Upgrade to Pro at https://yaffle.local:6969/test-org/settings/billing for unlimited previews.",
+      summary:
+        "Free tier limit: 1 concurrent preview branches. You have 1 active. Upgrade to Pro at https://yaffle.local:6969/test-org/settings/billing for unlimited previews.\n\n" +
+        `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${runGroup.id})`,
     })
   })
 })

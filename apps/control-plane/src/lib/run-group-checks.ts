@@ -5,17 +5,13 @@ import type { WebhookContext } from "@yaffle/shared"
 import { db } from "./db.ts"
 import { getEnv } from "./env.ts"
 import { createCheckRun, updateCheckRun } from "./github.ts"
+import { getRunGroupCheckSummary } from "./run-group-check-copy.ts"
 import { logger } from "./telemetry.ts"
 import { findGithubInstallationsForOrg } from "../db/queries/organizations.ts"
 import { findRepoByInstallationAndName } from "../db/queries/repositories.ts"
 import { iacJobs, organizations, runGroups, workspaceDeployments } from "../db/schema.ts"
 
 const CHECK_NAME = "Yaffle / run"
-
-const PENDING_SUMMARY = "Yaffle accepted this commit and is preparing Terraform runs."
-const SUCCESS_SUMMARY = "Yaffle completed all Terraform runs for this commit."
-const FAILURE_SUMMARY = "Yaffle failed while processing this commit."
-const CANCELLED_SUMMARY = "Yaffle did not complete all Terraform runs for this commit."
 
 interface RunGroupCheckContext {
   id: string
@@ -54,7 +50,7 @@ export async function createPendingRunGroupCheck(
       status: "in_progress",
       detailsUrl,
       title: "Pending",
-      summary: PENDING_SUMMARY,
+      summary: formatCheckSummary(getRunGroupCheckSummary("pending"), detailsUrl),
     })
 
     await db
@@ -128,8 +124,11 @@ export async function completeRunGroupCheck(params: {
   const repoRecord = await findRepoByInstallationAndName(installation.installationId, context.repo)
   const owner = repoRecord?.fullName.split("/")[0] ?? installation.githubOrgLogin
   const title = params.title ?? defaultTitleForConclusion(params.conclusion)
-  const summary = params.summary ?? defaultSummaryForConclusion(params.conclusion)
   const detailsUrl = params.detailsUrl ?? buildRunGroupDetailsUrl(context)
+  const summary = formatCheckSummary(
+    params.summary ?? defaultSummaryForConclusion(params.conclusion),
+    detailsUrl,
+  )
 
   try {
     let checkRunId = context.checkRunId
@@ -252,23 +251,45 @@ function defaultTitleForConclusion(conclusion: "success" | "failure" | "cancelle
 function defaultSummaryForConclusion(conclusion: "success" | "failure" | "cancelled"): string {
   switch (conclusion) {
     case "success":
-      return SUCCESS_SUMMARY
+      return getRunGroupCheckSummary("success")
     case "failure":
-      return FAILURE_SUMMARY
+      return getRunGroupCheckSummary("failure")
     case "cancelled":
-      return CANCELLED_SUMMARY
+      return getRunGroupCheckSummary("cancelled")
   }
 }
 
 function buildRunGroupDetailsUrl(context: Pick<RunGroupCheckContext, "id" | "orgSlug" | "repo" | "environmentName">): string | undefined {
-  const baseUrl = getEnv().betterAuthUrl.trim().replace(/\/$/, "")
+  const baseUrl = getEnv().betterAuthUrl.trim()
   if (!baseUrl) {
     return undefined
   }
 
-  const url = new URL(
-    `${baseUrl}/${encodeURIComponent(context.orgSlug)}/${encodeURIComponent(context.repo)}/env/${encodeURIComponent(context.environmentName)}`,
-  )
+  const url = new URL(baseUrl)
+  const basePath = url.pathname.replace(/\/$/, "")
+  const appBasePath = basePath.endsWith("/app") ? basePath : `${basePath}/app`
+
+  url.pathname =
+    `${appBasePath}/${encodeURIComponent(context.orgSlug)}` +
+    `/${encodeURIComponent(context.repo)}/env/${encodeURIComponent(context.environmentName)}`
+  url.search = ""
+
   url.searchParams.set("runGroupId", context.id)
   return url.toString()
+}
+
+function formatCheckSummary(summary: string, detailsUrl: string | undefined): string {
+  if (!detailsUrl) {
+    return summary
+  }
+
+  return `${summary}\n\n[${buildDetailsLabel(detailsUrl)}](${detailsUrl})`
+}
+
+function buildDetailsLabel(detailsUrl: string): string {
+  try {
+    return `View more details at ${new URL(detailsUrl).hostname}`
+  } catch {
+    return "View more details"
+  }
 }
