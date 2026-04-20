@@ -14,6 +14,11 @@ describe("provider credential signature inference", () => {
       signatures: DEFAULT_PROVIDER_CREDENTIAL_SIGNATURES,
     }))
       .toBe("databricks")
+
+    expect(inferProviderTypeFromEnvVarKeysWithSignatures(["HOOKDECK_API_KEY"], {
+      signatures: DEFAULT_PROVIDER_CREDENTIAL_SIGNATURES,
+    }))
+      .toBe("hookdeck")
   })
 
   test("infers provider from known prefixes", () => {

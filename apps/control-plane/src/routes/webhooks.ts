@@ -15,7 +15,10 @@ import {
   RequestBodyTooLargeError,
 } from "../lib/request-protection.ts"
 import { logger, getWebhookReceivedCounter, withSpan, SpanStatusCode } from "../lib/telemetry.ts"
-import { verifyWebhookSignature } from "../lib/webhook-verify.ts"
+import {
+  verifyGithubWebhookSignature,
+  verifyHookdeckWebhookSignature,
+} from "../lib/webhook-verify.ts"
 import { handleWebhookEvent } from "../lib/webhook-handler.ts"
 import {
   upsertGithubInstallation,
@@ -71,6 +74,95 @@ function markPrEventProcessed(repo: string, prNumber: number, action: string, sh
   return true
 }
 
+type WebhookIngress = "github" | "hookdeck"
+type WebhookVerificationMode = "github" | "hookdeck" | "hookdeck+github"
+
+interface VerifiedWebhookRequest {
+  ingress: WebhookIngress
+  verificationMode: WebhookVerificationMode
+  hookdeckVerified: boolean
+  hookdeckEventId?: string
+  hookdeckRequestId?: string
+  hookdeckSourceName?: string
+  hookdeckConnectionName?: string
+  hookdeckDestinationName?: string
+}
+
+function readVerifiedWebhookRequest(headers: Headers): {
+  hookdeckSignature: string | undefined
+  hookdeckSignature2: string | undefined
+  githubSignature: string | undefined
+  hookdeckVerified: boolean
+  hookdeckEventId: string | undefined
+  hookdeckRequestId: string | undefined
+  hookdeckSourceName: string | undefined
+  hookdeckConnectionName: string | undefined
+  hookdeckDestinationName: string | undefined
+} {
+  return {
+    hookdeckSignature: headers.get("x-hookdeck-signature") ?? undefined,
+    hookdeckSignature2: headers.get("x-hookdeck-signature-2") ?? undefined,
+    githubSignature: headers.get("x-hub-signature-256") ?? undefined,
+    hookdeckVerified: headers.get("x-hookdeck-verified") === "true",
+    hookdeckEventId: headers.get("x-hookdeck-eventid") ?? undefined,
+    hookdeckRequestId: headers.get("x-hookdeck-requestid") ?? undefined,
+    hookdeckSourceName: headers.get("x-hookdeck-source-name") ?? undefined,
+    hookdeckConnectionName: headers.get("x-hookdeck-connection-name") ?? undefined,
+    hookdeckDestinationName: headers.get("x-hookdeck-destination-name") ?? undefined,
+  }
+}
+
+async function verifyWebhookRequest(
+  payload: string,
+  headers: Headers,
+): Promise<VerifiedWebhookRequest> {
+  const env = getEnv()
+  const request = readVerifiedWebhookRequest(headers)
+
+  if (request.hookdeckSignature || request.hookdeckSignature2) {
+    await verifyHookdeckWebhookSignature(
+      payload,
+      request.hookdeckSignature,
+      request.hookdeckSignature2,
+      env.hookdeckWebhookSecret,
+    )
+
+    if (request.hookdeckVerified) {
+      return {
+        ingress: "hookdeck",
+        verificationMode: "hookdeck",
+        hookdeckVerified: true,
+        hookdeckEventId: request.hookdeckEventId,
+        hookdeckRequestId: request.hookdeckRequestId,
+        hookdeckSourceName: request.hookdeckSourceName,
+        hookdeckConnectionName: request.hookdeckConnectionName,
+        hookdeckDestinationName: request.hookdeckDestinationName,
+      }
+    }
+
+    await verifyGithubWebhookSignature(payload, request.githubSignature, env.githubWebhookSecret)
+
+    return {
+      ingress: "hookdeck",
+      verificationMode: "hookdeck+github",
+      hookdeckVerified: false,
+      hookdeckEventId: request.hookdeckEventId,
+      hookdeckRequestId: request.hookdeckRequestId,
+      hookdeckSourceName: request.hookdeckSourceName,
+      hookdeckConnectionName: request.hookdeckConnectionName,
+      hookdeckDestinationName: request.hookdeckDestinationName,
+    }
+  }
+
+  await verifyGithubWebhookSignature(payload, request.githubSignature, env.githubWebhookSecret)
+
+  return {
+    ingress: "github",
+    verificationMode: "github",
+    hookdeckVerified: false,
+  }
+}
+
 webhooksRoute.post("/github", async (c) => {
   const rateLimitResponse = enforceRateLimit(c, GITHUB_WEBHOOK_RATE_LIMIT)
   if (rateLimitResponse) {
@@ -78,7 +170,6 @@ webhooksRoute.post("/github", async (c) => {
   }
 
   const event = c.req.header("x-github-event")
-  const signature = c.req.header("x-hub-signature-256")
   const deliveryId = c.req.header("x-github-delivery")
 
   let body: string
@@ -94,10 +185,10 @@ webhooksRoute.post("/github", async (c) => {
     throw err
   }
 
+  let verifiedRequest: VerifiedWebhookRequest
   // Verify signature
   try {
-    const env = getEnv()
-    await verifyWebhookSignature(body, signature, env.githubWebhookSecret)
+    verifiedRequest = await verifyWebhookRequest(body, c.req.raw.headers)
   } catch (err) {
     logger.error("webhook verification failed", {
       "error": err instanceof Error ? err.message : String(err),
@@ -113,16 +204,42 @@ webhooksRoute.post("/github", async (c) => {
     logger.info(`duplicate webhook delivery ignored: ${deliveryId}`, {
       "webhook.event": event ?? "unknown",
       "webhook.delivery_id": deliveryId,
+      "webhook.ingress": verifiedRequest.ingress,
+      "webhook.verification_mode": verifiedRequest.verificationMode,
     })
     return c.json({ data: { ignored: true, reason: "duplicate delivery" } })
   }
 
-  getWebhookReceivedCounter().add(1, { event: event ?? "unknown" })
-  console.log(`[webhook] RECEIVED: event=${event} delivery=${deliveryId}`)
-  logger.info(`webhook received: event=${event} delivery=${deliveryId}`, {
+  const receivedAttrs: Record<string, string | number | boolean> = {
     "webhook.event": event ?? "unknown",
     "webhook.delivery_id": deliveryId ?? "unknown",
+    "webhook.ingress": verifiedRequest.ingress,
+    "webhook.verification_mode": verifiedRequest.verificationMode,
+    "hookdeck.verified": verifiedRequest.hookdeckVerified,
+  }
+  if (verifiedRequest.hookdeckEventId) {
+    receivedAttrs["hookdeck.event_id"] = verifiedRequest.hookdeckEventId
+  }
+  if (verifiedRequest.hookdeckRequestId) {
+    receivedAttrs["hookdeck.request_id"] = verifiedRequest.hookdeckRequestId
+  }
+  if (verifiedRequest.hookdeckSourceName) {
+    receivedAttrs["hookdeck.source_name"] = verifiedRequest.hookdeckSourceName
+  }
+  if (verifiedRequest.hookdeckConnectionName) {
+    receivedAttrs["hookdeck.connection_name"] = verifiedRequest.hookdeckConnectionName
+  }
+  if (verifiedRequest.hookdeckDestinationName) {
+    receivedAttrs["hookdeck.destination_name"] = verifiedRequest.hookdeckDestinationName
+  }
+
+  getWebhookReceivedCounter().add(1, {
+    event: event ?? "unknown",
+    ingress: verifiedRequest.ingress,
+    verification_mode: verifiedRequest.verificationMode,
   })
+  console.log(`[webhook] RECEIVED: event=${event} delivery=${deliveryId}`)
+  logger.info(`webhook received: event=${event} delivery=${deliveryId}`, receivedAttrs)
 
   const payload = JSON.parse(body)
 
@@ -166,7 +283,7 @@ webhooksRoute.post("/github", async (c) => {
       `webhook.process.pull_request.${action}`,
       async (span) => {
         span.setAttributes({
-          "webhook.delivery_id": deliveryId ?? "unknown",
+          ...receivedAttrs,
           "webhook.event": "pull_request",
           "webhook.action": action,
           "git.repository": `${context.owner}/${context.repo}`,
@@ -257,7 +374,7 @@ webhooksRoute.post("/github", async (c) => {
       "webhook.process.push",
       async (span) => {
         span.setAttributes({
-          "webhook.delivery_id": deliveryId ?? "unknown",
+          ...receivedAttrs,
           "webhook.event": "push",
           "git.repository": `${context.owner}/${context.repo}`,
           "git.commit.sha": afterSha,

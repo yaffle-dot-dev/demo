@@ -175,6 +175,7 @@ resource "aws_iam_role_policy" "ecs_execution_secrets" {
         ]
         Resource = [
           "${local.secrets_arn_prefix}/*",
+          local.hookdeck_webhook_secret_arn,
           local.stripe_api_key_secret_arn,
           local.stripe_webhook_signing_secret_arn,
         ]

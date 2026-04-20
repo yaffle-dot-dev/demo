@@ -72,4 +72,7 @@ locals {
   stripe_webhook_signing_secret_arn = module.shared.stripe_webhook_signing_secret_arn
   stripe_portal_configuration_id    = module.shared.stripe_portal_configuration_id
   stripe_pricing                    = module.shared.stripe_pricing
+
+  # Hookdeck
+  hookdeck_webhook_secret_arn = module.shared.hookdeck_webhook_secret_arn
 }

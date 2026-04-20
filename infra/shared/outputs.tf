@@ -41,6 +41,40 @@ output "github_actions_yaffle_api_token_secret_arn" {
 }
 
 # -----------------------------------------------------------------------------
+# Hookdeck
+# -----------------------------------------------------------------------------
+
+output "hookdeck_api_key_secret_arn" {
+  value       = aws_secretsmanager_secret.hookdeck_api_key.arn
+  description = "Secrets Manager ARN for the Hookdeck API key"
+}
+
+output "hookdeck_webhook_secret_arn" {
+  value       = aws_secretsmanager_secret.hookdeck_webhook_secret.arn
+  description = "Secrets Manager ARN for the Hookdeck webhook signing secret"
+}
+
+output "hookdeck_github_source_id" {
+  value       = hookdeck_source.github_app.id
+  description = "Hookdeck source ID for the GitHub App ingress"
+}
+
+output "hookdeck_github_source_url" {
+  value       = hookdeck_source.github_app.url
+  description = "Hookdeck source URL to configure as the GitHub App webhook endpoint"
+}
+
+output "hookdeck_production_destination_id" {
+  value       = hookdeck_destination.control_plane_production.id
+  description = "Hookdeck destination ID for the production control-plane receiver"
+}
+
+output "hookdeck_production_connection_id" {
+  value       = hookdeck_connection.github_app_to_control_plane_production.id
+  description = "Hookdeck connection ID for the default production delivery path"
+}
+
+# -----------------------------------------------------------------------------
 # Stripe
 # -----------------------------------------------------------------------------
 

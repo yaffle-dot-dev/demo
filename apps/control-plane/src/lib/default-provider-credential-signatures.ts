@@ -33,6 +33,16 @@ export const DEFAULT_PROVIDER_CREDENTIAL_SIGNATURES: ProviderCredentialSignature
     prefixEnvVars: [],
   },
   {
+    providerType: "hookdeck",
+    displayName: "Hookdeck",
+    suggestedCredentialProviderType: "envvar",
+    exactEnvVars: [
+      "HOOKDECK_API_KEY",
+      "HOOKDECK_API_BASE",
+    ],
+    prefixEnvVars: [],
+  },
+  {
     providerType: "tailscale",
     displayName: "Tailscale",
     suggestedCredentialProviderType: "envvar",

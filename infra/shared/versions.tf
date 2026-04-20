@@ -28,6 +28,10 @@ terraform {
       source  = "lukasaron/stripe"
       version = "~> 2.0"
     }
+    hookdeck = {
+      source  = "hookdeck/hookdeck"
+      version = "~> 2.0"
+    }
   }
 
   # Backend is injected by Yaffle via backend_override.tf
@@ -69,3 +73,7 @@ provider "tailscale" {}
 # Stripe provider for billing product catalog.
 # Authenticates via STRIPE_API_KEY env var (set by connection, not in state).
 provider "stripe" {}
+
+# Hookdeck provider for GitHub webhook ingress and routing.
+# Authenticates via HOOKDECK_API_KEY env var (set by connection, not in state).
+provider "hookdeck" {}

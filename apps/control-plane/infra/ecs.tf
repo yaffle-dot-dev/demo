@@ -106,6 +106,7 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "GITHUB_APP_ID", valueFrom = aws_secretsmanager_secret.app["github-app-id"].arn },
         { name = "GITHUB_APP_PRIVATE_KEY", valueFrom = aws_secretsmanager_secret.app["github-app-private-key"].arn },
         { name = "GITHUB_WEBHOOK_SECRET", valueFrom = aws_secretsmanager_secret.app["github-webhook-secret"].arn },
+        { name = "HOOKDECK_WEBHOOK_SECRET", valueFrom = local.hookdeck_webhook_secret_arn },
         { name = "BETTER_AUTH_SECRET", valueFrom = aws_secretsmanager_secret.app["better-auth-secret"].arn },
         { name = "GITHUB_OAUTH_CLIENT_ID", valueFrom = aws_secretsmanager_secret.app["github-oauth-client-id"].arn },
         { name = "GITHUB_OAUTH_CLIENT_SECRET", valueFrom = aws_secretsmanager_secret.app["github-oauth-client-secret"].arn },

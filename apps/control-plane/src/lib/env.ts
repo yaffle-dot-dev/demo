@@ -4,6 +4,7 @@ export interface AppEnv {
   githubAppId: string
   githubAppPrivateKey: string
   githubWebhookSecret: string
+  hookdeckWebhookSecret: string
   databaseUrl: string
   /** OTEL_EXPORTER_OTLP_ENDPOINT -- e.g. https://api.axiom.co */
   otelEndpoint: string
@@ -87,6 +88,7 @@ export function getEnv(): AppEnv {
     githubAppId: process.env.GITHUB_APP_ID ?? "",
     githubAppPrivateKey: loadPrivateKey(),
     githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? "",
+    hookdeckWebhookSecret: process.env.HOOKDECK_WEBHOOK_SECRET ?? "",
     databaseUrl: process.env.DATABASE_URL ?? "postgresql://yaffle@localhost:5432/yaffle_dev",
     otelEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "",
     otelHeaders: process.env.OTEL_EXPORTER_OTLP_HEADERS ?? "",
