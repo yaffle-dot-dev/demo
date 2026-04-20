@@ -5,19 +5,7 @@ import { describeTaskDefinition, renderImage, registerTaskDefinition, deployServ
 
 export async function deployWeb() {
   const { registry, tier, sha, dryRun } = await getConfig()
-
-  const [webOutputs, cpOutputs] = await Promise.all([
-    fetchOutputs({ workspace: "apps/web/infra", environment: "main", wait: false }),
-    fetchOutputs({ workspace: "apps/control-plane/infra", environment: "main", wait: false }),
-  ])
-
-  const cluster = cpOutputs.ecs_cluster_name as string
-  const service = webOutputs.web_service_name as string
-  const appDeployerRoleArn = webOutputs.app_deployer_role_arn as string
-
-  if (!appDeployerRoleArn) {
-    throw new Error("apps/web/infra must export app_deployer_role_arn for local deploys")
-  }
+  const { cluster, service, appDeployerRoleArn } = await resolveWebDeploymentTarget()
 
   const family = service
   const image = `${imageUri(registry, "web", tier)}:sha-${sha}`
@@ -37,6 +25,59 @@ export async function deployWeb() {
   const arn = await registerTaskDefinition(rendered)
   await deployService(cluster, service, arn)
   await waitForStability(cluster, service)
+}
+
+async function resolveWebDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
+  const overrideCluster = process.env.YAFFLE_WEB_CLUSTER?.trim()
+    || process.env.YAFFLE_ECS_CLUSTER?.trim()
+  const overrideService = process.env.YAFFLE_WEB_SERVICE?.trim()
+  const overrideAppDeployerRoleArn = process.env.YAFFLE_APP_DEPLOYER_ROLE_ARN?.trim()
+
+  if (overrideCluster || overrideService) {
+    if (!overrideCluster || !overrideService) {
+      throw new Error(
+        "Set both YAFFLE_WEB_CLUSTER (or YAFFLE_ECS_CLUSTER) and YAFFLE_WEB_SERVICE when overriding the web deploy target.",
+      )
+    }
+
+    if (!overrideAppDeployerRoleArn) {
+      throw new Error(
+        "Set YAFFLE_APP_DEPLOYER_ROLE_ARN when overriding YAFFLE_WEB_CLUSTER/YAFFLE_WEB_SERVICE.",
+      )
+    }
+
+    return {
+      cluster: overrideCluster,
+      service: overrideService,
+      appDeployerRoleArn: overrideAppDeployerRoleArn,
+    }
+  }
+
+  const [webOutputs, cpOutputs] = await Promise.all([
+    fetchOutputs({ workspace: "apps/web/infra", environment: "main", wait: false }),
+    fetchOutputs({ workspace: "apps/control-plane/infra", environment: "main", wait: false }),
+  ])
+
+  const cluster = typeof cpOutputs.ecs_cluster_name === "string"
+    ? cpOutputs.ecs_cluster_name.trim()
+    : ""
+  const service = typeof webOutputs.web_service_name === "string"
+    ? webOutputs.web_service_name.trim()
+    : ""
+  const appDeployerRoleArn = overrideAppDeployerRoleArn
+    || (typeof webOutputs.app_deployer_role_arn === "string"
+      ? webOutputs.app_deployer_role_arn.trim()
+      : "")
+
+  if (!cluster || !service || !appDeployerRoleArn) {
+    throw new Error(
+      "Could not determine web cluster/service. "
+      + "Set YAFFLE_WEB_CLUSTER (or YAFFLE_ECS_CLUSTER), YAFFLE_WEB_SERVICE, and YAFFLE_APP_DEPLOYER_ROLE_ARN, "
+      + "or ensure apps/control-plane/infra exports ecs_cluster_name and apps/web/infra exports web_service_name and app_deployer_role_arn through Yaffle outputs.",
+    )
+  }
+
+  return { cluster, service, appDeployerRoleArn }
 }
 
 if (import.meta.main) {
