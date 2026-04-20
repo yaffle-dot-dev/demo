@@ -111,25 +111,44 @@ export async function markJobBlocked(
   reason: string,
 ): Promise<void> {
   return withDbSpan("update", "iac_jobs", async () => {
-    await db
+    const rows = await db
       .update(iacJobs)
       .set({
         blockedAt: new Date(),
         blockedReason: reason,
       })
       .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "queued")))
+      .returning({
+        deploymentId: iacJobs.deploymentId,
+      })
+
+    const updated = rows[0]
+    if (updated) {
+      events.emitJobUpdate(jobId, updated.deploymentId)
+    }
   })
 }
 
 export async function clearJobBlocked(jobId: string): Promise<void> {
   return withDbSpan("update", "iac_jobs", async () => {
-    await db
+    const rows = await db
       .update(iacJobs)
       .set({
         blockedAt: null,
         blockedReason: null,
       })
-      .where(eq(iacJobs.id, jobId))
+      .where(and(
+        eq(iacJobs.id, jobId),
+        sql`${iacJobs.blockedAt} IS NOT NULL OR ${iacJobs.blockedReason} IS NOT NULL`,
+      ))
+      .returning({
+        deploymentId: iacJobs.deploymentId,
+      })
+
+    const updated = rows[0]
+    if (updated) {
+      events.emitJobUpdate(jobId, updated.deploymentId)
+    }
   })
 }
 

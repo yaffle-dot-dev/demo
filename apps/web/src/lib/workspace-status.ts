@@ -9,12 +9,12 @@ export function normalizeWorkspaceStatus(status: string): string {
 }
 
 export function getWorkspaceConnectionBlockReason(workspace: WorkspaceWithRuns): string | null {
-  const explicitReason = workspace.preview.blockedReason?.trim()
-  if (explicitReason) {
-    return explicitReason
-  }
-
   if (workspace.preview.connectionStatus === "missing") {
+    const explicitReason = workspace.preview.blockedReason?.trim()
+    if (explicitReason) {
+      return explicitReason
+    }
+
     if (workspace.preview.missingProviders.length > 0) {
       return `Missing connections: ${workspace.preview.missingProviders.join(", ")}`
     }
@@ -23,6 +23,11 @@ export function getWorkspaceConnectionBlockReason(workspace: WorkspaceWithRuns):
   }
 
   if (workspace.preview.connectionStatus === "conflict") {
+    const explicitReason = workspace.preview.blockedReason?.trim()
+    if (explicitReason) {
+      return explicitReason
+    }
+
     if (workspace.preview.conflictProviders.length > 0) {
       return `Conflicting connections: ${workspace.preview.conflictProviders.join(", ")}`
     }

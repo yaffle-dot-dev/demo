@@ -113,6 +113,14 @@ describe("workspace-status", () => {
     expect(getWorkspaceConnectionBlockReason(workspace)).toBe("Missing connections: aws")
   })
 
+  test("ignores stale blocked reasons once readiness is restored", () => {
+    const workspace = createWorkspace("infra", "pending")
+    workspace.preview.connectionStatus = "ready"
+    workspace.preview.blockedReason = "Missing connections: aws"
+
+    expect(getWorkspaceConnectionBlockReason(workspace)).toBeNull()
+  })
+
   test("detects upstream workspaces blocked by missing connections", () => {
     const graph: DependencyGraph = {
       workspaces: ["app", "infra"],

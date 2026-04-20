@@ -4,10 +4,13 @@ import { z } from "zod"
 
 import { listDeployments } from "../db/queries/workspace-deployments.ts"
 import { findLatestRunsForDeployments } from "../db/queries/tf-runs.ts"
-import { findLatestJobsForDeployments } from "../db/queries/iac-jobs.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
-import { getConnectionReadinessForDeploymentWithDeps, type ConnectionReadiness } from "../lib/execution-credentials.ts"
+import {
+  formatConnectionBlockedReason,
+  getConnectionReadinessForDeploymentWithDeps,
+  type ConnectionReadiness,
+} from "../lib/execution-credentials.ts"
 import { getRequiredProvidersForDeployment } from "../lib/provider-requirements.ts"
 
 const listQuerySchema = z.object({
@@ -206,10 +209,9 @@ async function fetchEnvironments(
   }
 
   // Batch fetch all data in parallel (5 queries instead of N*4)
-  const [applyRunsMap, allRunsMap, jobsMap, orgConnections] = await Promise.all([
+  const [applyRunsMap, allRunsMap, orgConnections] = await Promise.all([
     findLatestRunsForDeployments(deploymentIds, "apply"),
     findLatestRunsForDeployments(deploymentIds),
-    findLatestJobsForDeployments(deploymentIds),
     listConnectionsForOrg(orgId),
   ])
 
@@ -233,7 +235,6 @@ async function fetchEnvironments(
 
     const latestApply = applyRunsMap.get(preview.id)
     const latestRun = latestApply ?? allRunsMap.get(preview.id)
-    const latestJob = jobsMap.get(preview.id)
     const connectionReadiness = readinessMap.get(preview.id)!
 
     const workspace: EnvironmentWorkspace = {
@@ -244,7 +245,7 @@ async function fetchEnvironments(
       missingProviders: connectionReadiness.missingProviders,
       conflictProviders: connectionReadiness.conflictProviders,
       matchedConnections: connectionReadiness.matchedConnections,
-      blockedReason: latestJob?.blockedReason ?? null,
+      blockedReason: formatConnectionBlockedReason(connectionReadiness),
       headSha: preview.headSha,
       lastRunId: latestRun?.id ?? null,
       lastRunType: latestRun?.runType ?? null,

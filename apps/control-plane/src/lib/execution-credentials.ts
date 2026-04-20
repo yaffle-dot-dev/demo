@@ -36,6 +36,24 @@ export interface ConnectionReadiness {
   }>
 }
 
+export function formatConnectionBlockedReason(
+  readiness: Pick<ConnectionReadiness, "status" | "missingProviders" | "conflictProviders">,
+): string | null {
+  if (readiness.status === "missing") {
+    return readiness.missingProviders.length > 0
+      ? `Missing connections: ${readiness.missingProviders.join(", ")}`
+      : "Missing required connections"
+  }
+
+  if (readiness.status === "conflict") {
+    return readiness.conflictProviders.length > 0
+      ? `Conflicting connections: ${readiness.conflictProviders.join(", ")}`
+      : "Conflicting connections"
+  }
+
+  return null
+}
+
 interface ExecutionResolutionDeps {
   getProvidersForDeployment: (deployment: ProviderRequirementDeployment) => Promise<string[]>
   listConnectionsForOrg: (orgId: string) => Promise<Connection[]>

@@ -13,7 +13,6 @@ import {
   type TfRunListItem,
 } from "../db/queries/tf-runs.ts"
 import { getSpansForRun } from "../db/queries/resource-spans.ts"
-import { findLatestJobForDeployment, findLatestJobsForDeployments } from "../db/queries/iac-jobs.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import {
   findRunGroupsByIds,
@@ -34,6 +33,7 @@ import {
   logger,
 } from "../lib/telemetry.ts"
 import {
+  formatConnectionBlockedReason,
   getConnectionReadinessForDeployment,
   getConnectionReadinessForDeploymentWithDeps,
 } from "../lib/execution-credentials.ts"
@@ -163,11 +163,10 @@ reposRoute.get(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
         const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-        const latestJob = await findLatestJobForDeployment(deployment.id)
         const outputs = latestApply?.outputs ?? null
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
         return {
-          preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
+          preview: serializePreview(deployment, connectionReadiness),
           runs: runs.map(serializeRun),
           outputs,
         }
@@ -266,7 +265,6 @@ reposRoute.get(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
               const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-              const latestJob = await findLatestJobForDeployment(deployment.id)
               const outputs = latestApply?.outputs ?? null
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
 
@@ -278,7 +276,7 @@ reposRoute.get(
                 : undefined
 
               return {
-                preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
+                preview: serializePreview(deployment, connectionReadiness),
                 runs: runs.map(serializeRun),
                 outputs,
                 ...(resourceSpans ? { resourceSpans } : {}),
@@ -434,11 +432,10 @@ reposRoute.get(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
         const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-        const latestJob = await findLatestJobForDeployment(deployment.id)
         const outputs = latestApply?.outputs ?? null
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
         return {
-          preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
+          preview: serializePreview(deployment, connectionReadiness),
           runs: runs.map(serializeRun),
           outputs,
         }
@@ -523,7 +520,6 @@ reposRoute.get(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
               const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-              const latestJob = await findLatestJobForDeployment(deployment.id)
               const outputs = latestApply?.outputs ?? null
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
 
@@ -535,7 +531,7 @@ reposRoute.get(
                 : undefined
 
               return {
-                preview: serializePreview({ ...deployment, blockedReason: latestJob?.blockedReason ?? null }, connectionReadiness),
+                preview: serializePreview(deployment, connectionReadiness),
                 runs: runs.map(serializeRun),
                 outputs,
                 ...(resourceSpans ? { resourceSpans } : {}),
@@ -710,12 +706,18 @@ async function buildEnvironmentSnapshotData(params: {
   }
 
   if (params.detailLevel === "dag") {
-    const latestJobsMap = await findLatestJobsForDeployments(deploymentIds)
+    const readinessEntries = await Promise.all(
+      deployments.map(async (deployment) => [
+        deployment.id,
+        await getConnectionReadinessForDeployment(deployment),
+      ] as const),
+    )
+    const readinessByDeployment = new Map(readinessEntries)
 
     const workspaces = deployments.map((deployment) => ({
       preview: serializePreview(
-        { ...deployment, blockedReason: latestJobsMap.get(deployment.id)?.blockedReason ?? null },
-        defaultReadiness,
+        deployment,
+        readinessByDeployment.get(deployment.id) ?? defaultReadiness,
       ),
       runs: [],
       outputs: null,
@@ -744,12 +746,11 @@ async function buildEnvironmentSnapshotData(params: {
       .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
   )]
 
-  const [runsByDeployment, latestApplyByDeployment, latestJobsMap, orgConnections, runGroupsById] = await Promise.all([
+  const [runsByDeployment, latestApplyByDeployment, orgConnections, runGroupsById] = await Promise.all([
     visibleRunGroupIds.length > 0
       ? listRunsForDeployments(deploymentIds, { runGroupIds: visibleRunGroupIds })
       : listRunsForDeployments(deploymentIds),
     findLatestSuccessfulRunsForDeployments(deploymentIds, "apply"),
-    findLatestJobsForDeployments(deploymentIds),
     listConnectionsForOrg(params.orgId),
     findRunGroupsByIds(deploymentRunGroupIds),
   ])
@@ -807,7 +808,6 @@ async function buildEnvironmentSnapshotData(params: {
   const workspaces = deployments.map((deployment) => {
     const runs = runsByDeployment.get(deployment.id) ?? []
     const latestApply = latestApplyByDeployment.get(deployment.id)
-    const latestJob = latestJobsMap.get(deployment.id)
     const connectionReadiness = readinessByDeployment.get(deployment.id) ?? defaultReadiness
     const runningRun = params.includeResourceSpans
       ? runs.find((run) => run.status === "running")
@@ -818,7 +818,7 @@ async function buildEnvironmentSnapshotData(params: {
 
     return {
       preview: serializePreview(
-        { ...deployment, blockedReason: latestJob?.blockedReason ?? null },
+        deployment,
         connectionReadiness,
       ),
       runs: runs.map(serializeRun),
@@ -1222,7 +1222,7 @@ function serializePreview(p: {
     missingProviders: readiness.missingProviders,
     conflictProviders: readiness.conflictProviders,
     matchedConnections: readiness.matchedConnections,
-    blockedReason: p.blockedReason ?? null,
+    blockedReason: formatConnectionBlockedReason(readiness),
     stateKey: p.stateKey,
     mode: p.mode,
     requireApproval: p.requireApproval,
