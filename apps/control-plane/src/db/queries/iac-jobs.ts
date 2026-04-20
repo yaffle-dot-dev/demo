@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 
-import { and, desc, eq, inArray, notInArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import {
@@ -1225,6 +1225,13 @@ const JOB_TYPE_PRIORITY_SQL = sql<number>`
   END
 `
 
+const JOB_BLOCK_PRIORITY_SQL = sql<number>`
+  CASE
+    WHEN ${iacJobs.blockedAt} IS NULL THEN 0
+    ELSE 1
+  END
+`
+
 export interface SpawnResult {
   /** Jobs selected for spawning */
   jobs: IacJob[]
@@ -1393,7 +1400,7 @@ export async function findQueuedJobsForSpawning(
               : sql`${workspaceDeployments.runGroupId} IS NULL`,
           ),
         )
-        .orderBy(JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
+        .orderBy(JOB_BLOCK_PRIORITY_SQL, JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
         .limit(groupCapacity)
 
       const jobs: IacJob[] = groupJobs.map((row) => row.iac_jobs)
@@ -1521,7 +1528,7 @@ export async function findQueuedJobsForWarmRunner(
               : sql`${workspaceDeployments.runGroupId} IS NULL`,
           ),
         )
-        .orderBy(JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
+        .orderBy(JOB_BLOCK_PRIORITY_SQL, JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
         .limit(groupCapacity)
 
       const jobs = groupJobs.map((row) => row.iac_jobs)
@@ -1546,6 +1553,7 @@ export async function countEligibleQueuedJobsForOrg(
     const conditions = [
       eq(iacJobs.status, "queued"),
       eq(workspaceDeployments.orgId, orgId),
+      isNull(iacJobs.blockedAt),
       sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
     ] as const
 

@@ -3,6 +3,8 @@ import { describe, expect, test } from "bun:test"
 import type { DependencyGraph, WorkspaceWithRuns } from "$lib/api"
 
 import {
+  getBlockingUpstreamWorkspacePaths,
+  getWorkspaceConnectionBlockReason,
   getWorkspaceDisplayStatus,
   isWorkspaceActivelyRunningStatus,
   isWorkspaceInProgressStatus,
@@ -101,6 +103,27 @@ describe("workspace-status", () => {
       dependencyGraph: null,
       isViewingLatest: true,
     })).toBe("applying")
+  })
+
+  test("builds a connection block reason from connection readiness", () => {
+    const workspace = createWorkspace("infra", "pending")
+    workspace.preview.connectionStatus = "missing"
+    workspace.preview.missingProviders = ["aws"]
+
+    expect(getWorkspaceConnectionBlockReason(workspace)).toBe("Missing connections: aws")
+  })
+
+  test("detects upstream workspaces blocked by missing connections", () => {
+    const graph: DependencyGraph = {
+      workspaces: ["app", "infra"],
+      edges: [["app", "infra"]],
+    }
+    const upstream = createWorkspace("infra", "pending")
+    upstream.preview.connectionStatus = "missing"
+    upstream.preview.missingProviders = ["aws"]
+    const downstream = createWorkspace("app", "pending")
+
+    expect(getBlockingUpstreamWorkspacePaths("app", [downstream, upstream], graph)).toEqual(["infra"])
   })
 
   test("classifies active and in-progress statuses consistently", () => {

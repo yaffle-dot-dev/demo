@@ -41,3 +41,5 @@ crash.*.log
 tmp/**
 
 backups
+
+**/.DS_Store

@@ -2,6 +2,10 @@
   import type { WorkspaceWithRuns, DependencyGraph, Run } from "$lib/api"
   import { triggerApply, pauseApply } from "$lib/api"
   import { statusConfig } from "$lib/status"
+  import {
+    getBlockingUpstreamWorkspacePaths,
+    getWorkspaceConnectionBlockReason,
+  } from "$lib/workspace-status"
   import DagLayout from "./DagLayout.svelte"
   import type { DagPosition } from "./DagLayout.svelte"
 
@@ -390,6 +394,34 @@
     return false
   }
 
+  function getConnectionBlockedLabel(workspace: WorkspaceWithRuns): string | null {
+    const reason = getWorkspaceConnectionBlockReason(workspace)
+    if (!reason) return null
+
+    if (workspace.preview.connectionStatus === "missing") {
+      return workspace.preview.missingProviders.length === 1
+        ? `Missing ${workspace.preview.missingProviders[0]}`
+        : "Missing connections"
+    }
+
+    if (workspace.preview.connectionStatus === "conflict") {
+      return workspace.preview.conflictProviders.length === 1
+        ? `Conflicting ${workspace.preview.conflictProviders[0]}`
+        : "Conflicting connections"
+    }
+
+    return "Blocked"
+  }
+
+  function getUpstreamBlockedLabel(wsPath: string): string | null {
+    const upstreamPaths = getBlockingUpstreamWorkspacePaths(wsPath, workspaces, dependencyGraph)
+    if (upstreamPaths.length === 0) {
+      return null
+    }
+
+    return "Waiting on upstream"
+  }
+
   // Layout constants for cells
   const NODE_HEIGHT = 78
   const NODE_PAD_X = 6
@@ -414,6 +446,8 @@
   {@const displayStatus = workspaceStatuses[wsPath] ?? workspace.preview.status}
   {@const planSummary = getPlanSummary(workspace)}
   {@const isBlocked = hasFailedUpstream(wsPath)}
+  {@const connectionBlockedLabel = getConnectionBlockedLabel(workspace)}
+  {@const upstreamBlockedLabel = getUpstreamBlockedLabel(wsPath)}
   {@const readyForApply = isReadyForApply(workspace)}
   {@const requiresApproval = getRequiresApproval(workspace)}
   {@const isQueued = workspace.runs.length === 0 && (displayStatus === "queued" || displayStatus === "pending")}
@@ -545,6 +579,10 @@
         </text>
       {:else if planStatus === "success"}
         <text y="28" class="node-status text-status-ready">{statusIcon("success")} No changes</text>
+      {:else if connectionBlockedLabel}
+        <text y="28" class="node-status text-status-system-error">⚠ {connectionBlockedLabel}</text>
+      {:else if upstreamBlockedLabel}
+        <text y="28" class="node-status text-text-dim">{statusIcon("waiting")} {upstreamBlockedLabel}</text>
       {:else if isBlocked}
         <!-- Upstream failed - this workspace was skipped -->
         {@const skippedCfg = statusConfig("skipped")}

@@ -22,6 +22,7 @@ interface MockJob {
   jobType: string
   queuedAt: string
   runGroupId: string
+  blockedAt?: string | null
   spawnLeaseExpiresAt?: string | null
 }
 
@@ -40,6 +41,9 @@ function filterSpawnLeaseEligibleJobs(
 
 function sortJobsByPriority(jobs: MockJob[]): MockJob[] {
   return [...jobs].sort((a, b) => {
+    const blockDiff = (a.blockedAt ? 1 : 0) - (b.blockedAt ? 1 : 0)
+    if (blockDiff !== 0) return blockDiff
+
     const priorityDiff = jobTypePriority(a.jobType) - jobTypePriority(b.jobType)
     if (priorityDiff !== 0) return priorityDiff
     return new Date(a.queuedAt).getTime() - new Date(b.queuedAt).getTime()
@@ -131,6 +135,44 @@ describe("iac-jobs priority sorting", () => {
     // Apply should be first despite being queued last
     expect(sorted[0].id).toBe("apply-1")
     expect(sorted.map((j) => j.id)).toEqual(["apply-1", "plan-1", "plan-2", "plan-3"])
+  })
+
+  test("unblocked jobs are prioritized ahead of older blocked jobs", () => {
+    const jobs: MockJob[] = [
+      {
+        id: "blocked-plan-1",
+        jobType: "plan",
+        queuedAt: "2024-01-01T00:00:00Z",
+        runGroupId: "group-a",
+        blockedAt: "2024-01-01T00:05:00Z",
+      },
+      {
+        id: "blocked-plan-2",
+        jobType: "plan",
+        queuedAt: "2024-01-01T00:01:00Z",
+        runGroupId: "group-a",
+        blockedAt: "2024-01-01T00:05:00Z",
+      },
+      {
+        id: "blocked-plan-3",
+        jobType: "plan",
+        queuedAt: "2024-01-01T00:02:00Z",
+        runGroupId: "group-a",
+        blockedAt: "2024-01-01T00:05:00Z",
+      },
+      {
+        id: "ready-plan",
+        jobType: "plan",
+        queuedAt: "2024-01-01T00:03:00Z",
+        runGroupId: "group-a",
+        blockedAt: null,
+      },
+    ]
+
+    const sorted = sortJobsByPriority(jobs)
+
+    expect(sorted[0]?.id).toBe("ready-plan")
+    expect(sorted.slice(0, 3).map((job) => job.id)).toContain("ready-plan")
   })
 })
 

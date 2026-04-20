@@ -8,6 +8,54 @@ export function normalizeWorkspaceStatus(status: string): string {
   return status
 }
 
+export function getWorkspaceConnectionBlockReason(workspace: WorkspaceWithRuns): string | null {
+  const explicitReason = workspace.preview.blockedReason?.trim()
+  if (explicitReason) {
+    return explicitReason
+  }
+
+  if (workspace.preview.connectionStatus === "missing") {
+    if (workspace.preview.missingProviders.length > 0) {
+      return `Missing connections: ${workspace.preview.missingProviders.join(", ")}`
+    }
+
+    return "Missing required connections"
+  }
+
+  if (workspace.preview.connectionStatus === "conflict") {
+    if (workspace.preview.conflictProviders.length > 0) {
+      return `Conflicting connections: ${workspace.preview.conflictProviders.join(", ")}`
+    }
+
+    return "Conflicting connections"
+  }
+
+  return null
+}
+
+export function getBlockingUpstreamWorkspacePaths(
+  workspacePath: string,
+  workspaces: WorkspaceWithRuns[],
+  dependencyGraph: DependencyGraph | null,
+): string[] {
+  if (!dependencyGraph) {
+    return []
+  }
+
+  const upstreamPaths = dependencyGraph.edges
+    .filter(([source]) => source === workspacePath)
+    .map(([, target]) => target)
+
+  return upstreamPaths.filter((upstreamPath) => {
+    const upstreamWorkspace = workspaces.find((workspace) => workspace.preview.workspacePath === upstreamPath)
+    if (!upstreamWorkspace) {
+      return false
+    }
+
+    return getWorkspaceConnectionBlockReason(upstreamWorkspace) !== null
+  })
+}
+
 export function hasFailedUpstreamWorkspace(
   workspacePath: string,
   workspaces: WorkspaceWithRuns[],

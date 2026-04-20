@@ -10,6 +10,8 @@
   import type { RunViewCorrelation, RunViewTelemetryEvent } from "$lib/run-view-monitoring"
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
   import {
+    getBlockingUpstreamWorkspacePaths,
+    getWorkspaceConnectionBlockReason,
     getWorkspaceDisplayStatus,
     isWorkspaceActivelyRunningStatus,
     isWorkspaceInProgressStatus,
@@ -119,6 +121,7 @@
   const usingFreshPendingDag = $derived(
     !!viewedRunGroup
       && isLatestRunGroup
+      && workspaces.length === 0
       && workspacesWithRuns.length === 0
       && (viewedRunGroup.status === "scanning"
         || viewedRunGroup.status === "pending"
@@ -369,8 +372,49 @@
     filteredWorkspaces.find((w) => w.preview.workspacePath === selectedPath)
   )
 
+  const selectedWorkspaceConnectionBlockReason = $derived(
+    selectedWorkspace ? getWorkspaceConnectionBlockReason(selectedWorkspace) : null,
+  )
+
+  const selectedWorkspaceConnectionBlockLabel = $derived.by((): string | null => {
+    if (!selectedWorkspaceConnectionBlockReason) {
+      return null
+    }
+
+    if (
+      selectedWorkspace?.preview.connectionStatus === "conflict"
+      || selectedWorkspaceConnectionBlockReason.startsWith("Conflicting connections")
+    ) {
+      return "resolve connections"
+    }
+
+    if (selectedWorkspaceConnectionBlockReason.startsWith("Missing")) {
+      return "missing connections"
+    }
+
+    return "blocked"
+  })
+
+  const selectedWorkspaceBlockedUpstreamPaths = $derived.by((): string[] => {
+    if (!selectedWorkspace) {
+      return []
+    }
+
+    return getBlockingUpstreamWorkspacePaths(
+      selectedWorkspace.preview.workspacePath,
+      filteredWorkspaces,
+      viewedRunGroup?.dependencyGraph ?? null,
+    )
+  })
+
   const missingConnectionBlockedWorkspaces = $derived(
-    filteredWorkspaces.filter((workspace) => workspace.preview.connectionStatus === "missing"),
+    filteredWorkspaces.filter((workspace) => {
+      if (workspace.preview.connectionStatus === "missing") {
+        return true
+      }
+
+      return getWorkspaceConnectionBlockReason(workspace)?.startsWith("Missing connections:") ?? false
+    }),
   )
 
   const missingConnectionProviders = $derived.by((): string[] => {
@@ -1001,6 +1045,43 @@
       : null
   )
 
+  const selectedWorkspaceWaitingLabel = $derived.by((): string => {
+    if (selectedWorkspaceConnectionBlockReason) {
+      return selectedWorkspaceConnectionBlockLabel === "resolve connections"
+        ? "Resolve connections"
+        : selectedWorkspaceConnectionBlockLabel === "missing connections"
+          ? "Missing connections"
+          : "Blocked"
+    }
+
+    if (selectedWorkspaceBlockedUpstreamPaths.length > 0) {
+      return "Waiting on upstream"
+    }
+
+    return statusConfig(selectedWorkspaceDisplayStatus ?? "pending").label
+  })
+
+  const selectedWorkspaceWaitingMessage = $derived.by((): string => {
+    if (selectedWorkspaceConnectionBlockReason) {
+      return `${selectedWorkspaceConnectionBlockReason}. This workspace cannot start until the required connections are configured.`
+    }
+
+    if (selectedWorkspaceBlockedUpstreamPaths.length > 0) {
+      const label = selectedWorkspaceBlockedUpstreamPaths.length === 1 ? "workspace" : "workspaces"
+      return `This workspace is waiting on blocked upstream ${label}: ${selectedWorkspaceBlockedUpstreamPaths.join(", ")}.`
+    }
+
+    if (selectedWorkspaceDisplayStatus === "awaiting_approval") {
+      return "This workspace is paused and waiting for approval before apply can start."
+    }
+
+    if (selectedWorkspaceDisplayStatus === "planning" || selectedWorkspaceDisplayStatus === "applying") {
+      return "This workspace is starting up. Live run details will appear as soon as the runner claims work."
+    }
+
+    return "This workspace is waiting to be dispatched. It will start once its upstream dependencies complete."
+  })
+
   // Check if the selected workspace is waiting on run-group work without visible runs yet.
   const isQueuedWorkspace = $derived(
     selectedWorkspace
@@ -1235,7 +1316,11 @@ terraform {
                 </button>
               </div>
         <div class="flex items-center gap-2 mt-1">
-          {#if selectedWorkspace.preview.connectionStatus !== "missing" && selectedWorkspace.preview.connectionStatus !== "conflict"}
+          {#if selectedWorkspaceConnectionBlockReason}
+            <span class="text-xs text-status-system-error px-1.5 py-0.5 bg-status-system-error/10 rounded">
+              {selectedWorkspaceConnectionBlockLabel}
+            </span>
+          {:else if selectedWorkspace.preview.connectionStatus !== "missing" && selectedWorkspace.preview.connectionStatus !== "conflict"}
             <span class="text-xs {cfg.color}">{cfg.icon} {cfg.label}</span>
           {/if}
                 {#if selectedWorkspace.preview.requireApproval}
@@ -1244,9 +1329,9 @@ terraform {
                   </span>
                 {/if}
               </div>
-              {#if selectedWorkspace.preview.blockedReason}
+              {#if selectedWorkspaceConnectionBlockReason}
                 <div class="mt-2 text-xs text-text-dim">
-                  {selectedWorkspace.preview.blockedReason}
+                  {selectedWorkspaceConnectionBlockReason}
                 </div>
               {/if}
               {#if selectedWorkspace.preview.matchedConnections.length > 0}
@@ -1316,21 +1401,14 @@ terraform {
         </div>
 
         {#if isQueuedWorkspace}
-          {@const waitingCfg = statusConfig(selectedWorkspaceDisplayStatus ?? "pending")}
           <div class="flex flex-col items-center justify-center h-48 text-center">
             <svg class="w-10 h-10 text-text-dim/50 mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <circle cx="12" cy="12" r="10" stroke-dasharray="4 4"/>
               <path d="M12 6v6l4 2" stroke-linecap="round" stroke-linejoin="round"/>
             </svg>
-            <p class="text-sm text-text-muted mb-1">{waitingCfg.label}</p>
+            <p class="text-sm text-text-muted mb-1">{selectedWorkspaceWaitingLabel}</p>
             <p class="text-xs text-text-dim/75 max-w-sm">
-              {#if selectedWorkspaceDisplayStatus === "awaiting_approval"}
-                This workspace is paused and waiting for approval before apply can start.
-              {:else if selectedWorkspaceDisplayStatus === "planning" || selectedWorkspaceDisplayStatus === "applying"}
-                This workspace is starting up. Live run details will appear as soon as the runner claims work.
-              {:else}
-                This workspace is waiting to be dispatched. It will start once its upstream dependencies complete.
-              {/if}
+              {selectedWorkspaceWaitingMessage}
             </p>
           </div>
         {:else if tabs.length > 0}
