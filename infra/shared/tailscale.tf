@@ -89,3 +89,18 @@ resource "aws_secretsmanager_secret_version" "tailscale_github_actions_oauth" {
     oauth_secret    = tailscale_oauth_client.github_actions.key
   })
 }
+
+resource "aws_ssm_parameter" "tailscale_layer_arn" {
+  name  = "/yaffle/scanner/layers/tailscale"
+  type  = "String"
+  value = "placeholder"
+
+  lifecycle {
+    ignore_changes = [value]
+  }
+
+  tags = {
+    Name      = "yaffle-scanner-tailscale-layer-arn"
+    ManagedBy = "terraform"
+  }
+}

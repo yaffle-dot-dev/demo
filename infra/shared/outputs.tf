@@ -149,6 +149,11 @@ output "acm_certificate_validated_arn" {
 # Tailscale
 # -----------------------------------------------------------------------------
 
+output "tailscale_layer_ssm_parameter_arn" {
+  value       = aws_ssm_parameter.tailscale_layer_arn.arn
+  description = "SSM parameter ARN for the current scanner Tailscale Lambda layer"
+}
+
 output "tailscale_runner_authkey_secret_arn" {
   value       = aws_secretsmanager_secret.tailscale_runner_authkey.arn
   description = "Secrets Manager ARN for the ECS runner Tailscale auth secret"

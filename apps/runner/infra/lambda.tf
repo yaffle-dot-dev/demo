@@ -10,25 +10,9 @@
 # -----------------------------------------------------------------------------
 # Lambda Layer ARN Parameters
 # -----------------------------------------------------------------------------
-# Terraform owns the SSM parameters; CI publishes layers and overwrites the
-# values via `nix run .#publish-scanner-layers`. ignore_changes on value
-# prevents Terraform from reverting CI updates.
-
-resource "aws_ssm_parameter" "tailscale_layer_arn" {
-  count = var.tailscale_enabled ? 1 : 0
-
-  name  = "/yaffle/scanner/layers/tailscale"
-  type  = "String"
-  value = "placeholder"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-
-  tags = {
-    Name = "yaffle-scanner-tailscale-layer-arn"
-  }
-}
+# Shared infra owns the SSM parameter; CI publishes layers and overwrites the
+# value via `nix run .#publish-scanner-layers`. Runner infra reads the current
+# layer ARN from Parameter Store.
 
 # -----------------------------------------------------------------------------
 # Lambda Layers
@@ -41,7 +25,7 @@ locals {
   # TODO: Axiom telemetry extension — need to verify correct arm64 layer version
   # axiom_layer_arn = "arn:aws:lambda:${var.aws_region}:694952825951:layer:axiom-extension-arm64:VERSION"
 
-  tailscale_layer_value = var.tailscale_enabled ? aws_ssm_parameter.tailscale_layer_arn[0].value : ""
+  tailscale_layer_value = var.tailscale_enabled && local.tailscale_layer_ssm_parameter_arn != null ? data.aws_ssm_parameter.tailscale_layer_arn[0].value : ""
 
   # Only include custom layers if they've been published (not still "placeholder")
   scanner_layers = compact(concat(

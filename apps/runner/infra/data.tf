@@ -12,6 +12,11 @@ module "shared" {
   source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
+data "aws_ssm_parameter" "tailscale_layer_arn" {
+  count = var.tailscale_enabled && local.tailscale_layer_ssm_parameter_arn != null ? 1 : 0
+  name  = split(":parameter", local.tailscale_layer_ssm_parameter_arn)[1]
+}
+
 # -----------------------------------------------------------------------------
 # Core Infrastructure (VPC, ECS cluster)
 # -----------------------------------------------------------------------------
@@ -39,5 +44,6 @@ locals {
   private_subnet_ids                  = local._core.private_subnet_ids
   ecs_cluster_arn                     = local._core.ecs_cluster_arn
   ecs_cluster_name                    = local._core.ecs_cluster_name
+  tailscale_layer_ssm_parameter_arn   = try(module.shared.tailscale_layer_ssm_parameter_arn, null)
   tailscale_runner_authkey_secret_arn = try(module.shared.tailscale_runner_authkey_secret_arn, null)
 }

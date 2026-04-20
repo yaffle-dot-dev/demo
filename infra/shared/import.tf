@@ -232,6 +232,12 @@ import {
 
 import {
   for_each = local.import_main
+  to       = aws_ssm_parameter.tailscale_layer_arn
+  id       = "/yaffle/scanner/layers/tailscale"
+}
+
+import {
+  for_each = local.import_main
   to       = tailscale_acl.policy
   id       = "ba998ec7-d1ed-73b3-55b1-c313bbca590b"
 }
