@@ -11,7 +11,7 @@
 # =============================================================================
 
 locals {
-  hookdeck_production_webhook_url = "https://api.${var.domain}/api/webhooks/github"
+  hookdeck_webhook_url = "https://api.${var.domain}/api/webhooks/github"
 }
 
 resource "aws_secretsmanager_secret" "hookdeck_api_key" {
@@ -55,23 +55,23 @@ resource "aws_secretsmanager_secret_version" "hookdeck_webhook_secret" {
 }
 
 resource "hookdeck_source" "github_app" {
-  name        = "github-app"
+  name        = "yaffle-github-app"
   type        = "GITHUB"
   description = "GitHub App webhook ingress for Yaffle"
 }
 
-resource "hookdeck_destination" "control_plane_production" {
-  name        = "yaffle-control-plane-production"
+resource "hookdeck_destination" "control_plane" {
+  name        = "yaffle-control-plane-${var.environment}"
   type        = "HTTP"
-  description = "Production Yaffle control-plane GitHub webhook receiver"
+  description = "Yaffle control-plane GitHub webhook receiver"
   config = jsonencode({
-    url = local.hookdeck_production_webhook_url
+    url = local.hookdeck_webhook_url
   })
 }
 
-resource "hookdeck_connection" "github_app_to_control_plane_production" {
-  name           = "github-app-to-control-plane-production"
-  description    = "Default GitHub App webhook delivery path to production Yaffle"
+resource "hookdeck_connection" "github_app_to_control_plane" {
+  name           = "github-app-to-control-plane-${var.environment}"
+  description    = "Default GitHub App webhook delivery path to Yaffle"
   source_id      = hookdeck_source.github_app.id
-  destination_id = hookdeck_destination.control_plane_production.id
+  destination_id = hookdeck_destination.control_plane.id
 }

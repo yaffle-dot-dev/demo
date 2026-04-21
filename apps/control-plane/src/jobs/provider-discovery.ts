@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { type Job } from "../db/queries/jobs.ts"
+import { getEnv } from "../lib/env.ts"
 import { logger } from "../lib/telemetry.ts"
 
 const providerDiscoveryPayloadSchema = z.object({
@@ -11,18 +12,9 @@ const providerDiscoveryPayloadSchema = z.object({
   requestedByOrgId: z.string().uuid(),
 })
 
-function resolveCallbackUrl(): string {
-  const explicit = process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_URL
-  if (explicit) {
-    return explicit
-  }
-
-  const baseUrl = process.env.BETTER_AUTH_URL
-  if (!baseUrl) {
-    throw new Error("BETTER_AUTH_URL or YAFFLE_PROVIDER_DISCOVERY_CALLBACK_URL is required")
-  }
-
-  return `${baseUrl.replace(/\/$/, "")}/api/internal/provider-discovery/results`
+export function resolveProviderDiscoveryCallbackUrl(): string {
+  const publicApiUrl = getEnv().publicApiUrl
+  return `${publicApiUrl.replace(/\/$/, "")}/api/internal/provider-discovery/results`
 }
 
 export async function handleProviderDiscoveryJob(job: Job): Promise<void> {
@@ -51,7 +43,7 @@ export async function handleProviderDiscoveryJob(job: Job): Promise<void> {
   }
 
   const payload = parsed.data
-  const callbackUrl = resolveCallbackUrl()
+  const callbackUrl = resolveProviderDiscoveryCallbackUrl()
 
   const response = await fetch(endpoint, {
     method: "POST",

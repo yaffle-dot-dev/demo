@@ -48,9 +48,19 @@ output "agent_token_secret_id" {
   description = "Secrets Manager secret ID containing the provider discovery agent bearer token"
 }
 
+output "agent_token_secret_arn" {
+  value       = aws_secretsmanager_secret.agent_token.arn
+  description = "Secrets Manager ARN containing the provider discovery agent bearer token"
+}
+
 output "callback_secret_secret_id" {
   value       = aws_secretsmanager_secret.callback_secret.name
   description = "Secrets Manager secret ID containing the provider discovery callback secret"
+}
+
+output "callback_secret_secret_arn" {
+  value       = aws_secretsmanager_secret.callback_secret.arn
+  description = "Secrets Manager ARN containing the provider discovery callback secret"
 }
 
 output "github_token_secret_id" {

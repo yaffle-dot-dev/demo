@@ -7,6 +7,10 @@ if (process.env.YAFFLE_SKIP_TEST_DB_SETUP === "true") {
     process.env.BETTER_AUTH_URL = "https://yaffle.local:6969"
   }
 
+  if (!process.env.YAFFLE_PUBLIC_API_URL) {
+    process.env.YAFFLE_PUBLIC_API_URL = "https://yaffle.local:6969"
+  }
+
   if (!process.env.TRUSTED_ORIGINS) {
     process.env.TRUSTED_ORIGINS = "https://yaffle.local:6969,http://yaffle.local:5173,http://yaffle.local:3000"
   }
@@ -93,6 +97,10 @@ async function ensureDatabaseExists(databaseUrl: string): Promise<void> {
 
 if (!process.env.BETTER_AUTH_URL) {
   process.env.BETTER_AUTH_URL = "https://yaffle.local:6969"
+}
+
+if (!process.env.YAFFLE_PUBLIC_API_URL) {
+  process.env.YAFFLE_PUBLIC_API_URL = "https://yaffle.local:6969"
 }
 
 if (!process.env.TRUSTED_ORIGINS) {

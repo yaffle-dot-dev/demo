@@ -5,6 +5,8 @@ export interface AppEnv {
   githubAppPrivateKey: string
   githubWebhookSecret: string
   hookdeckWebhookSecret: string
+  /** YAFFLE_PUBLIC_API_URL -- Public base URL for the control plane API */
+  publicApiUrl: string
   databaseUrl: string
   /** OTEL_EXPORTER_OTLP_ENDPOINT -- e.g. https://api.axiom.co */
   otelEndpoint: string
@@ -83,12 +85,22 @@ function loadPrivateKey(): string {
   }
 }
 
+function requireEnv(name: string): string {
+  const value = process.env[name]?.trim() ?? ""
+  if (!value) {
+    throw new Error(`${name} must be configured`)
+  }
+
+  return value
+}
+
 export function getEnv(): AppEnv {
   return {
     githubAppId: process.env.GITHUB_APP_ID ?? "",
     githubAppPrivateKey: loadPrivateKey(),
     githubWebhookSecret: process.env.GITHUB_WEBHOOK_SECRET ?? "",
     hookdeckWebhookSecret: process.env.HOOKDECK_WEBHOOK_SECRET ?? "",
+    publicApiUrl: requireEnv("YAFFLE_PUBLIC_API_URL"),
     databaseUrl: process.env.DATABASE_URL ?? "postgresql://yaffle@localhost:5432/yaffle_dev",
     otelEndpoint: process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "",
     otelHeaders: process.env.OTEL_EXPORTER_OTLP_HEADERS ?? "",

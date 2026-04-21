@@ -23,7 +23,7 @@ import { uuidv7 } from "uuidv7"
 import { listLatestDeploymentsForOrg } from "../db/queries/workspace-deployments.ts"
 import { findMissingConnectionRequirements } from "../lib/provider-requirements.ts"
 import { connectionScopesOverlap, type ConnectionScopeConfig } from "../lib/connection-scope.ts"
-import { withSpan } from "../lib/telemetry.ts"
+import { logger, withSpan } from "../lib/telemetry.ts"
 import { inferProviderTypeFromEnvVarKeys } from "../lib/provider-credential-inference.ts"
 import { listActiveProviderCredentialSignatures } from "../db/queries/provider-credential-signatures.ts"
 import {
@@ -40,6 +40,7 @@ import {
 import { deprovisionOrgResources } from "../lib/org-provisioning.ts"
 import { claimPrivateBetaInvite } from "../db/queries/private-beta-invites.ts"
 import { getPrivateBetaAccessStatusForUser } from "../lib/private-beta.ts"
+import { emitConnectionReadinessChangedForOrg } from "../lib/connection-readiness-events.ts"
 
 export const orgsRoute = new Hono()
 
@@ -76,6 +77,15 @@ function buildScopeSummary(environmentScope: string[], workspaceScope: string[])
 function appendServerTiming(existing: string | null, name: string, durationMs: number): string {
   const metric = `${name};dur=${Math.max(0, durationMs).toFixed(1)}`
   return existing ? `${existing}, ${metric}` : metric
+}
+
+async function refreshConnectionReadinessForOrg(orgId: string): Promise<void> {
+  await emitConnectionReadinessChangedForOrg(orgId).catch((error) => {
+    logger.warn("connections.readiness_refresh_failed", {
+      orgId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  })
 }
 
 async function resolveConnectionProviderType(payload: z.infer<typeof createConnectionSchema>): Promise<string> {
@@ -954,6 +964,7 @@ orgsRoute.delete("/:slug/connections/:connectionId", async (c) => {
   }
 
   await deleteConnection(connection.id)
+  await refreshConnectionReadinessForOrg(org.id)
 
   return c.json({ data: { success: true } })
 })
@@ -1140,6 +1151,8 @@ orgsRoute.post("/:slug/connections", async (c) => {
     lastValidatedAt: new Date(),
     lastValidationError: null,
   })
+
+  await refreshConnectionReadinessForOrg(org.id)
 
   return c.json({
     data: {
@@ -1375,6 +1388,8 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
     lastValidatedAt: new Date(),
     lastValidationError: null,
   })
+
+  await refreshConnectionReadinessForOrg(org.id)
 
   return c.json({
     data: connection,

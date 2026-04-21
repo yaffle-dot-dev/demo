@@ -41,6 +41,10 @@ module "runner" {
   source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/apps--runner--infra/yaffle"
 }
 
+module "provider_discovery_agent" {
+  source = "${var.module_registry_host}/yaffle-dot-dev--yaffle/apps--provider-discovery-agent--infra/yaffle"
+}
+
 # -----------------------------------------------------------------------------
 # Convenience Locals
 # -----------------------------------------------------------------------------
@@ -75,4 +79,10 @@ locals {
 
   # Hookdeck
   hookdeck_webhook_secret_arn = module.shared.hookdeck_webhook_secret_arn
+
+  # Provider discovery
+  provider_discovery_agent_endpoint         = "${module.provider_discovery_agent.worker_url}/discover"
+  provider_discovery_agent_token_secret_arn = module.provider_discovery_agent.agent_token_secret_arn
+  provider_discovery_callback_secret_arn    = module.provider_discovery_agent.callback_secret_secret_arn
+  public_api_url                            = "https://${local.api_domain}"
 }

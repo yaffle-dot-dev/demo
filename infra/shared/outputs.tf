@@ -64,14 +64,14 @@ output "hookdeck_github_source_url" {
   description = "Hookdeck source URL to configure as the GitHub App webhook endpoint"
 }
 
-output "hookdeck_production_destination_id" {
-  value       = hookdeck_destination.control_plane_production.id
-  description = "Hookdeck destination ID for the production control-plane receiver"
+output "hookdeck_destination_id" {
+  value       = hookdeck_destination.control_plane.id
+  description = "Hookdeck destination ID for the control-plane receiver"
 }
 
-output "hookdeck_production_connection_id" {
-  value       = hookdeck_connection.github_app_to_control_plane_production.id
-  description = "Hookdeck connection ID for the default production delivery path"
+output "hookdeck_connection_id" {
+  value       = hookdeck_connection.github_app_to_control_plane.id
+  description = "Hookdeck connection ID for the default delivery path"
 }
 
 # -----------------------------------------------------------------------------

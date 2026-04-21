@@ -88,7 +88,7 @@ beforeEach(async () => {
   process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT = "https://provider-discovery-agent.test/discover"
   process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN = "provider-agent-token"
   process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET = "provider-callback-secret"
-  process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_URL = "https://yaffle.local/api/internal/provider-discovery/results"
+  process.env.YAFFLE_PUBLIC_API_URL = "https://yaffle.local"
 })
 
 afterEach(async () => {

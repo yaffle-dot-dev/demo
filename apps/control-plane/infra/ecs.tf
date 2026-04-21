@@ -70,6 +70,10 @@ resource "aws_ecs_task_definition" "control_plane" {
         # Auth
         { name = "BETTER_AUTH_URL", value = "https://${var.domain}" },
         { name = "TRUSTED_ORIGINS", value = "https://${var.domain}" },
+        { name = "YAFFLE_PUBLIC_API_URL", value = local.public_api_url },
+        # Provider discovery
+        { name = "YAFFLE_PROVIDER_DISCOVERY_ENABLED", value = "true" },
+        { name = "YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT", value = local.provider_discovery_agent_endpoint },
         # Private beta access control
         { name = "YAFFLE_PRIVATE_BETA_INVITES_REQUIRED", value = tostring(var.private_beta_invites_required) },
         { name = "YAFFLE_PRIVATE_BETA_OPERATOR_IDENTIFIERS", value = var.private_beta_operator_identifiers },
@@ -115,6 +119,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "OTEL_EXPORTER_OTLP_TRACES_HEADERS", valueFrom = aws_secretsmanager_secret.app["otel-traces-headers"].arn },
         { name = "STRIPE_API_KEY", valueFrom = local.stripe_api_key_secret_arn },
         { name = "STRIPE_WEBHOOK_SIGNING_SECRET", valueFrom = local.stripe_webhook_signing_secret_arn },
+        { name = "YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN", valueFrom = local.provider_discovery_agent_token_secret_arn },
+        { name = "YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET", valueFrom = local.provider_discovery_callback_secret_arn },
       ]
 
       logConfiguration = {
