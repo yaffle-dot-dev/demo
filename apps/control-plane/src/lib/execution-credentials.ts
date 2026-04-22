@@ -9,7 +9,9 @@ import { getConnectionSecret } from "./connection-secrets.ts"
 import { assumeOrgBrokerRole } from "./org-broker-auth.ts"
 import {
   connectionMatches,
+  getRequiredProviderRequirementsForDeployment,
   getRequiredProvidersForDeployment,
+  type ExtractedProviderRequirement,
   type ProviderRequirementDeployment,
 } from "./provider-requirements.ts"
 import { queueUnknownProviderDiscovery } from "./provider-discovery.ts"
@@ -56,8 +58,26 @@ export function formatConnectionBlockedReason(
 
 interface ExecutionResolutionDeps {
   getProvidersForDeployment: (deployment: ProviderRequirementDeployment) => Promise<string[]>
+  getProviderRequirementsForDeployment?: (
+    deployment: ProviderRequirementDeployment,
+  ) => Promise<ExtractedProviderRequirement[]>
   listConnectionsForOrg: (orgId: string) => Promise<Connection[]>
   resolveConnectionEnv: (connection: Connection) => Promise<Record<string, string>>
+}
+
+async function loadProviderRequirements(
+  deployment: ProviderRequirementDeployment,
+  deps: ExecutionResolutionDeps,
+): Promise<ExtractedProviderRequirement[]> {
+  if (deps.getProviderRequirementsForDeployment) {
+    return deps.getProviderRequirementsForDeployment(deployment)
+  }
+
+  const providers = await deps.getProvidersForDeployment(deployment)
+  return providers.map((providerType) => ({
+    providerType,
+    providerSource: null,
+  }))
 }
 
 async function resolveConnectionEnv(connection: Connection): Promise<Record<string, string>> {
@@ -128,6 +148,7 @@ export async function resolveExecutionCredentialsForDeployment(
 ): Promise<ExecutionCredentialResolution> {
   return resolveExecutionCredentialsForDeploymentWithDeps(deployment, {
     getProvidersForDeployment: getRequiredProvidersForDeployment,
+    getProviderRequirementsForDeployment: getRequiredProviderRequirementsForDeployment,
     listConnectionsForOrg,
     resolveConnectionEnv,
   })
@@ -137,22 +158,25 @@ export async function resolveExecutionCredentialsForDeploymentWithDeps(
   deployment: Pick<WorkspaceDeployment, "orgId" | "environmentName" | "workspacePath" | "runGroupId"> & ProviderRequirementDeployment,
   deps: ExecutionResolutionDeps,
 ): Promise<ExecutionCredentialResolution> {
-  const [providers, connections] = await Promise.all([
-    deps.getProvidersForDeployment(deployment),
+  const [requirements, connections] = await Promise.all([
+    loadProviderRequirements(deployment, deps),
     deps.listConnectionsForOrg(deployment.orgId),
   ])
 
   const missingProviders: string[] = []
+  const missingRequirements: ExtractedProviderRequirement[] = []
   const conflictProviders: string[] = []
   const env: Record<string, string> = {}
 
-  for (const provider of providers) {
+  for (const requirement of requirements) {
+    const provider = requirement.providerType
     const matches = connections.filter((connection) =>
       connectionMatches(connection, provider, deployment.environmentName, deployment.workspacePath)
     )
 
     if (matches.length === 0) {
       missingProviders.push(provider)
+      missingRequirements.push(requirement)
       continue
     }
 
@@ -168,7 +192,7 @@ export async function resolveExecutionCredentialsForDeploymentWithDeps(
     if (missingProviders.length > 0) {
       await queueUnknownProviderDiscovery({
         orgId: deployment.orgId,
-        providers: missingProviders,
+        providers: missingRequirements,
         repo: deployment.repo,
         environment: deployment.environmentName,
         workspacePath: deployment.workspacePath,
@@ -199,6 +223,7 @@ export async function getConnectionReadinessForDeployment(
 ): Promise<ConnectionReadiness> {
   return getConnectionReadinessForDeploymentWithDeps(deployment, {
     getProvidersForDeployment: getRequiredProvidersForDeployment,
+    getProviderRequirementsForDeployment: getRequiredProviderRequirementsForDeployment,
     listConnectionsForOrg,
     resolveConnectionEnv,
   })
@@ -208,10 +233,12 @@ export async function getConnectionReadinessForDeploymentWithDeps(
   deployment: Pick<WorkspaceDeployment, "orgId" | "environmentName" | "workspacePath" | "runGroupId"> & ProviderRequirementDeployment,
   deps: ExecutionResolutionDeps,
 ): Promise<ConnectionReadiness> {
-  const [providers, connections] = await Promise.all([
-    deps.getProvidersForDeployment(deployment),
+  const [requirements, connections] = await Promise.all([
+    loadProviderRequirements(deployment, deps),
     deps.listConnectionsForOrg(deployment.orgId),
   ])
+
+  const providers = requirements.map((requirement) => requirement.providerType)
 
   if (providers.length === 0) {
     return {
@@ -224,16 +251,19 @@ export async function getConnectionReadinessForDeploymentWithDeps(
   }
 
   const missingProviders: string[] = []
+  const missingRequirements: ExtractedProviderRequirement[] = []
   const conflictProviders: string[] = []
   const matchedConnections: Array<{ id: string; name: string; provider: string }> = []
 
-  for (const provider of providers) {
+  for (const requirement of requirements) {
+    const provider = requirement.providerType
     const matches = connections.filter((connection) =>
       connectionMatches(connection, provider, deployment.environmentName, deployment.workspacePath)
     )
 
     if (matches.length === 0) {
       missingProviders.push(provider)
+      missingRequirements.push(requirement)
     } else if (matches.length > 1) {
       conflictProviders.push(provider)
     } else {
@@ -248,7 +278,7 @@ export async function getConnectionReadinessForDeploymentWithDeps(
   if (missingProviders.length > 0) {
     await queueUnknownProviderDiscovery({
       orgId: deployment.orgId,
-      providers: missingProviders,
+      providers: missingRequirements,
       repo: deployment.repo,
       environment: deployment.environmentName,
       workspacePath: deployment.workspacePath,

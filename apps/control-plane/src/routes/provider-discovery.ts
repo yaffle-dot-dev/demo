@@ -73,6 +73,17 @@ providerDiscoveryRoute.post("/results", async (c) => {
   }
 
   const result = parsed.data
+  logger.info("provider_discovery.callback_received", {
+    requestId: result.requestId,
+    providerType: result.providerType,
+    status: result.status,
+    confidence: result.confidence,
+    exactEnvVarCount: result.exactEnvVars.length,
+    prefixEnvVarCount: result.prefixEnvVars.length,
+    sourceCount: result.sources.length,
+    reasoningSummary: result.reasoningSummary,
+  })
+
   const job = await findJobById(result.requestId)
   if (!job) {
     return c.json({ error: { code: "NOT_FOUND", message: "Discovery request not found" } }, 404)
@@ -110,6 +121,13 @@ providerDiscoveryRoute.post("/results", async (c) => {
     })
     return c.json({ error: { code: "INTERNAL_ERROR", message: "Failed to apply discovery result" } }, 500)
   }
+
+  logger.info("provider_discovery.callback_applied", {
+    requestId: result.requestId,
+    providerType: result.providerType,
+    status: result.status,
+    confidence: result.confidence,
+  })
 
   return c.json({ data: { accepted: true } }, 202)
 })

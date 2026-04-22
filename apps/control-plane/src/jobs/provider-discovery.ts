@@ -6,6 +6,7 @@ import { logger } from "../lib/telemetry.ts"
 
 const providerDiscoveryPayloadSchema = z.object({
   providerType: z.string().min(1),
+  providerSource: z.string().min(1).optional(),
   repo: z.string().min(1).optional(),
   environment: z.string().min(1).optional(),
   workspacePath: z.string().min(1).optional(),
@@ -44,6 +45,31 @@ export async function handleProviderDiscoveryJob(job: Job): Promise<void> {
 
   const payload = parsed.data
   const callbackUrl = resolveProviderDiscoveryCallbackUrl()
+  const dispatchPayload = {
+    requestId: job.id,
+    providerType: payload.providerType,
+    providerSource: payload.providerSource,
+    repo: payload.repo,
+    environment: payload.environment,
+    workspacePath: payload.workspacePath,
+    callbackUrl,
+    callbackAuth: {
+      mode: "hmac-sha256",
+      secretRef: "YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET",
+    },
+    callbackTtlSeconds: 600,
+  } as const
+
+  logger.info("provider_discovery.dispatching", {
+    jobId: job.id,
+    providerType: payload.providerType,
+    providerSource: payload.providerSource,
+    repo: payload.repo,
+    environment: payload.environment,
+    workspacePath: payload.workspacePath,
+    endpoint,
+    callbackUrl,
+  })
 
   const response = await fetch(endpoint, {
     method: "POST",
@@ -51,19 +77,7 @@ export async function handleProviderDiscoveryJob(job: Job): Promise<void> {
       "content-type": "application/json",
       authorization: `Bearer ${token}`,
     },
-    body: JSON.stringify({
-      requestId: job.id,
-      providerType: payload.providerType,
-      repo: payload.repo,
-      environment: payload.environment,
-      workspacePath: payload.workspacePath,
-      callbackUrl,
-      callbackAuth: {
-        mode: "hmac-sha256",
-        secretRef: "YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET",
-      },
-      callbackTtlSeconds: 600,
-    }),
+    body: JSON.stringify(dispatchPayload),
   })
 
   if (!response.ok) {
@@ -74,6 +88,10 @@ export async function handleProviderDiscoveryJob(job: Job): Promise<void> {
   logger.info("provider_discovery.dispatched", {
     jobId: job.id,
     providerType: payload.providerType,
+    providerSource: payload.providerSource,
+    repo: payload.repo,
+    environment: payload.environment,
+    workspacePath: payload.workspacePath,
     endpoint,
   })
 }

@@ -162,15 +162,33 @@ function rankProviderCandidate(a: ProviderCandidate, b: ProviderCandidate): numb
 
 async function resolveProviderCandidate(
   providerType: string,
+  providerSource: string | undefined,
   timeoutMs: number,
 ): Promise<ProviderCandidate | null> {
-  const normalized = normalizeProviderType(providerType)
-
-  const sourceMatch = normalized.match(/^([^/]+)\/([^/]+)$/)
+  const normalizedSource = providerSource ? normalizeProviderType(providerSource) : ""
+  const sourceMatch = normalizedSource.match(/^([^/]+)\/([^/]+)$/)
   if (sourceMatch) {
+    console.log("provider_discovery.candidate_resolved_from_source", {
+      providerType,
+      providerSource: normalizedSource,
+      namespace: sourceMatch[1],
+      name: sourceMatch[2],
+    })
+
     return {
       namespace: sourceMatch[1],
       name: sourceMatch[2],
+      source: `https://github.com/${sourceMatch[1]}/terraform-provider-${sourceMatch[2]}`,
+    }
+  }
+
+  const normalized = normalizeProviderType(providerType)
+
+  const providerTypeSourceMatch = normalized.match(/^([^/]+)\/([^/]+)$/)
+  if (providerTypeSourceMatch) {
+    return {
+      namespace: providerTypeSourceMatch[1],
+      name: providerTypeSourceMatch[2],
     }
   }
 
@@ -189,6 +207,15 @@ async function resolveProviderCandidate(
   const exactMatches = (payload.providers ?? [])
     .filter((candidate) => candidate.name.toLowerCase() === normalized)
     .sort(rankProviderCandidate)
+
+  console.log("provider_discovery.candidate_registry_search", {
+    providerType,
+    providerSource: normalizedSource || undefined,
+    candidateCount: exactMatches.length,
+    selected: exactMatches[0]
+      ? `${exactMatches[0].namespace}/${exactMatches[0].name}`
+      : null,
+  })
 
   return exactMatches[0] ?? null
 }
@@ -474,23 +501,49 @@ async function collectGitHubMarkdown(params: {
 
 async function collectProviderResearchMaterial(params: {
   providerType: string
+  providerSource?: string
   timeoutMs: number
   maxDocs: number
   githubToken?: string
 }): Promise<ProviderResearchMaterial | null> {
   const requestedProviderType = normalizeProviderType(params.providerType)
-  const candidate = await resolveProviderCandidate(requestedProviderType, params.timeoutMs)
+  const candidate = await resolveProviderCandidate(
+    requestedProviderType,
+    params.providerSource,
+    params.timeoutMs,
+  )
   if (!candidate) {
+    console.warn("provider_discovery.material_unresolved", {
+      providerType: requestedProviderType,
+      providerSource: params.providerSource,
+    })
     return null
   }
 
-  const details = await fetchProviderDetails(candidate, params.timeoutMs)
-  const sources: DiscoverySource[] = [
-    {
+  let details: ProviderDetails
+  const sources: DiscoverySource[] = []
+  try {
+    details = await fetchProviderDetails(candidate, params.timeoutMs)
+    sources.push({
       kind: "terraform_registry",
       url: `${TERRAFORM_REGISTRY_BASE_URL}/providers/${details.namespace}/${details.name}/latest/docs`,
-    },
-  ]
+    })
+  } catch (error) {
+    details = {
+      namespace: candidate.namespace,
+      name: candidate.name,
+      source: candidate.source ?? `https://github.com/${candidate.namespace}/terraform-provider-${candidate.name}`,
+      docs: [],
+    }
+
+    console.warn("provider_discovery.registry_details_unavailable", {
+      providerType: requestedProviderType,
+      providerSource: params.providerSource,
+      candidate: `${candidate.namespace}/${candidate.name}`,
+      error: error instanceof Error ? error.message : String(error),
+    })
+  }
+
   const documents: ProviderDocument[] = []
 
   const repo = parseGitHubRepo(details.source)
@@ -547,6 +600,14 @@ async function collectProviderResearchMaterial(params: {
       }
     }
   }
+
+  console.log("provider_discovery.material_collected", {
+    providerType: requestedProviderType,
+    providerSource: params.providerSource,
+    resolvedProvider: `${details.namespace}/${details.name}`,
+    sourceCount: dedupeSources(sources).length,
+    documentCount: documents.length,
+  })
 
   return {
     providerType: requestedProviderType,
@@ -615,6 +676,7 @@ function extractProviderCredentialsHeuristically(
 
 export async function discoverProviderCredentials(params: {
   providerType: string
+  providerSource?: string
   timeoutMs: number
   maxDocs: number
   githubToken?: string
@@ -634,6 +696,7 @@ export async function discoverProviderCredentials(params: {
 
   const material = await collectProviderResearchMaterial({
     providerType: requestedProviderType,
+    providerSource: params.providerSource,
     timeoutMs: params.timeoutMs,
     maxDocs: params.maxDocs,
     githubToken: params.githubToken,

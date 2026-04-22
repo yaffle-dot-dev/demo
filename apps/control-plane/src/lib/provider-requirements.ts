@@ -26,6 +26,11 @@ export interface ProviderRequirementDeployment {
   runGroupId: string | null
 }
 
+export interface ExtractedProviderRequirement {
+  providerType: string
+  providerSource: string | null
+}
+
 function providerDeploymentKey(deployment: ProviderRequirementDeployment): string {
   return `${deployment.runGroupId ?? "no-run-group"}:${deployment.workspacePath}`
 }
@@ -61,13 +66,58 @@ const PROVIDER_CACHE_TTL_MS = 10 * 60 * 1000
 const DEFAULT_EXTRACTION_CONCURRENCY = 4
 
 interface WorkspaceProviderCacheEntry {
-  providers: string[]
+  requirements: ExtractedProviderRequirement[]
   expiresAt: number
+}
+
+function normalizeRequirementKey(providerType: string): string {
+  return providerType.trim().toLowerCase()
+}
+
+function normalizeProviderRequirements(
+  requirements: Iterable<ExtractedProviderRequirement>,
+): ExtractedProviderRequirement[] {
+  const deduped = new Map<string, ExtractedProviderRequirement>()
+
+  for (const requirement of requirements) {
+    const providerType = requirement.providerType.trim().toLowerCase()
+    if (!providerType || NO_CREDENTIAL_PROVIDERS.has(providerType)) {
+      continue
+    }
+
+    const providerSource = requirement.providerSource?.trim().toLowerCase() ?? null
+    const existing = deduped.get(providerType)
+    if (!existing) {
+      deduped.set(providerType, {
+        providerType,
+        providerSource,
+      })
+      continue
+    }
+
+    if (!existing.providerSource && providerSource) {
+      deduped.set(providerType, {
+        providerType,
+        providerSource,
+      })
+    }
+  }
+
+  return [...deduped.values()].sort((a, b) => a.providerType.localeCompare(b.providerType))
 }
 
 const workspaceProviderCacheV2 = new Map<string, WorkspaceProviderCacheEntry>()
 
 function getCachedWorkspaceProviders(key: string): string[] | null {
+  const requirements = getCachedWorkspaceProviderRequirements(key)
+  if (!requirements) {
+    return null
+  }
+
+  return requirements.map((requirement) => requirement.providerType)
+}
+
+function getCachedWorkspaceProviderRequirements(key: string): ExtractedProviderRequirement[] | null {
   const cached = workspaceProviderCacheV2.get(key)
   if (!cached) {
     getConnectionRequirementsProviderCacheCounter().add(1, { result: "miss" })
@@ -83,10 +133,10 @@ function getCachedWorkspaceProviders(key: string): string[] | null {
   workspaceProviderCacheV2.delete(key)
   workspaceProviderCacheV2.set(key, cached)
   getConnectionRequirementsProviderCacheCounter().add(1, { result: "hit" })
-  return cached.providers
+  return cached.requirements
 }
 
-function setCachedWorkspaceProviders(key: string, providers: string[]): void {
+function setCachedWorkspaceProviders(key: string, requirements: ExtractedProviderRequirement[]): void {
   if (workspaceProviderCacheV2.size >= PROVIDER_CACHE_MAX_ENTRIES) {
     const oldestKey = workspaceProviderCacheV2.keys().next().value
     if (oldestKey) {
@@ -96,7 +146,7 @@ function setCachedWorkspaceProviders(key: string, providers: string[]): void {
   }
 
   workspaceProviderCacheV2.set(key, {
-    providers,
+    requirements,
     expiresAt: Date.now() + PROVIDER_CACHE_TTL_MS,
   })
 }
@@ -139,7 +189,7 @@ function isLocalModuleSource(source: string): boolean {
 
 async function extractProvidersFromDir(
   rootDir: string,
-  providers: Set<string>,
+  requirements: Map<string, ExtractedProviderRequirement>,
   visitedDirs: Set<string>,
 ): Promise<void> {
   const resolvedRoot = resolve(rootDir)
@@ -156,16 +206,34 @@ async function extractProvidersFromDir(
     PROVIDER_BLOCK_PATTERN.lastIndex = 0
     let providerMatch: RegExpExecArray | null
     while ((providerMatch = PROVIDER_BLOCK_PATTERN.exec(content)) !== null) {
-      providers.add(providerMatch[1])
+      const providerType = providerMatch[1].trim().toLowerCase()
+      if (!providerType) {
+        continue
+      }
+
+      const key = normalizeRequirementKey(providerType)
+      const existing = requirements.get(key)
+      requirements.set(key, {
+        providerType,
+        providerSource: existing?.providerSource ?? null,
+      })
     }
 
     REQUIRED_PROVIDER_PATTERN.lastIndex = 0
     let requiredMatch: RegExpExecArray | null
     while ((requiredMatch = REQUIRED_PROVIDER_PATTERN.exec(content)) !== null) {
       const localName = requiredMatch[1]
-      const source = requiredMatch[2]
+      const source = requiredMatch[2].trim().toLowerCase()
       const sourceName = source.split("/").pop() ?? localName
-      providers.add(sourceName)
+      const providerType = sourceName.trim().toLowerCase()
+      if (!providerType) {
+        continue
+      }
+
+      requirements.set(normalizeRequirementKey(providerType), {
+        providerType,
+        providerSource: source,
+      })
     }
 
     MODULE_SOURCE_PATTERN.lastIndex = 0
@@ -180,7 +248,7 @@ async function extractProvidersFromDir(
       try {
         const stats = await stat(modulePath)
         if (stats.isDirectory()) {
-          await extractProvidersFromDir(modulePath, providers, visitedDirs)
+          await extractProvidersFromDir(modulePath, requirements, visitedDirs)
         }
       } catch {
         continue
@@ -189,11 +257,11 @@ async function extractProvidersFromDir(
   }
 }
 
-async function extractProviders(workspaceDir: string): Promise<string[]> {
-  const providers = new Set<string>()
+async function extractProviderRequirements(workspaceDir: string): Promise<ExtractedProviderRequirement[]> {
+  const requirements = new Map<string, ExtractedProviderRequirement>()
   const visitedDirs = new Set<string>()
-  await extractProvidersFromDir(workspaceDir, providers, visitedDirs)
-  return [...providers].filter((provider) => !NO_CREDENTIAL_PROVIDERS.has(provider)).sort()
+  await extractProvidersFromDir(workspaceDir, requirements, visitedDirs)
+  return normalizeProviderRequirements(requirements.values())
 }
 
 export function connectionMatches(
@@ -234,6 +302,16 @@ export async function getRequiredProvidersForDeployment(
     runGroup?: Pick<RunGroup, "id" | "workspaceS3Key"> | null
   },
 ): Promise<string[]> {
+  const requirements = await getRequiredProviderRequirementsForDeployment(deployment, opts)
+  return requirements.map((requirement) => requirement.providerType)
+}
+
+export async function getRequiredProviderRequirementsForDeployment(
+  deployment: ProviderRequirementDeployment,
+  opts?: {
+    runGroup?: Pick<RunGroup, "id" | "workspaceS3Key"> | null
+  },
+): Promise<ExtractedProviderRequirement[]> {
   if (!deployment.runGroupId) {
     return []
   }
@@ -245,7 +323,7 @@ export async function getRequiredProvidersForDeployment(
   const workspaceS3Key = runGroup.workspaceS3Key
 
   const cacheKey = workspaceExtractionKey(workspaceS3Key, deployment.workspacePath)
-  const cached = getCachedWorkspaceProviders(cacheKey)
+  const cached = getCachedWorkspaceProviderRequirements(cacheKey)
   if (cached) {
     return cached
   }
@@ -261,9 +339,9 @@ export async function getRequiredProvidersForDeployment(
 
     try {
       const workspaceDir = join(repoDir, deployment.workspacePath)
-      const providers = await extractProviders(workspaceDir)
-      setCachedWorkspaceProviders(cacheKey, providers)
-      return providers
+      const requirements = await extractProviderRequirements(workspaceDir)
+      setCachedWorkspaceProviders(cacheKey, requirements)
+      return requirements
     } finally {
       await cleanupWorkspace(repoDir)
     }
@@ -347,16 +425,19 @@ export async function getRequiredProvidersForDeployments(
 
       try {
         await Promise.all(workspaces.map(async (workspace) => {
-          let providers: string[] = []
+          let requirements: ExtractedProviderRequirement[] = []
 
           try {
-            providers = await extractProviders(join(repoDir, workspace.workspacePath))
+            requirements = await extractProviderRequirements(join(repoDir, workspace.workspacePath))
           } catch {
-            providers = []
+            requirements = []
           }
 
-          setCachedWorkspaceProviders(workspace.workspaceCacheKey, providers)
-          providersByDeployment.set(workspace.deploymentKey, providers)
+          setCachedWorkspaceProviders(workspace.workspaceCacheKey, requirements)
+          providersByDeployment.set(
+            workspace.deploymentKey,
+            requirements.map((requirement) => requirement.providerType),
+          )
         }))
       } finally {
         await cleanupWorkspace(repoDir)

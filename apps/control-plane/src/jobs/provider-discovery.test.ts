@@ -25,6 +25,7 @@ const baseJob = {
   status: "pending",
   payload: {
     providerType: "hookdeck",
+    providerSource: "hookdeck/hookdeck",
     repo: "yaffle-dot-dev/yaffle",
     environment: "main",
     workspacePath: "infra/shared",
@@ -95,6 +96,7 @@ describe("handleProviderDiscoveryJob", () => {
     expect(requestBody).toMatchObject({
       requestId: baseJob.id,
       providerType: "hookdeck",
+      providerSource: "hookdeck/hookdeck",
       callbackUrl: "https://api.yaffle.test/api/internal/provider-discovery/results",
       callbackAuth: {
         mode: "hmac-sha256",

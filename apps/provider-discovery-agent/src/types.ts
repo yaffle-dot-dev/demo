@@ -3,6 +3,7 @@ import { z } from "zod"
 export const discoveryDispatchRequestSchema = z.object({
   requestId: z.string().uuid(),
   providerType: z.string().min(1),
+  providerSource: z.string().min(1).optional(),
   repo: z.string().min(1).optional(),
   environment: z.string().min(1).optional(),
   workspacePath: z.string().min(1).optional(),

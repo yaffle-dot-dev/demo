@@ -227,4 +227,48 @@ describe("discoverProviderCredentials", () => {
     expect(result.exactEnvVars).toContain("TFE_TOKEN")
     expect(result.prefixEnvVars).toContain("TFE_")
   })
+
+  test("uses providerSource to resolve namespaced providers when providerType is short", async () => {
+    globalThis.fetch = mock(async (input: string | URL | Request) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url
+
+      if (url === "https://registry.terraform.io/v1/providers/hashicorp/tfe") {
+        return new Response(JSON.stringify({
+          namespace: "hashicorp",
+          name: "tfe",
+          source: "https://github.com/hashicorp/terraform-provider-tfe",
+          tier: "official",
+          docs: [],
+        }), { status: 200 })
+      }
+
+      if (url === "https://api.github.com/repos/hashicorp/terraform-provider-tfe") {
+        return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 })
+      }
+
+      if (url === "https://api.github.com/repos/hashicorp/terraform-provider-tfe/git/trees/main?recursive=1") {
+        return new Response(JSON.stringify({ tree: [] }), { status: 200 })
+      }
+
+      if (url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/README.md") {
+        return new Response("Use TFE_TOKEN to authenticate.", { status: 200 })
+      }
+
+      throw new Error(`Unexpected fetch: ${url}`)
+    }) as unknown as typeof fetch
+
+    const result = await discoverProviderCredentials({
+      providerType: "tfe",
+      providerSource: "hashicorp/tfe",
+      timeoutMs: 5_000,
+      maxDocs: 5,
+    })
+
+    expect(result.status).toBe("succeeded")
+    expect(result.exactEnvVars).toContain("TFE_TOKEN")
+  })
 })

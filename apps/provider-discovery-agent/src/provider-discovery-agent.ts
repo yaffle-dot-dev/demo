@@ -145,8 +145,19 @@ export class ProviderDiscoveryAgent extends Agent<Env, ProviderDiscoveryAgentSta
     })
 
     try {
+      console.log("provider_discovery.callback_flow.started", {
+        requestId: request.requestId,
+        providerType: request.providerType,
+        providerSource: request.providerSource,
+        repo: request.repo,
+        environment: request.environment,
+        workspacePath: request.workspacePath,
+        callbackUrl: request.callbackUrl,
+      })
+
       const result = await discoverProviderCredentials({
         providerType: request.providerType,
+        providerSource: request.providerSource,
         timeoutMs,
         maxDocs,
         githubToken: this.env.GITHUB_TOKEN,
@@ -156,6 +167,7 @@ export class ProviderDiscoveryAgent extends Agent<Env, ProviderDiscoveryAgentSta
       console.log("provider_discovery.callback_flow.succeeded", {
         requestId: request.requestId,
         providerType: request.providerType,
+        providerSource: request.providerSource,
         status: result.status,
         confidence: result.confidence,
         exactEnvVarCount: result.exactEnvVars.length,

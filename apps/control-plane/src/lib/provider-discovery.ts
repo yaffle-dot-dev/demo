@@ -1,6 +1,7 @@
 import { z } from "zod"
 
 import { createJob, findActiveProviderDiscoveryJob } from "../db/queries/jobs.ts"
+import type { ExtractedProviderRequirement } from "./provider-requirements.ts"
 import {
   findProviderCredentialSignatureByType,
   listActiveProviderCredentialSignatures,
@@ -64,7 +65,7 @@ function markRecentlyQueued(key: string): void {
 
 export async function queueUnknownProviderDiscovery(params: {
   orgId: string
-  providers: string[]
+  providers: ExtractedProviderRequirement[]
   repo?: string
   environment?: string
   workspacePath?: string
@@ -76,8 +77,9 @@ export async function queueUnknownProviderDiscovery(params: {
   const activeSignatures = await listActiveProviderCredentialSignatures()
   const activeProviderSet = new Set(activeSignatures.map((signature) => signature.providerType.toLowerCase()))
 
-  for (const rawProviderType of params.providers) {
-    const providerType = normalizeProviderType(rawProviderType)
+  for (const requirement of params.providers) {
+    const providerType = normalizeProviderType(requirement.providerType)
+    const providerSource = requirement.providerSource?.trim().toLowerCase() || undefined
     if (!providerType) {
       continue
     }
@@ -107,6 +109,7 @@ export async function queueUnknownProviderDiscovery(params: {
       jobType: "provider_discovery",
       payload: {
         providerType,
+        providerSource,
         repo: params.repo,
         environment: params.environment,
         workspacePath: params.workspacePath,
@@ -118,6 +121,7 @@ export async function queueUnknownProviderDiscovery(params: {
     logger.info("provider_discovery.queued", {
       orgId: params.orgId,
       providerType,
+      providerSource,
       repo: params.repo,
       environment: params.environment,
       workspacePath: params.workspacePath,
@@ -133,6 +137,11 @@ export async function applyProviderDiscoveryResult(
       requestId: result.requestId,
       providerType: result.providerType,
       status: result.status,
+      confidence: result.confidence,
+      exactEnvVarCount: result.exactEnvVars.length,
+      prefixEnvVarCount: result.prefixEnvVars.length,
+      sourceCount: result.sources.length,
+      reasoningSummary: result.reasoningSummary,
     })
     return
   }
