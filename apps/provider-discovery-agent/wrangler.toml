@@ -9,6 +9,15 @@ enabled = true
 [observability.logs]
 enabled = true
 invocation_logs = true
+destinations = ["yaffle-logs"]
+head_sampling_rate = 1.0
+persist = true
+
+[observability.traces]
+enabled = true
+destinations = ["yaffle-traces"]
+head_sampling_rate = 1.0
+persist = true
 
 [ai]
 binding = "AI"

@@ -4,7 +4,7 @@
  * Simple job queue for async tasks like org provisioning.
  */
 
-import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm"
+import { and, asc, desc, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { jobs } from "../schema.ts"
@@ -185,6 +185,42 @@ export async function findActiveProviderDiscoveryJob(
         inArray(jobs.status, ["pending", "running"]),
         sql`${jobs.payload} ->> 'providerType' = ${normalizedProviderType}`,
       ))
+      .limit(1)
+
+    return rows[0]
+  })
+}
+
+export async function findRecentCompletedProviderDiscoveryJob(params: {
+  orgId: string
+  providerType: string
+  providerSource?: string
+  since: Date
+}): Promise<Job | undefined> {
+  const normalizedProviderType = params.providerType.trim().toLowerCase()
+  if (!normalizedProviderType) {
+    return undefined
+  }
+
+  const normalizedProviderSource = params.providerSource?.trim().toLowerCase()
+
+  return withDbSpan("select", "jobs", async () => {
+    const conditions = [
+      eq(jobs.orgId, params.orgId),
+      eq(jobs.jobType, "provider_discovery"),
+      inArray(jobs.status, ["completed", "failed"]),
+      gte(jobs.createdAt, params.since),
+      sql`${jobs.payload} ->> 'providerType' = ${normalizedProviderType}`,
+      normalizedProviderSource
+        ? sql`${jobs.payload} ->> 'providerSource' = ${normalizedProviderSource}`
+        : sql`${jobs.payload} ->> 'providerSource' is null`,
+    ]
+
+    const rows = await db
+      .select()
+      .from(jobs)
+      .where(and(...conditions))
+      .orderBy(desc(jobs.createdAt), desc(jobs.id))
       .limit(1)
 
     return rows[0]

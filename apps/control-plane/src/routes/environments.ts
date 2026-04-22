@@ -11,7 +11,10 @@ import {
   getConnectionReadinessForDeploymentWithDeps,
   type ConnectionReadiness,
 } from "../lib/execution-credentials.ts"
-import { getRequiredProvidersForDeployment } from "../lib/provider-requirements.ts"
+import {
+  getRequiredProviderRequirementsForDeployment,
+  getRequiredProvidersForDeployment,
+} from "../lib/provider-requirements.ts"
 
 const listQuerySchema = z.object({
   org: z.string().min(1),
@@ -221,6 +224,7 @@ async function fetchEnvironments(
     activePreviews.map(async (preview) => {
       const readiness = await getConnectionReadinessForDeploymentWithDeps(preview, {
         getProvidersForDeployment: getRequiredProvidersForDeployment,
+        getProviderRequirementsForDeployment: getRequiredProviderRequirementsForDeployment,
         listConnectionsForOrg: async () => orgConnections,
         resolveConnectionEnv: async () => ({}), // Not needed for readiness check
       })

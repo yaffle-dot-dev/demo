@@ -38,7 +38,8 @@ import {
   getConnectionReadinessForDeploymentWithDeps,
 } from "../lib/execution-credentials.ts"
 import {
-  getRequiredProvidersForDeployments,
+  getRequiredProviderRequirementsForDeployment,
+  getRequiredProvidersForDeployment,
 } from "../lib/provider-requirements.ts"
 import {
   buildStreamPayloadMeta,
@@ -755,19 +756,17 @@ async function buildEnvironmentSnapshotData(params: {
     findRunGroupsByIds(deploymentRunGroupIds),
   ])
 
-  const providersByDeployment = await getRequiredProvidersForDeployments(deployments, {
-    runGroupsById,
-  })
-
   const readinessEntries = await Promise.all(
     deployments.map(async (deployment) => {
       const readiness = await getConnectionReadinessForDeploymentWithDeps(deployment, {
         getProvidersForDeployment: (currentDeployment) =>
-          Promise.resolve(
-            providersByDeployment.get(
-              `${currentDeployment.runGroupId ?? "no-run-group"}:${currentDeployment.workspacePath}`,
-            ) ?? [],
-          ),
+          getRequiredProvidersForDeployment(currentDeployment, {
+            runGroup: runGroupsById.get(currentDeployment.runGroupId ?? "") ?? null,
+          }),
+        getProviderRequirementsForDeployment: (currentDeployment) =>
+          getRequiredProviderRequirementsForDeployment(currentDeployment, {
+            runGroup: runGroupsById.get(currentDeployment.runGroupId ?? "") ?? null,
+          }),
         listConnectionsForOrg: async () => orgConnections,
         resolveConnectionEnv: async () => ({}),
       })
