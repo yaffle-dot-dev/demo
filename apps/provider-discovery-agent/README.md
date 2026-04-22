@@ -41,7 +41,20 @@ bun run --filter=@yaffle/provider-discovery-agent dev
 
 ```bash
 bun run --filter=@yaffle/provider-discovery-agent deploy
+nix run .#build-provider-discovery-agent
+nix run .#deploy-provider-discovery-agent -- --env main
 ```
+
+For preview deploys:
+
+```bash
+nix run .#deploy-provider-discovery-agent -- --pr 123
+```
+
+The Nix deploy script resolves `apps/provider-discovery-agent/infra` outputs via Yaffle,
+uses env vars when present, and otherwise falls back to the Secrets Manager secret IDs
+exported by that workspace. Set `YAFFLE_API_URL` and `YAFFLE_API_TOKEN` so it can read
+workspace outputs.
 
 ## CI/CD
 

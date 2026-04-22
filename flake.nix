@@ -132,10 +132,22 @@
               exec ${pkgs.bun}/bin/bun run scripts/build-scanner.ts "$@"
             '');
           };
+          build-provider-discovery-agent = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "build-provider-discovery-agent" ''
+              exec ${pkgs.bun}/bin/bun run scripts/build-provider-discovery-agent.ts "$@"
+            '');
+          };
           deploy-scanner = {
             type = "app";
             program = toString (pkgs.writeShellScript "deploy-scanner" ''
               exec ${pkgs.bun}/bin/bun run scripts/deploy-scanner.ts "$@"
+            '');
+          };
+          deploy-provider-discovery-agent = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-provider-discovery-agent" ''
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-provider-discovery-agent.ts "$@"
             '');
           };
           test-scanner-lambda = {
