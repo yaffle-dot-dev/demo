@@ -59,19 +59,29 @@ output "hookdeck_github_source_id" {
   description = "Hookdeck source ID for the GitHub App ingress"
 }
 
+output "hookdeck_github_source_name" {
+  value       = local.hookdeck_github_source_name
+  description = "Hookdeck source name for the GitHub App ingress"
+}
+
 output "hookdeck_github_source_url" {
   value       = hookdeck_source.github_app.url
   description = "Hookdeck source URL to configure as the GitHub App webhook endpoint"
 }
 
-output "hookdeck_destination_id" {
+output "hookdeck_production_destination_id" {
   value       = hookdeck_destination.control_plane.id
-  description = "Hookdeck destination ID for the control-plane receiver"
+  description = "Hookdeck destination ID for the production control-plane receiver"
 }
 
-output "hookdeck_connection_id" {
-  value       = hookdeck_connection.github_app_to_control_plane.id
-  description = "Hookdeck connection ID for the default delivery path"
+output "hookdeck_production_destination_name" {
+  value       = local.hookdeck_production_destination_name
+  description = "Hookdeck destination name for the production control-plane receiver"
+}
+
+output "hookdeck_production_connection_name" {
+  value       = local.hookdeck_production_connection_name
+  description = "Hookdeck connection name reserved for the production delivery path"
 }
 
 # -----------------------------------------------------------------------------
