@@ -27,6 +27,7 @@ What exists now:
 - separate Secrets Manager secret for traffic-controller database credentials, readable only by traffic-controller Lambdas
 - versioned privileged SQL bootstrap for the scoped runtime role in `apps/traffic-controller/sql/0001_runtime_role_grants.sql`
 - wrapper script to apply grants and populate the runtime DB secret via `psql` + `aws` CLI
+- dedicated traffic-controller telemetry secret shells for traces and logs
 
 What still needs follow-up:
 
@@ -91,3 +92,22 @@ The current model is:
 - privileged bootstrap SQL creates/updates `yaffle_tc_runtime`
 - bootstrap updates the runtime DB URL secret
 - Lambdas read only that runtime secret
+
+## Axiom Telemetry
+
+Traffic-controller now supports dedicated OTEL log and trace export to Axiom.
+
+Create values for these two secrets after `apply`:
+
+- `yaffle/${environment}/traffic-controller/otlp-traces-headers`
+- `yaffle/${environment}/traffic-controller/otlp-logs-headers`
+
+Expected secret string format:
+
+```text
+Authorization=Bearer <AXIOM_TOKEN>,X-Axiom-Dataset=traffic-control-traces
+Authorization=Bearer <AXIOM_TOKEN>,X-Axiom-Dataset=traffic-control-logs
+```
+
+The Lambdas set `OTEL_EXPORTER_OTLP_ENDPOINT=https://api.axiom.co` and fetch the
+signal-specific headers from Secrets Manager at runtime.

@@ -37,6 +37,36 @@ resource "aws_secretsmanager_secret" "database_url" {
   }
 }
 
+locals {
+  telemetry_secrets = {
+    otlp-traces-headers = "OTLP traces headers for traffic-controller (${var.environment})"
+    otlp-logs-headers   = "OTLP logs headers for traffic-controller (${var.environment})"
+  }
+}
+
+resource "aws_secretsmanager_secret" "telemetry" {
+  for_each = local.telemetry_secrets
+
+  name        = "yaffle/${var.environment}/traffic-controller/${each.key}"
+  description = each.value
+
+  tags = {
+    Name                    = "yaffle-traffic-controller-${each.key}-${local.name_suffix}"
+    "yaffle:resource-class" = local.traffic_controller_resource_classes.secrets
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "telemetry_placeholder" {
+  for_each = local.telemetry_secrets
+
+  secret_id     = aws_secretsmanager_secret.telemetry[each.key].id
+  secret_string = "PLACEHOLDER-set-via-cli"
+
+  lifecycle {
+    ignore_changes = [secret_string]
+  }
+}
+
 resource "aws_sqs_queue" "reconcile_dlq" {
   name = local.dlq_name
 
@@ -140,6 +170,8 @@ resource "aws_iam_role_policy" "api_lambda_runtime" {
         ]
         Resource = [
           aws_secretsmanager_secret.database_url.arn,
+          aws_secretsmanager_secret.telemetry["otlp-traces-headers"].arn,
+          aws_secretsmanager_secret.telemetry["otlp-logs-headers"].arn,
           module.shared.hookdeck_api_key_secret_arn,
           data.aws_secretsmanager_secret.github_app_id.arn,
           data.aws_secretsmanager_secret.github_app_private_key.arn,
@@ -173,6 +205,8 @@ resource "aws_iam_role_policy" "reconcile_lambda_runtime" {
         ]
         Resource = [
           aws_secretsmanager_secret.database_url.arn,
+          aws_secretsmanager_secret.telemetry["otlp-traces-headers"].arn,
+          aws_secretsmanager_secret.telemetry["otlp-logs-headers"].arn,
           module.shared.hookdeck_api_key_secret_arn,
           data.aws_secretsmanager_secret.github_app_id.arn,
           data.aws_secretsmanager_secret.github_app_private_key.arn,
@@ -214,18 +248,22 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      TRAFFIC_CONTROL_DATABASE_URL_SECRET_ARN = aws_secretsmanager_secret.database_url.arn
-      GITHUB_APP_ID_SECRET_ARN                = data.aws_secretsmanager_secret.github_app_id.arn
-      GITHUB_APP_PRIVATE_KEY_SECRET_ARN       = data.aws_secretsmanager_secret.github_app_private_key.arn
-      HOOKDECK_API_KEY_SECRET_ARN             = module.shared.hookdeck_api_key_secret_arn
-      RECONCILE_QUEUE_URL                     = aws_sqs_queue.reconcile.id
-      YAFFLE_MONOREPO_OWNER                   = "yaffle-dot-dev"
-      YAFFLE_MONOREPO_REPO                    = "yaffle"
-      HOOKDECK_GITHUB_SOURCE_ID               = local.hookdeck_github_source_id
-      HOOKDECK_GITHUB_SOURCE_NAME             = local.hookdeck_github_source_name
-      HOOKDECK_PRODUCTION_DESTINATION_ID      = local.hookdeck_production_destination_id
-      HOOKDECK_PRODUCTION_DESTINATION_NAME    = local.hookdeck_production_destination_name
-      HOOKDECK_PRODUCTION_CONNECTION_NAME     = local.hookdeck_production_connection_name
+      TRAFFIC_CONTROL_DATABASE_URL_SECRET_ARN      = aws_secretsmanager_secret.database_url.arn
+      OTEL_EXPORTER_OTLP_ENDPOINT                  = "https://api.axiom.co"
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS_SECRET_ARN = aws_secretsmanager_secret.telemetry["otlp-traces-headers"].arn
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS_SECRET_ARN   = aws_secretsmanager_secret.telemetry["otlp-logs-headers"].arn
+      YAFFLE_ENV                                   = var.environment
+      GITHUB_APP_ID_SECRET_ARN                     = data.aws_secretsmanager_secret.github_app_id.arn
+      GITHUB_APP_PRIVATE_KEY_SECRET_ARN            = data.aws_secretsmanager_secret.github_app_private_key.arn
+      HOOKDECK_API_KEY_SECRET_ARN                  = module.shared.hookdeck_api_key_secret_arn
+      RECONCILE_QUEUE_URL                          = aws_sqs_queue.reconcile.id
+      YAFFLE_MONOREPO_OWNER                        = "yaffle-dot-dev"
+      YAFFLE_MONOREPO_REPO                         = "yaffle"
+      HOOKDECK_GITHUB_SOURCE_ID                    = local.hookdeck_github_source_id
+      HOOKDECK_GITHUB_SOURCE_NAME                  = local.hookdeck_github_source_name
+      HOOKDECK_PRODUCTION_DESTINATION_ID           = local.hookdeck_production_destination_id
+      HOOKDECK_PRODUCTION_DESTINATION_NAME         = local.hookdeck_production_destination_name
+      HOOKDECK_PRODUCTION_CONNECTION_NAME          = local.hookdeck_production_connection_name
     }
   }
 
@@ -251,18 +289,22 @@ resource "aws_lambda_function" "reconcile" {
 
   environment {
     variables = {
-      TRAFFIC_CONTROL_DATABASE_URL_SECRET_ARN = aws_secretsmanager_secret.database_url.arn
-      GITHUB_APP_ID_SECRET_ARN                = data.aws_secretsmanager_secret.github_app_id.arn
-      GITHUB_APP_PRIVATE_KEY_SECRET_ARN       = data.aws_secretsmanager_secret.github_app_private_key.arn
-      HOOKDECK_API_KEY_SECRET_ARN             = module.shared.hookdeck_api_key_secret_arn
-      RECONCILE_QUEUE_URL                     = aws_sqs_queue.reconcile.id
-      YAFFLE_MONOREPO_OWNER                   = "yaffle-dot-dev"
-      YAFFLE_MONOREPO_REPO                    = "yaffle"
-      HOOKDECK_GITHUB_SOURCE_ID               = local.hookdeck_github_source_id
-      HOOKDECK_GITHUB_SOURCE_NAME             = local.hookdeck_github_source_name
-      HOOKDECK_PRODUCTION_DESTINATION_ID      = local.hookdeck_production_destination_id
-      HOOKDECK_PRODUCTION_DESTINATION_NAME    = local.hookdeck_production_destination_name
-      HOOKDECK_PRODUCTION_CONNECTION_NAME     = local.hookdeck_production_connection_name
+      TRAFFIC_CONTROL_DATABASE_URL_SECRET_ARN      = aws_secretsmanager_secret.database_url.arn
+      OTEL_EXPORTER_OTLP_ENDPOINT                  = "https://api.axiom.co"
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS_SECRET_ARN = aws_secretsmanager_secret.telemetry["otlp-traces-headers"].arn
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS_SECRET_ARN   = aws_secretsmanager_secret.telemetry["otlp-logs-headers"].arn
+      YAFFLE_ENV                                   = var.environment
+      GITHUB_APP_ID_SECRET_ARN                     = data.aws_secretsmanager_secret.github_app_id.arn
+      GITHUB_APP_PRIVATE_KEY_SECRET_ARN            = data.aws_secretsmanager_secret.github_app_private_key.arn
+      HOOKDECK_API_KEY_SECRET_ARN                  = module.shared.hookdeck_api_key_secret_arn
+      RECONCILE_QUEUE_URL                          = aws_sqs_queue.reconcile.id
+      YAFFLE_MONOREPO_OWNER                        = "yaffle-dot-dev"
+      YAFFLE_MONOREPO_REPO                         = "yaffle"
+      HOOKDECK_GITHUB_SOURCE_ID                    = local.hookdeck_github_source_id
+      HOOKDECK_GITHUB_SOURCE_NAME                  = local.hookdeck_github_source_name
+      HOOKDECK_PRODUCTION_DESTINATION_ID           = local.hookdeck_production_destination_id
+      HOOKDECK_PRODUCTION_DESTINATION_NAME         = local.hookdeck_production_destination_name
+      HOOKDECK_PRODUCTION_CONNECTION_NAME          = local.hookdeck_production_connection_name
     }
   }
 

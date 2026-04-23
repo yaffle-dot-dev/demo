@@ -162,6 +162,7 @@ resource "aws_iam_role_policy" "app_deployer" {
         Effect = "Allow"
         Action = [
           "lambda:UpdateFunctionCode",
+          "lambda:InvokeFunction",
         ]
         Resource = [
           "arn:aws:lambda:*:${data.aws_caller_identity.current.account_id}:function:yaffle-scanner-*",
