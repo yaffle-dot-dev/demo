@@ -165,6 +165,8 @@ resource "aws_iam_role_policy" "app_deployer" {
         ]
         Resource = [
           "arn:aws:lambda:*:${data.aws_caller_identity.current.account_id}:function:yaffle-scanner-*",
+          "arn:aws:lambda:*:${data.aws_caller_identity.current.account_id}:function:yaffle-traffic-controller-api-*",
+          "arn:aws:lambda:*:${data.aws_caller_identity.current.account_id}:function:yaffle-traffic-controller-reconcile-*",
         ]
       },
     ]
