@@ -8,12 +8,23 @@ locals {
   reconcile_queue_name  = "yaffle-traffic-controller-reconcile-${local.name_suffix}"
   dlq_name              = "yaffle-traffic-controller-reconcile-dlq-${local.name_suffix}"
 
+  github_app_id_secret_name          = "yaffle/${var.environment}/github-app-id"
+  github_app_private_key_secret_name = "yaffle/${var.environment}/github-app-private-key"
+
   # Hookdeck runtime routing is controlled only from this service.
   hookdeck_github_source_id            = module.shared.hookdeck_github_source_id
   hookdeck_github_source_name          = module.shared.hookdeck_github_source_name
   hookdeck_production_destination_id   = module.shared.hookdeck_production_destination_id
   hookdeck_production_destination_name = module.shared.hookdeck_production_destination_name
   hookdeck_production_connection_name  = module.shared.hookdeck_production_connection_name
+}
+
+data "aws_secretsmanager_secret" "github_app_id" {
+  name = local.github_app_id_secret_name
+}
+
+data "aws_secretsmanager_secret" "github_app_private_key" {
+  name = local.github_app_private_key_secret_name
 }
 
 resource "aws_secretsmanager_secret" "database_url" {
@@ -130,6 +141,8 @@ resource "aws_iam_role_policy" "api_lambda_runtime" {
         Resource = [
           aws_secretsmanager_secret.database_url.arn,
           module.shared.hookdeck_api_key_secret_arn,
+          data.aws_secretsmanager_secret.github_app_id.arn,
+          data.aws_secretsmanager_secret.github_app_private_key.arn,
         ]
       },
     ]
@@ -161,6 +174,8 @@ resource "aws_iam_role_policy" "reconcile_lambda_runtime" {
         Resource = [
           aws_secretsmanager_secret.database_url.arn,
           module.shared.hookdeck_api_key_secret_arn,
+          data.aws_secretsmanager_secret.github_app_id.arn,
+          data.aws_secretsmanager_secret.github_app_private_key.arn,
         ]
       },
     ]
@@ -200,7 +215,12 @@ resource "aws_lambda_function" "api" {
   environment {
     variables = {
       TRAFFIC_CONTROL_DATABASE_URL_SECRET_ARN = aws_secretsmanager_secret.database_url.arn
+      GITHUB_APP_ID_SECRET_ARN                = data.aws_secretsmanager_secret.github_app_id.arn
+      GITHUB_APP_PRIVATE_KEY_SECRET_ARN       = data.aws_secretsmanager_secret.github_app_private_key.arn
+      HOOKDECK_API_KEY_SECRET_ARN             = module.shared.hookdeck_api_key_secret_arn
       RECONCILE_QUEUE_URL                     = aws_sqs_queue.reconcile.id
+      YAFFLE_MONOREPO_OWNER                   = "yaffle-dot-dev"
+      YAFFLE_MONOREPO_REPO                    = "yaffle"
       HOOKDECK_GITHUB_SOURCE_ID               = local.hookdeck_github_source_id
       HOOKDECK_GITHUB_SOURCE_NAME             = local.hookdeck_github_source_name
       HOOKDECK_PRODUCTION_DESTINATION_ID      = local.hookdeck_production_destination_id
@@ -232,7 +252,12 @@ resource "aws_lambda_function" "reconcile" {
   environment {
     variables = {
       TRAFFIC_CONTROL_DATABASE_URL_SECRET_ARN = aws_secretsmanager_secret.database_url.arn
+      GITHUB_APP_ID_SECRET_ARN                = data.aws_secretsmanager_secret.github_app_id.arn
+      GITHUB_APP_PRIVATE_KEY_SECRET_ARN       = data.aws_secretsmanager_secret.github_app_private_key.arn
+      HOOKDECK_API_KEY_SECRET_ARN             = module.shared.hookdeck_api_key_secret_arn
       RECONCILE_QUEUE_URL                     = aws_sqs_queue.reconcile.id
+      YAFFLE_MONOREPO_OWNER                   = "yaffle-dot-dev"
+      YAFFLE_MONOREPO_REPO                    = "yaffle"
       HOOKDECK_GITHUB_SOURCE_ID               = local.hookdeck_github_source_id
       HOOKDECK_GITHUB_SOURCE_NAME             = local.hookdeck_github_source_name
       HOOKDECK_PRODUCTION_DESTINATION_ID      = local.hookdeck_production_destination_id
