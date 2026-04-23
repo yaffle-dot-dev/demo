@@ -92,6 +92,12 @@ export const reconcileLeaseEventSchema = z.object({
   leaseId: z.string().min(1),
 })
 
+export const reconcileRouteableDeploymentEventSchema = z.object({
+  command: z.literal("reconcile_routeable_deployment"),
+  operationId: z.string().min(1),
+  routeableDeploymentId: z.string().min(1),
+})
+
 export const sweepDriftEventSchema = z.object({
   command: z.literal("sweep_drift"),
   requestId: z.string().min(1),
@@ -104,6 +110,7 @@ export const trafficControllerApiCommandSchema = z.discriminatedUnion("command",
 ])
 
 export const trafficControllerReconcileCommandSchema = z.discriminatedUnion("command", [
+  reconcileRouteableDeploymentEventSchema,
   reconcileLeaseEventSchema,
   sweepDriftEventSchema,
 ])

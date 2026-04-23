@@ -12,6 +12,26 @@ This service is responsible for:
 
 This service is intentionally **not** customer-facing.
 
+## Build And Deploy
+
+Build the Lambda bundles:
+
+```bash
+nix run .#build-tc
+```
+
+Deploy the traffic-controller Lambdas to `main`:
+
+```bash
+nix run .#deploy-tc -- --env main
+```
+
+Useful flags:
+
+- `--skip-build` to reuse existing bundles
+- `--api-only` to deploy only the API Lambda
+- `--reconcile-only` to deploy only the reconcile Lambda
+
 ## Boundary
 
 - `control-plane`: receives and handles webhooks normally

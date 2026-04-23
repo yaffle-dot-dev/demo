@@ -12,7 +12,10 @@
     "db:bootstrap-runtime-role": "bun run scripts/bootstrap-runtime-role.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.1035.0",
+    "@aws-sdk/client-sqs": "^3.1036.0",
     "drizzle-orm": "^0.45.1",
+    "postgres": "^3.4.9",
     "uuidv7": "^1.1.0",
     "zod": "^3.24.0"
   },

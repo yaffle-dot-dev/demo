@@ -138,10 +138,22 @@
               exec ${pkgs.bun}/bin/bun run scripts/build-provider-discovery-agent.ts "$@"
             '');
           };
+          build-tc = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "build-tc" ''
+              exec ${pkgs.bun}/bin/bun run scripts/build-tc.ts "$@"
+            '');
+          };
           deploy-scanner = {
             type = "app";
             program = toString (pkgs.writeShellScript "deploy-scanner" ''
               exec ${pkgs.bun}/bin/bun run scripts/deploy-scanner.ts "$@"
+            '');
+          };
+          deploy-tc = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "deploy-tc" ''
+              exec ${pkgs.bun}/bin/bun run scripts/deploy-tc.ts "$@"
             '');
           };
           deploy-provider-discovery-agent = {
