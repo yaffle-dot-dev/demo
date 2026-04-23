@@ -71,12 +71,17 @@ export const routeableDeployments = trafficControl.table("routeable_deployments"
   ownerGithubLoginSnapshot: text("owner_github_login_snapshot").notNull(),
   receiverUrl: text("receiver_url").notNull(),
   receiverKind: routeableDeploymentReceiverKindEnum("receiver_kind").default("github_webhook").notNull(),
+  hookdeckDestinationId: text("hookdeck_destination_id"),
+  hookdeckDestinationName: text("hookdeck_destination_name"),
+  lastReconciledAt: timestamp("last_reconciled_at", { withTimezone: true }),
+  lastSyncError: text("last_sync_error"),
   state: routeableDeploymentStateEnum("state").default("inactive").notNull(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (t) => [
   uniqueIndex("tc_routeable_deployments_external_deployment_id_idx").on(t.externalDeploymentId),
+  uniqueIndex("tc_routeable_deployments_hookdeck_destination_id_idx").on(t.hookdeckDestinationId),
   index("tc_routeable_deployments_pr_number_idx").on(t.prNumber),
   index("tc_routeable_deployments_owner_github_user_id_idx").on(t.ownerGithubUserId),
   index("tc_routeable_deployments_state_idx").on(t.state),
@@ -126,6 +131,16 @@ export const liveWebhookLeases = trafficControl.table("live_webhook_leases", {
     t.installationId,
     t.repositoryId,
   ),
+  uniqueIndex("tc_live_webhook_leases_active_exact_scope_idx")
+    .on(
+      t.event,
+      t.installationId,
+      t.repositoryId,
+      t.action,
+      t.pullRequestNumber,
+      t.ref,
+    )
+    .where(sql`${t.status} = 'active'`),
 ])
 
 export const trafficControlOperations = trafficControl.table("operations", {

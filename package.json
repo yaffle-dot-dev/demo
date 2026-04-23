@@ -20,6 +20,7 @@
     "smoke": "bun run --filter=@yaffle/control-plane smoke",
     "smoke:browser": "bun run --filter=@yaffle/web smoke",
     "test": "bun run --filter='*' test",
+    "test:scripts": "bun test scripts/**/*.test.ts",
     "db:generate": "bun run --filter=@yaffle/control-plane db:generate",
     "db:migrate": "bun run --filter=@yaffle/control-plane db:migrate",
     "yaffle-cli": "bun run packages/cli/src/main.ts"

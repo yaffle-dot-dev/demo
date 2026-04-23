@@ -10,12 +10,14 @@ import {
 import {
   findRouteableDeploymentByExternalId,
 } from "../db/queries/routeable-deployments.ts"
+import { createTrafficControlAuditEvent } from "../db/queries/audit-events.ts"
 import type { ReconcileQueueClient } from "../reconcile-queue.ts"
 
 interface EnsureRouteableDeploymentDeps {
   findExistingOperation: typeof findInFlightOperationByRequestIdAndType
   createOperation: typeof createTrafficControlOperation
   findRouteableDeploymentByExternalId: typeof findRouteableDeploymentByExternalId
+  createAuditEvent: typeof createTrafficControlAuditEvent
   queue: ReconcileQueueClient
 }
 
@@ -24,6 +26,7 @@ export function createEnsureRouteableDeploymentDeps(queue: ReconcileQueueClient)
   findExistingOperation: findInFlightOperationByRequestIdAndType,
   createOperation: createTrafficControlOperation,
     findRouteableDeploymentByExternalId,
+    createAuditEvent: createTrafficControlAuditEvent,
     queue,
   }
 }
@@ -68,6 +71,17 @@ export async function ensureRouteableDeployment(
 
   try {
     const existingDeployment = await deps.findRouteableDeploymentByExternalId(command.deploymentId)
+    await deps.createAuditEvent({
+      operationId: operation.id,
+      routeableDeploymentId: existingDeployment?.id,
+      eventType: "routeable_deployment.ensure_requested",
+      actorGithubUserId: command.ownerGithubUserId,
+      actorGithubLoginSnapshot: command.ownerGithubLogin,
+      details: {
+        externalDeploymentId: command.deploymentId,
+        desiredState: command.desiredState,
+      },
+    })
     await deps.queue.send({
       command: "reconcile_routeable_deployment",
       operationId: operation.id,

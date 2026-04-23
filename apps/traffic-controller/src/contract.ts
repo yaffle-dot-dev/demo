@@ -131,6 +131,7 @@ export const operationStateSchema = z.object({
     resultMessage: z.string().min(1).optional(),
     leaseId: z.string().min(1).optional(),
     routeableDeploymentId: z.string().min(1).optional(),
+    output: z.record(z.string(), z.unknown()).optional(),
   }),
 })
 

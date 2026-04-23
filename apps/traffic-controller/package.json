@@ -14,7 +14,17 @@
   "dependencies": {
     "@aws-sdk/client-secrets-manager": "^3.1035.0",
     "@aws-sdk/client-sqs": "^3.1036.0",
+    "@hookdeck/sdk": "^0.4.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/api-logs": "^0.215.0",
+    "@opentelemetry/exporter-logs-otlp-proto": "^0.215.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.215.0",
+    "@opentelemetry/resources": "^2.7.0",
+    "@opentelemetry/sdk-logs": "^0.215.0",
+    "@opentelemetry/sdk-trace-base": "^2.7.0",
+    "@opentelemetry/semantic-conventions": "^1.40.0",
     "drizzle-orm": "^0.45.1",
+    "octokit": "^5.0.5",
     "postgres": "^3.4.9",
     "uuidv7": "^1.1.0",
     "zod": "^3.24.0"

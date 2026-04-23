@@ -15,6 +15,10 @@ export interface UpsertRouteableDeploymentInput {
   receiverUrl: string
   receiverKind: RouteableDeployment["receiverKind"]
   state: RouteableDeployment["state"]
+  hookdeckDestinationId?: string | null
+  hookdeckDestinationName?: string | null
+  lastReconciledAt?: Date | null
+  lastSyncError?: string | null
 }
 
 function deploymentsDb(db?: TrafficControlDb): Promise<TrafficControlDb> | TrafficControlDb {
@@ -30,6 +34,20 @@ export async function findRouteableDeploymentByExternalId(
     .select()
     .from(routeableDeployments)
     .where(eq(routeableDeployments.externalDeploymentId, externalDeploymentId))
+    .limit(1)
+
+  return rows[0]
+}
+
+export async function findRouteableDeploymentById(
+  id: string,
+  db?: TrafficControlDb,
+): Promise<RouteableDeployment | undefined> {
+  const resolvedDb = await deploymentsDb(db)
+  const rows = await resolvedDb
+    .select()
+    .from(routeableDeployments)
+    .where(eq(routeableDeployments.id, id))
     .limit(1)
 
   return rows[0]
@@ -52,6 +70,10 @@ export async function upsertRouteableDeployment(
       ownerGithubLoginSnapshot: input.ownerGithubLoginSnapshot,
       receiverUrl: input.receiverUrl,
       receiverKind: input.receiverKind,
+      hookdeckDestinationId: input.hookdeckDestinationId ?? null,
+      hookdeckDestinationName: input.hookdeckDestinationName ?? null,
+      lastReconciledAt: input.lastReconciledAt ?? null,
+      lastSyncError: input.lastSyncError ?? null,
       state: input.state,
       lastSeenAt: now,
       updatedAt: now,
@@ -66,11 +88,41 @@ export async function upsertRouteableDeployment(
         ownerGithubLoginSnapshot: input.ownerGithubLoginSnapshot,
         receiverUrl: input.receiverUrl,
         receiverKind: input.receiverKind,
+        hookdeckDestinationId: input.hookdeckDestinationId ?? null,
+        hookdeckDestinationName: input.hookdeckDestinationName ?? null,
+        lastReconciledAt: input.lastReconciledAt ?? null,
+        lastSyncError: input.lastSyncError ?? null,
         state: input.state,
         lastSeenAt: now,
         updatedAt: now,
       },
     })
+    .returning()
+
+  return rows[0]
+}
+
+export async function updateRouteableDeploymentHookdeckMetadata(
+  id: string,
+  params: {
+    hookdeckDestinationId?: string | null
+    hookdeckDestinationName?: string | null
+    lastReconciledAt?: Date | null
+    lastSyncError?: string | null
+  },
+  db?: TrafficControlDb,
+): Promise<RouteableDeployment | undefined> {
+  const resolvedDb = await deploymentsDb(db)
+  const rows = await resolvedDb
+    .update(routeableDeployments)
+    .set({
+      hookdeckDestinationId: params.hookdeckDestinationId,
+      hookdeckDestinationName: params.hookdeckDestinationName,
+      lastReconciledAt: params.lastReconciledAt,
+      lastSyncError: params.lastSyncError,
+      updatedAt: new Date(),
+    })
+    .where(eq(routeableDeployments.id, id))
     .returning()
 
   return rows[0]

@@ -31,6 +31,19 @@ describe("reconcileRouteableDeployment", () => {
       },
       markOperationFailed: async () => undefined,
       findRouteableDeploymentByExternalId: async () => undefined,
+      createHookdeckRoutingClient: async () => ({
+        upsertDestination: async () => ({
+          id: "dest-1",
+          name: "routeable-destination",
+        } as never),
+        upsertConnection: async () => {
+          throw new Error("upsertConnection should not be called")
+        },
+        deleteConnection: async () => {
+          throw new Error("deleteConnection should not be called")
+        },
+      }),
+      createAuditEvent: async () => ({ id: "audit-1" } as never),
       upsertRouteableDeployment: async (input) => {
         calls.push({ kind: "upsert", payload: input })
         return {
@@ -79,6 +92,16 @@ describe("reconcileRouteableDeployment", () => {
         return undefined
       },
       findRouteableDeploymentByExternalId: async () => undefined,
+      createHookdeckRoutingClient: async () => ({
+        upsertDestination: async () => ({ id: "dest-1", name: "routeable-destination" } as never),
+        upsertConnection: async () => {
+          throw new Error("upsertConnection should not be called")
+        },
+        deleteConnection: async () => {
+          throw new Error("deleteConnection should not be called")
+        },
+      }),
+      createAuditEvent: async () => ({ id: "audit-1" } as never),
       upsertRouteableDeployment: async () => {
         throw new Error("db write failed")
       },

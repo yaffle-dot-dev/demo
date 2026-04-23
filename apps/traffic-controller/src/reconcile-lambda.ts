@@ -1,6 +1,8 @@
 import { findOperationById } from "./db/queries/operations.ts"
+import { reconcileLiveWebhookLease } from "./reconcile-live-webhook-lease.ts"
 import { reconcileRouteableDeployment } from "./reconcile-routeable-deployment.ts"
 import { trafficControllerReconcileCommandSchema } from "./contract.ts"
+import { forceFlushTelemetry, initTelemetry, logger, withSpan } from "./telemetry.ts"
 
 interface ReconcileResult {
   ok: boolean
@@ -27,14 +29,22 @@ export async function handleReconcileCommand(
   deps: {
     findOperationById: typeof findOperationById
     reconcileRouteableDeployment: typeof reconcileRouteableDeployment
+    reconcileLiveWebhookLease: typeof reconcileLiveWebhookLease
   } = {
     findOperationById,
     reconcileRouteableDeployment,
+    reconcileLiveWebhookLease,
   },
 ): Promise<ReconcileResult> {
   const parsed = trafficControllerReconcileCommandSchema.parse(body)
 
-  switch (parsed.command) {
+  return withSpan(
+    `traffic-controller.reconcile.${parsed.command}`,
+    {
+      "traffic_controller.command": parsed.command,
+    },
+    async () => {
+      switch (parsed.command) {
     case "reconcile_routeable_deployment": {
       const operation = await deps.findOperationById(parsed.operationId)
       if (!operation) {
@@ -66,13 +76,28 @@ export async function handleReconcileCommand(
         },
       })
 
+      logger.info("traffic-controller reconciled routeable deployment", {
+        operationId: parsed.operationId,
+        routeableDeploymentId: parsed.routeableDeploymentId,
+      })
+
       return { ok: true }
     }
     case "reconcile_live_webhook_lease":
-      throw new Error("reconcile_live_webhook_lease is not implemented yet")
+      await deps.reconcileLiveWebhookLease({
+        operationId: parsed.operationId,
+        leaseId: parsed.leaseId,
+      })
+      logger.info("traffic-controller reconciled live webhook lease", {
+        operationId: parsed.operationId,
+        leaseId: parsed.leaseId,
+      })
+      return { ok: true }
     case "sweep_drift":
       throw new Error("sweep_drift is not implemented yet")
-  }
+      }
+    },
+  )
 }
 
 export async function handler(event: unknown): Promise<ReconcileResult> {
@@ -84,38 +109,56 @@ export async function handlerWithDeps(
   deps: {
     findOperationById: typeof findOperationById
     reconcileRouteableDeployment: typeof reconcileRouteableDeployment
+    reconcileLiveWebhookLease: typeof reconcileLiveWebhookLease
   } = {
     findOperationById,
     reconcileRouteableDeployment,
+    reconcileLiveWebhookLease,
   },
 ): Promise<ReconcileResult> {
+  await initTelemetry()
   if (isSqsEvent(event)) {
-    for (const record of event.Records) {
-      let parsedBody: unknown
-      try {
-        parsedBody = JSON.parse(record.body)
-      } catch {
-        throw new Error("Invalid reconcile payload: SQS record body must be valid JSON")
+    try {
+      for (const record of event.Records) {
+        let parsedBody: unknown
+        try {
+          parsedBody = JSON.parse(record.body)
+        } catch {
+          throw new Error("Invalid reconcile payload: SQS record body must be valid JSON")
+        }
+
+        const parsedRecord = trafficControllerReconcileCommandSchema.safeParse(parsedBody)
+        if (!parsedRecord.success) {
+          throw new Error(`Invalid reconcile payload: ${parsedRecord.error.issues[0]?.message ?? "unknown error"}`)
+        }
+
+        await handleReconcileCommand(parsedRecord.data, deps)
       }
 
-      const parsedRecord = trafficControllerReconcileCommandSchema.safeParse(parsedBody)
-      if (!parsedRecord.success) {
-        throw new Error(`Invalid reconcile payload: ${parsedRecord.error.issues[0]?.message ?? "unknown error"}`)
+      logger.info("traffic-controller processed reconcile batch", {
+        processedCount: event.Records.length,
+      })
+
+      return {
+        ok: true,
+        processedCount: event.Records.length,
       }
-
-      await handleReconcileCommand(parsedRecord.data, deps)
-    }
-
-    return {
-      ok: true,
-      processedCount: event.Records.length,
+    } finally {
+      await forceFlushTelemetry("reconcile-batch")
     }
   }
 
   const parsed = trafficControllerReconcileCommandSchema.safeParse(event)
   if (!parsed.success) {
+    logger.warn("traffic-controller reconcile validation failed", {
+      issue: parsed.error.issues[0]?.message ?? "unknown error",
+    })
     throw new Error(`Invalid reconcile payload: ${parsed.error.issues[0]?.message ?? "unknown error"}`)
   }
 
-  return handleReconcileCommand(parsed.data, deps)
+  try {
+    return await handleReconcileCommand(parsed.data, deps)
+  } finally {
+    await forceFlushTelemetry(`reconcile:${parsed.data.command}`)
+  }
 }

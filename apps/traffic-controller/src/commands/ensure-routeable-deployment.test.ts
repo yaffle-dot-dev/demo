@@ -42,6 +42,7 @@ describe("ensureRouteableDeployment", () => {
         return operation as never
       },
       findRouteableDeploymentByExternalId: async () => undefined,
+      createAuditEvent: async () => ({ id: "audit-1" } as never),
       queue: {
         send: async (message) => {
           expect(message).toEqual({
@@ -98,6 +99,7 @@ describe("ensureRouteableDeployment", () => {
         throw new Error("createOperation should not be called")
       },
       findRouteableDeploymentByExternalId: async () => undefined,
+      createAuditEvent: async () => ({ id: "audit-1" } as never),
       queue: {
         send: async () => {
           throw new Error("queue.send should not be called")
@@ -166,6 +168,7 @@ describe("ensureRouteableDeployment", () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       } as never),
+      createAuditEvent: async () => ({ id: "audit-1" } as never),
       queue: {
         send: async (message) => {
           expect(message).toEqual({
@@ -217,6 +220,7 @@ describe("ensureRouteableDeployment", () => {
         completedAt: null,
       } as never),
       findRouteableDeploymentByExternalId: async () => undefined,
+      createAuditEvent: async () => ({ id: "audit-1" } as never),
       queue: {
         send: async () => {
           throw new Error("queue unavailable")
