@@ -120,6 +120,13 @@
       "when": 1776389000000,
       "tag": "0016_run_group_check_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1776903000000,
+      "tag": "0017_drop_hookdeck_live_webhook_lease_tables",
+      "breakpoints": true
     }
   ]
 }
