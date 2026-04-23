@@ -130,6 +130,15 @@ function md5(content: string | Uint8Array): string {
   return createHash("md5").update(data).digest("hex")
 }
 
+function restoreEnv(name: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[name]
+    return
+  }
+
+  process.env[name] = value
+}
+
 // =============================================================================
 // Test Setup and Teardown
 // =============================================================================
@@ -416,7 +425,7 @@ describe("OAuth and Public URL Security", () => {
     }
   })
 
-  test("state version URLs use configured public origin instead of forwarded host", async () => {
+  test("state version URLs use configured public API origin instead of runner or forwarded hosts", async () => {
     const statePayload = JSON.stringify({
       version: 4,
       terraform_version: "1.7.0",
@@ -426,52 +435,101 @@ describe("OAuth and Public URL Security", () => {
       resources: [],
     })
 
-    const createRes = await app.fetch(
-      authRequest(
+    const originalRunnerTfcApiHost = process.env.YAFFLE_RUNNER_TFC_API_HOST
+    const originalPublicApiUrl = process.env.YAFFLE_PUBLIC_API_URL
+
+    process.env.YAFFLE_RUNNER_TFC_API_HOST = "cp.internal.yaffle.dev"
+    process.env.YAFFLE_PUBLIC_API_URL = "https://public-api.yaffle.test"
+
+    try {
+      const createRes = await app.fetch(
+        authRequest(
+          "POST",
+          `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+          testUserToken,
+          {
+            data: {
+              type: "workspaces",
+              attributes: { name: TEST_WORKSPACE_NAME },
+            },
+          },
+        ),
+      )
+      const createBody = await createRes.json()
+      testWorkspaceId = createBody.data.id
+
+      await app.fetch(
+        authRequest(
+          "POST",
+          `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
+          testUserToken,
+        ),
+      )
+
+      const request = authRequest(
         "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
+        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
         testUserToken,
         {
           data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
+            type: "state-versions",
+            attributes: {
+              serial: 1,
+              md5: md5(statePayload),
+            },
           },
         },
-      ),
-    )
-    const createBody = await createRes.json()
-    testWorkspaceId = createBody.data.id
+      )
+      request.headers.set("x-forwarded-host", "evil.example.com")
+      request.headers.set("x-forwarded-proto", "https")
 
-    await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
-    )
+      const res = await app.fetch(request)
 
-    const request = authRequest(
-      "POST",
-      `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
-      testUserToken,
-      {
-        data: {
-          type: "state-versions",
-          attributes: {
-            serial: 1,
-            md5: md5(statePayload),
+      expect(res.status).toBe(201)
+      const body = await res.json()
+      expect(body.data.attributes["hosted-state-upload-url"]).toStartWith(
+        "https://public-api.yaffle.test/",
+      )
+      expect(body.data.attributes["hosted-state-upload-url"]).not.toContain("cp.internal.yaffle.dev")
+      expect(body.data.attributes["hosted-state-upload-url"]).not.toContain("evil.example.com")
+
+      const uploadPath = new URL(body.data.attributes["hosted-state-upload-url"]).pathname
+      const uploadRes = await app.fetch(
+        new Request(`http://localhost${uploadPath}`, {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${testUserToken}`,
+            "Content-Type": "application/json",
           },
-        },
-      },
-    )
-    request.headers.set("x-forwarded-host", "evil.example.com")
-    request.headers.set("x-forwarded-proto", "https")
+          body: statePayload,
+        }),
+      )
 
-    const res = await app.fetch(request)
+      expect(uploadRes.status).toBe(200)
 
-    expect(res.status).toBe(201)
-    const body = await res.json()
-    expect(body.data.attributes["hosted-state-upload-url"]).toStartWith("https://yaffle.local:6969/")
+      const currentStateRes = await app.fetch(
+        authRequest(
+          "GET",
+          `/tfc/api/v2/workspaces/${testWorkspaceId}/current-state-version`,
+          testUserToken,
+        ),
+      )
+
+      expect(currentStateRes.status).toBe(200)
+      const currentStateBody = await currentStateRes.json()
+      expect(currentStateBody.data.attributes["hosted-state-download-url"]).toStartWith(
+        "https://public-api.yaffle.test/",
+      )
+      expect(currentStateBody.data.attributes["hosted-state-download-url"]).not.toContain(
+        "cp.internal.yaffle.dev",
+      )
+      expect(currentStateBody.data.attributes["hosted-state-download-url"]).not.toContain(
+        "evil.example.com",
+      )
+    } finally {
+      restoreEnv("YAFFLE_RUNNER_TFC_API_HOST", originalRunnerTfcApiHost)
+      restoreEnv("YAFFLE_PUBLIC_API_URL", originalPublicApiUrl)
+    }
   })
 })
 

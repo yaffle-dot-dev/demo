@@ -1,6 +1,7 @@
 import { Hono } from "hono"
 import { z } from "zod"
 
+import { getEnv } from "../../lib/env.ts"
 import { logger as log } from "../../lib/telemetry.ts"
 import {
   findStateVersionById,
@@ -33,7 +34,6 @@ import {
   readRequestBodyBytes,
   RequestBodyTooLargeError,
 } from "../../lib/request-protection.ts"
-import { getRunnerReachableTfcHost } from "../../lib/tfc-host.ts"
 
 // Hono context variables for TFC auth
 type TfcVariables = {
@@ -146,14 +146,14 @@ interface JsonApiStateVersion {
   }
 }
 
-function getRequestOrigin(c: { req: { url: string; header: (name: string) => string | undefined } }): string {
-  const configuredHost = getRunnerReachableTfcHost()
-  if (configuredHost) {
-    const requestUrl = new URL(c.req.url)
-    const scheme = configuredHost.startsWith("localhost") || configuredHost.startsWith("127.0.0.1")
-      ? requestUrl.protocol.replace(/:$/, "")
-      : "https"
-    return `${scheme}://${configuredHost}`
+function getPublicApiBaseUrl(c: { req: { url: string } }): string {
+  const configuredUrl = getEnv().publicApiUrl.trim()
+  if (configuredUrl) {
+    try {
+      return new URL(configuredUrl).toString().replace(/\/$/, "")
+    } catch {
+      // Fall back to the request URL if config is malformed.
+    }
   }
 
   return new URL(c.req.url).origin
@@ -161,7 +161,7 @@ function getRequestOrigin(c: { req: { url: string; header: (name: string) => str
 
 function toJsonApiStateVersion(
   sv: StateVersion,
-  origin: string,
+  baseUrl: string,
   options: { includeUploadUrl?: boolean; includeDownloadUrl?: boolean } = {},
 ): JsonApiStateVersion {
   const result: JsonApiStateVersion = {
@@ -185,15 +185,15 @@ function toJsonApiStateVersion(
   }
 
   if (options.includeUploadUrl && sv.status === "pending") {
-    result.attributes["hosted-state-upload-url"] = `${origin}/tfc/api/v2/state-versions/${sv.id}/upload`
+    result.attributes["hosted-state-upload-url"] = `${baseUrl}/tfc/api/v2/state-versions/${sv.id}/upload`
     // JSON state upload URL - go-tfe uploads JSON state in parallel with raw state
-    result.attributes["hosted-json-state-upload-url"] = `${origin}/tfc/api/v2/state-versions/${sv.id}/upload-json`
+    result.attributes["hosted-json-state-upload-url"] = `${baseUrl}/tfc/api/v2/state-versions/${sv.id}/upload-json`
   }
 
   if (options.includeDownloadUrl && sv.status === "finalized") {
-    result.attributes["hosted-state-download-url"] = `${origin}/tfc/api/v2/state-versions/${sv.id}/download`
+    result.attributes["hosted-state-download-url"] = `${baseUrl}/tfc/api/v2/state-versions/${sv.id}/download`
     // JSON state download URL
-    result.attributes["hosted-json-state-download-url"] = `${origin}/tfc/api/v2/state-versions/${sv.id}/download-json`
+    result.attributes["hosted-json-state-download-url"] = `${baseUrl}/tfc/api/v2/state-versions/${sv.id}/download-json`
   }
 
   return result
@@ -315,7 +315,7 @@ stateVersionsRoute.post(
       createdBy: expectedLocker,
     })
 
-    const response = toJsonApiStateVersion(sv, getRequestOrigin(c), { includeUploadUrl: true })
+    const response = toJsonApiStateVersion(sv, getPublicApiBaseUrl(c), { includeUploadUrl: true })
     
     log.info("State version created (pending upload)", {
       stateVersionId: sv.id,
@@ -346,7 +346,7 @@ stateVersionsRoute.get(
       return c.json({ errors: [{ status: "404", title: "No state version found" }] }, 404)
     }
 
-    return c.json({ data: toJsonApiStateVersion(sv, getRequestOrigin(c), { includeDownloadUrl: true }) })
+    return c.json({ data: toJsonApiStateVersion(sv, getPublicApiBaseUrl(c), { includeDownloadUrl: true }) })
   },
 )
 
@@ -532,7 +532,7 @@ stateVersionsRoute.get(
     })
 
     return c.json({
-      data: items.map((sv) => toJsonApiStateVersion(sv, getRequestOrigin(c), { includeDownloadUrl: true })),
+      data: items.map((sv) => toJsonApiStateVersion(sv, getPublicApiBaseUrl(c), { includeDownloadUrl: true })),
       meta: {
         pagination: {
           "next-page": nextCursor,
@@ -571,7 +571,7 @@ stateVersionsRoute.get(
     })
 
     return c.json({
-      data: toJsonApiStateVersion(sv, getRequestOrigin(c), {
+      data: toJsonApiStateVersion(sv, getPublicApiBaseUrl(c), {
         includeUploadUrl: sv.status === "pending",
         includeDownloadUrl: sv.status === "finalized",
       }),
