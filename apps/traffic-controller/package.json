@@ -8,7 +8,8 @@
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate"
+    "db:migrate": "drizzle-kit migrate",
+    "db:bootstrap-runtime-role": "bun run scripts/bootstrap-runtime-role.ts"
   },
   "dependencies": {
     "drizzle-orm": "^0.45.1",

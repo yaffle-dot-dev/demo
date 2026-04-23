@@ -81,6 +81,10 @@ environments = ["*"]
 path = "apps/provider-discovery-agent/infra"
 environments = ["*"]
 
+[[workspaces]]
+path = "apps/traffic-controller/infra"
+environments = ["main"]
+
 # ---------------------------------------------------------------------------
 # Unified Frontend (CloudFront + routing)
 # ---------------------------------------------------------------------------
