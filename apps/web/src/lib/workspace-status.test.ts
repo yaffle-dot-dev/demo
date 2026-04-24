@@ -4,6 +4,7 @@ import type { DependencyGraph, WorkspaceWithRuns } from "$lib/api"
 
 import {
   getBlockingUpstreamWorkspacePaths,
+  getWorkspaceDisplayRuns,
   getWorkspaceConnectionBlockReason,
   getWorkspaceDisplayStatus,
   isWorkspaceActivelyRunningStatus,
@@ -36,9 +37,13 @@ function createWorkspace(
   }
 }
 
-function createRun(runType: string, status: string): WorkspaceWithRuns["runs"][number] {
+function createRun(
+  runType: string,
+  status: string,
+  createdAt = new Date().toISOString(),
+): WorkspaceWithRuns["runs"][number] {
   return {
-    id: `${runType}-${status}`,
+    id: `${runType}-${status}-${createdAt}`,
     previewId: "workspace-id",
     runGroupId: "rg-1",
     runType,
@@ -50,7 +55,7 @@ function createRun(runType: string, status: string): WorkspaceWithRuns["runs"][n
     logOutput: null,
     startedAt: null,
     completedAt: null,
-    createdAt: new Date().toISOString(),
+    createdAt,
   }
 }
 
@@ -103,6 +108,41 @@ describe("workspace-status", () => {
       dependencyGraph: null,
       isViewingLatest: true,
     })).toBe("applying")
+  })
+
+  test("hides stale failed runs when a rerun is queued for the latest view", () => {
+    const workspace = createWorkspace("infra", "pending", [
+      createRun("apply", "failed", "2024-01-01T01:00:00.000Z"),
+      createRun("plan", "success", "2024-01-01T00:00:00.000Z"),
+    ])
+
+    const displayRuns = getWorkspaceDisplayRuns({
+      workspace,
+      isViewingLatest: true,
+    })
+
+    expect(displayRuns).toEqual([])
+    expect(getWorkspaceDisplayStatus({
+      workspace: { ...workspace, runs: displayRuns },
+      workspaces: [{ ...workspace, runs: displayRuns }],
+      dependencyGraph: null,
+      isViewingLatest: true,
+    })).toBe("pending")
+  })
+
+  test("filters stale apply runs after a newer plan starts", () => {
+    const workspace = createWorkspace("infra", "planning", [
+      createRun("plan", "running", "2024-01-02T00:00:00.000Z"),
+      createRun("apply", "failed", "2024-01-01T01:00:00.000Z"),
+      createRun("plan", "success", "2024-01-01T00:00:00.000Z"),
+    ])
+
+    expect(getWorkspaceDisplayRuns({
+      workspace,
+      isViewingLatest: true,
+    })).toEqual([
+      expect.objectContaining({ runType: "plan", status: "running" }),
+    ])
   })
 
   test("builds a connection block reason from connection readiness", () => {

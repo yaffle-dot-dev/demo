@@ -37,7 +37,7 @@ resource "aws_lb_target_group" "web" {
 
 resource "aws_lb_listener_rule" "web" {
   listener_arn = local.https_listener_arn
-  priority     = 100
+  priority     = local.web_listener_rule_priority
 
   action {
     type             = "forward"
@@ -47,6 +47,12 @@ resource "aws_lb_listener_rule" "web" {
   condition {
     path_pattern {
       values = ["/app", "/app/*"]
+    }
+  }
+
+  condition {
+    host_header {
+      values = local.listener_rule_host_headers
     }
   }
 

@@ -1,4 +1,7 @@
-import type { DependencyGraph, WorkspaceWithRuns } from "$lib/api"
+import type { DependencyGraph, Run, WorkspaceWithRuns } from "$lib/api"
+
+const QUEUED_WORKSPACE_STATUSES = new Set(["pending", "queued"])
+const TERMINAL_RUN_STATUSES = new Set(["success", "failed", "cancelled", "skipped", "system_error"])
 
 export function normalizeWorkspaceStatus(status: string): string {
   if (status === "awaiting_apply") {
@@ -6,6 +9,43 @@ export function normalizeWorkspaceStatus(status: string): string {
   }
 
   return status
+}
+
+function filterRunsToCurrentCycle(runs: Run[]): Run[] {
+  if (runs.length === 0) {
+    return []
+  }
+
+  const latestPlan = runs.find((run) => run.runType === "plan")
+  if (!latestPlan) {
+    return runs
+  }
+
+  return runs.filter((run) => run.createdAt >= latestPlan.createdAt)
+}
+
+export function getWorkspaceDisplayRuns(params: {
+  workspace: WorkspaceWithRuns
+  isViewingLatest: boolean
+}): Run[] {
+  const { workspace, isViewingLatest } = params
+
+  if (!isViewingLatest || workspace.runs.length === 0) {
+    return workspace.runs
+  }
+
+  const previewStatus = normalizeWorkspaceStatus(workspace.preview.status)
+  const latestRun = workspace.runs[0]
+
+  if (
+    latestRun
+    && QUEUED_WORKSPACE_STATUSES.has(previewStatus)
+    && TERMINAL_RUN_STATUSES.has(latestRun.status)
+  ) {
+    return []
+  }
+
+  return filterRunsToCurrentCycle(workspace.runs)
 }
 
 export function getWorkspaceConnectionBlockReason(workspace: WorkspaceWithRuns): string | null {

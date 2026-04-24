@@ -14,7 +14,7 @@
 
 resource "aws_s3_bucket" "primary" {
   bucket        = "yaffle-web-${local.name_suffix}"
-  force_destroy = var.is_preview
+  force_destroy = local.is_preview
 
   tags = {
     Name = "yaffle-web-${local.name_suffix}"
@@ -75,7 +75,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "primary" {
 resource "aws_s3_bucket" "replica" {
   provider      = aws.replica
   bucket        = "yaffle-web-${local.replica_name_suffix}"
-  force_destroy = var.is_preview
+  force_destroy = local.is_preview
 
   tags = {
     Name = "yaffle-web-${local.replica_name_suffix}"

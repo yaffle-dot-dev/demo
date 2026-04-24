@@ -3,10 +3,10 @@ variable "environment" {
   description = "Environment name - branch name (e.g., 'main') or preview (e.g., 'prvw-42')"
 }
 
-variable "is_preview" {
-  type        = bool
-  description = "Whether this is a preview environment (ephemeral, for PRs)"
-  default     = false
+variable "environment_kind" {
+  type        = string
+  description = "Kind of environment ('named' or 'transient')"
+  default     = "named"
 }
 
 variable "aws_region" {
@@ -54,8 +54,17 @@ module "naming_replica" {
 locals {
   # Naming: yaffle-{resource}-{suffix}
   # suffix = {environment}-{region_short} (e.g., "main-use1", "prvw-42-use1")
-  name_suffix         = module.naming.suffix
-  replica_name_suffix = module.naming_replica.suffix
+  name_suffix                = module.naming.suffix
+  replica_name_suffix        = module.naming_replica.suffix
+  is_preview                 = var.environment_kind == "transient"
+  site_domain                = local.is_preview ? "${var.environment}.preview.${var.domain}" : var.domain
+  control_plane_api_domain   = local.is_preview ? "api-${var.environment}.preview.${var.domain}" : "api.${var.domain}"
+  web_listener_rule_priority = var.environment_kind == "transient" ? 1000 + (tonumber(trimprefix(var.environment, "pr-")) % 49000) : 100
+  listener_rule_host_headers = distinct([
+    local.site_domain,
+    "www.${local.site_domain}",
+    local.control_plane_api_domain,
+  ])
 
   # Control plane outputs (ALB, VPC, ECS cluster)
   vpc_id                = module.control_plane.vpc_id

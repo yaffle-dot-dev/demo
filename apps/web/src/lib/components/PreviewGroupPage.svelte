@@ -11,6 +11,7 @@
   import { shortSha, statusConfig, formatRelativeTime } from "$lib/status"
   import {
     getBlockingUpstreamWorkspacePaths,
+    getWorkspaceDisplayRuns,
     getWorkspaceConnectionBlockReason,
     getWorkspaceDisplayStatus,
     isWorkspaceActivelyRunningStatus,
@@ -140,7 +141,13 @@
     const graph = displayDependencyGraph
     if (!graph || graph.workspaces.length === 0) {
       // No dependency graph, fall back to workspaces with runs
-      return workspacesWithRuns
+      return workspacesWithRuns.map((workspace) => ({
+        ...workspace,
+        runs: getWorkspaceDisplayRuns({
+          workspace,
+          isViewingLatest: isLatestRunGroup,
+        }),
+      }))
     }
 
     if (usingFreshPendingDag) {
@@ -178,7 +185,15 @@
     return graph.workspaces.map((path): WorkspaceWithRuns => {
       // If we have run data for this workspace in this run group, use it
       const existing = wsWithRunsByPath.get(path)
-      if (existing) return existing
+      if (existing) {
+        return {
+          ...existing,
+          runs: getWorkspaceDisplayRuns({
+            workspace: existing,
+            isViewingLatest: isLatestRunGroup,
+          }),
+        }
+      }
 
       // Check if workspace exists but has no runs in this run group
       // Use its actual status from the full workspaces list
@@ -186,7 +201,13 @@
       if (fullWs) {
         return {
           ...fullWs,
-          runs: [], // No runs in this run group
+          runs: getWorkspaceDisplayRuns({
+            workspace: {
+              ...fullWs,
+              runs: [],
+            },
+            isViewingLatest: isLatestRunGroup,
+          }),
         }
       }
 

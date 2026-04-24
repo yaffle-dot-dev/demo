@@ -11,7 +11,7 @@
 
 resource "aws_cloudwatch_log_group" "web" {
   name              = "/ecs/yaffle-web-${local.name_suffix}"
-  retention_in_days = var.is_preview ? 7 : 30
+  retention_in_days = local.is_preview ? 7 : 30
 
   tags = {
     Name = "yaffle-web-logs-${local.name_suffix}"
@@ -26,8 +26,8 @@ resource "aws_ecs_task_definition" "web" {
   family                   = "yaffle-web-${local.name_suffix}"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = var.is_preview ? 256 : 256
-  memory                   = var.is_preview ? 512 : 512
+  cpu                      = local.is_preview ? 256 : 256
+  memory                   = local.is_preview ? 512 : 512
   execution_role_arn       = aws_iam_role.ecs_execution.arn
   task_role_arn            = aws_iam_role.web_task.arn
 
@@ -51,8 +51,8 @@ resource "aws_ecs_task_definition" "web" {
 
       environment = [
         { name = "PORT", value = "3000" },
-        { name = "NODE_ENV", value = var.is_preview ? "development" : "production" },
-        { name = "ORIGIN", value = "https://${var.domain}" },
+        { name = "NODE_ENV", value = local.is_preview ? "development" : "production" },
+        { name = "ORIGIN", value = "https://${local.site_domain}" },
         { name = "YAFFLE_API_URL", value = "https://${module.control_plane.internal_domain}" },
         # Stripe pricing (runtime vars for SvelteKit $env/dynamic/public)
         { name = "PUBLIC_STRIPE_PRO_PRICE_ID", value = module.shared.stripe_pricing.pro.price_id },
@@ -95,7 +95,7 @@ resource "aws_ecs_service" "web" {
   name            = "yaffle-web-${local.name_suffix}"
   cluster         = local.ecs_cluster_arn
   task_definition = aws_ecs_task_definition.web.arn
-  desired_count   = var.is_preview ? 1 : 2
+  desired_count   = local.is_preview ? 1 : 2
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -110,7 +110,7 @@ resource "aws_ecs_service" "web" {
     container_port   = 3000
   }
 
-  deployment_minimum_healthy_percent = var.is_preview ? 0 : 50
+  deployment_minimum_healthy_percent = local.is_preview ? 0 : 50
   deployment_maximum_percent         = 200
 
   enable_ecs_managed_tags = true
