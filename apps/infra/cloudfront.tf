@@ -14,10 +14,10 @@ resource "aws_cloudfront_distribution" "main" {
   enabled             = true
   is_ipv6_enabled     = true
   default_root_object = "index.html"
-  price_class         = var.is_preview ? "PriceClass_100" : "PriceClass_All"
+  price_class         = local.is_preview ? "PriceClass_100" : "PriceClass_All"
   comment             = "Yaffle frontend - ${var.environment}"
 
-  aliases    = [local.site_domain, "www.${local.site_domain}"]
+  aliases    = local.site_aliases
   web_acl_id = aws_wafv2_web_acl.cloudfront.arn
 
   # ===========================================================================
@@ -429,7 +429,7 @@ resource "aws_route53_record" "main_aaaa" {
 # =============================================================================
 
 resource "cloudflare_dns_record" "main" {
-  zone_id = var.cloudflare_zone_id
+  zone_id = local.cloudflare_zone_id
   name    = local.site_domain
   type    = "CNAME"
   content = aws_cloudfront_distribution.main.domain_name
@@ -438,7 +438,9 @@ resource "cloudflare_dns_record" "main" {
 }
 
 resource "cloudflare_dns_record" "www" {
-  zone_id = var.cloudflare_zone_id
+  count = local.is_preview ? 0 : 1
+
+  zone_id = local.cloudflare_zone_id
   name    = "www.${local.site_domain}"
   type    = "CNAME"
   content = aws_cloudfront_distribution.main.domain_name
@@ -447,6 +449,8 @@ resource "cloudflare_dns_record" "www" {
 }
 
 resource "aws_route53_record" "www" {
+  count = local.is_preview ? 0 : 1
+
   zone_id = local.route53_zone_id
   name    = "www.${local.site_domain}"
   type    = "A"
@@ -459,6 +463,8 @@ resource "aws_route53_record" "www" {
 }
 
 resource "aws_route53_record" "www_aaaa" {
+  count = local.is_preview ? 0 : 1
+
   zone_id = local.route53_zone_id
   name    = "www.${local.site_domain}"
   type    = "AAAA"

@@ -36,6 +36,7 @@ module "control_plane" {
 locals {
   # Shared outputs (true singletons)
   route53_zone_id     = module.shared.route53_zone_id
+  cloudflare_zone_id  = coalesce(var.cloudflare_zone_id, module.shared.cloudflare_zone_id)
   acm_certificate_arn = module.shared.acm_certificate_validated_arn
 
   # Marketing site buckets

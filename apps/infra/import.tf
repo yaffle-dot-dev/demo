@@ -101,11 +101,11 @@ import {
 import {
   for_each = local.import_main
   to       = cloudflare_dns_record.main
-  id       = "${var.cloudflare_zone_id}/6272db27d14d290f4c4f0c3156337662"
+  id       = "${local.cloudflare_zone_id}/6272db27d14d290f4c4f0c3156337662"
 }
 
 import {
   for_each = local.import_main
   to       = cloudflare_dns_record.www
-  id       = "${var.cloudflare_zone_id}/6c7fc12a49ae3832681868e0cfd82a2f"
+  id       = "${local.cloudflare_zone_id}/6c7fc12a49ae3832681868e0cfd82a2f"
 }

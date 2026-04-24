@@ -3,10 +3,10 @@ variable "environment" {
   description = "Environment name - branch name (e.g., 'main') or preview (e.g., 'prvw-42')"
 }
 
-variable "is_preview" {
-  type        = bool
-  description = "Whether this is a preview environment (ephemeral, for PRs)"
-  default     = false
+variable "environment_kind" {
+  type        = string
+  description = "Kind of environment ('named' or 'transient')"
+  default     = "named"
 }
 
 variable "aws_region" {
@@ -35,7 +35,8 @@ variable "replica_region" {
 
 variable "cloudflare_zone_id" {
   type        = string
-  description = "Cloudflare zone ID for yaffle.dev (dual DNS setup)"
+  description = "Optional override for the Cloudflare zone ID; defaults to the shared workspace output"
+  default     = null
 }
 
 module "naming" {
@@ -46,7 +47,9 @@ module "naming" {
 
 locals {
   name_suffix = module.naming.suffix
+  is_preview  = var.environment_kind == "transient"
 
   # Domain: yaffle.dev for production, {env}.preview.yaffle.dev for previews
-  site_domain = var.is_preview ? "${var.environment}.preview.${var.domain}" : var.domain
+  site_domain = local.is_preview ? "${var.environment}.preview.${var.domain}" : var.domain
+  site_aliases = local.is_preview ? [local.site_domain] : [local.site_domain, "www.${local.site_domain}"]
 }
