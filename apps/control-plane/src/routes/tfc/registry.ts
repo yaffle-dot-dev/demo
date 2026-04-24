@@ -33,6 +33,7 @@ import {
 import {
   resolveModule,
   parsePreviewContext,
+  type PreviewContext,
 } from "../../lib/module-resolver.ts"
 import { parseYaffleToml, type YaffleTomlConfig } from "../../lib/config-toml.ts"
 import {
@@ -277,6 +278,34 @@ async function resolveConsumerWorkspace(auth: TfcAuthContext): Promise<ModuleCon
     orgSlug: org.slug,
     repo: repository?.fullName ?? workspace.repo,
     workspacePath: workspace.workspacePath,
+    prNumber: workspace.prNumber,
+  }
+}
+
+function derivePreviewContext(options: {
+  explicitPreviewContext: PreviewContext | null
+  consumerWorkspace: ModuleConsumerWorkspace | null
+  producerOrgSlug: string
+  producerRepo: string
+}): PreviewContext | null {
+  if (options.explicitPreviewContext) {
+    return options.explicitPreviewContext
+  }
+
+  const consumer = options.consumerWorkspace
+  if (!consumer || !consumer.prNumber) {
+    return null
+  }
+
+  const consumerRepo = consumer.repo.includes("/") ? consumer.repo : `${consumer.orgSlug}/${consumer.repo}`
+  const producerRepo = `${options.producerOrgSlug}/${options.producerRepo}`
+
+  if (consumerRepo.toLowerCase() !== producerRepo.toLowerCase()) {
+    return null
+  }
+
+  return {
+    prNumber: consumer.prNumber,
   }
 }
 
@@ -400,9 +429,13 @@ registryRoute.get(
 
     // Convert module name to workspace path
     const workspacePath = moduleNameToWorkspacePath(moduleName)
-
-    // Parse preview context
-    const previewContext = parsePreviewContext(previewParam ?? null)
+    const consumerWorkspace = await resolveConsumerWorkspace(auth)
+    const previewContext = derivePreviewContext({
+      explicitPreviewContext: parsePreviewContext(previewParam ?? null),
+      consumerWorkspace,
+      producerOrgSlug: orgSlug,
+      producerRepo: repo,
+    })
 
     // Find the appropriate workspace
     let workspace: Workspace | undefined
@@ -450,10 +483,7 @@ registryRoute.get(
       )
     }
 
-    const [consumerWorkspace, producerConfigResult] = await Promise.all([
-      resolveConsumerWorkspace(auth),
-      loadProducerConfig(workspace, orgSlug),
-    ])
+    const producerConfigResult = await loadProducerConfig(workspace, orgSlug)
 
     const accessDecision = resolveModuleAccessDecision({
       authType: auth.type,
@@ -568,9 +598,13 @@ registryRoute.get(
 
     // Convert module name to workspace path
     const workspacePath = moduleNameToWorkspacePath(moduleName)
-
-    // Parse preview context
-    const previewContext = parsePreviewContext(previewParam ?? null)
+    const consumerWorkspace = await resolveConsumerWorkspace(auth)
+    const previewContext = derivePreviewContext({
+      explicitPreviewContext: parsePreviewContext(previewParam ?? null),
+      consumerWorkspace,
+      producerOrgSlug: orgSlug,
+      producerRepo: repo,
+    })
 
     // Resolve the module
     const resolved = await resolveModule({
@@ -588,10 +622,7 @@ registryRoute.get(
       )
     }
 
-    const [consumerWorkspace, producerConfigResult] = await Promise.all([
-      resolveConsumerWorkspace(auth),
-      loadProducerConfig(resolved.workspace, orgSlug),
-    ])
+    const producerConfigResult = await loadProducerConfig(resolved.workspace, orgSlug)
 
     const accessDecision = resolveModuleAccessDecision({
       authType: auth.type,

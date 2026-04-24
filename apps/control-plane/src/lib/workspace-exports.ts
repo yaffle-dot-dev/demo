@@ -11,6 +11,7 @@ export interface ModuleConsumerWorkspace {
   orgSlug: string
   repo: string
   workspacePath: string
+  prNumber?: number | null
 }
 
 export interface ModuleAccessDecision {

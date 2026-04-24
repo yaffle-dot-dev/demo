@@ -68,8 +68,8 @@ resource "aws_ecs_task_definition" "control_plane" {
         { name = "YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS", value = tostring(local.stripe_pricing.free_limits.preview_creations_per_month) },
         { name = "YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS", value = tostring(local.stripe_pricing.free_limits.named_environments) },
         # Auth
-        { name = "BETTER_AUTH_URL", value = "https://${var.domain}" },
-        { name = "TRUSTED_ORIGINS", value = "https://${var.domain}" },
+        { name = "BETTER_AUTH_URL", value = "https://${local.site_domain}" },
+        { name = "TRUSTED_ORIGINS", value = local.auth_trusted_origins },
         { name = "YAFFLE_PUBLIC_API_URL", value = local.public_api_url },
         # Provider discovery
         { name = "YAFFLE_PROVIDER_DISCOVERY_ENABLED", value = "true" },

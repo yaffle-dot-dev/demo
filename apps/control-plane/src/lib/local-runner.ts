@@ -77,6 +77,7 @@ export class LocalRunner implements Runner {
 
         // Configure TFC backend
         const tfcHost = getTfcApiHost()
+
         await configureTfcBackend(tfDir, {
           hostname: tfcHost,
           organization: opts.tfcOrganization,
