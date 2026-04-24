@@ -9,6 +9,8 @@
 locals {
   planetscale_org      = "yaffle"
   planetscale_database = "yaffle"
+  # PlanetScale defaults regular branches to PS_DEV when cluster_size is omitted.
+  planetscale_branch_size = local.is_preview ? null : "PS_5_AWS_ARM"
 }
 
 data "planetscale_database_postgres" "yaffle" {
@@ -36,7 +38,7 @@ resource "planetscale_postgres_branch" "main" {
   organization = local.planetscale_org
   database     = data.planetscale_database_postgres.yaffle.name
   name         = var.environment
-  cluster_size = "PS_5_AWS_ARM"
+  cluster_size = local.planetscale_branch_size
 }
 
 # -----------------------------------------------------------------------------
