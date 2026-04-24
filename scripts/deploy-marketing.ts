@@ -5,6 +5,8 @@
 
 import { assumeRole } from "./lib/aws-auth"
 import {
+  type DeployConfig,
+  type DeployTarget,
   formatDeployTarget,
   formatStaticSiteUrl,
   invalidateStaticSiteCache,
@@ -84,6 +86,41 @@ function validatePricing(pricing: StripePricing): StripePricing {
 
 const MARKETING_DIR = `${import.meta.dir}/../apps/marketing`
 
+async function loadMarketingInfrastructure(target: DeployTarget, wait: boolean): Promise<{
+  siteInfra: Awaited<ReturnType<typeof loadStaticSiteInfrastructure>>
+  pricing: StripePricing
+}> {
+  const [siteInfra, sharedOutputs] = await Promise.all([
+    loadStaticSiteInfrastructure({
+      siteWorkspace: "apps/marketing/infra",
+      humanDeployerRoleOutput: "site_deployer_role_arn",
+      target,
+      wait,
+    }),
+    loadOutputsForTarget("infra/shared", { type: "env", name: "main" }, wait),
+  ])
+
+  const pricing = sharedOutputs.stripe_pricing as StripePricing | undefined
+
+  if (!pricing) {
+    throw new Error("infra/shared must export stripe_pricing for marketing pricing")
+  }
+
+  return {
+    siteInfra,
+    pricing: validatePricing(pricing),
+  }
+}
+
+export async function buildMarketingSite(
+  target: DeployTarget,
+  wait: boolean,
+  dryRun: boolean,
+): Promise<void> {
+  const { siteInfra, pricing } = await loadMarketingInfrastructure(target, wait)
+  await buildSite(siteInfra.siteUrl, pricing, dryRun)
+}
+
 async function buildSite(siteUrl: string, pricing: StripePricing, dryRun: boolean): Promise<void> {
   console.log(`\nUsing SITE_URL=${siteUrl} for marketing build...`)
 
@@ -110,31 +147,14 @@ async function buildSite(siteUrl: string, pricing: StripePricing, dryRun: boolea
   })
 }
 
-async function main(): Promise<void> {
-  const config = await parseStaticSiteDeployArgs("deploy-marketing.ts")
+export async function deployMarketingSite(config: DeployConfig): Promise<void> {
   const targetLabel = formatDeployTarget(config.target)
 
   console.log("=== Marketing Site Deploy ===")
   console.log(`Target: ${targetLabel}`)
   if (config.dryRun) console.log("(dry-run mode)")
 
-  const [siteInfra, sharedOutputs] = await Promise.all([
-    loadStaticSiteInfrastructure({
-      siteWorkspace: "apps/marketing/infra",
-      humanDeployerRoleOutput: "site_deployer_role_arn",
-      target: config.target,
-      wait: config.wait,
-    }),
-    loadOutputsForTarget("infra/shared", config.target, config.wait),
-  ])
-
-  const pricing = sharedOutputs.stripe_pricing as StripePricing | undefined
-
-  if (!pricing) {
-    throw new Error("infra/shared must export stripe_pricing for marketing pricing")
-  }
-
-  const validatedPricing = validatePricing(pricing)
+  const { siteInfra, pricing } = await loadMarketingInfrastructure(config.target, config.wait)
 
   console.log("\nInfrastructure:")
   console.log(`  Bucket: ${siteInfra.bucket}`)
@@ -142,7 +162,7 @@ async function main(): Promise<void> {
   console.log(`  CloudFront: ${siteInfra.distributionId}`)
 
   if (!config.skipBuild) {
-    await buildSite(siteInfra.siteUrl, validatedPricing, config.dryRun)
+    await buildSite(siteInfra.siteUrl, pricing, config.dryRun)
   } else {
     console.log("\nSkipping build (--skip-build)")
   }
@@ -172,7 +192,14 @@ async function main(): Promise<void> {
   console.log(`Site: ${formatStaticSiteUrl(siteInfra.siteUrl)}`)
 }
 
-main().catch((err) => {
-  console.error("Deploy failed:", err.message)
-  process.exit(1)
-})
+async function main(): Promise<void> {
+  const config = await parseStaticSiteDeployArgs("deploy-marketing.ts")
+  await deployMarketingSite(config)
+}
+
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("Deploy failed:", err.message)
+    process.exit(1)
+  })
+}

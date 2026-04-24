@@ -20,6 +20,8 @@ export async function getConfig(): Promise<Config> {
 
   const region = process.env.AWS_REGION ?? "us-east-1"
   const registry = process.env.YAFFLE_REGISTRY ?? "870923192739.dkr.ecr.us-east-1.amazonaws.com"
+  const environmentName = process.env.YAFFLE_ENVIRONMENT_NAME?.trim()
+  const environmentKind = process.env.YAFFLE_ENVIRONMENT_KIND?.trim()
 
   const sha = process.env.YAFFLE_SHA
     ?? (await exec(["git", "rev-parse", "HEAD"], { quiet: true })).trim()
@@ -27,7 +29,10 @@ export async function getConfig(): Promise<Config> {
   const branch = process.env.YAFFLE_BRANCH
     ?? (await exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], { quiet: true })).trim()
 
-  const tier = process.env.YAFFLE_TIER ?? (branch === "main" ? "production" : "nonprod")
+  const tier = process.env.YAFFLE_TIER
+    ?? ((environmentKind === "named" && environmentName === "main") || branch === "main"
+      ? "production"
+      : "nonprod")
   // Only push by default on main. Locally on feature branches, build-only unless explicitly told to push.
   const shouldPush = process.env.YAFFLE_PUSH === "true" || (process.env.YAFFLE_PUSH !== "false" && branch === "main")
   const dryRun = process.env.YAFFLE_DRY_RUN === "true"

@@ -41,7 +41,9 @@ async function main(): Promise<void> {
   console.log(`\nBundle ready: ${outDir}`)
 }
 
-main().catch((error) => {
-  console.error("Build failed:", error instanceof Error ? error.message : String(error))
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error("Build failed:", error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  })
+}

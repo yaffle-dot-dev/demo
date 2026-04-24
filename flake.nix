@@ -50,6 +50,16 @@
               exec ${pkgs.bun}/bin/bun run packages/cli/src/main.ts "$@"
             '');
           };
+          ci = {
+            type = "app";
+            program = toString (pkgs.writeShellScript "ci" ''
+              if [ ! -f "scripts/ci/main.ts" ]; then
+                echo "Error: Must run from yaffle repo root" >&2
+                exit 1
+              fi
+              exec ${pkgs.bun}/bin/bun run scripts/ci/main.ts "$@"
+            '');
+          };
           deploy-marketing = {
             type = "app";
             program = toString (pkgs.writeShellScript "deploy-marketing" ''

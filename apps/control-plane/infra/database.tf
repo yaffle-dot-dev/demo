@@ -55,6 +55,16 @@ resource "planetscale_postgres_branch_role" "app" {
   inherited_roles = ["pg_read_all_data", "pg_write_all_data"]
 }
 
+resource "planetscale_postgres_branch_role" "migration" {
+  organization = local.planetscale_org
+  database     = data.planetscale_database_postgres.yaffle.name
+  branch       = planetscale_postgres_branch.main.name
+
+  name = "yaffle-cp-migrate-${var.environment}"
+
+  inherited_roles = ["postgres"]
+}
+
 # -----------------------------------------------------------------------------
 # Secrets Manager - DATABASE_URL for ECS task
 # -----------------------------------------------------------------------------
@@ -76,4 +86,23 @@ resource "aws_secretsmanager_secret" "database_url" {
 resource "aws_secretsmanager_secret_version" "database_url" {
   secret_id     = aws_secretsmanager_secret.database_url.id
   secret_string = "postgresql://${planetscale_postgres_branch_role.app.username}:${planetscale_postgres_branch_role.app.password}@${planetscale_postgres_branch_role.app.access_host_url}:5432/postgres?sslmode=require"
+}
+
+# -----------------------------------------------------------------------------
+# Secrets Manager - CI-only migration URL
+# -----------------------------------------------------------------------------
+
+resource "aws_secretsmanager_secret" "database_migration_url" {
+  name        = "yaffle/ci/${var.environment}/database-migration-url"
+  description = "PlanetScale Postgres migration connection string for ${var.environment}"
+
+  tags = {
+    Name                    = "yaffle-database-migration-url-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.secrets
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "database_migration_url" {
+  secret_id     = aws_secretsmanager_secret.database_migration_url.id
+  secret_string = "postgresql://${planetscale_postgres_branch_role.migration.username}:${planetscale_postgres_branch_role.migration.password}@${planetscale_postgres_branch_role.migration.access_host_url}:5432/postgres?sslmode=require"
 }

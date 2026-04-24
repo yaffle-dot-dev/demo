@@ -7,8 +7,6 @@
 
 import { $ } from "bun"
 
-const YAFFLE_API_URL = process.env.YAFFLE_API_URL ?? "https://yaffle.local:6969"
-
 interface TerraformOutput {
   value: unknown
   type?: string
@@ -62,13 +60,18 @@ export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<st
   } else if (opts.environment) {
     args.push("--env", opts.environment)
   } else {
-    // Auto-detect from git branch
-    const branch = await $`git rev-parse --abbrev-ref HEAD`.quiet().text()
-    const trimmed = branch.trim()
-    if (trimmed === "main" || trimmed === "master") {
-      args.push("--env", trimmed)
+    const environmentName = process.env.YAFFLE_ENVIRONMENT_NAME?.trim()
+    if (environmentName) {
+      args.push("--env", environmentName)
     } else {
-      throw new Error(`On branch '${trimmed}' — specify environment or prNumber`)
+      // Auto-detect from git branch
+      const branch = await $`git rev-parse --abbrev-ref HEAD`.quiet().text()
+      const trimmed = branch.trim()
+      if (trimmed === "main" || trimmed === "master") {
+        args.push("--env", trimmed)
+      } else {
+        throw new Error(`On branch '${trimmed}' — specify environment or prNumber`)
+      }
     }
   }
 
@@ -80,14 +83,21 @@ export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<st
   console.log(`Fetching outputs for workspace=${opts.workspace}...`)
 
   const { org, repo } = await getOrgRepo()
+  const apiUrl = process.env.YAFFLE_API_URL?.trim()
+  const childEnv = {
+    ...getChildEnv(),
+    GITHUB_REPOSITORY: `${org}/${repo}`,
+  }
+
+  if (apiUrl) {
+    childEnv.YAFFLE_API_URL = apiUrl
+    childEnv.NODE_TLS_REJECT_UNAUTHORIZED = apiUrl.includes("localhost") || apiUrl.includes(".local")
+      ? "0"
+      : "1"
+  }
 
   const proc = $`bun run packages/cli/src/main.ts outputs ${args}`
-    .env({
-      ...getChildEnv(),
-      GITHUB_REPOSITORY: `${org}/${repo}`,
-      YAFFLE_API_URL,
-      NODE_TLS_REJECT_UNAUTHORIZED: YAFFLE_API_URL.includes("localhost") || YAFFLE_API_URL.includes(".local") ? "0" : "1",
-    })
+    .env(childEnv)
     .quiet()
 
   let output: string

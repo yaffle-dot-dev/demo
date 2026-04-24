@@ -28,6 +28,7 @@ export async function deployWeb() {
 }
 
 async function resolveWebDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
+  const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const overrideCluster = process.env.YAFFLE_WEB_CLUSTER?.trim()
     || process.env.YAFFLE_ECS_CLUSTER?.trim()
   const overrideService = process.env.YAFFLE_WEB_SERVICE?.trim()
@@ -54,8 +55,8 @@ async function resolveWebDeploymentTarget(): Promise<{ cluster: string; service:
   }
 
   const [webOutputs, cpOutputs] = await Promise.all([
-    fetchOutputs({ workspace: "apps/web/infra", environment: "main", wait: false }),
-    fetchOutputs({ workspace: "apps/control-plane/infra", environment: "main", wait: false }),
+    fetchOutputs({ workspace: "apps/web/infra", environment, wait: false }),
+    fetchOutputs({ workspace: "apps/control-plane/infra", environment, wait: false }),
   ])
 
   const cluster = typeof cpOutputs.ecs_cluster_name === "string"

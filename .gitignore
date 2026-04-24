@@ -43,3 +43,5 @@ tmp/**
 backups
 
 **/.DS_Store
+
+/.ci/**

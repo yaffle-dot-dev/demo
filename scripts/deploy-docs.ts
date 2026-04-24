@@ -5,6 +5,7 @@
 
 import { assumeRole } from "./lib/aws-auth"
 import {
+  type DeployConfig,
   formatDeployTarget,
   formatStaticSiteUrl,
   invalidateStaticSiteCache,
@@ -17,7 +18,7 @@ import {
 const DOCS_DIR = `${import.meta.dir}/../apps/docs`
 const DOCS_PREFIX = "docs"
 
-async function buildSite(dryRun: boolean): Promise<void> {
+export async function buildDocsSite(dryRun: boolean): Promise<void> {
   await runStaticSiteBuild({
     appDir: DOCS_DIR,
     appLabel: "docs",
@@ -25,8 +26,7 @@ async function buildSite(dryRun: boolean): Promise<void> {
   })
 }
 
-async function main(): Promise<void> {
-  const config = await parseStaticSiteDeployArgs("deploy-docs.ts")
+export async function deployDocsSite(config: DeployConfig): Promise<void> {
   const targetLabel = formatDeployTarget(config.target)
 
   console.log("=== Docs Site Deploy ===")
@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   console.log(`  CloudFront: ${siteInfra.distributionId}`)
 
   if (!config.skipBuild) {
-    await buildSite(config.dryRun)
+    await buildDocsSite(config.dryRun)
   } else {
     console.log("\nSkipping build (--skip-build)")
   }
@@ -78,7 +78,14 @@ async function main(): Promise<void> {
   console.log(`Site: ${formatStaticSiteUrl(siteInfra.siteUrl, DOCS_PREFIX)}`)
 }
 
-main().catch((err) => {
-  console.error("Deploy failed:", err.message)
-  process.exit(1)
-})
+async function main(): Promise<void> {
+  const config = await parseStaticSiteDeployArgs("deploy-docs.ts")
+  await deployDocsSite(config)
+}
+
+if (import.meta.main) {
+  main().catch((err) => {
+    console.error("Deploy failed:", err.message)
+    process.exit(1)
+  })
+}

@@ -26,6 +26,7 @@ export async function deployRunner() {
 }
 
 async function resolveRunnerTaskDefinition(): Promise<{ family: string; appDeployerRoleArn: string }> {
+  const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const override = process.env.YAFFLE_RUNNER_TASK_DEFINITION?.trim()
     || process.env.YAFFLE_RUNNER_TASK_DEFINITION_FAMILY?.trim()
     || process.env.YAFFLE_ECS_TASK_DEFINITION?.trim()
@@ -44,7 +45,7 @@ async function resolveRunnerTaskDefinition(): Promise<{ family: string; appDeplo
 
   const outputs = await fetchOutputs({
     workspace: "apps/runner/infra",
-    environment: "main",
+    environment,
     wait: false,
   })
 

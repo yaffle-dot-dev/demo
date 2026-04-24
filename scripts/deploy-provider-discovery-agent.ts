@@ -8,7 +8,9 @@ async function main(): Promise<void> {
   await deployProviderDiscoveryAgent(args)
 }
 
-main().catch((error) => {
-  console.error("Deploy failed:", error instanceof Error ? error.message : String(error))
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error("Deploy failed:", error instanceof Error ? error.message : String(error))
+    process.exit(1)
+  })
+}

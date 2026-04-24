@@ -38,6 +38,36 @@ output "app_deployer_role_arn" {
   description = "IAM role ARN for human app deployers"
 }
 
+output "database_url_secret_arn" {
+  value       = aws_secretsmanager_secret.database_url.arn
+  description = "Secrets Manager ARN containing the environment database URL"
+}
+
+output "database_url_secret_id" {
+  value       = aws_secretsmanager_secret.database_url.name
+  description = "Secrets Manager name containing the environment database URL"
+}
+
+output "database_migration_url_secret_arn" {
+  value       = aws_secretsmanager_secret.database_migration_url.arn
+  description = "Secrets Manager ARN containing the CI-only migration database URL"
+}
+
+output "database_migration_url_secret_id" {
+  value       = aws_secretsmanager_secret.database_migration_url.name
+  description = "Secrets Manager name containing the CI-only migration database URL"
+}
+
+output "provider_discovery_agent_token_secret_arn" {
+  value       = local.provider_discovery_agent_token_secret_arn
+  description = "Secrets Manager ARN containing the provider discovery agent token"
+}
+
+output "provider_discovery_callback_secret_arn" {
+  value       = local.provider_discovery_callback_secret_arn
+  description = "Secrets Manager ARN containing the provider discovery callback secret"
+}
+
 # tf_runner_task_role_arn moved to apps/runner/infra outputs
 
 # -----------------------------------------------------------------------------

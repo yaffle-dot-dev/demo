@@ -5,6 +5,7 @@ import { describeTaskDefinition, renderImage, registerTaskDefinition, deployServ
 
 export async function deployCp() {
   const { registry, tier, sha, dryRun } = await getConfig()
+  const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const { cluster, service, appDeployerRoleArn } = await resolveControlPlaneDeploymentTarget()
   const family = service
 
@@ -15,7 +16,10 @@ export async function deployCp() {
   applyAwsSession(await assumeRole(appDeployerRoleArn, "app-deployer"))
 
   const taskDef = await describeTaskDefinition(family)
-  const rendered = renderImage(taskDef, "control-plane", image)
+  const rendered = renderControlPlaneTaskDefinition(
+    renderImage(taskDef, "control-plane", image),
+    await resolveControlPlaneSecretOverrides(environment),
+  )
 
   if (dryRun) {
     console.log("[dry-run] Would register task definition and deploy service")
@@ -27,7 +31,78 @@ export async function deployCp() {
   await waitForStability(cluster, service)
 }
 
+interface ControlPlaneSecretOverrides {
+  providerDiscoveryAgentTokenSecretArn?: string
+  providerDiscoveryCallbackSecretArn?: string
+}
+
+function renderControlPlaneTaskDefinition(
+  taskDef: Record<string, any>,
+  overrides: ControlPlaneSecretOverrides,
+): Record<string, any> {
+  const containers = taskDef.containerDefinitions as Array<Record<string, any>>
+
+  return {
+    ...taskDef,
+    containerDefinitions: containers.map((container) => {
+      if (container.name !== "control-plane") {
+        return container
+      }
+
+      const secrets = Array.isArray(container.secrets) ? container.secrets as Array<Record<string, any>> : []
+      const rewrittenSecrets = secrets.map((secret) => {
+        if (
+          secret.name === "YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN"
+          && overrides.providerDiscoveryAgentTokenSecretArn
+        ) {
+          return {
+            ...secret,
+            valueFrom: overrides.providerDiscoveryAgentTokenSecretArn,
+          }
+        }
+
+        if (
+          secret.name === "YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET"
+          && overrides.providerDiscoveryCallbackSecretArn
+        ) {
+          return {
+            ...secret,
+            valueFrom: overrides.providerDiscoveryCallbackSecretArn,
+          }
+        }
+
+        return secret
+      })
+
+      return {
+        ...container,
+        secrets: rewrittenSecrets,
+      }
+    }),
+  }
+}
+
+async function resolveControlPlaneSecretOverrides(
+  environment: string,
+): Promise<ControlPlaneSecretOverrides> {
+  const outputs = await fetchOutputs({
+    workspace: "apps/provider-discovery-agent/infra",
+    environment,
+    wait: false,
+  })
+
+  return {
+    providerDiscoveryAgentTokenSecretArn: typeof outputs.agent_token_secret_arn === "string"
+      ? outputs.agent_token_secret_arn.trim()
+      : undefined,
+    providerDiscoveryCallbackSecretArn: typeof outputs.callback_secret_secret_arn === "string"
+      ? outputs.callback_secret_secret_arn.trim()
+      : undefined,
+  }
+}
+
 async function resolveControlPlaneDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
+  const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const overrideCluster = process.env.YAFFLE_CP_CLUSTER?.trim()
     || process.env.YAFFLE_ECS_CLUSTER?.trim()
   const overrideService = process.env.YAFFLE_CP_SERVICE?.trim()
@@ -49,7 +124,7 @@ async function resolveControlPlaneDeploymentTarget(): Promise<{ cluster: string;
 
   const outputs = await fetchOutputs({
     workspace: "apps/control-plane/infra",
-    environment: "main",
+    environment,
     wait: false,
   })
 

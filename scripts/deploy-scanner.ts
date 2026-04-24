@@ -41,6 +41,7 @@ export async function deployScanner() {
 }
 
 async function resolveScannerDeploymentTarget(): Promise<{ functionName: string; appDeployerRoleArn: string }> {
+  const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const overrideFunctionName = process.env.YAFFLE_SCANNER_FUNCTION?.trim()
   const overrideAppDeployerRoleArn = process.env.YAFFLE_APP_DEPLOYER_ROLE_ARN?.trim()
 
@@ -53,7 +54,7 @@ async function resolveScannerDeploymentTarget(): Promise<{ functionName: string;
 
   const outputs = await fetchOutputs({
     workspace: "apps/runner/infra",
-    environment: "main",
+    environment,
     wait: false,
   })
 
