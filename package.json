@@ -8,6 +8,7 @@
   ],
   "scripts": {
     "ci": "bun run scripts/ci/main.ts",
+    "yaffle": "cargo run -p yaffle-cli --",
     "dev:control-plane": "bun run --filter=@yaffle/control-plane dev",
     "dev:web": "bun run --filter=@yaffle/web dev",
     "dev:mlp": "bun run --filter=@yaffle/marketing dev",
@@ -23,8 +24,7 @@
     "test": "bun run --filter='*' test",
     "test:scripts": "bun test scripts/**/*.test.ts",
     "db:generate": "bun run --filter=@yaffle/control-plane db:generate",
-    "db:migrate": "bun run --filter=@yaffle/control-plane db:migrate",
-    "yaffle-cli": "bun run packages/cli/src/main.ts"
+    "db:migrate": "bun run --filter=@yaffle/control-plane db:migrate"
   },
   "devDependencies": {
     "@dotenvx/dotenvx": "^1.57.0",

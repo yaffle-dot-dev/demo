@@ -1,0 +1,25 @@
+[package]
+name = "yaffle-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[[bin]]
+name = "yaffle"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+
+[dependencies.yaffle-contracts]
+path = "../yaffle-contracts"
+
+[dependencies.yaffle-engine]
+path = "../yaffle-engine"
+
+[dependencies.yaffle-config]
+path = "../yaffle-config"

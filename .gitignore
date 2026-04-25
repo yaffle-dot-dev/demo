@@ -17,6 +17,7 @@ node_modules/
 
 # Build output
 dist/
+/target/
 
 # Exception: GitHub Actions must have dist/ committed
 !actions/*/dist/

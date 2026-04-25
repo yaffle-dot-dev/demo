@@ -1,32 +1,40 @@
 /**
  * Fetch Yaffle terraform outputs for a workspace.
  *
- * Uses the yaffle CLI (`packages/cli/src/main.ts outputs`) to query
- * the control plane API for infrastructure outputs.
+ * Uses the shared Yaffle client package to query the control plane API for
+ * infrastructure outputs.
  */
 
 import { $ } from "bun"
+import { execSync } from "node:child_process"
 
-interface TerraformOutput {
-  value: unknown
-  type?: string
-  sensitive?: boolean
-}
+import {
+  getCredentials,
+  getHost,
+  TokenAuth,
+  type Target,
+  type TerraformOutput,
+  YaffleClient,
+} from "../../packages/yaffle-client/src/index"
 
-interface YaffleOutputsResponse {
-  outputs: Record<string, TerraformOutput>
-}
+const DEFAULT_API_URL = "https://yaffle.dev"
 
-function getChildEnv(): Record<string, string> {
-  const env: Record<string, string> = {}
+function normalizeApiUrl(apiUrl: string): string {
+  const trimmed = apiUrl.trim().replace(/\/+$/, "")
 
-  for (const [key, value] of Object.entries(process.env)) {
-    if (typeof value === "string") {
-      env[key] = value
-    }
+  if (!trimmed) {
+    return trimmed
   }
 
-  return env
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed
+  }
+
+  return `https://${trimmed}`
+}
+
+function resolveApiUrl(): string {
+  return normalizeApiUrl(process.env.YAFFLE_API_URL || DEFAULT_API_URL)
 }
 
 async function getOrgRepo(): Promise<{ org: string; repo: string }> {
@@ -50,76 +58,35 @@ export interface FetchOutputsOptions {
  * Fetch terraform outputs for a workspace. Returns a flat key→value map.
  */
 export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<string, unknown>> {
-  const args = [
-    "--workspace", opts.workspace,
-    "--format", "json",
-  ]
-
-  if (opts.prNumber) {
-    args.push("--pr", String(opts.prNumber))
-  } else if (opts.environment) {
-    args.push("--env", opts.environment)
-  } else {
-    const environmentName = process.env.YAFFLE_ENVIRONMENT_NAME?.trim()
-    if (environmentName) {
-      args.push("--env", environmentName)
-    } else {
-      // Auto-detect from git branch
-      const branch = await $`git rev-parse --abbrev-ref HEAD`.quiet().text()
-      const trimmed = branch.trim()
-      if (trimmed === "main" || trimmed === "master") {
-        args.push("--env", trimmed)
-      } else {
-        throw new Error(`On branch '${trimmed}' — specify environment or prNumber`)
-      }
-    }
-  }
-
-  if (opts.wait) {
-    args.push("--wait")
-    args.push("--timeout", String(opts.waitTimeout ?? 600))
-  }
-
   console.log(`Fetching outputs for workspace=${opts.workspace}...`)
 
   const { org, repo } = await getOrgRepo()
-  const apiUrl = process.env.YAFFLE_API_URL?.trim()
-  const childEnv = {
-    ...getChildEnv(),
-    GITHUB_REPOSITORY: `${org}/${repo}`,
+  const apiUrl = resolveApiUrl()
+
+  const target = await resolveTarget(opts)
+  const client = await createClient(apiUrl)
+
+  let result: {
+    previewId: string
+    status: string
+    outputs: Record<string, TerraformOutput> | null
   }
 
-  if (apiUrl) {
-    childEnv.YAFFLE_API_URL = apiUrl
-    childEnv.NODE_TLS_REJECT_UNAUTHORIZED = apiUrl.includes("localhost") || apiUrl.includes(".local")
-      ? "0"
-      : "1"
-  }
-
-  const proc = $`bun run packages/cli/src/main.ts outputs ${args}`
-    .env(childEnv)
-    .quiet()
-
-  let output: string
   try {
-    output = await proc.text()
-  } catch (err: unknown) {
-    console.error(`[error] yaffle-outputs failed:`)
-    if (err && typeof err === "object" && "stderr" in err) {
-      console.error(String((err as any).stderr))
-    } else if (err instanceof Error) {
+    result = await client.getOutputs({
+      org,
+      repo,
+      target,
+      workspace: opts.workspace,
+      wait: opts.wait ?? false,
+      waitTimeout: opts.waitTimeout ?? 600,
+    })
+  } catch (err) {
+    if (err instanceof Error) {
+      console.error(`[error] yaffle outputs failed:`)
       console.error(err.message)
     }
     throw err
-  }
-
-  let result: YaffleOutputsResponse
-  try {
-    result = JSON.parse(output)
-  } catch {
-    console.error(`[error] Failed to parse yaffle-outputs response:`)
-    console.error(output)
-    throw new Error("Invalid JSON from yaffle-outputs")
   }
 
   if (!result.outputs) {
@@ -132,4 +99,61 @@ export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<st
   }
 
   return flat
+}
+
+async function resolveTarget(opts: FetchOutputsOptions): Promise<Target> {
+  if (opts.prNumber) {
+    return { type: "pr", prNumber: opts.prNumber }
+  }
+
+  if (opts.environment) {
+    return { type: "env", name: opts.environment }
+  }
+
+  const environmentName = process.env.YAFFLE_ENVIRONMENT_NAME?.trim()
+  if (environmentName) {
+    return { type: "env", name: environmentName }
+  }
+
+  const branch = await $`git rev-parse --abbrev-ref HEAD`.quiet().text()
+  const trimmed = branch.trim()
+  if (trimmed === "main" || trimmed === "master") {
+    return { type: "env", name: trimmed }
+  }
+
+  throw new Error(`On branch '${trimmed}' — specify environment or prNumber`)
+}
+
+async function createClient(apiUrl: string): Promise<YaffleClient> {
+  let token = process.env.YAFFLE_TOKEN || process.env.YAFFLE_API_TOKEN || process.env.GITHUB_TOKEN || ""
+
+  if (!token) {
+    const stored = await getCredentials(getHost(apiUrl))
+    token = stored?.accessToken || ""
+  }
+
+  if (!token) {
+    try {
+      token = execSync("gh auth token", {
+        encoding: "utf8",
+        stdio: ["pipe", "pipe", "ignore"],
+      }).trim()
+    } catch {
+      // ignore
+    }
+  }
+
+  if (!token) {
+    throw new Error("Not authenticated. Run 'yaffle cloud login' or set YAFFLE_TOKEN/GITHUB_TOKEN")
+  }
+
+  return new YaffleClient({
+    apiUrl,
+    auth: new TokenAuth(token),
+    logger: {
+      info: (msg) => console.error(`[info] ${msg}`),
+      warn: (msg) => console.error(`[warn] ${msg}`),
+      error: (msg) => console.error(`[error] ${msg}`),
+    },
+  })
 }

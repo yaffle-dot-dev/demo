@@ -43,11 +43,12 @@
           yaffle = {
             type = "app";
             program = toString (pkgs.writeShellScript "yaffle" ''
-              if [ ! -f "packages/cli/src/main.ts" ]; then
+              if [ ! -f "Cargo.toml" ]; then
                 echo "Error: Must run from yaffle repo root" >&2
                 exit 1
               fi
-              exec ${pkgs.bun}/bin/bun run packages/cli/src/main.ts "$@"
+              export PATH="${pkgs.cargo}/bin:${pkgs.rustc}/bin:$PATH"
+              exec cargo run -p yaffle-cli -- "$@"
             '');
           };
           ci = {
@@ -248,6 +249,13 @@
               bun
               nodejs_22
 
+              # Rust
+              cargo
+              rustc
+              rustfmt
+              clippy
+              rust-analyzer
+
               # Infrastructure
               opentofu
               awscli2
@@ -295,6 +303,8 @@
               echo ""
               echo "yaffle dev environment"
               echo "  bun              $(bun --version)"
+              echo "  cargo            $(cargo --version)"
+              echo "  rustc            $(rustc --version)"
               echo "  tofu             $(tofu --version | head -1)"
               echo "  psql             $(psql --version)"
               echo "  jj               $(jj --version)"

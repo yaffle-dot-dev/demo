@@ -1,0 +1,13 @@
+[package]
+name = "yaffle-graph"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+serde.workspace = true
+
+[dependencies.yaffle-contracts]
+path = "../yaffle-contracts"
