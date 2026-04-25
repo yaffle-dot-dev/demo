@@ -72,6 +72,35 @@ function assertNotPlaceholderSecret(value: string, description: string): string 
   return value
 }
 
+function formatAwsSecretError(secretId: string, error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error)
+  const normalized = message.toLowerCase()
+
+  if (
+    normalized.includes("your session has expired")
+    || normalized.includes("aws login")
+    || normalized.includes("expiredtoken")
+    || normalized.includes("security token included in the request is expired")
+  ) {
+    return new Error(
+      `AWS authentication failed while reading secret ${secretId}: your AWS session has expired. Reauthenticate and retry.\n${message}`,
+    )
+  }
+
+  if (
+    normalized.includes("unable to locate credentials")
+    || normalized.includes("could not find credentials")
+    || normalized.includes("unrecognizedclientexception")
+    || normalized.includes("invalidclienttokenid")
+  ) {
+    return new Error(
+      `AWS authentication failed while reading secret ${secretId}: no valid AWS credentials are available.\n${message}`,
+    )
+  }
+
+  return new Error(`Failed to read secret ${secretId}.\n${message}`)
+}
+
 async function getSecretValueFromAws(secretId: string): Promise<string> {
   const value = await exec(
     [
@@ -90,7 +119,9 @@ async function getSecretValueFromAws(secretId: string): Promise<string> {
     {
       quiet: true,
     },
-  )
+  ).catch((error) => {
+    throw formatAwsSecretError(secretId, error)
+  })
 
   const trimmed = value.trim()
   if (!trimmed || trimmed === "None" || trimmed === "null") {
@@ -116,7 +147,9 @@ async function putSecretValueToAws(secretId: string, value: string): Promise<voi
     {
       quiet: true,
     },
-  )
+  ).catch((error) => {
+    throw formatAwsSecretError(secretId, error)
+  })
 }
 
 async function getWorkspaceOutputs(

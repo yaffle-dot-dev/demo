@@ -9,6 +9,31 @@ export interface ExecOptions {
   quiet?: boolean
 }
 
+function sanitizeCommand(cmd: string[]): string {
+  const redactedFlags = new Set([
+    "--secret-string",
+    "--secret-binary",
+    "--password",
+    "--token",
+    "--access-token",
+    "--client-secret",
+  ])
+
+  const sanitized: string[] = []
+
+  for (let i = 0; i < cmd.length; i += 1) {
+    const part = cmd[i]
+    sanitized.push(part)
+
+    if (redactedFlags.has(part) && i + 1 < cmd.length) {
+      sanitized.push("[REDACTED]")
+      i += 1
+    }
+  }
+
+  return sanitized.join(" ")
+}
+
 /**
  * Run a command, stream output, throw on non-zero exit.
  */
@@ -21,16 +46,19 @@ export async function exec(cmd: string[], opts?: ExecOptions): Promise<string> {
   })
 
   const result = await proc.exited
+  const stdout = opts?.quiet && proc.stdout ? await new Response(proc.stdout).text() : ""
+  const stderr = opts?.quiet && proc.stderr ? await new Response(proc.stderr).text() : ""
 
   if (result !== 0) {
-    throw new Error(`Command failed (exit ${result}): ${cmd.join(" ")}`)
+    const detail = stderr.trim() || stdout.trim()
+    throw new Error(
+      detail
+        ? `Command failed (exit ${result}): ${sanitizeCommand(cmd)}\n${detail}`
+        : `Command failed (exit ${result}): ${sanitizeCommand(cmd)}`,
+    )
   }
 
-  if (opts?.quiet && proc.stdout) {
-    return await new Response(proc.stdout).text()
-  }
-
-  return ""
+  return stdout
 }
 
 export interface ParallelTask {
