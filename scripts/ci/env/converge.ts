@@ -2,12 +2,14 @@ import { parallel } from "../../lib/exec"
 import { fetchOutputs } from "../../lib/outputs"
 
 import { discoverDeployables } from "../deployables/discovery"
+import { buildDeployableExecutionGraph, getDeployableExecutionOrder } from "../deployables/execution-graph"
 import { assertSecretChecksPassed, checkDeployableSecrets, withDeployablePhaseSecrets } from "../secrets"
 import { listChangedFiles } from "../git"
 import { planDeployables } from "../deployables/planner"
 import { readTarget } from "../target"
 import type { CiTarget, ConvergeResult } from "../types"
 import type { DiscoveredDeployable } from "../deployables/types"
+import type { DeployableExecutionResult } from "../types"
 
 export interface ConvergeEnvironmentOptions {
   targetPath: string
@@ -222,6 +224,30 @@ async function verifyDeployables(
   })))
 }
 
+async function convergeDeployable(
+  deployable: DiscoveredDeployable,
+  target: CiTarget,
+  dryRun: boolean,
+): Promise<void> {
+  const workspaces = getSelectedWorkspaces([deployable])
+
+  console.log(`[deployable:${deployable.name}] workspaces: ${workspaces.join(", ")}`)
+  await waitForWorkspaces(workspaces, target)
+
+  const secretChecks = await checkDeployableSecrets({
+    deployables: [deployable],
+    target,
+  })
+  assertSecretChecksPassed(secretChecks)
+
+  await withTargetEnvironment(target, dryRun, async () => {
+    await prepareDeployables([deployable], target, dryRun)
+    await buildDeployables([deployable], target, dryRun)
+    await deployDeployables([deployable], target, dryRun)
+    await verifyDeployables([deployable], target, dryRun)
+  })
+}
+
 export async function convergeEnvironment(
   options: ConvergeEnvironmentOptions,
 ): Promise<ConvergeResult> {
@@ -251,6 +277,7 @@ export async function convergeEnvironment(
       mode: changeSet.mode,
       dryRun: options.dryRun ?? false,
       plan: plan.entries,
+      execution: [],
     }
   }
 
@@ -262,20 +289,68 @@ export async function convergeEnvironment(
     console.warn(`Skipping ${entry.name}: ${entry.reasons.join("; ")}`)
   }
 
-  await waitForWorkspaces(workspaces, target)
+  const executionGraph = await buildDeployableExecutionGraph(deployables)
+  const executionOrder = getDeployableExecutionOrder(executionGraph)
+  const graphByName = new Map(executionGraph.map((node) => [node.deployable.name, node]))
+  const executionResults: DeployableExecutionResult[] = []
+  const statusByName = new Map<string, DeployableExecutionResult["status"]>()
+  const dryRun = options.dryRun ?? false
 
-  const secretChecks = await checkDeployableSecrets({
-    deployables,
-    target,
-  })
-  assertSecretChecksPassed(secretChecks)
+  console.log(`Execution order: ${executionOrder.join(", ")}`)
 
-  await withTargetEnvironment(target, options.dryRun ?? false, async () => {
-    await prepareDeployables(deployables, target, options.dryRun ?? false)
-    await buildDeployables(deployables, target, options.dryRun ?? false)
-    await deployDeployables(deployables, target, options.dryRun ?? false)
-    await verifyDeployables(deployables, target, options.dryRun ?? false)
-  })
+  for (const name of executionOrder) {
+    const node = graphByName.get(name)
+    if (!node) {
+      continue
+    }
+
+    const blockedBy = node.dependencies.filter((dependency) => statusByName.get(dependency) !== "completed")
+    if (blockedBy.length > 0) {
+      const result: DeployableExecutionResult = {
+        name,
+        status: "skipped",
+        dependencies: [...node.dependencies],
+        workspaces: [...node.deployable.workspaces],
+        error: `blocked by failed dependencies: ${blockedBy.join(", ")}`,
+      }
+      executionResults.push(result)
+      statusByName.set(name, result.status)
+      console.warn(`[deployable:${name}] skipped; ${result.error}`)
+      continue
+    }
+
+    try {
+      await convergeDeployable(node.deployable, target, dryRun)
+      const result: DeployableExecutionResult = {
+        name,
+        status: "completed",
+        dependencies: [...node.dependencies],
+        workspaces: [...node.deployable.workspaces],
+      }
+      executionResults.push(result)
+      statusByName.set(name, result.status)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const result: DeployableExecutionResult = {
+        name,
+        status: "failed",
+        dependencies: [...node.dependencies],
+        workspaces: [...node.deployable.workspaces],
+        error: message,
+      }
+      executionResults.push(result)
+      statusByName.set(name, result.status)
+      console.error(`[deployable:${name}] failed: ${message}`)
+    }
+  }
+
+  const failures = executionResults.filter((result) => result.status !== "completed")
+  if (failures.length > 0) {
+    const detail = failures
+      .map((result) => `${result.name}: ${result.error ?? result.status}`)
+      .join("\n")
+    throw new Error(`Converge completed with failures:\n${detail}`)
+  }
 
   return {
     target,
@@ -283,7 +358,8 @@ export async function convergeEnvironment(
     workspaces,
     changedFiles: changeSet.files,
     mode: changeSet.mode,
-    dryRun: options.dryRun ?? false,
+    dryRun,
     plan: plan.entries,
+    execution: executionResults,
   }
 }

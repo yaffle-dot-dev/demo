@@ -38,6 +38,14 @@ export interface DeployablePlanEntry {
   supportedEnvironmentKinds: EnvironmentKind[]
 }
 
+export interface DeployableExecutionResult {
+  name: string
+  status: "completed" | "failed" | "skipped"
+  dependencies: string[]
+  workspaces: string[]
+  error?: string
+}
+
 export interface ConvergeResult {
   target: CiTarget
   deployables: string[]
@@ -46,4 +54,5 @@ export interface ConvergeResult {
   mode: "all" | "changed"
   dryRun: boolean
   plan: DeployablePlanEntry[]
+  execution: DeployableExecutionResult[]
 }
