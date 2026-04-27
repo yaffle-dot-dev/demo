@@ -6,7 +6,7 @@ data "terraform_remote_state" "shared" {
   backend = "local"
 
   config = {
-    path = "../../../infra/shared/terraform.tfstate"
+    path = "../../../.yaffle/state/main/infra/shared/terraform.tfstate"
   }
 }
 

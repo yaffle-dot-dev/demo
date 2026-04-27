@@ -3,6 +3,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use hcl::Body;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use yaffle_contracts::{
@@ -44,7 +45,6 @@ struct GraphContext {
 struct PreparedExecutionRepo {
     _temp_dir: tempfile::TempDir,
     repo_root: PathBuf,
-    workspace_dir: PathBuf,
     tf_data_dir: PathBuf,
 }
 
@@ -87,6 +87,12 @@ pub fn execute(request: &EngineRequest, working_dir: &Path) -> Result<EngineResp
                 .as_ref()
                 .expect("graph execution should always have repo context"),
         ),
+        EngineOperation::Converge => execute_converge_operation(
+            request,
+            repo_context
+                .as_ref()
+                .expect("converge execution should always have repo context"),
+        ),
         EngineOperation::Outputs => execute_outputs_operation(
             request,
             repo_context
@@ -94,13 +100,9 @@ pub fn execute(request: &EngineRequest, working_dir: &Path) -> Result<EngineResp
                 .expect("outputs execution should always have repo context"),
         ),
         EngineOperation::Doctor => Ok(execute_doctor_operation(request, working_dir)),
-        EngineOperation::Converge
-        | EngineOperation::Destroy
-        | EngineOperation::Status
-        | EngineOperation::Wait => Ok(execute_placeholder_operation(
-            request,
-            repo_context.as_ref(),
-        )),
+        EngineOperation::Destroy | EngineOperation::Status | EngineOperation::Wait => Ok(
+            execute_placeholder_operation(request, repo_context.as_ref()),
+        ),
     }
 }
 
@@ -182,11 +184,25 @@ fn execute_outputs_operation(
     })?;
 
     let prepared_repo = prepare_execution_repo(&repo_context.repo_root, &workspace_path, request)?;
+    let environment_kind = graph_context
+        .graph
+        .environment_kind
+        .expect("outputs operation should have an environment kind");
+    let workspace_config = repo_context
+        .config
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.path == workspace_path)
+        .expect("selected outputs workspace should exist in config");
+
+    let _uses_local_backend =
+        configure_workspace_execution(request, &prepared_repo, workspace_config, environment_kind)?;
 
     run_tofu_command(
         request,
         &tofu_resolution,
         &prepared_repo,
+        &workspace_path,
         &["init", "-input=false", "-no-color"],
         "tofu_init_failed",
     )?;
@@ -195,6 +211,7 @@ fn execute_outputs_operation(
         request,
         &tofu_resolution,
         &prepared_repo,
+        &workspace_path,
         &["output", "-json", "-no-color"],
         "tofu_output_failed",
     )?;
@@ -262,6 +279,131 @@ fn execute_outputs_operation(
         format_outputs_summary(environment_name, &workspace_path, &outputs),
         workspace_snapshots,
         outputs,
+        diagnostics,
+    ))
+}
+
+fn execute_converge_operation(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+) -> Result<EngineResponse, EngineError> {
+    let graph_context = load_graph_context(repo_context, request)?;
+    let tofu_report = inspect_tofu_resolution(&TofuResolutionRequest::default());
+    let tofu_resolution = tofu_report.clone().into_result().map_err(|error| {
+        request_error_with_details(
+            request,
+            "tofu_resolution_failed",
+            "could not resolve tofu using the configured source policy",
+            Some(BTreeMap::from([(
+                "attempts".to_string(),
+                json!(error.attempts),
+            )])),
+        )
+    })?;
+
+    let prepared_repo = prepare_execution_repo(&repo_context.repo_root, ".", request)?;
+    let environment_kind = graph_context
+        .graph
+        .environment_kind
+        .expect("converge operation should have an environment kind");
+
+    for workspace_path in &graph_context.topological_order {
+        let workspace_config = repo_context
+            .config
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.path == *workspace_path)
+            .expect("converge workspace should exist in config");
+
+        let uses_local_backend = configure_workspace_execution(
+            request,
+            &prepared_repo,
+            workspace_config,
+            environment_kind,
+        )?;
+
+        run_tofu_command(
+            request,
+            &tofu_resolution,
+            &prepared_repo,
+            workspace_path,
+            &["init", "-input=false", "-no-color"],
+            "tofu_init_failed",
+        )?;
+        run_tofu_command(
+            request,
+            &tofu_resolution,
+            &prepared_repo,
+            workspace_path,
+            &["apply", "-auto-approve", "-input=false", "-no-color"],
+            "tofu_apply_failed",
+        )?;
+
+        if uses_local_backend {
+            persist_local_backend_state(request, repo_context, &prepared_repo, workspace_path)?;
+        }
+    }
+
+    let mut diagnostics = repo_context_diagnostics(repo_context);
+    diagnostics.push(DiagnosticMessage {
+        level: DiagnosticLevel::Info,
+        code: Some("tofu_resolved".to_string()),
+        message: format!(
+            "Resolved tofu via {} at '{}' ({})",
+            tofu_source_label(tofu_resolution.source),
+            tofu_resolution.path.display(),
+            tofu_resolution.version
+        ),
+        workspace_path: None,
+        item_key: None,
+        details: Some(BTreeMap::from([
+            ("source".to_string(), json!(tofu_resolution.source)),
+            (
+                "path".to_string(),
+                json!(tofu_resolution.path.display().to_string()),
+            ),
+            ("version".to_string(), json!(tofu_resolution.version)),
+            ("attempts".to_string(), json!(tofu_report.attempts)),
+        ])),
+    });
+
+    for (index, workspace_path) in graph_context.topological_order.iter().enumerate() {
+        diagnostics.push(DiagnosticMessage {
+            level: DiagnosticLevel::Info,
+            code: Some("workspace_converged".to_string()),
+            message: format!("Converged workspace '{}'.", workspace_path),
+            workspace_path: Some(workspace_path.clone()),
+            item_key: None,
+            details: Some(BTreeMap::from([(
+                "topological_index".to_string(),
+                json!(index),
+            )])),
+        });
+    }
+
+    let workspace_snapshots = graph_context
+        .topological_order
+        .iter()
+        .map(|workspace_path| WorkspaceSnapshot {
+            workspace_path: workspace_path.clone(),
+            lifecycle: None,
+            materialization: None,
+            freshness: None,
+        })
+        .collect::<Vec<_>>();
+
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+
+    Ok(build_response(
+        request,
+        OperationResultKind::Succeeded,
+        format_converge_summary(environment_name, &graph_context.topological_order),
+        workspace_snapshots,
+        BTreeMap::new(),
         diagnostics,
     ))
 }
@@ -901,22 +1043,65 @@ fn prepare_execution_repo(
     Ok(PreparedExecutionRepo {
         _temp_dir: temp_dir,
         repo_root,
-        workspace_dir,
         tf_data_dir,
     })
+}
+
+fn configure_workspace_execution(
+    request: &EngineRequest,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace: &yaffle_config::Workspace,
+    environment_kind: EnvironmentKind,
+) -> Result<bool, EngineError> {
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.clone())
+        .unwrap_or_default();
+    let workspace_dir = prepared_repo.repo_root.join(&workspace.path);
+
+    ensure_injected_variable_declarations(request, &workspace_dir)?;
+    write_workspace_variables_file(
+        request,
+        &workspace_dir,
+        workspace,
+        &environment_name,
+        environment_kind,
+    )?;
+
+    let has_explicit_backend = workspace_has_explicit_backend(request, &workspace_dir)?;
+    if !has_explicit_backend {
+        write_local_backend_override(request, prepared_repo, &workspace_dir, &workspace.path)?;
+    }
+
+    Ok(!has_explicit_backend)
 }
 
 fn run_tofu_command(
     request: &EngineRequest,
     tofu_resolution: &yaffle_tofu::TofuResolution,
     prepared_repo: &PreparedExecutionRepo,
+    workspace_path: &str,
     args: &[&str],
     error_code: &'static str,
 ) -> Result<std::process::Output, EngineError> {
+    let workspace_dir = prepared_repo.repo_root.join(workspace_path);
+    let tf_data_dir = prepared_repo.tf_data_dir.join(slugify_path(workspace_path));
+    fs::create_dir_all(&tf_data_dir).map_err(|error| {
+        request_error(
+            request,
+            "execution_workspace_prepare_failed",
+            format!(
+                "Failed to create TF_DATA_DIR for workspace '{}': {error}",
+                workspace_path
+            ),
+        )
+    })?;
+
     let output = tofu_resolution
         .command()
-        .current_dir(&prepared_repo.workspace_dir)
-        .env("TF_DATA_DIR", &prepared_repo.tf_data_dir)
+        .current_dir(&workspace_dir)
+        .env("TF_DATA_DIR", &tf_data_dir)
         .env("TF_IN_AUTOMATION", "1")
         .env("TOFU_IN_AUTOMATION", "1")
         .args(args)
@@ -928,12 +1113,12 @@ fn run_tofu_command(
                 format!(
                     "Failed to execute tofu command '{}' for workspace '{}': {error}",
                     args.join(" "),
-                    prepared_repo.workspace_dir.display()
+                    workspace_dir.display()
                 ),
                 Some(BTreeMap::from([
                     (
                         "workspace_dir".to_string(),
-                        json!(prepared_repo.workspace_dir.display().to_string()),
+                        json!(workspace_dir.display().to_string()),
                     ),
                     (
                         "repo_root".to_string(),
@@ -951,17 +1136,14 @@ fn run_tofu_command(
             format!(
                 "tofu {} failed for workspace '{}': {}",
                 args.join(" "),
-                prepared_repo.workspace_dir.display(),
+                workspace_dir.display(),
                 utf8_trimmed(&output.stderr)
             ),
             Some(BTreeMap::from([
-                (
-                    "workspace_path".to_string(),
-                    json!(request.selection.workspaces),
-                ),
+                ("workspace_path".to_string(), json!(workspace_path)),
                 (
                     "workspace_dir".to_string(),
-                    json!(prepared_repo.workspace_dir.display().to_string()),
+                    json!(workspace_dir.display().to_string()),
                 ),
                 (
                     "repo_root".to_string(),
@@ -1046,12 +1228,334 @@ fn format_outputs_summary(
     lines.join("\n")
 }
 
+fn format_converge_summary(environment_name: &str, workspace_paths: &[String]) -> String {
+    let header = format!(
+        "converged {} workspace(s) for environment '{}'",
+        workspace_paths.len(),
+        environment_name
+    );
+
+    if workspace_paths.is_empty() {
+        return header;
+    }
+
+    let mut lines = vec![header, String::new()];
+    lines.extend(
+        workspace_paths
+            .iter()
+            .map(|workspace_path| format!("- {workspace_path}")),
+    );
+    lines.join("\n")
+}
+
+fn write_workspace_variables_file(
+    request: &EngineRequest,
+    workspace_dir: &Path,
+    workspace: &yaffle_config::Workspace,
+    environment_name: &str,
+    environment_kind: EnvironmentKind,
+) -> Result<(), EngineError> {
+    let mut variables = workspace_variable_values(&workspace.variables);
+    variables.insert("environment".to_string(), json!(environment_name));
+    variables.insert(
+        "environment_kind".to_string(),
+        json!(environment_kind_name(environment_kind)),
+    );
+
+    let serialized = serde_json::to_vec_pretty(&variables).map_err(|error| {
+        request_error(
+            request,
+            "workspace_variables_serialize_failed",
+            format!(
+                "Failed to serialize variables for workspace '{}': {error}",
+                workspace.path
+            ),
+        )
+    })?;
+
+    fs::write(workspace_dir.join("yaffle.auto.tfvars.json"), serialized).map_err(|error| {
+        request_error(
+            request,
+            "workspace_variables_write_failed",
+            format!(
+                "Failed to write Yaffle variables file for workspace '{}': {error}",
+                workspace.path
+            ),
+        )
+    })
+}
+
+fn ensure_injected_variable_declarations(
+    request: &EngineRequest,
+    workspace_dir: &Path,
+) -> Result<(), EngineError> {
+    let body = load_workspace_hcl_body(request, workspace_dir)?;
+    let declared_variables = body
+        .blocks()
+        .filter(|block| block.identifier() == "variable")
+        .filter_map(|block| {
+            block
+                .labels()
+                .first()
+                .map(|label| label.as_str().to_string())
+        })
+        .collect::<BTreeSet<_>>();
+
+    let missing_variables = [
+        ("environment", "Environment name (injected by Yaffle)"),
+        (
+            "environment_kind",
+            "Environment kind: 'named' or 'transient' (injected by Yaffle)",
+        ),
+    ]
+    .into_iter()
+    .filter(|(name, _)| !declared_variables.contains(*name))
+    .collect::<Vec<_>>();
+
+    if missing_variables.is_empty() {
+        return Ok(());
+    }
+
+    let blocks = missing_variables
+        .into_iter()
+        .map(|(name, description)| {
+            format!(
+                "variable \"{name}\" {{\n  type        = string\n  description = \"{description}\"\n}}"
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n");
+
+    let content = format!(
+        "# Generated by Yaffle -- do not edit\n# These variables are injected by Yaffle if not declared in the workspace.\n\n{blocks}\n"
+    );
+
+    fs::write(workspace_dir.join("yaffle_injected_variables.tf"), content).map_err(|error| {
+        request_error(
+            request,
+            "workspace_variables_write_failed",
+            format!(
+                "Failed to write injected variable declarations in '{}': {error}",
+                workspace_dir.display()
+            ),
+        )
+    })
+}
+
+fn workspace_has_explicit_backend(
+    request: &EngineRequest,
+    workspace_dir: &Path,
+) -> Result<bool, EngineError> {
+    let body = load_workspace_hcl_body(request, workspace_dir)?;
+
+    Ok(body
+        .blocks()
+        .filter(|block| block.identifier() == "terraform")
+        .any(|block| {
+            block
+                .body()
+                .blocks()
+                .any(|nested| nested.identifier() == "cloud" || nested.identifier() == "backend")
+        }))
+}
+
+fn write_local_backend_override(
+    request: &EngineRequest,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace_dir: &Path,
+    workspace_path: &str,
+) -> Result<(), EngineError> {
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+    let state_path = prepared_repo
+        .repo_root
+        .join(".yaffle")
+        .join("state")
+        .join(environment_name)
+        .join(workspace_path)
+        .join("terraform.tfstate");
+
+    if let Some(parent) = state_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            request_error(
+                request,
+                "workspace_backend_write_failed",
+                format!(
+                    "Failed to create local state directory for workspace '{}': {error}",
+                    workspace_path
+                ),
+            )
+        })?;
+    }
+
+    let content = format!(
+        "# Generated by Yaffle -- do not edit\nterraform {{\n  backend \"local\" {{\n    path = \"{}\"\n  }}\n}}\n",
+        state_path.display()
+    );
+
+    fs::write(workspace_dir.join("backend_override.tf"), content).map_err(|error| {
+        request_error(
+            request,
+            "workspace_backend_write_failed",
+            format!(
+                "Failed to write local backend override for workspace '{}': {error}",
+                workspace_path
+            ),
+        )
+    })
+}
+
+fn persist_local_backend_state(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace_path: &str,
+) -> Result<(), EngineError> {
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+    let source_state_dir = prepared_repo
+        .repo_root
+        .join(".yaffle")
+        .join("state")
+        .join(environment_name)
+        .join(workspace_path);
+    let destination_state_dir = repo_context
+        .repo_root
+        .join(".yaffle")
+        .join("state")
+        .join(environment_name)
+        .join(workspace_path);
+
+    if !source_state_dir.is_dir() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(&destination_state_dir).map_err(|error| {
+        request_error(
+            request,
+            "workspace_state_persist_failed",
+            format!(
+                "Failed to create persisted state directory for workspace '{}': {error}",
+                workspace_path
+            ),
+        )
+    })?;
+
+    for file_name in ["terraform.tfstate", "terraform.tfstate.backup"] {
+        let source_path = source_state_dir.join(file_name);
+        if !source_path.is_file() {
+            continue;
+        }
+
+        fs::copy(&source_path, destination_state_dir.join(file_name)).map_err(|error| {
+            request_error(
+                request,
+                "workspace_state_persist_failed",
+                format!(
+                    "Failed to persist local state file '{}' for workspace '{}': {error}",
+                    file_name, workspace_path
+                ),
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
 fn terraform_output_type_name(value: Value) -> Option<String> {
     match value {
         Value::Null => None,
         Value::String(value) => Some(value),
         other => serde_json::to_string(&other).ok(),
     }
+}
+
+fn workspace_variable_values(
+    variables: &BTreeMap<String, yaffle_config::VariableValue>,
+) -> BTreeMap<String, Value> {
+    variables
+        .iter()
+        .map(|(name, value)| {
+            let value = match value {
+                yaffle_config::VariableValue::String(value) => json!(value),
+                yaffle_config::VariableValue::Integer(value) => json!(value),
+                yaffle_config::VariableValue::Float(value) => json!(value),
+                yaffle_config::VariableValue::Boolean(value) => json!(value),
+            };
+
+            (name.clone(), value)
+        })
+        .collect()
+}
+
+fn environment_kind_name(environment_kind: EnvironmentKind) -> &'static str {
+    match environment_kind {
+        EnvironmentKind::Named => "named",
+        EnvironmentKind::Transient => "transient",
+    }
+}
+
+fn load_workspace_hcl_body(
+    request: &EngineRequest,
+    workspace_dir: &Path,
+) -> Result<Body, EngineError> {
+    let mut body = Body::default();
+
+    for entry in fs::read_dir(workspace_dir).map_err(|error| {
+        request_error(
+            request,
+            "workspace_read_failed",
+            format!(
+                "Failed to read workspace directory '{}': {error}",
+                workspace_dir.display()
+            ),
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            request_error(
+                request,
+                "workspace_read_failed",
+                format!(
+                    "Failed to inspect workspace directory '{}': {error}",
+                    workspace_dir.display()
+                ),
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("tf") {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path).map_err(|error| {
+            request_error(
+                request,
+                "workspace_read_failed",
+                format!(
+                    "Failed to read workspace file '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        let parsed = hcl::from_str::<Body>(&content).map_err(|error| {
+            request_error(
+                request,
+                "workspace_parse_failed",
+                format!(
+                    "Failed to parse workspace file '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        body.extend(parsed);
+    }
+
+    Ok(body)
 }
 
 fn copy_repo_for_execution(source: &Path, destination: &Path) -> io::Result<()> {
@@ -2149,6 +2653,36 @@ environments = ["main"]
             .iter()
             .any(|diagnostic| diagnostic.code.as_deref() == Some("config_not_found")));
         assert!(response.result.summary.contains("[fail]"));
+    }
+
+    #[test]
+    fn injects_missing_environment_variable_declarations() {
+        let repo = TempDir::new().expect("temp dir should exist");
+        let workspace_dir = repo.path().join("infra/app");
+        fs::create_dir_all(&workspace_dir).expect("workspace dir should exist");
+        fs::write(
+            workspace_dir.join("main.tf"),
+            "locals {\n  descriptor = \"${var.environment}:${var.environment_kind}\"\n}\n",
+        )
+        .expect("fixture file should be written");
+
+        ensure_injected_variable_declarations(
+            &EngineRequest {
+                operation: EngineOperation::Converge,
+                target: Some(EnvironmentTarget {
+                    environment: "main".to_string(),
+                }),
+                selection: WorkspaceSelection::default(),
+                wait_for: None,
+            },
+            &workspace_dir,
+        )
+        .expect("missing variable declarations should be injected");
+
+        let content = fs::read_to_string(workspace_dir.join("yaffle_injected_variables.tf"))
+            .expect("injected variables file should exist");
+        assert!(content.contains("variable \"environment\""));
+        assert!(content.contains("variable \"environment_kind\""));
     }
 
     #[test]

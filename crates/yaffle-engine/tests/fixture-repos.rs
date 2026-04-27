@@ -4,7 +4,9 @@ use serde_json::json;
 use yaffle_contracts::{EngineOperation, OperationResultKind, WorkspaceSelection};
 use yaffle_engine::{execute, EngineRequest, EnvironmentTarget};
 
-use support::{copy_fixture_repo, run_tofu_apply, run_tofu_output_json};
+use support::{
+    copy_fixture_repo, run_tofu_apply, run_tofu_output_json, run_tofu_output_json_for_env,
+};
 
 #[test]
 fn graph_dependency_chain_fixture_resolves_expected_order() {
@@ -190,5 +192,99 @@ fn outputs_remote_state_chain_fixture_supports_upstream_and_downstream_states() 
     assert_eq!(
         response.outputs["feature_flags"].value,
         json!(["auth", "cdn", "metrics"])
+    );
+}
+
+#[test]
+fn converge_remote_state_chain_fixture_persists_outputs_for_downstream_workspace() {
+    let repo = copy_fixture_repo("outputs-remote-state-chain");
+
+    let converge = execute(
+        &EngineRequest {
+            operation: EngineOperation::Converge,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("converge should succeed for remote-state fixture");
+
+    assert_eq!(converge.result.kind, OperationResultKind::Succeeded);
+    assert!(converge.result.summary.contains("converged 2 workspace(s)"));
+
+    let direct_outputs = run_tofu_output_json(repo.path(), "apps/web/infra");
+    assert_eq!(
+        direct_outputs["base_url"]["value"],
+        json!("https://shared.internal")
+    );
+
+    let outputs = execute(
+        &EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection {
+                workspaces: vec!["apps/web/infra".to_string()],
+            },
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("outputs should read state produced by converge");
+
+    assert_eq!(
+        outputs.outputs["base_url"].value,
+        json!("https://shared.internal")
+    );
+    assert_eq!(outputs.outputs["https_port"].value, json!(8443));
+}
+
+#[test]
+fn converge_environment_vars_fixture_supports_transient_environment_values() {
+    let repo = copy_fixture_repo("converge-environment-vars");
+
+    let converge = execute(
+        &EngineRequest {
+            operation: EngineOperation::Converge,
+            target: Some(EnvironmentTarget {
+                environment: "pr-42".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("transient converge should succeed");
+
+    assert_eq!(converge.result.kind, OperationResultKind::Succeeded);
+
+    let direct_outputs = run_tofu_output_json_for_env(repo.path(), "apps/web/infra", "pr-42");
+    assert_eq!(
+        direct_outputs["environment_descriptor"]["value"],
+        json!("pr-42:transient")
+    );
+
+    let outputs = execute(
+        &EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: Some(EnvironmentTarget {
+                environment: "pr-42".to_string(),
+            }),
+            selection: WorkspaceSelection {
+                workspaces: vec!["apps/web/infra".to_string()],
+            },
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("outputs should read transient converge state");
+
+    assert_eq!(
+        outputs.outputs["environment_descriptor"].value,
+        json!("pr-42:transient")
     );
 }

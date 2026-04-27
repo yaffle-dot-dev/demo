@@ -771,6 +771,7 @@ dependencies = [
 name = "yaffle-engine"
 version = "0.1.0"
 dependencies = [
+ "hcl-rs",
  "serde",
  "serde_json",
  "tempfile",

@@ -20,6 +20,9 @@ Current fixtures:
 - `outputs-remote-state-chain`
   - providerless multi-workspace repo using `terraform_remote_state`
   - used for richer output-shape and multi-workspace fixture tests
+- `converge-environment-vars`
+  - wildcard workspaces with undeclared `environment` / `environment_kind` inputs
+  - used to verify injected variable declarations and transient env converge
 
 Rules:
 
