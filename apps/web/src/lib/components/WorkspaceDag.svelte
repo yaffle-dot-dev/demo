@@ -119,6 +119,7 @@
   nodeGapY={8}
   minColumnWidth={60}
   horizontalFirst={true}
+  layoutMode="cli"
   {node}
 />
 

@@ -265,7 +265,6 @@
               pscale
 
               # Secrets
-              secretspec
               _1password-cli
 
               # Version control / GitHub
@@ -308,7 +307,6 @@
               echo "  tofu             $(tofu --version | head -1)"
               echo "  psql             $(psql --version)"
               echo "  jj               $(jj --version)"
-              echo "  secretspec       $(secretspec --version)"
               echo "  process-compose  $(process-compose version | head -1)"
               echo ""
                echo "commands:"

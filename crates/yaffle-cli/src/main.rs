@@ -5,12 +5,11 @@ use std::path::PathBuf;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 
-use yaffle_config::validate_environment_name;
 use yaffle_contracts::{
     EngineError, EngineOperation, EngineResponse, EnvironmentTarget, ErrorPayload,
     WorkspaceSelection, CONTRACT_VERSION,
 };
-use yaffle_engine::{execute_graph, placeholder_response, EngineRequest};
+use yaffle_engine::{execute, EngineRequest};
 
 type CliResult = Result<(), CliFailure>;
 
@@ -168,201 +167,99 @@ fn run() -> CliResult {
         Commands::Wait(command) => run_wait(command),
         Commands::Outputs(command) => run_outputs(command),
         Commands::Graph(command) => run_graph(command),
-        Commands::Doctor => print_placeholder(
-            "doctor",
-            "Diagnose local or cloud prerequisites, configuration, and capability problems",
-            false,
-        ),
+        Commands::Doctor => run_doctor(),
         Commands::Completion(command) => run_completion(command),
         Commands::Cloud(command) => run_cloud(command),
     }
 }
 
 fn run_targeted_operation(operation: EngineOperation, command: TargetedCommand) -> CliResult {
-    validate_environment_name(&command.env).map_err(|error| {
-        command_error(
-            command.json,
-            Some(operation.clone()),
-            Some(EnvironmentTarget {
-                environment: command.env.clone(),
+    run_engine_request(
+        command.json,
+        EngineRequest {
+            operation,
+            target: Some(EnvironmentTarget {
+                environment: command.env,
             }),
-            Some(WorkspaceSelection {
-                workspaces: command.workspaces.clone(),
-            }),
-            "invalid_environment",
-            error.to_string(),
-        )
-    })?;
-
-    let request = EngineRequest {
-        operation,
-        target: Some(EnvironmentTarget {
-            environment: command.env,
-        }),
-        selection: WorkspaceSelection {
-            workspaces: command.workspaces,
+            selection: WorkspaceSelection {
+                workspaces: command.workspaces,
+            },
+            wait_for: None,
         },
-    };
-
-    let response = placeholder_response(
-        &request,
-        "CLI alpha placeholder: Rust shell is wired, engine execution is not implemented yet.",
-    );
-    render_response(command.json, &response)
+    )
 }
 
 fn run_environment_operation(
     operation: EngineOperation,
     command: EnvironmentOnlyCommand,
 ) -> CliResult {
-    validate_environment_name(&command.env).map_err(|error| {
-        command_error(
-            command.json,
-            Some(operation.clone()),
-            Some(EnvironmentTarget {
-                environment: command.env.clone(),
+    run_engine_request(
+        command.json,
+        EngineRequest {
+            operation,
+            target: Some(EnvironmentTarget {
+                environment: command.env,
             }),
-            Some(WorkspaceSelection::default()),
-            "invalid_environment",
-            error.to_string(),
-        )
-    })?;
-
-    let request = EngineRequest {
-        operation,
-        target: Some(EnvironmentTarget {
-            environment: command.env,
-        }),
-        selection: WorkspaceSelection::default(),
-    };
-
-    let response = placeholder_response(
-        &request,
-        "CLI alpha placeholder: Rust shell is wired, engine execution is not implemented yet.",
-    );
-    render_response(command.json, &response)
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+    )
 }
 
 fn run_wait(command: WaitCommand) -> CliResult {
-    validate_environment_name(&command.env).map_err(|error| {
-        command_error(
-            command.json,
-            Some(EngineOperation::Wait),
-            Some(EnvironmentTarget {
-                environment: command.env.clone(),
+    run_engine_request(
+        command.json,
+        EngineRequest {
+            operation: EngineOperation::Wait,
+            target: Some(EnvironmentTarget {
+                environment: command.env,
             }),
-            Some(WorkspaceSelection::default()),
-            "invalid_environment",
-            error.to_string(),
-        )
-    })?;
-    if command.condition.trim().is_empty() {
-        return Err(command_error(
-            command.json,
-            Some(EngineOperation::Wait),
-            Some(EnvironmentTarget {
-                environment: command.env.clone(),
-            }),
-            Some(WorkspaceSelection::default()),
-            "invalid_condition",
-            "condition passed to --for must not be empty",
-        ));
-    }
-
-    let request = EngineRequest {
-        operation: EngineOperation::Status,
-        target: Some(EnvironmentTarget {
-            environment: command.env,
-        }),
-        selection: WorkspaceSelection::default(),
-    };
-
-    let response = placeholder_response(
-        &request,
-        format!(
-            "CLI alpha placeholder: waiting for condition '{}' is not implemented yet.",
-            command.condition
-        ),
-    );
-    render_response(command.json, &response)
+            selection: WorkspaceSelection::default(),
+            wait_for: Some(command.condition),
+        },
+    )
 }
 
 fn run_outputs(command: OutputsCommand) -> CliResult {
-    validate_environment_name(&command.env).map_err(|error| {
-        command_error(
-            command.json,
-            Some(EngineOperation::Outputs),
-            Some(EnvironmentTarget {
-                environment: command.env.clone(),
+    run_engine_request(
+        command.json,
+        EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: Some(EnvironmentTarget {
+                environment: command.env,
             }),
-            Some(WorkspaceSelection {
-                workspaces: vec![command.workspace.clone()],
-            }),
-            "invalid_environment",
-            error.to_string(),
-        )
-    })?;
-    if command.workspace.trim().is_empty() {
-        return Err(command_error(
-            command.json,
-            Some(EngineOperation::Outputs),
-            Some(EnvironmentTarget {
-                environment: command.env.clone(),
-            }),
-            Some(WorkspaceSelection::default()),
-            "invalid_workspace",
-            "workspace passed to --workspace must not be empty",
-        ));
-    }
-
-    let request = EngineRequest {
-        operation: EngineOperation::Outputs,
-        target: Some(EnvironmentTarget {
-            environment: command.env,
-        }),
-        selection: WorkspaceSelection {
-            workspaces: vec![command.workspace],
+            selection: WorkspaceSelection {
+                workspaces: vec![command.workspace],
+            },
+            wait_for: None,
         },
-    };
-
-    let response = placeholder_response(
-        &request,
-        "CLI alpha placeholder: outputs execution is not implemented in Rust yet.",
-    );
-    render_response(command.json, &response)
+    )
 }
 
 fn run_graph(command: GraphCommand) -> CliResult {
-    if let Some(environment) = &command.env {
-        validate_environment_name(environment).map_err(|error| {
-            command_error(
-                command.json,
-                Some(EngineOperation::Graph),
-                Some(EnvironmentTarget {
-                    environment: environment.clone(),
-                }),
-                Some(WorkspaceSelection::default()),
-                "invalid_environment",
-                error.to_string(),
-            )
-        })?;
-    }
+    run_engine_request(
+        command.json,
+        EngineRequest {
+            operation: EngineOperation::Graph,
+            target: command
+                .env
+                .map(|environment| EnvironmentTarget { environment }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+    )
+}
 
-    let request = EngineRequest {
-        operation: EngineOperation::Graph,
-        target: command
-            .env
-            .map(|environment| EnvironmentTarget { environment }),
-        selection: WorkspaceSelection::default(),
-    };
-
-    let working_dir = current_working_directory(command.json, &request)?;
-    let response = execute_graph(&request, &working_dir).map_err(|payload| CliFailure {
-        json: command.json,
-        payload,
-    })?;
-
-    render_response(command.json, &response)
+fn run_doctor() -> CliResult {
+    run_engine_request(
+        false,
+        EngineRequest {
+            operation: EngineOperation::Doctor,
+            target: None,
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+    )
 }
 
 fn run_cloud(command: CloudCommands) -> CliResult {
@@ -385,6 +282,14 @@ fn run_completion(command: CompletionCommand) -> CliResult {
     let mut root = Cli::command();
     generate(command.shell, &mut root, "yaffle", &mut io::stdout());
     Ok(())
+}
+
+fn run_engine_request(json: bool, request: EngineRequest) -> CliResult {
+    let working_dir = current_working_directory(json, &request)?;
+    let response =
+        execute(&request, &working_dir).map_err(|payload| CliFailure { json, payload })?;
+
+    render_response(json, &response)
 }
 
 fn print_placeholder(command: &str, summary: &str, json: bool) -> CliResult {

@@ -77,6 +77,13 @@ The current frozen CLI alpha policy is:
 
 The initial Rust abstraction for this lives in `crates/yaffle-tofu`.
 
+Current implementation status:
+
+- `crates/yaffle-tofu` resolves `tofu` through a typed source policy
+- explicit override is currently supported via `YAFFLE_TOFU_PATH`
+- bundled and managed slots exist in the resolver contract even though acquisition is not implemented yet
+- system `tofu` remains the active fallback path used by local dogfooding
+
 ## Local entrypoint
 
 For now, the repo-level command is:

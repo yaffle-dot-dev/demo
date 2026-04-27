@@ -1,7 +1,7 @@
 <script lang="ts" module>
   import type { DependencyGraph } from "$lib/api"
 
-  export type LayoutMode = "alphabetical" | "flexible"
+  export type LayoutMode = "alphabetical" | "flexible" | "cli"
 
   export interface DagNode<T> {
     id: string
@@ -36,6 +36,11 @@
 
 <script lang="ts" generics="T">
   import type { Snippet } from "svelte"
+
+  import {
+    buildOrthogonalEdgePaths,
+    computeCliAlignedColumns,
+  } from "$lib/dag-layout-cli"
 
   interface Props {
     /** Items to layout in the DAG */
@@ -72,7 +77,7 @@
     nodeGapY = 12,
     minColumnWidth = 80,
     horizontalFirst = false,
-    layoutMode = "flexible",
+    layoutMode = "cli",
     node,
   }: Props = $props()
 
@@ -333,13 +338,15 @@
       return [[...items].sort((a, b) => getId(a).localeCompare(getId(b)))]
     }
 
-    const itemIds = new Set(items.map(getId))
-    const depths = computeDepths(dependencyGraph, itemIds)
-
     switch (layoutMode) {
+      case "cli":
+        return computeCliAlignedColumns(items, getId, dependencyGraph, horizontalFirst).columns
+
       case "flexible": {
         // For flexible layout, use alphabetical ordering for columns
         // then compute flexible Y positions to avoid edge-node crossings
+        const itemIds = new Set(items.map(getId))
+        const depths = computeDepths(dependencyGraph, itemIds)
         const cols = groupByDepthAlphabetical(items, getId, depths)
         flexibleYPositions = computeFlexibleYPositions(cols, getId, dependencyGraph, nodeHeight, nodeGapY)
         return cols
@@ -347,6 +354,8 @@
 
       case "alphabetical":
       default:
+        const itemIds = new Set(items.map(getId))
+        const depths = computeDepths(dependencyGraph, itemIds)
         return groupByDepthAlphabetical(items, getId, depths)
     }
   })
@@ -452,8 +461,41 @@
     return result
   })
 
+  const orthogonalEdgePaths = $derived.by(() => {
+    if (layoutMode !== "cli") {
+      return new Map<string, string>()
+    }
+
+    return buildOrthogonalEdgePaths(
+      edges.map((edge) => {
+        const sourcePos = positions.get(edge.sourceId)
+        const targetPos = positions.get(edge.targetId)
+
+        const sourceX = getNodeX(edge.sourceCol) + columnWidths[edge.sourceCol]
+        const sourceY = (sourcePos?.y ?? getNodeY(edge.sourceRow)) + nodeHeight / 2
+        const targetX = getNodeX(edge.targetCol)
+        const targetY = (targetPos?.y ?? getNodeY(edge.targetRow)) + nodeHeight / 2
+
+        return {
+          edgeId: `${edge.sourceId}->${edge.targetId}`,
+          sourceId: edge.sourceId,
+          targetId: edge.targetId,
+          sourceX,
+          sourceY,
+          targetX,
+          targetY,
+          bendX: targetX - nodeGapX / 2,
+        }
+      }),
+    )
+  })
+
   // Generate edge path - simple bezier curve for all edges
   function edgePath(edge: DagEdge): string {
+    if (layoutMode === "cli") {
+      return orthogonalEdgePaths.get(`${edge.sourceId}->${edge.targetId}`) ?? ""
+    }
+
     const sourcePos = positions.get(edge.sourceId)
     const targetPos = positions.get(edge.targetId)
 
