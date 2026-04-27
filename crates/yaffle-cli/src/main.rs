@@ -156,14 +156,22 @@ fn run() -> CliResult {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init => print_placeholder("init", "Initialize or scaffold repo-native Yaffle config", false),
+        Commands::Init => print_placeholder(
+            "init",
+            "Initialize or scaffold repo-native Yaffle config",
+            false,
+        ),
         Commands::Converge(command) => run_targeted_operation(EngineOperation::Converge, command),
         Commands::Destroy(command) => run_targeted_operation(EngineOperation::Destroy, command),
         Commands::Status(command) => run_environment_operation(EngineOperation::Status, command),
         Commands::Wait(command) => run_wait(command),
         Commands::Outputs(command) => run_outputs(command),
         Commands::Graph(command) => run_graph(command),
-        Commands::Doctor => print_placeholder("doctor", "Diagnose local or cloud prerequisites, configuration, and capability problems", false),
+        Commands::Doctor => print_placeholder(
+            "doctor",
+            "Diagnose local or cloud prerequisites, configuration, and capability problems",
+            false,
+        ),
         Commands::Completion(command) => run_completion(command),
         Commands::Cloud(command) => run_cloud(command),
     }
@@ -202,7 +210,10 @@ fn run_targeted_operation(operation: EngineOperation, command: TargetedCommand) 
     render_response(command.json, &response)
 }
 
-fn run_environment_operation(operation: EngineOperation, command: EnvironmentOnlyCommand) -> CliResult {
+fn run_environment_operation(
+    operation: EngineOperation,
+    command: EnvironmentOnlyCommand,
+) -> CliResult {
     validate_environment_name(&command.env).map_err(|error| {
         command_error(
             command.json,
@@ -338,7 +349,9 @@ fn run_graph(command: GraphCommand) -> CliResult {
 
     let request = EngineRequest {
         operation: EngineOperation::Graph,
-        target: command.env.map(|environment| EnvironmentTarget { environment }),
+        target: command
+            .env
+            .map(|environment| EnvironmentTarget { environment }),
         selection: WorkspaceSelection::default(),
     };
 
@@ -351,9 +364,15 @@ fn run_graph(command: GraphCommand) -> CliResult {
 
 fn run_cloud(command: CloudCommands) -> CliResult {
     let summary = match command {
-        CloudCommands::Login => "CLI alpha placeholder: cloud login is not implemented in Rust yet.",
-        CloudCommands::Logout => "CLI alpha placeholder: cloud logout is not implemented in Rust yet.",
-        CloudCommands::Status => "CLI alpha placeholder: cloud status is not implemented in Rust yet.",
+        CloudCommands::Login => {
+            "CLI alpha placeholder: cloud login is not implemented in Rust yet."
+        }
+        CloudCommands::Logout => {
+            "CLI alpha placeholder: cloud logout is not implemented in Rust yet."
+        }
+        CloudCommands::Status => {
+            "CLI alpha placeholder: cloud status is not implemented in Rust yet."
+        }
     };
 
     print_placeholder("cloud", summary, false)
@@ -380,9 +399,19 @@ fn print_placeholder(command: &str, summary: &str, json: bool) -> CliResult {
                 "message": "This CLI alpha command is not fully implemented yet.",
             }],
         });
-        println!("{}", serde_json::to_string_pretty(&value).map_err(|error| {
-            command_error(json, None, None, None, "serialization_failed", error.to_string())
-        })?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).map_err(|error| {
+                command_error(
+                    json,
+                    None,
+                    None,
+                    None,
+                    "serialization_failed",
+                    error.to_string(),
+                )
+            })?
+        );
         return Ok(());
     }
 
@@ -392,16 +421,19 @@ fn print_placeholder(command: &str, summary: &str, json: bool) -> CliResult {
 
 fn render_response(json: bool, response: &EngineResponse) -> CliResult {
     if json {
-        println!("{}", serde_json::to_string_pretty(response).map_err(|error| {
-            command_error(
-                json,
-                Some(response.operation.clone()),
-                response.target.clone(),
-                Some(response.selection.clone()),
-                "serialization_failed",
-                error.to_string(),
-            )
-        })?);
+        println!(
+            "{}",
+            serde_json::to_string_pretty(response).map_err(|error| {
+                command_error(
+                    json,
+                    Some(response.operation.clone()),
+                    response.target.clone(),
+                    Some(response.selection.clone()),
+                    "serialization_failed",
+                    error.to_string(),
+                )
+            })?
+        );
         return Ok(());
     }
 

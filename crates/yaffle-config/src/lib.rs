@@ -106,7 +106,8 @@ pub fn validate_environment_name(environment: &str) -> AnyhowResult<()> {
 }
 
 pub fn parse_yaffle_toml(input: &str) -> Result<YaffleConfig, ConfigError> {
-    let raw: RawConfig = toml::from_str(input).map_err(|error| ConfigError::ParseToml(error.to_string()))?;
+    let raw: RawConfig =
+        toml::from_str(input).map_err(|error| ConfigError::ParseToml(error.to_string()))?;
     normalize_and_validate(raw)
 }
 
@@ -118,11 +119,17 @@ fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
     }
 
     if raw.triggers.is_some() {
-        errors.push("top-level triggers are no longer supported; move them under cloud.triggers".to_string());
+        errors.push(
+            "top-level triggers are no longer supported; move them under cloud.triggers"
+                .to_string(),
+        );
     }
 
     if raw.approvals.is_some() {
-        errors.push("top-level approvals are no longer supported; move them under cloud.approvals".to_string());
+        errors.push(
+            "top-level approvals are no longer supported; move them under cloud.approvals"
+                .to_string(),
+        );
     }
 
     if raw.workspaces.is_empty() {
@@ -130,7 +137,10 @@ fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
     }
 
     let environments = raw.environments.unwrap_or_default();
-    let declared_environments: BTreeSet<String> = environments.iter().map(|environment| environment.name.clone()).collect();
+    let declared_environments: BTreeSet<String> = environments
+        .iter()
+        .map(|environment| environment.name.clone())
+        .collect();
     if declared_environments.len() != environments.len() {
         errors.push("environments: duplicate environment names are not allowed".to_string());
     }
@@ -140,7 +150,10 @@ fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
 
     for workspace in raw.workspaces {
         if !seen_paths.insert(workspace.path.clone()) {
-            errors.push(format!("workspaces: duplicate workspace path '{}'", workspace.path));
+            errors.push(format!(
+                "workspaces: duplicate workspace path '{}'",
+                workspace.path
+            ));
         }
 
         let environments = normalize_environment_selector(workspace.environments);
@@ -427,7 +440,11 @@ branch_patterns = ["*"]
 "#;
 
         let config = parse_yaffle_toml(input).expect("config should parse");
-        let github = config.cloud.triggers.github.expect("github triggers should exist");
+        let github = config
+            .cloud
+            .triggers
+            .github
+            .expect("github triggers should exist");
         assert_eq!(github.push.len(), 1);
         assert_eq!(github.pull_request.len(), 1);
     }
@@ -454,7 +471,10 @@ approvers = ["github:user:alice"]
 
         let config = parse_yaffle_toml(input).expect("config should parse");
         assert_eq!(config.cloud.approvals.len(), 1);
-        assert_eq!(config.cloud.approvals[0].approvers, vec!["github:user:alice"]);
+        assert_eq!(
+            config.cloud.approvals[0].approvers,
+            vec!["github:user:alice"]
+        );
     }
 
     #[test]
@@ -475,7 +495,9 @@ environment = "main"
 "#;
 
         let error = parse_yaffle_toml(input).expect_err("legacy top-level triggers should fail");
-        assert!(error.to_string().contains("top-level triggers are no longer supported"));
+        assert!(error
+            .to_string()
+            .contains("top-level triggers are no longer supported"));
     }
 
     #[test]
@@ -497,7 +519,9 @@ approvers = ["github:user:alice"]
 "#;
 
         let error = parse_yaffle_toml(input).expect_err("legacy top-level approvals should fail");
-        assert!(error.to_string().contains("top-level approvals are no longer supported"));
+        assert!(error
+            .to_string()
+            .contains("top-level approvals are no longer supported"));
     }
 
     #[test]
@@ -524,6 +548,8 @@ environment = "main"
 "#;
 
         let error = parse_yaffle_toml(input).expect_err("mixed trigger syntax should fail");
-        assert!(error.to_string().contains("top-level triggers are no longer supported"));
+        assert!(error
+            .to_string()
+            .contains("top-level triggers are no longer supported"));
     }
 }

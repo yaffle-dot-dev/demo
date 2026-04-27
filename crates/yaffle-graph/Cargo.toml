@@ -7,7 +7,15 @@ repository.workspace = true
 homepage.workspace = true
 
 [dependencies]
+hcl.workspace = true
 serde.workspace = true
+thiserror.workspace = true
+
+[dependencies.yaffle-config]
+path = "../yaffle-config"
 
 [dependencies.yaffle-contracts]
 path = "../yaffle-contracts"
+
+[dev-dependencies]
+tempfile.workspace = true
