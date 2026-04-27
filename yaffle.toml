@@ -74,28 +74,28 @@ variables.sandbox_mode = true
 
 # Push triggers - map refs to environments
 # When a push happens to a matching ref, the environment is deployed
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "production"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/develop"]
 environment = "development"
 
 # Glob patterns work for ref matching
 # Note: "*" matches a single path segment and "**" matches across "/"
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/release/*"]
 environment = "staging"
 
 # Pull request triggers - create transient environments
 # When a PR is opened with a head branch matching the pattern,
 # a transient environment (e.g., "pr-123") is created
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 # =============================================================================
@@ -109,31 +109,31 @@ branch_patterns = ["*"]
 #   - github:team:myorg/platform-team
 
 # Production deployments require senior engineer approval
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/database", "infra/core"]
 environments = ["production"]
 approvers = ["github:user:senior-engineer", "github:team:acme/platform"]
 
 # All production workspaces need at least one reviewer
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["*"]
 environments = ["production"]
 approvers = ["github:user:on-call-lead"]
 
 # Staging needs team approval via glob pattern
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/*"]
 environments = ["staging"]
 approvers = ["github:team:acme/infrastructure"]
 
 # Feature flags have a dedicated owner across all environments
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/feature-flags"]
 environments = ["*"]
 approvers = ["github:user:feature-flag-owner"]
 
 # Development and PR environments don't require approval (empty approvers)
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["*"]
 environments = ["development"]
 approvers = []
