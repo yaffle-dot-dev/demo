@@ -68,6 +68,15 @@ Instead, Project 1 should shape:
 This does not require final bundling/embedding yet, but it must be part of the
 architecture from the start.
 
+The current frozen CLI alpha policy is:
+
+- prefer an explicit override when provided
+- otherwise prefer a bundled sidecar toolchain
+- otherwise prefer a Yaffle-managed cached toolchain
+- fall back to system `tofu` only as a compatibility path
+
+The initial Rust abstraction for this lives in `crates/yaffle-tofu`.
+
 ## Local entrypoint
 
 For now, the repo-level command is:

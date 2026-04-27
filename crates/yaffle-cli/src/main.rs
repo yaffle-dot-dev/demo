@@ -1,12 +1,38 @@
-use anyhow::{anyhow, Result};
+use std::fmt::{Display, Formatter};
+use std::io;
+
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell};
 
 use yaffle_config::validate_environment_name;
-use yaffle_contracts::{ContractVersion, EnvironmentTarget, WorkspaceSelection};
-use yaffle_engine::{placeholder_response, EngineOperation, EngineRequest};
+use yaffle_contracts::{
+    EngineError, EngineOperation, EngineResponse, EnvironmentTarget, ErrorPayload,
+    WorkspaceSelection, CONTRACT_VERSION,
+};
+use yaffle_engine::{placeholder_response, EngineRequest};
+
+type CliResult = Result<(), CliFailure>;
+
+#[derive(Debug)]
+struct CliFailure {
+    json: bool,
+    payload: EngineError,
+}
+
+impl Display for CliFailure {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.payload.error.message)
+    }
+}
 
 #[derive(Debug, Parser)]
-#[command(name = "yaffle", version, about = "Yaffle CLI")]
+#[command(
+    name = "yaffle",
+    version,
+    about = "Environment orchestration for Terraform/OpenTofu",
+    long_about = "Yaffle CLI\n\nCreate, inspect, and destroy named or transient environments using the canonical Yaffle command surface.",
+    after_help = "Examples:\n  yaffle init\n  yaffle converge --env main\n  yaffle outputs --env main --workspace apps/control-plane/infra\n  yaffle graph --env pr-7\n  yaffle cloud login"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -30,6 +56,8 @@ enum Commands {
     Graph(GraphCommand),
     /// Diagnose local or cloud prerequisites, configuration, and capability problems
     Doctor,
+    /// Generate shell completion scripts for the static CLI surface
+    Completion(CompletionCommand),
     #[command(subcommand)]
     Cloud(CloudCommands),
 }
@@ -93,6 +121,13 @@ struct GraphCommand {
     json: bool,
 }
 
+#[derive(Debug, Args)]
+struct CompletionCommand {
+    /// Shell to generate completion for
+    #[arg(value_enum)]
+    shell: Shell,
+}
+
 #[derive(Debug, Subcommand)]
 enum CloudCommands {
     /// Authenticate the operator to Yaffle Cloud
@@ -105,12 +140,19 @@ enum CloudCommands {
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("Error: {error}");
+        if error.json {
+            match serde_json::to_string_pretty(&error.payload) {
+                Ok(value) => println!("{value}"),
+                Err(_) => eprintln!("Error: {}", error.payload.error.message),
+            }
+        } else {
+            eprintln!("Error: {error}");
+        }
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<()> {
+fn run() -> CliResult {
     let cli = Cli::parse();
 
     match cli.command {
@@ -122,15 +164,28 @@ fn run() -> Result<()> {
         Commands::Outputs(command) => run_outputs(command),
         Commands::Graph(command) => run_graph(command),
         Commands::Doctor => print_placeholder("doctor", "Diagnose local or cloud prerequisites, configuration, and capability problems", false),
+        Commands::Completion(command) => run_completion(command),
         Commands::Cloud(command) => run_cloud(command),
     }
 }
 
-fn run_targeted_operation(operation: EngineOperation, command: TargetedCommand) -> Result<()> {
-    validate_environment_name(&command.env)?;
+fn run_targeted_operation(operation: EngineOperation, command: TargetedCommand) -> CliResult {
+    validate_environment_name(&command.env).map_err(|error| {
+        command_error(
+            command.json,
+            Some(operation.clone()),
+            Some(EnvironmentTarget {
+                environment: command.env.clone(),
+            }),
+            Some(WorkspaceSelection {
+                workspaces: command.workspaces.clone(),
+            }),
+            "invalid_environment",
+            error.to_string(),
+        )
+    })?;
 
     let request = EngineRequest {
-        contract_version: ContractVersion::default(),
         operation,
         target: Some(EnvironmentTarget {
             environment: command.env,
@@ -147,11 +202,21 @@ fn run_targeted_operation(operation: EngineOperation, command: TargetedCommand) 
     render_response(command.json, &response)
 }
 
-fn run_environment_operation(operation: EngineOperation, command: EnvironmentOnlyCommand) -> Result<()> {
-    validate_environment_name(&command.env)?;
+fn run_environment_operation(operation: EngineOperation, command: EnvironmentOnlyCommand) -> CliResult {
+    validate_environment_name(&command.env).map_err(|error| {
+        command_error(
+            command.json,
+            Some(operation.clone()),
+            Some(EnvironmentTarget {
+                environment: command.env.clone(),
+            }),
+            Some(WorkspaceSelection::default()),
+            "invalid_environment",
+            error.to_string(),
+        )
+    })?;
 
     let request = EngineRequest {
-        contract_version: ContractVersion::default(),
         operation,
         target: Some(EnvironmentTarget {
             environment: command.env,
@@ -166,14 +231,33 @@ fn run_environment_operation(operation: EngineOperation, command: EnvironmentOnl
     render_response(command.json, &response)
 }
 
-fn run_wait(command: WaitCommand) -> Result<()> {
-    validate_environment_name(&command.env)?;
+fn run_wait(command: WaitCommand) -> CliResult {
+    validate_environment_name(&command.env).map_err(|error| {
+        command_error(
+            command.json,
+            Some(EngineOperation::Wait),
+            Some(EnvironmentTarget {
+                environment: command.env.clone(),
+            }),
+            Some(WorkspaceSelection::default()),
+            "invalid_environment",
+            error.to_string(),
+        )
+    })?;
     if command.condition.trim().is_empty() {
-        return Err(anyhow!("condition passed to --for must not be empty"));
+        return Err(command_error(
+            command.json,
+            Some(EngineOperation::Wait),
+            Some(EnvironmentTarget {
+                environment: command.env.clone(),
+            }),
+            Some(WorkspaceSelection::default()),
+            "invalid_condition",
+            "condition passed to --for must not be empty",
+        ));
     }
 
     let request = EngineRequest {
-        contract_version: ContractVersion::default(),
         operation: EngineOperation::Status,
         target: Some(EnvironmentTarget {
             environment: command.env,
@@ -191,14 +275,35 @@ fn run_wait(command: WaitCommand) -> Result<()> {
     render_response(command.json, &response)
 }
 
-fn run_outputs(command: OutputsCommand) -> Result<()> {
-    validate_environment_name(&command.env)?;
+fn run_outputs(command: OutputsCommand) -> CliResult {
+    validate_environment_name(&command.env).map_err(|error| {
+        command_error(
+            command.json,
+            Some(EngineOperation::Outputs),
+            Some(EnvironmentTarget {
+                environment: command.env.clone(),
+            }),
+            Some(WorkspaceSelection {
+                workspaces: vec![command.workspace.clone()],
+            }),
+            "invalid_environment",
+            error.to_string(),
+        )
+    })?;
     if command.workspace.trim().is_empty() {
-        return Err(anyhow!("workspace passed to --workspace must not be empty"));
+        return Err(command_error(
+            command.json,
+            Some(EngineOperation::Outputs),
+            Some(EnvironmentTarget {
+                environment: command.env.clone(),
+            }),
+            Some(WorkspaceSelection::default()),
+            "invalid_workspace",
+            "workspace passed to --workspace must not be empty",
+        ));
     }
 
     let request = EngineRequest {
-        contract_version: ContractVersion::default(),
         operation: EngineOperation::Outputs,
         target: Some(EnvironmentTarget {
             environment: command.env,
@@ -215,13 +320,23 @@ fn run_outputs(command: OutputsCommand) -> Result<()> {
     render_response(command.json, &response)
 }
 
-fn run_graph(command: GraphCommand) -> Result<()> {
+fn run_graph(command: GraphCommand) -> CliResult {
     if let Some(environment) = &command.env {
-        validate_environment_name(environment)?;
+        validate_environment_name(environment).map_err(|error| {
+            command_error(
+                command.json,
+                Some(EngineOperation::Graph),
+                Some(EnvironmentTarget {
+                    environment: environment.clone(),
+                }),
+                Some(WorkspaceSelection::default()),
+                "invalid_environment",
+                error.to_string(),
+            )
+        })?;
     }
 
     let request = EngineRequest {
-        contract_version: ContractVersion::default(),
         operation: EngineOperation::Graph,
         target: command.env.map(|environment| EnvironmentTarget { environment }),
         selection: WorkspaceSelection::default(),
@@ -234,7 +349,7 @@ fn run_graph(command: GraphCommand) -> Result<()> {
     render_response(command.json, &response)
 }
 
-fn run_cloud(command: CloudCommands) -> Result<()> {
+fn run_cloud(command: CloudCommands) -> CliResult {
     let summary = match command {
         CloudCommands::Login => "CLI alpha placeholder: cloud login is not implemented in Rust yet.",
         CloudCommands::Logout => "CLI alpha placeholder: cloud logout is not implemented in Rust yet.",
@@ -244,14 +359,30 @@ fn run_cloud(command: CloudCommands) -> Result<()> {
     print_placeholder("cloud", summary, false)
 }
 
-fn print_placeholder(command: &str, summary: &str, json: bool) -> Result<()> {
+fn run_completion(command: CompletionCommand) -> CliResult {
+    let mut root = Cli::command();
+    generate(command.shell, &mut root, "yaffle", &mut io::stdout());
+    Ok(())
+}
+
+fn print_placeholder(command: &str, summary: &str, json: bool) -> CliResult {
     if json {
         let value = serde_json::json!({
+            "contract_version": CONTRACT_VERSION,
             "command": command,
-            "summary": summary,
-            "status": "not_implemented",
+            "result": {
+                "kind": "partial",
+                "summary": summary,
+            },
+            "diagnostics": [{
+                "level": "warning",
+                "code": "not_implemented",
+                "message": "This CLI alpha command is not fully implemented yet.",
+            }],
         });
-        println!("{}", serde_json::to_string_pretty(&value)?);
+        println!("{}", serde_json::to_string_pretty(&value).map_err(|error| {
+            command_error(json, None, None, None, "serialization_failed", error.to_string())
+        })?);
         return Ok(());
     }
 
@@ -259,17 +390,50 @@ fn print_placeholder(command: &str, summary: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
-fn render_response(json: bool, response: &yaffle_engine::EngineResponse) -> Result<()> {
+fn render_response(json: bool, response: &EngineResponse) -> CliResult {
     if json {
-        println!("{}", serde_json::to_string_pretty(response)?);
+        println!("{}", serde_json::to_string_pretty(response).map_err(|error| {
+            command_error(
+                json,
+                Some(response.operation.clone()),
+                response.target.clone(),
+                Some(response.selection.clone()),
+                "serialization_failed",
+                error.to_string(),
+            )
+        })?);
         return Ok(());
     }
 
-    println!("{}", response.summary);
+    println!("{}", response.result.summary);
     Ok(())
 }
 
 #[allow(dead_code)]
 fn command_help_for_tests() -> clap::Command {
     Cli::command()
+}
+
+fn command_error(
+    json: bool,
+    operation: Option<EngineOperation>,
+    target: Option<EnvironmentTarget>,
+    selection: Option<WorkspaceSelection>,
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> CliFailure {
+    CliFailure {
+        json,
+        payload: EngineError {
+            contract_version: CONTRACT_VERSION,
+            operation,
+            target,
+            selection,
+            error: ErrorPayload {
+                code: code.into(),
+                message: message.into(),
+                details: None,
+            },
+        },
+    }
 }

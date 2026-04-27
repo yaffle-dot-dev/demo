@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+clap_complete = "4.5.60"
 serde_json.workspace = true
 
 [dependencies.yaffle-contracts]
