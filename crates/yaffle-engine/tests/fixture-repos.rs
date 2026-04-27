@@ -95,6 +95,57 @@ fn outputs_minimal_single_fixture_can_apply_and_emit_outputs() {
         outputs["settings"]["value"],
         json!({ "enabled": true, "tier": "test" })
     );
+
+    let response = execute(
+        &EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection {
+                workspaces: vec!["infra/single".to_string()],
+            },
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("outputs operation should resolve single-workspace outputs");
+
+    assert_eq!(response.result.kind, OperationResultKind::Succeeded);
+    assert_eq!(
+        response.outputs["service_name"].value,
+        json!("single-service")
+    );
+    assert_eq!(response.outputs["numbers"].value, json!([1, 2, 3]));
+    assert_eq!(
+        response.outputs["settings"].value,
+        json!({ "enabled": true, "tier": "test" })
+    );
+    assert!(response.result.summary.contains("resolved 3 output(s)"));
+}
+
+#[test]
+fn outputs_fixture_returns_empty_map_before_state_exists() {
+    let repo = copy_fixture_repo("outputs-minimal-single");
+
+    let response = execute(
+        &EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection {
+                workspaces: vec!["infra/single".to_string()],
+            },
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("outputs should still execute before state exists");
+
+    assert_eq!(response.result.kind, OperationResultKind::Succeeded);
+    assert!(response.outputs.is_empty());
+    assert!(response.result.summary.contains("resolved 0 output(s)"));
 }
 
 #[test]
@@ -112,6 +163,32 @@ fn outputs_remote_state_chain_fixture_supports_upstream_and_downstream_states() 
     assert_eq!(outputs["https_port"]["value"], json!(8443));
     assert_eq!(
         outputs["feature_flags"]["value"],
+        json!(["auth", "cdn", "metrics"])
+    );
+
+    let response = execute(
+        &EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection {
+                workspaces: vec!["apps/web/infra".to_string()],
+            },
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("outputs operation should resolve downstream outputs");
+
+    assert_eq!(response.result.kind, OperationResultKind::Succeeded);
+    assert_eq!(
+        response.outputs["base_url"].value,
+        json!("https://shared.internal")
+    );
+    assert_eq!(response.outputs["https_port"].value, json!(8443));
+    assert_eq!(
+        response.outputs["feature_flags"].value,
         json!(["auth", "cdn", "metrics"])
     );
 }

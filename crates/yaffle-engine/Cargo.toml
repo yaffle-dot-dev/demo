@@ -9,6 +9,7 @@ homepage.workspace = true
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+tempfile.workspace = true
 
 [dependencies.yaffle-contracts]
 path = "../yaffle-contracts"
@@ -21,6 +22,3 @@ path = "../yaffle-graph"
 
 [dependencies.yaffle-tofu]
 path = "../yaffle-tofu"
-
-[dev-dependencies]
-tempfile.workspace = true
