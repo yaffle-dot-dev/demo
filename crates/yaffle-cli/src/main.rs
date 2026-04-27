@@ -1,5 +1,6 @@
 use std::fmt::{Display, Formatter};
 use std::io;
+use std::path::PathBuf;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
@@ -9,7 +10,7 @@ use yaffle_contracts::{
     EngineError, EngineOperation, EngineResponse, EnvironmentTarget, ErrorPayload,
     WorkspaceSelection, CONTRACT_VERSION,
 };
-use yaffle_engine::{placeholder_response, EngineRequest};
+use yaffle_engine::{execute_graph, placeholder_response, EngineRequest};
 
 type CliResult = Result<(), CliFailure>;
 
@@ -355,10 +356,12 @@ fn run_graph(command: GraphCommand) -> CliResult {
         selection: WorkspaceSelection::default(),
     };
 
-    let response = placeholder_response(
-        &request,
-        "CLI alpha placeholder: graph execution is not implemented in Rust yet.",
-    );
+    let working_dir = current_working_directory(command.json, &request)?;
+    let response = execute_graph(&request, &working_dir).map_err(|payload| CliFailure {
+        json: command.json,
+        payload,
+    })?;
+
     render_response(command.json, &response)
 }
 
@@ -468,4 +471,17 @@ fn command_error(
             },
         },
     }
+}
+
+fn current_working_directory(json: bool, request: &EngineRequest) -> Result<PathBuf, CliFailure> {
+    std::env::current_dir().map_err(|error| {
+        command_error(
+            json,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "current_directory_unavailable",
+            format!("Failed to resolve the current working directory: {error}"),
+        )
+    })
 }

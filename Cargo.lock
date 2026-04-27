@@ -772,6 +772,8 @@ name = "yaffle-engine"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
+ "tempfile",
  "yaffle-config",
  "yaffle-contracts",
  "yaffle-graph",
