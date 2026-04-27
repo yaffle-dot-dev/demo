@@ -459,11 +459,11 @@ version = 1
 [[environments]]
 name = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 [[workspaces]]
@@ -478,7 +478,7 @@ environments = ["*"]
 path = "apps/production/infra"
 environments = ["main"]
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["apps/production/infra"]
 environments = ["main"]
 approvers = [
@@ -493,13 +493,13 @@ which workspaces and environments Yaffle manages.
 
 ### Approval Behavior
 
-`previews.require_approval` is derived from matching `[[approvals]]` rules in
+`previews.require_approval` is derived from matching `[[cloud.approvals]]` rules in
 `yaffle.toml`.
 
 | Config state | UI Behavior | Approval Trigger |
 |--------------|-------------|------------------|
-| No matching `[[approvals]]` rule (or `approvers = []`) | 10-second countdown timer | Timer expiry OR manual click |
-| Matching `[[approvals]]` rule with one or more approvers | Approve button only | Manual click only |
+| No matching `[[cloud.approvals]]` rule (or `approvers = []`) | 10-second countdown timer | Timer expiry OR manual click |
+| Matching `[[cloud.approvals]]` rule with one or more approvers | Approve button only | Manual click only |
 
 ---
 

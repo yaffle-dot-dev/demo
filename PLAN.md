@@ -116,11 +116,11 @@ version = 1
 [[environments]]
 name = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 [[workspaces]]
@@ -400,11 +400,11 @@ version = 1
 [[environments]]
 name = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 [[workspaces]]
@@ -415,7 +415,7 @@ environments = ["main"]
 path = "apps/control-plane/infra"
 environments = ["*"]
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/shared"]
 environments = ["main"]
 approvers = ["github:team:acme/platform"]
@@ -676,11 +676,11 @@ version = 1
 [[environments]]
 name = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 [[workspaces]]

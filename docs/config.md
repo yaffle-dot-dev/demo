@@ -8,7 +8,8 @@ The configuration defines:
 
 - **Environments** - Named, long-lived deployment targets (e.g., `main`, `staging`)
 - **Workspaces** - Terraform root modules and which environments they deploy to
-- **Triggers** - What events cause Yaffle to run (pushes, pull requests)
+- **Cloud automation** - Cloud-only triggers and forge-driven lifecycle
+- **Cloud policy** - Cloud-only approval and workflow policy
 
 ## Example
 
@@ -33,15 +34,17 @@ environments = ["main"]
 path = "apps/control-plane/infra"
 environments = ["*"]
 
-[[triggers.github.push]]
+[cloud]
+
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 ```
 
@@ -109,7 +112,15 @@ environments = ["*"]
 - Environment names must reference declared `[[environments]]`, or be `"*"`
 - Referencing an undeclared environment is an error
 
-### `[[triggers.github.push]]`
+### `[cloud]` and `[[cloud.triggers.github.*]]`
+
+Cloud-only automation such as forge/webhook triggers lives under a `cloud`
+namespace to make the local-vs-cloud boundary explicit.
+
+Cloud-only automation such as forge/webhook triggers belongs under the `cloud`
+namespace. Top-level `triggers` is not part of the canonical config model.
+
+### `[[cloud.triggers.github.push]]`
 
 Triggers a plan/apply cycle when a ref is pushed.
 
@@ -120,15 +131,17 @@ Triggers a plan/apply cycle when a ref is pushed.
 | `environment` | string | Yes | Named environment to deploy |
 
 ```toml
-[[triggers.github.push]]
+[cloud]
+
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/release/*"]
 exclude_ref_patterns = ["refs/heads/release/archive/**"]
 environment = "release"
@@ -145,9 +158,10 @@ environment = "release"
 - `**` matches across `/`
 - `refs/heads/release/*` matches `refs/heads/release/v1`, `refs/heads/release/hotfix`, etc.
 
-Legacy `ref = "refs/heads/main"` remains supported as shorthand for a single include pattern.
+Legacy single-field `ref = "refs/heads/main"` remains supported as shorthand for
+a single include pattern within the canonical `cloud.triggers` namespace.
 
-### `[[triggers.github.pull_request]]`
+### `[[cloud.triggers.github.pull_request]]`
 
 Triggers a transient environment when a pull request is opened or updated.
 
@@ -157,7 +171,9 @@ Triggers a transient environment when a pull request is opened or updated.
 | `exclude_branch_patterns` | array | No | Exclude globs applied after include matching |
 
 ```toml
-[[triggers.github.pull_request]]
+[cloud]
+
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 exclude_branch_patterns = ["dependabot/**"]
 ```
@@ -175,7 +191,8 @@ exclude_branch_patterns = ["dependabot/**"]
 - `feature/*` matches only branches starting with `feature/`
 - `dependabot/**` matches `dependabot/` branches at any depth
 
-Legacy `branch_pattern = "*"` remains supported as shorthand for a single include pattern.
+Legacy single-field `branch_pattern = "*"` remains supported as shorthand for a
+single include pattern within the canonical `cloud.triggers` namespace.
 
 ## Environments
 
@@ -187,11 +204,11 @@ Named environments are declared in `[[environments]]` and are long-lived. They r
 
 - Created when first triggered
 - Never automatically destroyed (removed when deleted from config)
-- Tied to specific branches via `[[triggers.github.push]]`
+- Tied to specific branches via `[[cloud.triggers.github.push]]`
 
 ### Transient Environments
 
-Transient environments are created automatically by triggers like `[[triggers.github.pull_request]]`. They are short-lived and tied to the lifecycle of their trigger source.
+Transient environments are created automatically by cloud triggers like `[[cloud.triggers.github.pull_request]]`. They are short-lived and tied to the lifecycle of their trigger source.
 
 - Named automatically (e.g., `pr-123` for pull requests)
 - Destroyed when the trigger source closes (e.g., PR merged or closed)
@@ -204,3 +221,30 @@ Yaffle validates your configuration on every run:
 1. **Environment references** - Workspace `environments` and trigger `environment` must reference declared `[[environments]]` or use `"*"`
 2. **Unique paths** - Workspace paths must be unique
 3. **Trigger coverage** - Warning if a declared environment has no trigger
+
+### `[[cloud.approvals]]`
+
+Approvals are a cloud-only policy surface and belong under the `cloud`
+namespace.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `workspaces` | array | Yes | Workspace paths or glob patterns |
+| `environments` | array | Yes | Environment names or `"*"` |
+| `approvers` | array | Yes | Namespaced approver identifiers |
+
+```toml
+[cloud]
+
+[[cloud.approvals]]
+workspaces = ["infra/production"]
+environments = ["main"]
+approvers = ["github:user:alice", "github:user:bob"]
+
+[[cloud.approvals]]
+workspaces = ["apps/*"]
+environments = ["*"]
+approvers = []
+```
+
+Top-level `[[approvals]]` is not part of the canonical config model.

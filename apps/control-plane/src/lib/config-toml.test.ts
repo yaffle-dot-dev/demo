@@ -37,15 +37,15 @@ environments = ["main", "staging"]
 path = "apps/web/infra"
 environments = ["*"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/staging"
 environment = "staging"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_pattern = "*"
 `
 
@@ -60,10 +60,76 @@ branch_pattern = "*"
     expect(config.workspaces[0].environments).toEqual(["main", "staging"])
     expect(config.workspaces[1].path).toBe("apps/web/infra")
     expect(config.workspaces[1].environments).toBe("*")
-    expect(config.triggers.github?.push).toHaveLength(2)
-    expect(config.triggers.github?.push?.[0].ref_patterns).toEqual(["refs/heads/main"])
-    expect(config.triggers.github?.push?.[0].exclude_ref_patterns).toEqual([])
-    expect(config.triggers.github?.pull_request).toHaveLength(1)
+    expect(config.cloud.triggers.github?.push).toHaveLength(2)
+    expect(config.cloud.triggers.github?.push?.[0].ref_patterns).toEqual(["refs/heads/main"])
+    expect(config.cloud.triggers.github?.push?.[0].exclude_ref_patterns).toEqual([])
+    expect(config.cloud.triggers.github?.pull_request).toHaveLength(1)
+  })
+
+  test("parses cloud namespaced triggers", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra/shared"
+environments = ["main"]
+
+[cloud]
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/main"]
+environment = "main"
+
+[[cloud.triggers.github.pull_request]]
+branch_patterns = ["*"]
+`
+
+    const config = parseYaffleToml(toml)
+
+    expect(config.cloud.triggers.github?.push).toHaveLength(1)
+    expect(config.cloud.triggers.github?.pull_request).toHaveLength(1)
+  })
+
+  test("rejects legacy top-level triggers", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra/shared"
+environments = ["main"]
+
+[[triggers.github.push]]
+ref_patterns = ["refs/heads/main"]
+environment = "main"
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(/top-level triggers are no longer supported/)
+  })
+
+  test("rejects legacy top-level approvals", () => {
+    const toml = `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra/shared"
+environments = ["main"]
+
+[[approvals]]
+workspaces = ["infra/shared"]
+environments = ["main"]
+approvers = ["github:user:alice"]
+`
+
+    expect(() => parseYaffleToml(toml)).toThrow(/top-level approvals are no longer supported/)
   })
 
   test("normalizes single environment string to array", () => {
@@ -77,7 +143,7 @@ name = "main"
 path = "infra"
 environments = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 `
@@ -135,7 +201,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 `
@@ -172,7 +238,7 @@ name = "main"
 path = "infra"
 environments = ["main", "staging"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 `
@@ -192,7 +258,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/production"
 environment = "production"
 `
@@ -212,7 +278,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "main"
 environment = "main"
 `
@@ -232,7 +298,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/"
 environment = "main"
 `
@@ -252,13 +318,13 @@ name = "release"
 path = "infra"
 environments = ["release"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/tags/v*"
 environment = "release"
 `
 
     const config = parseYaffleToml(toml)
-    expect(config.triggers.github?.push?.[0].ref_patterns).toEqual(["refs/tags/v*"])
+    expect(config.cloud.triggers.github?.push?.[0].ref_patterns).toEqual(["refs/tags/v*"])
   })
 
   test("parses ref pattern arrays with excludes", () => {
@@ -272,7 +338,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/**"]
 exclude_ref_patterns = ["refs/heads/dependabot/**"]
 environment = "main"
@@ -280,7 +346,7 @@ environment = "main"
 
     const config = parseYaffleToml(toml)
 
-    expect(config.triggers.github?.push).toEqual([
+    expect(config.cloud.triggers.github?.push).toEqual([
       {
         ref_patterns: ["refs/heads/**"],
         exclude_ref_patterns: ["refs/heads/dependabot/**"],
@@ -300,7 +366,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 exclude_ref_patterns = ["refs/heads/main"]
 environment = "main"
@@ -308,7 +374,7 @@ environment = "main"
 
     const config = parseYaffleToml(toml)
 
-    expect(config.triggers.github?.push).toEqual([
+    expect(config.cloud.triggers.github?.push).toEqual([
       {
         ref_patterns: ["refs/heads/main"],
         exclude_ref_patterns: ["refs/heads/main"],
@@ -328,7 +394,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 exclude_ref_patterns = ["refs/heads/main"]
 environment = "main"
 `
@@ -348,7 +414,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 ref_patterns = ["refs/heads/release/**"]
 environment = "main"
@@ -366,13 +432,13 @@ version = 1
 path = "infra"
 environments = ["*"]
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_pattern = "*"
 `
 
     const config = parseYaffleToml(toml)
     expect(config.workspaces).toHaveLength(1)
-    expect(config.triggers.github?.pull_request).toHaveLength(1)
+    expect(config.cloud.triggers.github?.pull_request).toHaveLength(1)
   })
 
   test("parses branch pattern arrays with excludes", () => {
@@ -383,14 +449,14 @@ version = 1
 path = "infra"
 environments = ["*"]
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 exclude_branch_patterns = ["dependabot/**"]
 `
 
     const config = parseYaffleToml(toml)
 
-    expect(config.triggers.github?.pull_request).toEqual([
+    expect(config.cloud.triggers.github?.pull_request).toEqual([
       {
         branch_patterns: ["*"],
         exclude_branch_patterns: ["dependabot/**"],
@@ -406,14 +472,14 @@ version = 1
 path = "infra"
 environments = ["*"]
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_pattern = "*"
 exclude_branch_patterns = ["dependabot/**"]
 `
 
     const config = parseYaffleToml(toml)
 
-    expect(config.triggers.github?.pull_request).toEqual([
+    expect(config.cloud.triggers.github?.pull_request).toEqual([
       {
         branch_patterns: ["*"],
         exclude_branch_patterns: ["dependabot/**"],
@@ -429,7 +495,7 @@ version = 1
 path = "infra"
 environments = ["*"]
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 exclude_branch_patterns = ["dependabot/**"]
 `
 
@@ -445,7 +511,7 @@ version = 1
 path = "infra"
 environments = ["*"]
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_pattern = "*"
 branch_patterns = ["main"]
 `
@@ -528,19 +594,19 @@ name = "release"
 path = "infra"
 environments = ["main", "staging", "release"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/tags/v*"]
 environment = "release"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/dependabot/**"]
 exclude_ref_patterns = ["refs/heads/dependabot/**"]
 environment = "main"
@@ -606,7 +672,7 @@ version = 1
 path = "infra"
 environments = ["*"]
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["feature/*", "bugfix/*"]
 exclude_branch_patterns = ["feature/internal/**"]
 
@@ -641,7 +707,7 @@ name = "main"
 path = "infra"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 `)
@@ -672,15 +738,15 @@ environments = ["main"]
 path = "apps/web/infra"
 environments = ["*"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/staging"
 environment = "staging"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_pattern = "*"
 `)
 
@@ -1020,18 +1086,18 @@ name = "main"
 path = "infra/production"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/production"]
 environments = ["main"]
 approvers = ["github:user:alice", "github:user:bob"]
 `
     const config = parseYaffleToml(toml)
-    expect(config.approvals).toHaveLength(1)
-    expect(config.approvals[0]).toEqual({
+    expect(config.cloud.approvals).toHaveLength(1)
+    expect(config.cloud.approvals[0]).toEqual({
       workspaces: ["infra/production"],
       environments: ["main"],
       approvers: ["github:user:alice", "github:user:bob"],
@@ -1046,13 +1112,13 @@ version = 1
 path = "infra"
 environments = ["*"]
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra"]
 environments = ["*"]
 approvers = []
 `
     const config = parseYaffleToml(toml)
-    expect(config.approvals[0].approvers).toEqual([])
+    expect(config.cloud.approvals[0].approvers).toEqual([])
   })
 
   test("allows multiple approval rules", () => {
@@ -1070,22 +1136,22 @@ environments = ["main"]
 path = "infra/staging"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/production"]
 environments = ["main"]
 approvers = ["github:user:alice"]
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/*"]
 environments = ["*"]
 approvers = ["github:user:bob"]
 `
     const config = parseYaffleToml(toml)
-    expect(config.approvals).toHaveLength(2)
+    expect(config.cloud.approvals).toHaveLength(2)
   })
 
   test("allows config with no approvals", () => {
@@ -1097,7 +1163,7 @@ path = "infra"
 environments = ["*"]
 `
     const config = parseYaffleToml(toml)
-    expect(config.approvals).toEqual([])
+    expect(config.cloud.approvals).toEqual([])
   })
 })
 
@@ -1123,25 +1189,25 @@ environments = ["staging"]
 path = "apps/web/infra"
 environments = ["*"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/staging"
 environment = "staging"
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/production"]
 environments = ["main"]
 approvers = ["github:user:alice", "github:user:bob"]
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/*"]
 environments = ["main"]
 approvers = ["github:user:carol"]
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["apps/*"]
 environments = ["*"]
 approvers = ["github:user:dave"]
@@ -1186,16 +1252,16 @@ name = "main"
 path = "infra/shared"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/shared"]
 environments = ["main"]
 approvers = ["github:user:alice", "github:user:bob"]
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/*"]
 environments = ["main"]
 approvers = ["github:user:alice", "github:user:carol"]
@@ -1223,16 +1289,16 @@ environments = ["main"]
 path = "infra/dev"
 environments = ["main"]
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref = "refs/heads/main"
 environment = "main"
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/production"]
 environments = ["main"]
 approvers = ["github:user:alice"]
 
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/dev"]
 environments = ["main"]
 approvers = []

@@ -79,13 +79,15 @@ const DEFAULT_CONFIG: YaffleTomlConfig = {
       environments: "*", // Matches all environments (both named and transient)
     },
   ],
-  triggers: {
-    github: {
-      push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
-      pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+  cloud: {
+    triggers: {
+      github: {
+        push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+        pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+      },
     },
+    approvals: [],
   },
-  approvals: [],
 }
 
 /** Config with two workspaces. */
@@ -104,13 +106,15 @@ const MULTI_WORKSPACE_CONFIG: YaffleTomlConfig = {
       variables: { region: "us-east-1" },
     },
   ],
-  triggers: {
-    github: {
-      push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
-      pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+  cloud: {
+    triggers: {
+      github: {
+        push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+        pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+      },
     },
+    approvals: [],
   },
-  approvals: [],
 }
 
 /** Config with approval required for main environment. */
@@ -123,19 +127,21 @@ const APPROVAL_CONFIG: YaffleTomlConfig = {
       environments: "*",
     },
   ],
-  triggers: {
-    github: {
-      push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
-      pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+  cloud: {
+    triggers: {
+      github: {
+        push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+        pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+      },
     },
+    approvals: [
+      {
+        workspaces: ["infra"],
+        environments: ["main"],
+        approvers: ["github:user:lamalex"],
+      },
+    ],
   },
-  approvals: [
-    {
-      workspaces: ["infra"],
-      environments: ["main"],
-      approvers: ["github:user:lamalex"],
-    },
-  ],
 }
 
 /** Fake config loader that returns a fixed config. */
@@ -638,13 +644,15 @@ describe("webhook-handler", () => {
       version: 1,
       environments: [{ name: "develop" }],
       workspaces: [{ path: "infra", environments: ["develop"] }],
-      triggers: {
-        github: {
-          push: [{ ref_patterns: ["refs/heads/develop"], exclude_ref_patterns: [], environment: "develop" }],
-          pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+      cloud: {
+        triggers: {
+          github: {
+            push: [{ ref_patterns: ["refs/heads/develop"], exclude_ref_patterns: [], environment: "develop" }],
+            pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+          },
         },
+        approvals: [],
       },
-      approvals: [],
     }
     const h = createHandler(runner, {
       configLoader: fakeConfigLoader(config),

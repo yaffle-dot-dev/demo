@@ -54,13 +54,15 @@ const DEFAULT_CONFIG: YaffleTomlConfig = {
       environments: "*",
     },
   ],
-  triggers: {
-    github: {
-      push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
-      pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+  cloud: {
+    triggers: {
+      github: {
+        push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+        pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
+      },
     },
+    approvals: [],
   },
-  approvals: [],
 }
 
 function fakeConfigLoader(config: YaffleTomlConfig) {

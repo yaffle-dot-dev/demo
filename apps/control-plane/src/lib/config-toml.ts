@@ -165,12 +165,34 @@ const approvalSchema = z.object({
   approvers: z.array(approverStringSchema), // Empty array is allowed (means no approval required)
 })
 
+const cloudSchema = z.object({
+  triggers: triggersSchema.optional(),
+  approvals: z.array(approvalSchema).optional().default([]),
+})
+
 const configSchema = z.object({
   version: z.literal(1),
   environments: z.array(environmentSchema).optional().default([]),
   workspaces: z.array(workspaceSchema).min(1, "at least one workspace is required"),
-  triggers: triggersSchema.optional(),
-  approvals: z.array(approvalSchema).optional().default([]),
+  cloud: cloudSchema.optional(),
+  triggers: z.unknown().optional(),
+  approvals: z.unknown().optional(),
+}).superRefine((data, ctx) => {
+  if (data.triggers !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["triggers"],
+      message: "top-level triggers are no longer supported; move them under cloud.triggers",
+    })
+  }
+
+  if (data.approvals !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["approvals"],
+      message: "top-level approvals are no longer supported; move them under cloud.approvals",
+    })
+  }
 })
 
 /** Variable value type: string, number, or boolean */
@@ -183,8 +205,7 @@ export interface YaffleTomlConfig {
   version: 1
   environments: Environment[]
   workspaces: Workspace[]
-  triggers: Triggers
-  approvals: Approval[]
+  cloud: CloudConfig
 }
 
 export interface Environment {
@@ -225,6 +246,11 @@ export interface Approval {
    * Examples: "github:user:alice", "github:team:org/team-slug"
    */
   approvers: string[]
+}
+
+export interface CloudConfig {
+  triggers: Triggers
+  approvals: Approval[]
 }
 
 export interface Triggers {
@@ -288,13 +314,15 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
     outputs: ws.outputs,
   }))
 
-  const pushTriggers = raw.triggers?.github?.push?.map((trigger) => ({
+  const triggerRoot = raw.cloud?.triggers
+
+  const pushTriggers = triggerRoot?.github?.push?.map((trigger) => ({
     ref_patterns: trigger.ref_patterns ?? [trigger.ref!],
     exclude_ref_patterns: trigger.exclude_ref_patterns ?? [],
     environment: trigger.environment,
   }))
 
-  const pullRequestTriggers = raw.triggers?.github?.pull_request?.map((trigger) => ({
+  const pullRequestTriggers = triggerRoot?.github?.pull_request?.map((trigger) => ({
     branch_patterns: trigger.branch_patterns ?? [trigger.branch_pattern!],
     exclude_branch_patterns: trigger.exclude_branch_patterns ?? [],
   }))
@@ -304,15 +332,17 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
     version: 1,
     environments: raw.environments,
     workspaces,
-    triggers: {
-      github: raw.triggers?.github
-        ? {
-          push: pushTriggers,
-          pull_request: pullRequestTriggers,
-        }
-        : undefined,
+    cloud: {
+      triggers: {
+        github: triggerRoot?.github
+          ? {
+            push: pushTriggers,
+            pull_request: pullRequestTriggers,
+          }
+          : undefined,
+      },
+      approvals: raw.cloud?.approvals ?? [],
     },
-    approvals: raw.approvals,
   }
 
   // Validate semantic rules
@@ -422,8 +452,8 @@ function validateSemantics(config: YaffleTomlConfig): void {
 
   // 5. Push trigger environments must reference declared environments
   const triggeredEnvs = new Set<string>()
-  if (config.triggers.github?.push) {
-    for (const trigger of config.triggers.github.push) {
+  if (config.cloud.triggers.github?.push) {
+    for (const trigger of config.cloud.triggers.github.push) {
       if (!declaredEnvs.has(trigger.environment)) {
         errors.push(
           `Push trigger for refs "${trigger.ref_patterns.join(", ")}" references undeclared environment "${trigger.environment}"`,
@@ -586,7 +616,7 @@ export function findPushTriggerEnvironment(
   config: YaffleTomlConfig,
   ref: string,
 ): string | undefined {
-  const pushTriggers = config.triggers.github?.push ?? []
+  const pushTriggers = config.cloud.triggers.github?.push ?? []
 
   for (const trigger of pushTriggers) {
     if (matchesPatternSet(ref, trigger.ref_patterns, trigger.exclude_ref_patterns, matchRefPattern)) {
@@ -612,7 +642,7 @@ export function matchesPullRequestTrigger(
   config: YaffleTomlConfig,
   headBranch: string,
 ): boolean {
-  const prTriggers = config.triggers.github?.pull_request ?? []
+  const prTriggers = config.cloud.triggers.github?.pull_request ?? []
 
   for (const trigger of prTriggers) {
     if (matchesPatternSet(
@@ -689,7 +719,7 @@ export function resolveApprovers(
 ): string[] {
   const matchingApprovers = new Set<string>()
 
-  for (const rule of config.approvals) {
+  for (const rule of config.cloud.approvals) {
     // Check if workspace matches any pattern in the rule
     const workspaceMatches = rule.workspaces.some((pattern) =>
       matchWorkspacePattern(pattern, workspacePath)

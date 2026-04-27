@@ -18,11 +18,11 @@ version = 1
 [[environments]]
 name = "main"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 [[workspaces]]
