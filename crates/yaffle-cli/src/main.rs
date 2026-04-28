@@ -9,7 +9,7 @@ use yaffle_contracts::{
     EngineError, EngineOperation, EngineResponse, EnvironmentTarget, ErrorPayload,
     WorkspaceSelection, CONTRACT_VERSION,
 };
-use yaffle_engine::{execute, EngineRequest};
+use yaffle_engine::{execute, prepare_tf_login_exports, EngineRequest};
 
 type CliResult = Result<(), CliFailure>;
 
@@ -31,7 +31,7 @@ impl Display for CliFailure {
     version,
     about = "Environment orchestration for Terraform/OpenTofu",
     long_about = "Yaffle CLI\n\nCreate, inspect, and destroy named or transient environments using the canonical Yaffle command surface.",
-    after_help = "Examples:\n  yaffle init\n  yaffle converge --env main\n  yaffle outputs --env main --workspace apps/control-plane/infra\n  yaffle graph --env pr-7\n  yaffle cloud login"
+    after_help = "Examples:\n  yaffle init\n  yaffle converge --env main\n  yaffle outputs --env main --workspace apps/control-plane/infra\n  yaffle graph --env pr-7\n  eval \"$(yaffle tf login --env main --workspace apps/web/infra)\"\n  yaffle cloud login"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -56,6 +56,9 @@ enum Commands {
     Graph(GraphCommand),
     /// Diagnose local or cloud prerequisites, configuration, and capability problems
     Doctor,
+    #[command(subcommand)]
+    /// Bootstrap raw tofu access for the current shell
+    Tf(TfCommands),
     /// Generate shell completion scripts for the static CLI surface
     Completion(CompletionCommand),
     #[command(subcommand)]
@@ -138,6 +141,22 @@ enum CloudCommands {
     Status,
 }
 
+#[derive(Debug, Subcommand)]
+enum TfCommands {
+    /// Emit shell exports so raw tofu can resolve Yaffle-hosted output modules
+    Login(TfLoginCommand),
+}
+
+#[derive(Debug, Args)]
+struct TfLoginCommand {
+    /// Environment name
+    #[arg(long)]
+    env: String,
+    /// Workspace path
+    #[arg(long = "workspace")]
+    workspace: String,
+}
+
 fn main() {
     if let Err(error) = run() {
         if error.json {
@@ -168,6 +187,7 @@ fn run() -> CliResult {
         Commands::Outputs(command) => run_outputs(command),
         Commands::Graph(command) => run_graph(command),
         Commands::Doctor => run_doctor(),
+        Commands::Tf(command) => run_tf(command),
         Commands::Completion(command) => run_completion(command),
         Commands::Cloud(command) => run_cloud(command),
     }
@@ -260,6 +280,38 @@ fn run_doctor() -> CliResult {
             wait_for: None,
         },
     )
+}
+
+fn run_tf(command: TfCommands) -> CliResult {
+    match command {
+        TfCommands::Login(command) => run_tf_login(command),
+    }
+}
+
+fn run_tf_login(command: TfLoginCommand) -> CliResult {
+    let working_dir = std::env::current_dir().map_err(|error| {
+        command_error(
+            false,
+            None,
+            Some(EnvironmentTarget {
+                environment: command.env.clone(),
+            }),
+            Some(WorkspaceSelection {
+                workspaces: vec![command.workspace.clone()],
+            }),
+            "current_directory_unavailable",
+            format!("Failed to resolve the current working directory: {error}"),
+        )
+    })?;
+
+    let exports = prepare_tf_login_exports(&working_dir, &command.env, &command.workspace)
+        .map_err(|payload| CliFailure {
+            json: false,
+            payload,
+        })?;
+
+    print!("{exports}");
+    Ok(())
 }
 
 fn run_cloud(command: CloudCommands) -> CliResult {

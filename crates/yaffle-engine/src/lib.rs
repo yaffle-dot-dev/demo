@@ -6,19 +6,29 @@ use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod local_first;
+
 use hcl::eval::{Context as HclContext, Evaluate};
 use hcl::Body;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use yaffle_contracts::{
     DiagnosticLevel, DiagnosticMessage, EngineOperation, EngineResponse, EnvironmentSnapshot,
     OperationResult, OperationResultKind, TerraformOutput, WorkspaceSnapshot,
 };
 use yaffle_graph::{
-    apply_workspace_selection, module_name_to_workspace_path, resolve_workspace_graph,
-    EnvironmentKind, GraphError, ResolvedWorkspaceGraph, WorkspaceGraphOptions,
+    apply_workspace_selection, resolve_workspace_graph, EnvironmentKind, GraphError,
+    ResolvedWorkspaceGraph, WorkspaceGraphOptions,
 };
 use yaffle_tofu::{inspect_tofu_resolution, TofuResolutionRequest, TofuSourceKind};
+
+use crate::local_first::{
+    compute_local_repo_fingerprint, ensure_anonymous_principal,
+    local_first_feature_token_configured, mint_execution_credential, publish_hosted_output_module,
+    ExecutionCredential, ExecutionCredentialRequest, HostedOutputModulePublishRequest,
+    LocalFirstError,
+};
 
 const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
 const MODULE_API_HOST_OVERRIDE_ENV_VAR: &str = "YAFFLE_MODULE_API_HOST";
@@ -79,6 +89,7 @@ struct ResolvedAuthHost {
 enum AuthCredentialSource {
     CliConfig,
     EnvToken,
+    YaffleExecutionToken,
 }
 
 #[derive(Debug, Deserialize)]
@@ -169,6 +180,64 @@ pub fn execute(request: &EngineRequest, working_dir: &Path) -> Result<EngineResp
         ),
         EngineOperation::Doctor => Ok(execute_doctor_operation(request, working_dir)),
     }
+}
+
+pub fn prepare_tf_login_exports(
+    working_dir: &Path,
+    environment_name: &str,
+    workspace_path: &str,
+) -> Result<String, EngineError> {
+    let request = EngineRequest {
+        operation: EngineOperation::Outputs,
+        target: Some(EnvironmentTarget {
+            environment: environment_name.to_string(),
+        }),
+        selection: WorkspaceSelection {
+            workspaces: vec![workspace_path.to_string()],
+        },
+        wait_for: None,
+    };
+
+    validate_request(&request)?;
+    let repo_context = load_repo_context(working_dir, &request)?;
+    let _graph_context = load_graph_context(&repo_context, &request)?;
+    let canonical_repo_namespace = repo_context.current_namespace.as_ref().ok_or_else(|| {
+        request_error(
+            &request,
+            "repo_namespace_unresolved",
+            "Could not infer repo namespace for hosted Yaffle module auth. Configure a canonical git remote before using yaffle tf login.",
+        )
+    })?;
+    let local_repo_fingerprint = compute_local_repo_fingerprint(&repo_context.repo_root)
+        .map_err(|error| local_first_error(&request, "repo_fingerprint_failed", error))?;
+    let principal = ensure_anonymous_principal().map_err(|error| {
+        local_first_error(&request, "anonymous_session_bootstrap_failed", error)
+    })?;
+    let execution_credential = mint_execution_credential(
+        &principal,
+        &ExecutionCredentialRequest {
+            canonical_repo_namespace,
+            local_repo_fingerprint: &local_repo_fingerprint,
+            environment_name,
+            consumer_workspace_path: workspace_path,
+        },
+    )
+    .map_err(|error| local_first_error(&request, "execution_token_mint_failed", error))?;
+
+    let credentials_path = write_tf_login_credentials_file(
+        &request,
+        environment_name,
+        workspace_path,
+        &effective_yaffle_module_host(),
+        &execution_credential,
+    )?;
+
+    Ok(format!(
+        "export TF_CLI_CONFIG_FILE={}\nexport YAFFLE_ACTIVE_ENV={}\nexport YAFFLE_ACTIVE_WORKSPACE={}\n",
+        shell_single_quote(&credentials_path.display().to_string()),
+        shell_single_quote(environment_name),
+        shell_single_quote(workspace_path),
+    ))
 }
 
 fn execute_graph_operation(
@@ -866,6 +935,42 @@ fn execute_converge_operation(
         if workspace_execution.uses_local_backend {
             persist_local_backend_state(request, repo_context, &prepared_repo, workspace_path)?;
         }
+
+        let output = run_tofu_command(
+            request,
+            &tofu_resolution,
+            &prepared_repo,
+            &workspace_execution,
+            workspace_path,
+            &["output", "-json", "-no-color"],
+            "tofu_output_failed",
+        )?;
+        let outputs = parse_terraform_outputs(request, workspace_path, &output.stdout)?;
+
+        if let Some(published_version) =
+            maybe_publish_hosted_output_module(request, repo_context, workspace_path, &outputs)?
+        {
+            diagnostics.push(DiagnosticMessage {
+                level: DiagnosticLevel::Info,
+                code: Some("hosted_output_module_published".to_string()),
+                message: format!(
+                    "Published hosted output module '{}' for environment '{}' as version '{}'.",
+                    workspace_path,
+                    request
+                        .target
+                        .as_ref()
+                        .map(|target| target.environment.as_str())
+                        .unwrap_or("unknown"),
+                    published_version
+                ),
+                workspace_path: Some(workspace_path.clone()),
+                item_key: None,
+                details: Some(BTreeMap::from([(
+                    "version".to_string(),
+                    json!(published_version),
+                )])),
+            });
+        }
     }
 
     diagnostics.push(DiagnosticMessage {
@@ -1470,19 +1575,12 @@ fn effective_yaffle_module_host() -> String {
     module_api_host_override().unwrap_or_else(|| CANONICAL_YAFFLE_MODULE_HOST.to_string())
 }
 
-fn rewrite_workspace_module_sources(
+fn rewrite_workspace_module_hosts(
     request: &EngineRequest,
-    repo_context: &RepoContext,
     prepared_repo: &PreparedExecutionRepo,
     workspace_path: &str,
 ) -> Result<(), EngineError> {
     let workspace_dir = prepared_repo.repo_root.join(workspace_path);
-    let known_workspaces = repo_context
-        .config
-        .workspaces
-        .iter()
-        .map(|workspace| workspace.path.as_str())
-        .collect::<BTreeSet<_>>();
     let override_host = module_api_host_override();
 
     for entry in fs::read_dir(&workspace_dir).map_err(|error| {
@@ -1520,80 +1618,7 @@ fn rewrite_workspace_module_sources(
                 ),
             )
         })?;
-        let mut body = hcl::from_str::<Body>(&content).map_err(|error| {
-            request_error(
-                request,
-                "workspace_parse_failed",
-                format!(
-                    "Failed to parse workspace file '{}': {error}",
-                    path.display()
-                ),
-            )
-        })?;
-        let mut rewritten_to_local_path = false;
-
-        for block in body.blocks_mut() {
-            if block.identifier() != "module" {
-                continue;
-            }
-
-            let mut rewrote_module_source = false;
-
-            for attribute in block.body.attributes_mut() {
-                if attribute.key() != "source" {
-                    continue;
-                }
-
-                let expression_text = attribute.expr.to_string();
-                if let Some(target_workspace) = local_same_repo_module_target(
-                    repo_context,
-                    &known_workspaces,
-                    workspace_path,
-                    &expression_text,
-                ) {
-                    attribute.expr =
-                        relative_workspace_path(workspace_path, &target_workspace).into();
-                    rewritten_to_local_path = true;
-                    rewrote_module_source = true;
-                }
-            }
-
-            if rewrote_module_source {
-                let existing_keys = block
-                    .body
-                    .attributes()
-                    .map(|attribute| attribute.key().to_string())
-                    .collect::<BTreeSet<_>>();
-
-                if !existing_keys.contains("environment") {
-                    block.body.extend([parse_hcl_attribute(
-                        request,
-                        "environment = var.environment",
-                    )?]);
-                }
-                if !existing_keys.contains("environment_kind") {
-                    block.body.extend([parse_hcl_attribute(
-                        request,
-                        "environment_kind = var.environment_kind",
-                    )?]);
-                }
-            }
-        }
-
-        let mut rendered = if rewritten_to_local_path {
-            hcl::format::to_string(&body).map_err(|error| {
-                request_error(
-                    request,
-                    "workspace_rewrite_failed",
-                    format!(
-                        "Failed to render rewritten workspace file '{}': {error}",
-                        path.display()
-                    ),
-                )
-            })?
-        } else {
-            content
-        };
+        let mut rendered = content;
 
         if let Some(override_host) = &override_host {
             if rendered.contains(CANONICAL_YAFFLE_MODULE_HOST) {
@@ -1686,14 +1711,17 @@ fn auth_credential_source_name(source: AuthCredentialSource) -> &'static str {
     match source {
         AuthCredentialSource::CliConfig => "cli_config",
         AuthCredentialSource::EnvToken => "env_token",
+        AuthCredentialSource::YaffleExecutionToken => "yaffle_execution_token",
     }
 }
 
 fn prepare_workspace_auth(
     request: &EngineRequest,
+    repo_context: &RepoContext,
     prepared_repo: &PreparedExecutionRepo,
     workspace_path: &str,
     workspace_dir: &Path,
+    allow_scoped_yaffle_auth: bool,
 ) -> Result<PreparedWorkspaceAuth, EngineError> {
     let required_hosts = discover_workspace_auth_hosts(request, workspace_dir)?;
     if required_hosts.is_empty() {
@@ -1705,7 +1733,7 @@ fn prepare_workspace_auth(
         .as_deref()
         .map(discover_cli_credentials_hosts)
         .unwrap_or_default();
-    let env_token_hosts = required_hosts
+    let mut host_tokens = required_hosts
         .iter()
         .filter_map(|host| {
             env::var(host_token_env_var_name(host))
@@ -1714,18 +1742,58 @@ fn prepare_workspace_auth(
         })
         .collect::<BTreeMap<_, _>>();
 
-    let mut resolved_hosts = env_token_hosts
+    let mut execution_token_hosts = BTreeSet::new();
+    if allow_scoped_yaffle_auth && local_first_feature_token_configured() {
+        let yaffle_host = effective_yaffle_module_host();
+        if required_hosts.iter().any(|host| host == &yaffle_host) {
+            let canonical_repo_namespace = repo_context.current_namespace.as_ref().ok_or_else(|| {
+                request_error(
+                    request,
+                    "repo_namespace_unresolved",
+                    "Could not infer repo namespace for hosted Yaffle module auth. Configure a canonical git remote before using local-first hosted modules.",
+                )
+            })?;
+            let local_repo_fingerprint = compute_local_repo_fingerprint(&repo_context.repo_root)
+                .map_err(|error| local_first_error(request, "repo_fingerprint_failed", error))?;
+            let principal = ensure_anonymous_principal().map_err(|error| {
+                local_first_error(request, "anonymous_session_bootstrap_failed", error)
+            })?;
+            let execution_credential = mint_execution_credential(
+                &principal,
+                &ExecutionCredentialRequest {
+                    canonical_repo_namespace,
+                    local_repo_fingerprint: &local_repo_fingerprint,
+                    environment_name: request
+                        .target
+                        .as_ref()
+                        .map(|target| target.environment.as_str())
+                        .unwrap_or("unknown"),
+                    consumer_workspace_path: workspace_path,
+                },
+            )
+            .map_err(|error| local_first_error(request, "execution_token_mint_failed", error))?;
+
+            host_tokens.insert(yaffle_host.clone(), execution_credential.token);
+            execution_token_hosts.insert(yaffle_host);
+        }
+    }
+
+    let mut resolved_hosts = host_tokens
         .keys()
         .map(|host| ResolvedAuthHost {
             host: host.clone(),
-            source: AuthCredentialSource::EnvToken,
+            source: if execution_token_hosts.contains(host) {
+                AuthCredentialSource::YaffleExecutionToken
+            } else {
+                AuthCredentialSource::EnvToken
+            },
         })
         .collect::<Vec<_>>();
     resolved_hosts.extend(
         required_hosts
             .iter()
             .filter(|host| {
-                existing_hosts.contains(host.as_str()) && !env_token_hosts.contains_key(*host)
+                existing_hosts.contains(host.as_str()) && !host_tokens.contains_key(*host)
             })
             .map(|host| ResolvedAuthHost {
                 host: host.clone(),
@@ -1736,13 +1804,11 @@ fn prepare_workspace_auth(
 
     let missing_hosts = required_hosts
         .iter()
-        .filter(|host| {
-            !existing_hosts.contains(host.as_str()) && !env_token_hosts.contains_key(*host)
-        })
+        .filter(|host| !existing_hosts.contains(host.as_str()) && !host_tokens.contains_key(*host))
         .cloned()
         .collect::<Vec<_>>();
 
-    let tf_cli_config_file = if env_token_hosts.is_empty() {
+    let tf_cli_config_file = if host_tokens.is_empty() {
         existing_cli_config_path
     } else {
         Some(write_workspace_cli_credentials_file(
@@ -1750,7 +1816,7 @@ fn prepare_workspace_auth(
             prepared_repo,
             workspace_path,
             existing_cli_config_path.as_deref(),
-            &env_token_hosts,
+            &host_tokens,
         )?)
     };
 
@@ -1879,103 +1945,6 @@ fn module_source_uses_module_registry_host_variable(body: &Body) -> bool {
         .unwrap_or(false)
 }
 
-fn local_same_repo_module_target(
-    repo_context: &RepoContext,
-    known_workspaces: &BTreeSet<&str>,
-    current_workspace_path: &str,
-    expression_text: &str,
-) -> Option<String> {
-    let reference = parse_module_source_reference(expression_text)?;
-    if reference.provider != "yaffle" {
-        return None;
-    }
-
-    if reference.host != CANONICAL_YAFFLE_MODULE_HOST
-        && reference.host != effective_yaffle_module_host()
-        && !reference.uses_module_registry_host_variable
-    {
-        return None;
-    }
-
-    if let Some(current_namespace) = &repo_context.current_namespace {
-        if reference.namespace != *current_namespace {
-            return None;
-        }
-    }
-
-    let target_workspace = module_name_to_workspace_path(&reference.module_name);
-    if target_workspace == current_workspace_path
-        || !known_workspaces.contains(target_workspace.as_str())
-    {
-        return None;
-    }
-
-    Some(target_workspace)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ModuleSourceReference {
-    host: String,
-    namespace: String,
-    module_name: String,
-    provider: String,
-    uses_module_registry_host_variable: bool,
-}
-
-fn parse_module_source_reference(expression_text: &str) -> Option<ModuleSourceReference> {
-    let trimmed = expression_text.trim().trim_matches('"');
-    let parts = trimmed.split('/').collect::<Vec<_>>();
-    if parts.len() != 4 {
-        return None;
-    }
-
-    let host_segment = parts[0];
-    let uses_module_registry_host_variable = host_segment.contains("module_registry_host");
-    let host = if uses_module_registry_host_variable {
-        effective_yaffle_module_host()
-    } else {
-        host_segment.to_string()
-    };
-
-    Some(ModuleSourceReference {
-        host,
-        namespace: parts[1].to_string(),
-        module_name: parts[2].to_string(),
-        provider: parts[3].to_string(),
-        uses_module_registry_host_variable,
-    })
-}
-
-fn relative_workspace_path(from_workspace_path: &str, to_workspace_path: &str) -> String {
-    let from_parts = from_workspace_path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-    let to_parts = to_workspace_path
-        .split('/')
-        .filter(|segment| !segment.is_empty())
-        .collect::<Vec<_>>();
-
-    let mut common_prefix = 0usize;
-    while common_prefix < from_parts.len()
-        && common_prefix < to_parts.len()
-        && from_parts[common_prefix] == to_parts[common_prefix]
-    {
-        common_prefix += 1;
-    }
-
-    let mut relative_parts = Vec::new();
-    relative_parts
-        .extend(std::iter::repeat("..").take(from_parts.len().saturating_sub(common_prefix)));
-    relative_parts.extend(to_parts.into_iter().skip(common_prefix));
-
-    if relative_parts.is_empty() {
-        ".".to_string()
-    } else {
-        relative_parts.join("/")
-    }
-}
-
 fn extract_url_host(url: &str) -> Option<String> {
     let remainder = url.split_once("://")?.1;
     let authority = remainder.split('/').next()?;
@@ -2066,10 +2035,66 @@ fn write_workspace_cli_credentials_file(
         )
     })?;
 
+    let output_path = auth_dir.join(format!("{}.tfrc", slugify_path(workspace_path)));
+
+    write_cli_credentials_file(
+        request,
+        &output_path,
+        workspace_path,
+        base_config_path,
+        env_token_hosts,
+    )
+}
+
+fn write_tf_login_credentials_file(
+    request: &EngineRequest,
+    environment_name: &str,
+    workspace_path: &str,
+    host: &str,
+    execution_credential: &ExecutionCredential,
+) -> Result<PathBuf, EngineError> {
+    let auth_dir = local_first::local_auth_store_path()
+        .map_err(|error| local_first_error(request, "auth_config_write_failed", error))?
+        .parent()
+        .expect("local auth store path should have a parent")
+        .join("execution");
+    fs::create_dir_all(&auth_dir).map_err(|error| {
+        request_error(
+            request,
+            "auth_config_write_failed",
+            format!(
+                "Failed to create auth config directory for workspace '{}': {error}",
+                workspace_path
+            ),
+        )
+    })?;
+
+    let output_path = auth_dir.join(format!(
+        "{}-{}.tfrc.json",
+        slugify_path(environment_name),
+        slugify_path(workspace_path)
+    ));
+    let host_tokens = BTreeMap::from([(host.to_string(), execution_credential.token.clone())]);
+
+    write_cli_credentials_file(
+        request,
+        &output_path,
+        workspace_path,
+        discover_existing_cli_config_path().as_deref(),
+        &host_tokens,
+    )
+}
+
+fn write_cli_credentials_file(
+    request: &EngineRequest,
+    output_path: &Path,
+    workspace_label: &str,
+    base_config_path: Option<&Path>,
+    host_tokens: &BTreeMap<String, String>,
+) -> Result<PathBuf, EngineError> {
     let base_content = base_config_path
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_default();
-    let output_path = auth_dir.join(format!("{}.tfrc", slugify_path(workspace_path)));
 
     let content = if base_config_path
         .map(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
@@ -2082,7 +2107,7 @@ fn write_workspace_cli_credentials_file(
             .and_then(|value| value.get("credentials").and_then(Value::as_object).cloned())
             .unwrap_or_default();
 
-        for (host, token) in env_token_hosts {
+        for (host, token) in host_tokens {
             credentials.insert(host.clone(), json!({ "token": token }));
         }
 
@@ -2092,7 +2117,7 @@ fn write_workspace_cli_credentials_file(
                 "auth_config_write_failed",
                 format!(
                     "Failed to serialize auth config for workspace '{}': {error}",
-                    workspace_path
+                    workspace_label
                 ),
             )
         })?
@@ -2101,7 +2126,7 @@ fn write_workspace_cli_credentials_file(
         if !content.ends_with('\n') {
             content.push('\n');
         }
-        for (host, token) in env_token_hosts {
+        for (host, token) in host_tokens {
             content.push_str(&format!(
                 "\ncredentials \"{host}\" {{\n  token = \"{}\"\n}}\n",
                 escape_hcl_string(token)
@@ -2116,12 +2141,12 @@ fn write_workspace_cli_credentials_file(
             "auth_config_write_failed",
             format!(
                 "Failed to write auth config for workspace '{}': {error}",
-                workspace_path
+                workspace_label
             ),
         )
     })?;
 
-    Ok(output_path)
+    Ok(output_path.to_path_buf())
 }
 
 fn escape_hcl_string(value: &str) -> String {
@@ -2393,7 +2418,7 @@ fn configure_workspace_execution(
         .unwrap_or_default();
     let workspace_dir = prepared_repo.repo_root.join(&workspace.path);
 
-    rewrite_workspace_module_sources(request, repo_context, prepared_repo, &workspace.path)?;
+    rewrite_workspace_module_hosts(request, prepared_repo, &workspace.path)?;
     ensure_injected_variable_declarations(request, &workspace_dir)?;
     write_workspace_variables_file(
         request,
@@ -2408,7 +2433,14 @@ fn configure_workspace_execution(
         write_local_backend_override(request, prepared_repo, &workspace_dir, &workspace.path)?;
     }
 
-    let auth = prepare_workspace_auth(request, prepared_repo, &workspace.path, &workspace_dir)?;
+    let auth = prepare_workspace_auth(
+        request,
+        repo_context,
+        prepared_repo,
+        &workspace.path,
+        &workspace_dir,
+        !has_explicit_backend,
+    )?;
 
     Ok(PreparedWorkspaceExecution {
         uses_local_backend: !has_explicit_backend,
@@ -2714,6 +2746,77 @@ fn format_outputs_summary(
     }
 
     lines.join("\n")
+}
+
+fn maybe_publish_hosted_output_module(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    workspace_path: &str,
+    outputs: &BTreeMap<String, TerraformOutput>,
+) -> Result<Option<String>, EngineError> {
+    if !local_first_feature_token_configured() {
+        return Ok(None);
+    }
+
+    let canonical_repo_namespace = repo_context.current_namespace.as_ref().ok_or_else(|| {
+        request_error(
+            request,
+            "repo_namespace_unresolved",
+            "Could not infer repo namespace for hosted Yaffle output module publication. Configure a canonical git remote before using local-first hosted modules.",
+        )
+    })?;
+    let principal = ensure_anonymous_principal()
+        .map_err(|error| local_first_error(request, "anonymous_session_bootstrap_failed", error))?;
+    let local_repo_fingerprint = compute_local_repo_fingerprint(&repo_context.repo_root)
+        .map_err(|error| local_first_error(request, "repo_fingerprint_failed", error))?;
+    let outputs_json = terraform_outputs_json(request, outputs)?;
+    let state_fingerprint = sha256_hex(serde_json::to_vec(&outputs_json).map_err(|error| {
+        request_error(
+            request,
+            "outputs_serialize_failed",
+            format!("Failed to serialize outputs for publication: {error}"),
+        )
+    })?);
+
+    let published = publish_hosted_output_module(
+        &principal,
+        &HostedOutputModulePublishRequest {
+            canonical_repo_namespace,
+            local_repo_fingerprint: &local_repo_fingerprint,
+            environment_name: request
+                .target
+                .as_ref()
+                .map(|target| target.environment.as_str())
+                .unwrap_or("unknown"),
+            workspace_path,
+            state_fingerprint: &state_fingerprint,
+            outputs: &outputs_json,
+        },
+    )
+    .map_err(|error| local_first_error(request, "hosted_output_module_publish_failed", error))?;
+
+    Ok(Some(published.version))
+}
+
+fn terraform_outputs_json(
+    request: &EngineRequest,
+    outputs: &BTreeMap<String, TerraformOutput>,
+) -> Result<serde_json::Map<String, serde_json::Value>, EngineError> {
+    let value = serde_json::to_value(outputs).map_err(|error| {
+        request_error(
+            request,
+            "outputs_serialize_failed",
+            format!("Failed to serialize outputs for publication: {error}"),
+        )
+    })?;
+
+    value.as_object().cloned().ok_or_else(|| {
+        request_error(
+            request,
+            "outputs_serialize_failed",
+            "serialized outputs were not an object",
+        )
+    })
 }
 
 fn format_converge_summary(environment_name: &str, workspace_paths: &[String]) -> String {
@@ -3090,33 +3193,6 @@ fn load_workspace_hcl_body(
     Ok(body)
 }
 
-fn parse_hcl_attribute(
-    request: &EngineRequest,
-    snippet: &str,
-) -> Result<hcl::Attribute, EngineError> {
-    let body = hcl::from_str::<Body>(snippet).map_err(|error| {
-        request_error(
-            request,
-            "workspace_rewrite_failed",
-            format!(
-                "Failed to parse generated HCL attribute '{}': {error}",
-                snippet
-            ),
-        )
-    })?;
-
-    body.into_attributes().next().ok_or_else(|| {
-        request_error(
-            request,
-            "workspace_rewrite_failed",
-            format!(
-                "Generated HCL attribute '{}' produced no attribute",
-                snippet
-            ),
-        )
-    })
-}
-
 fn copy_repo_for_execution(source: &Path, destination: &Path) -> io::Result<()> {
     fs::create_dir_all(destination)?;
 
@@ -3160,6 +3236,20 @@ fn slugify_path(path: &str) -> String {
 
 fn utf8_trimmed(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim().to_string()
+}
+
+fn sha256_hex(bytes: Vec<u8>) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn build_response(
@@ -3368,6 +3458,14 @@ fn request_error_with_details(
             details,
         },
     }
+}
+
+fn local_first_error(
+    request: &EngineRequest,
+    code: impl Into<String>,
+    error: LocalFirstError,
+) -> EngineError {
+    request_error(request, code, error.to_string())
 }
 
 fn find_yaffle_toml(start: &Path) -> Option<PathBuf> {
@@ -3891,7 +3989,6 @@ mod tests {
     use super::*;
 
     static TOFU_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-    static AUTH_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn executes_graph_from_nested_workspace_directory() {
@@ -4103,7 +4200,9 @@ module "relative" {
     #[test]
     fn prepares_workspace_auth_from_env_token() {
         let repo = TempDir::new().expect("temp dir should exist");
-        let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock should succeed");
+        let _guard = crate::local_first::LOCAL_FIRST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let workspace_dir = repo.path().join("infra/app");
         fs::create_dir_all(&workspace_dir).expect("workspace dir should exist");
         fs::write(
@@ -4128,13 +4227,35 @@ module "relative" {
             selection: WorkspaceSelection::default(),
             wait_for: None,
         };
+        let repo_context = RepoContext {
+            repo_root: repo.path().to_path_buf(),
+            config_path: repo.path().join("yaffle.toml"),
+            config: YaffleConfig {
+                version: 1,
+                environments: vec![yaffle_config::Environment {
+                    name: "main".to_string(),
+                }],
+                workspaces: vec![yaffle_config::Workspace {
+                    path: "infra/app".to_string(),
+                    environments: yaffle_config::EnvironmentSelector::Named(vec![
+                        "main".to_string()
+                    ]),
+                    variables: BTreeMap::new(),
+                    outputs: BTreeMap::new(),
+                }],
+                cloud: yaffle_config::CloudConfig::default(),
+            },
+            current_namespace: Some("test-org--fixture".to_string()),
+        };
         let prepared_repo = prepare_execution_repo(repo.path(), "infra/app", &request)
             .expect("prepared repo should exist");
         let auth = prepare_workspace_auth(
             &request,
+            &repo_context,
             &prepared_repo,
             "infra/app",
             &prepared_repo.repo_root.join("infra/app"),
+            false,
         )
         .expect("workspace auth should be prepared");
 
@@ -4163,7 +4284,9 @@ module "relative" {
     #[test]
     fn applies_module_api_host_override_in_prepared_workspace() {
         let repo = TempDir::new().expect("temp dir should exist");
-        let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock should succeed");
+        let _guard = crate::local_first::LOCAL_FIRST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let workspace_dir = repo.path().join("infra/app");
         fs::create_dir_all(&workspace_dir).expect("workspace dir should exist");
         fs::write(
@@ -4238,7 +4361,7 @@ module "shared" {
         )
         .expect("tfvars file should be readable");
 
-        assert!(rewritten.contains("yaffle.local:6969"));
+        assert!(!rewritten.contains(CANONICAL_YAFFLE_MODULE_HOST));
         assert!(tfvars.contains("module_registry_host"));
         assert_eq!(
             execution.auth.required_hosts,

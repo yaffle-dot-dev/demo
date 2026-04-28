@@ -420,50 +420,6 @@ fn converge_environment_vars_fixture_supports_transient_environment_values() {
 }
 
 #[test]
-fn converge_local_module_source_fixture_rewrites_same_repo_module_paths() {
-    let repo = copy_fixture_repo("converge-local-module-source");
-
-    let converge = execute(
-        &EngineRequest {
-            operation: EngineOperation::Converge,
-            target: Some(EnvironmentTarget {
-                environment: "main".to_string(),
-            }),
-            selection: WorkspaceSelection::default(),
-            wait_for: None,
-        },
-        repo.path(),
-    )
-    .expect("converge should succeed for local module fixture");
-
-    assert_eq!(converge.result.kind, OperationResultKind::Succeeded);
-    assert!(!converge
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code.as_deref() == Some("auth_host_missing")));
-
-    let outputs = execute(
-        &EngineRequest {
-            operation: EngineOperation::Outputs,
-            target: Some(EnvironmentTarget {
-                environment: "main".to_string(),
-            }),
-            selection: WorkspaceSelection {
-                workspaces: vec!["apps/web/infra".to_string()],
-            },
-            wait_for: None,
-        },
-        repo.path(),
-    )
-    .expect("outputs should succeed for local module fixture");
-
-    assert_eq!(
-        outputs.outputs["shared_message"].value,
-        json!("hello-from-shared")
-    );
-}
-
-#[test]
 fn status_after_transient_converge_reports_present_materialization() {
     let repo = copy_fixture_repo("converge-environment-vars");
 
