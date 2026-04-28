@@ -1,4 +1,4 @@
-import { Hono } from "hono"
+import { Hono, type MiddlewareHandler } from "hono"
 import { timingSafeEqual } from "node:crypto"
 import { z } from "zod"
 
@@ -50,7 +50,7 @@ const publishOutputModuleSchema = z.object({
 
 export const localFirstRoute = new Hono<{ Variables: PrincipalVariables }>()
 
-localFirstRoute.use("*", async (c, next) => {
+const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
   const expectedToken = process.env[LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR]?.trim()
   if (!expectedToken) {
     return c.json({ error: { code: "NOT_FOUND", message: "not found" } }, 404)
@@ -65,7 +65,11 @@ localFirstRoute.use("*", async (c, next) => {
   }
 
   return next()
-})
+}
+
+localFirstRoute.use("/sessions/anonymous", enforceFeatureToken)
+localFirstRoute.use("/execution-tokens", enforceFeatureToken)
+localFirstRoute.use("/output-modules", enforceFeatureToken)
 
 localFirstRoute.post("/sessions/anonymous", async (c) => {
   const rateLimitResponse = enforceRateLimit(c, ANONYMOUS_SESSION_RATE_LIMIT)

@@ -25,7 +25,7 @@ Current fixtures:
   - used to verify injected variable declarations and transient env converge
 - `converge-local-module-source`
   - same-repo Yaffle module source authored with canonical `yaffle.dev`
-  - used to verify local module path rewriting without a registry hop
+  - reserved for local-first hosted output-module smoke coverage
 - `status-init-failure-mixed`
   - one healthy local workspace and one broken local module reference
   - used to verify status degrades instead of aborting on per-workspace init failures

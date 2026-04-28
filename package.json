@@ -21,6 +21,7 @@
     "format:check": "biome format .",
     "smoke": "bun run --filter=@yaffle/control-plane smoke",
     "smoke:browser": "bun run --filter=@yaffle/web smoke",
+    "smoke:local-first": "bun run scripts/smoke/local-first.ts",
     "test": "bun run --filter='*' test",
     "test:scripts": "bun test scripts/**/*.test.ts",
     "db:generate": "bun run --filter=@yaffle/control-plane db:generate",
@@ -29,7 +30,8 @@
   "devDependencies": {
     "@dotenvx/dotenvx": "^1.57.0",
     "bun-types": "^1.3.10",
-    "tar-stream": "^3.1.8"
+    "tar-stream": "^3.1.8",
+    "testcontainers": "^11.7.2"
   },
   "dependencies": {
     "@aws-sdk/client-ecr": "^3.1019.0",

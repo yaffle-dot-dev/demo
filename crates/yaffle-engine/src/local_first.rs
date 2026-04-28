@@ -18,17 +18,23 @@ pub(crate) static LOCAL_FIRST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| M
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredPrincipalCredential {
+    #[serde(alias = "principalId")]
     pub principal_id: String,
+    #[serde(alias = "sessionId")]
     pub session_id: String,
     pub token: String,
+    #[serde(alias = "issuedAt")]
     pub issued_at: String,
+    #[serde(alias = "expiresAt")]
     pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionCredential {
     pub token: String,
+    #[serde(alias = "repoBindingId")]
     pub repo_binding_id: String,
+    #[serde(alias = "expiresAt")]
     pub expires_at: Option<String>,
 }
 
@@ -45,11 +51,16 @@ pub struct HostedOutputModulePublishRequest<'a> {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HostedOutputModulePublishResult {
     pub id: String,
+    #[serde(alias = "repoBindingId")]
     pub repo_binding_id: String,
+    #[serde(alias = "workspacePath")]
     pub workspace_path: String,
+    #[serde(alias = "environmentName")]
     pub environment_name: String,
+    #[serde(alias = "versionSerial")]
     pub version_serial: u64,
     pub version: String,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
 }
 
@@ -221,6 +232,15 @@ pub fn module_api_base_url() -> Result<String, LocalFirstError> {
         return Ok(host);
     }
 
+    if host.starts_with("localhost:")
+        || host.starts_with("localhost.")
+        || host.contains(".localhost:")
+        || host.starts_with("127.0.0.1:")
+        || host.starts_with("[::1]:")
+    {
+        return Ok(format!("http://{host}"));
+    }
+
     Ok(format!("https://{host}"))
 }
 
@@ -280,12 +300,18 @@ impl LocalFirstRuntime {
                 ))
             })?;
 
+        let base_url = module_api_base_url()?;
+        let mut client_builder = Client::builder();
+        if should_allow_insecure_localhost_tls(&base_url) {
+            client_builder = client_builder.danger_accept_invalid_certs(true);
+        }
+
         Ok(Self {
-            client: Client::builder()
+            client: client_builder
                 .build()
                 .map_err(|error| LocalFirstError::Config(error.to_string()))?,
             feature_token,
-            base_url: module_api_base_url()?,
+            base_url,
         })
     }
 
@@ -317,6 +343,25 @@ impl LocalFirstRuntime {
         );
         Ok(headers)
     }
+}
+
+fn should_allow_insecure_localhost_tls(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    if url.scheme() != "https" {
+        return false;
+    }
+
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+
+    host == "localhost"
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.starts_with("localhost.")
+        || host.ends_with(".localhost")
 }
 
 fn read_api_error(response: reqwest::blocking::Response) -> Result<String, LocalFirstError> {

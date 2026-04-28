@@ -200,7 +200,7 @@ pub fn prepare_tf_login_exports(
 
     validate_request(&request)?;
     let repo_context = load_repo_context(working_dir, &request)?;
-    let _graph_context = load_graph_context(&repo_context, &request)?;
+    let graph_context = load_graph_context(&repo_context, &request)?;
     let canonical_repo_namespace = repo_context.current_namespace.as_ref().ok_or_else(|| {
         request_error(
             &request,
@@ -232,12 +232,41 @@ pub fn prepare_tf_login_exports(
         &execution_credential,
     )?;
 
-    Ok(format!(
-        "export TF_CLI_CONFIG_FILE={}\nexport YAFFLE_ACTIVE_ENV={}\nexport YAFFLE_ACTIVE_WORKSPACE={}\n",
-        shell_single_quote(&credentials_path.display().to_string()),
-        shell_single_quote(environment_name),
-        shell_single_quote(workspace_path),
-    ))
+    let mut exports = vec![format!(
+        "export TF_CLI_CONFIG_FILE={}",
+        shell_single_quote(&credentials_path.display().to_string())
+    )];
+
+    if let Some(module_host_override) = module_api_host_override() {
+        exports.push(format!(
+            "export TF_VAR_module_registry_host={}",
+            shell_single_quote(&module_host_override)
+        ));
+    }
+
+    exports.push(format!(
+        "export TF_VAR_environment={}",
+        shell_single_quote(environment_name)
+    ));
+    exports.push(format!(
+        "export TF_VAR_environment_kind={}",
+        shell_single_quote(environment_kind_name(
+            graph_context
+                .graph
+                .environment_kind
+                .unwrap_or(EnvironmentKind::Named)
+        ))
+    ));
+    exports.push(format!(
+        "export YAFFLE_ACTIVE_ENV={}",
+        shell_single_quote(environment_name)
+    ));
+    exports.push(format!(
+        "export YAFFLE_ACTIVE_WORKSPACE={}",
+        shell_single_quote(workspace_path)
+    ));
+
+    Ok(exports.join("\n") + "\n")
 }
 
 fn execute_graph_operation(
@@ -1568,11 +1597,19 @@ fn module_api_host_override() -> Option<String> {
     env::var(MODULE_API_HOST_OVERRIDE_ENV_VAR)
         .ok()
         .map(|value| value.trim().to_string())
+        .map(|value| strip_url_scheme(&value).to_string())
         .filter(|value| !value.is_empty() && value != CANONICAL_YAFFLE_MODULE_HOST)
 }
 
 fn effective_yaffle_module_host() -> String {
     module_api_host_override().unwrap_or_else(|| CANONICAL_YAFFLE_MODULE_HOST.to_string())
+}
+
+fn strip_url_scheme(value: &str) -> &str {
+    value
+        .strip_prefix("https://")
+        .or_else(|| value.strip_prefix("http://"))
+        .unwrap_or(value)
 }
 
 fn rewrite_workspace_module_hosts(
