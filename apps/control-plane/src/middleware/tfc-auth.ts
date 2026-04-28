@@ -6,8 +6,10 @@ import type { Workspace } from "../db/queries/workspaces.ts"
 import { logger as log } from "../lib/telemetry.ts"
 import { findApiTokenByHash, hashToken, touchApiToken } from "../db/queries/api-tokens.ts"
 import { findOrgMembership } from "../db/queries/organizations.ts"
+import { findPrincipalRepoBindingById } from "../db/queries/principals.ts"
 import { findStateVersionById } from "../db/queries/state-versions.ts"
 import { findWorkspaceById, findWorkspaceByLockId } from "../db/queries/workspaces.ts"
+import { verifyExecutionToken } from "../lib/principal-tokens.ts"
 import { verifyRunToken } from "../lib/run-token.ts"
 
 // Re-export for convenience
@@ -17,13 +19,18 @@ export { generateRunToken, type RunTokenPayload } from "../lib/run-token.ts"
  * TFC authentication context attached to requests.
  */
 export interface TfcAuthContext {
-  type: "user" | "run"
+  type: "user" | "run" | "execution"
   userId?: string // Present for user tokens
   runId?: string // Present for run tokens
   workspaceId?: string // Present for run tokens (scoped access)
   orgId?: string // Present for run tokens and org-scoped user tokens
   scopes: string[] // e.g., ["state:read", "state:write", "workspace:lock"]
   tokenId?: string
+  principalId?: string
+  repoBindingId?: string
+  repoNamespace?: string
+  environmentName?: string
+  consumerWorkspacePath?: string
 }
 
 export type TfcRole = "viewer" | "approver" | "admin"
@@ -104,6 +111,35 @@ export function tfcAuth(): MiddlewareHandler {
       tokenLength: token.length,
       looksLikeJwt: token.split(".").length === 3,
     })
+
+    const executionPayload = await verifyExecutionToken(token)
+    if (executionPayload) {
+      const binding = await findPrincipalRepoBindingById(executionPayload.repo_binding_id)
+      if (!binding || binding.principalId !== executionPayload.principal_id) {
+        return c.json(
+          { errors: [{ status: "401", title: "Invalid token" }] },
+          401,
+        )
+      }
+
+      c.set("tfcAuth", {
+        type: "execution",
+        principalId: executionPayload.principal_id,
+        repoBindingId: executionPayload.repo_binding_id,
+        repoNamespace: executionPayload.canonical_repo_namespace,
+        environmentName: executionPayload.environment_name,
+        consumerWorkspacePath: executionPayload.consumer_workspace_path,
+        scopes: executionPayload.scopes,
+      } as TfcAuthContext)
+
+      log.debug("Execution token authenticated", {
+        principalId: executionPayload.principal_id,
+        repoBindingId: executionPayload.repo_binding_id,
+        environmentName: executionPayload.environment_name,
+        consumerWorkspacePath: executionPayload.consumer_workspace_path,
+      })
+      return next()
+    }
 
     const runPayload = await verifyRunToken(token)
     if (runPayload) {

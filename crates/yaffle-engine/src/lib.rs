@@ -1,20 +1,27 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
+use hcl::eval::{Context as HclContext, Evaluate};
 use hcl::Body;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use yaffle_contracts::{
-    DiagnosticLevel, DiagnosticMessage, EngineOperation, EngineResponse, OperationResult,
-    OperationResultKind, TerraformOutput, WorkspaceSnapshot,
+    DiagnosticLevel, DiagnosticMessage, EngineOperation, EngineResponse, EnvironmentSnapshot,
+    OperationResult, OperationResultKind, TerraformOutput, WorkspaceSnapshot,
 };
 use yaffle_graph::{
-    apply_workspace_selection, resolve_workspace_graph, EnvironmentKind, GraphError,
-    ResolvedWorkspaceGraph, WorkspaceGraphOptions,
+    apply_workspace_selection, module_name_to_workspace_path, resolve_workspace_graph,
+    EnvironmentKind, GraphError, ResolvedWorkspaceGraph, WorkspaceGraphOptions,
 };
 use yaffle_tofu::{inspect_tofu_resolution, TofuResolutionRequest, TofuSourceKind};
+
+const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
+const MODULE_API_HOST_OVERRIDE_ENV_VAR: &str = "YAFFLE_MODULE_API_HOST";
 
 use yaffle_config::{parse_yaffle_toml, validate_environment_name, YaffleConfig};
 pub use yaffle_contracts::{EngineError, EnvironmentTarget, WorkspaceSelection, CONTRACT_VERSION};
@@ -48,12 +55,55 @@ struct PreparedExecutionRepo {
     tf_data_dir: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct PreparedWorkspaceExecution {
+    uses_local_backend: bool,
+    auth: PreparedWorkspaceAuth,
+}
+
+#[derive(Debug, Clone, Default)]
+struct PreparedWorkspaceAuth {
+    tf_cli_config_file: Option<PathBuf>,
+    required_hosts: Vec<String>,
+    resolved_hosts: Vec<ResolvedAuthHost>,
+    missing_hosts: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedAuthHost {
+    host: String,
+    source: AuthCredentialSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthCredentialSource {
+    CliConfig,
+    EnvToken,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawTerraformOutput {
     value: Value,
     #[serde(rename = "type")]
     type_name: Option<Value>,
     sensitive: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceStatusObservation {
+    workspace_path: String,
+    materialization: String,
+    outputs: BTreeMap<String, TerraformOutput>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitCondition {
+    InfraReady,
+    ActivationSettled,
+    VerificationSettled,
+    Usable,
+    Acceptable,
+    TeardownSettled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,10 +149,25 @@ pub fn execute(request: &EngineRequest, working_dir: &Path) -> Result<EngineResp
                 .as_ref()
                 .expect("outputs execution should always have repo context"),
         ),
-        EngineOperation::Doctor => Ok(execute_doctor_operation(request, working_dir)),
-        EngineOperation::Destroy | EngineOperation::Status | EngineOperation::Wait => Ok(
-            execute_placeholder_operation(request, repo_context.as_ref()),
+        EngineOperation::Status => execute_status_operation(
+            request,
+            repo_context
+                .as_ref()
+                .expect("status execution should always have repo context"),
         ),
+        EngineOperation::Wait => execute_wait_operation(
+            request,
+            repo_context
+                .as_ref()
+                .expect("wait execution should always have repo context"),
+        ),
+        EngineOperation::Destroy => execute_destroy_operation(
+            request,
+            repo_context
+                .as_ref()
+                .expect("destroy execution should always have repo context"),
+        ),
+        EngineOperation::Doctor => Ok(execute_doctor_operation(request, working_dir)),
     }
 }
 
@@ -194,14 +259,23 @@ fn execute_outputs_operation(
         .iter()
         .find(|workspace| workspace.path == workspace_path)
         .expect("selected outputs workspace should exist in config");
+    let mut diagnostics = repo_context_diagnostics(repo_context);
 
-    let _uses_local_backend =
-        configure_workspace_execution(request, &prepared_repo, workspace_config, environment_kind)?;
+    let workspace_execution = configure_workspace_execution(
+        request,
+        repo_context,
+        &prepared_repo,
+        workspace_config,
+        environment_kind,
+    )?;
+
+    append_auth_diagnostics(&mut diagnostics, &workspace_path, &workspace_execution.auth);
 
     run_tofu_command(
         request,
         &tofu_resolution,
         &prepared_repo,
+        &workspace_execution,
         &workspace_path,
         &["init", "-input=false", "-no-color"],
         "tofu_init_failed",
@@ -211,13 +285,13 @@ fn execute_outputs_operation(
         request,
         &tofu_resolution,
         &prepared_repo,
+        &workspace_execution,
         &workspace_path,
         &["output", "-json", "-no-color"],
         "tofu_output_failed",
     )?;
     let outputs = parse_terraform_outputs(request, &workspace_path, &output.stdout)?;
 
-    let mut diagnostics = repo_context_diagnostics(repo_context);
     diagnostics.push(DiagnosticMessage {
         level: DiagnosticLevel::Info,
         code: Some("tofu_resolved".to_string()),
@@ -283,6 +357,450 @@ fn execute_outputs_operation(
     ))
 }
 
+fn execute_status_operation(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+) -> Result<EngineResponse, EngineError> {
+    let graph_context = load_graph_context(repo_context, request)?;
+    let tofu_report = inspect_tofu_resolution(&TofuResolutionRequest::default());
+    let tofu_resolution = tofu_report.clone().into_result().map_err(|error| {
+        request_error_with_details(
+            request,
+            "tofu_resolution_failed",
+            "could not resolve tofu using the configured source policy",
+            Some(BTreeMap::from([(
+                "attempts".to_string(),
+                json!(error.attempts),
+            )])),
+        )
+    })?;
+    let prepared_repo = prepare_execution_repo(&repo_context.repo_root, ".", request)?;
+    let environment_kind = graph_context
+        .graph
+        .environment_kind
+        .expect("status operation should have an environment kind");
+
+    let mut diagnostics = repo_context_diagnostics(repo_context);
+    diagnostics.push(DiagnosticMessage {
+        level: DiagnosticLevel::Info,
+        code: Some("tofu_resolved".to_string()),
+        message: format!(
+            "Resolved tofu via {} at '{}' ({})",
+            tofu_source_label(tofu_resolution.source),
+            tofu_resolution.path.display(),
+            tofu_resolution.version
+        ),
+        workspace_path: None,
+        item_key: None,
+        details: Some(BTreeMap::from([
+            ("source".to_string(), json!(tofu_resolution.source)),
+            (
+                "path".to_string(),
+                json!(tofu_resolution.path.display().to_string()),
+            ),
+            ("version".to_string(), json!(tofu_resolution.version)),
+            ("attempts".to_string(), json!(tofu_report.attempts)),
+        ])),
+    });
+
+    let mut observations = Vec::new();
+    let mut workspace_error_count = 0usize;
+    for workspace_path in &graph_context.topological_order {
+        let observation_result: Result<WorkspaceStatusObservation, EngineError> = (|| {
+            let workspace_config = repo_context
+                .config
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.path == *workspace_path)
+                .expect("status workspace should exist in config");
+            let workspace_execution = configure_workspace_execution(
+                request,
+                repo_context,
+                &prepared_repo,
+                workspace_config,
+                environment_kind,
+            )?;
+
+            append_auth_diagnostics(&mut diagnostics, workspace_path, &workspace_execution.auth);
+
+            run_tofu_command(
+                request,
+                &tofu_resolution,
+                &prepared_repo,
+                &workspace_execution,
+                workspace_path,
+                &["init", "-input=false", "-no-color"],
+                "tofu_init_failed",
+            )?;
+
+            inspect_workspace_status(
+                request,
+                &prepared_repo,
+                &tofu_resolution,
+                &workspace_execution,
+                workspace_path,
+            )
+        })();
+
+        match observation_result {
+            Ok(observation) => {
+                diagnostics.push(DiagnosticMessage {
+                    level: DiagnosticLevel::Info,
+                    code: Some("workspace_status".to_string()),
+                    message: format!(
+                        "Workspace '{}' is {} with {} output(s).",
+                        observation.workspace_path,
+                        observation.materialization,
+                        observation.outputs.len()
+                    ),
+                    workspace_path: Some(observation.workspace_path.clone()),
+                    item_key: None,
+                    details: Some(BTreeMap::from([
+                        (
+                            "materialization".to_string(),
+                            json!(observation.materialization.clone()),
+                        ),
+                        ("output_count".to_string(), json!(observation.outputs.len())),
+                        (
+                            "output_keys".to_string(),
+                            json!(observation.outputs.keys().cloned().collect::<Vec<_>>()),
+                        ),
+                    ])),
+                });
+                observations.push(observation);
+            }
+            Err(error) => {
+                workspace_error_count += 1;
+                diagnostics.push(DiagnosticMessage {
+                    level: DiagnosticLevel::Error,
+                    code: Some(error.error.code),
+                    message: error.error.message,
+                    workspace_path: Some(workspace_path.clone()),
+                    item_key: None,
+                    details: error.error.details,
+                });
+                observations.push(WorkspaceStatusObservation {
+                    workspace_path: workspace_path.clone(),
+                    materialization: "partially_present".to_string(),
+                    outputs: BTreeMap::new(),
+                });
+            }
+        }
+    }
+
+    let workspace_snapshots = observations
+        .iter()
+        .map(|observation| WorkspaceSnapshot {
+            workspace_path: observation.workspace_path.clone(),
+            lifecycle: None,
+            materialization: Some(observation.materialization.clone()),
+            freshness: None,
+        })
+        .collect::<Vec<_>>();
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+    let environment_materialization = derive_environment_materialization(&observations);
+
+    Ok(build_response_with_environment(
+        request,
+        if workspace_error_count > 0 {
+            OperationResultKind::Degraded
+        } else {
+            OperationResultKind::Succeeded
+        },
+        format_status_summary(
+            environment_name,
+            &observations,
+            &environment_materialization,
+        ),
+        Some(EnvironmentSnapshot {
+            lifecycle: None,
+            conditions: Vec::new(),
+            materialization: Some(environment_materialization),
+            freshness: None,
+        }),
+        workspace_snapshots,
+        BTreeMap::new(),
+        diagnostics,
+    ))
+}
+
+fn execute_wait_operation(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+) -> Result<EngineResponse, EngineError> {
+    let condition_name = request
+        .wait_for
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default();
+    let condition = parse_wait_condition(condition_name)
+        .ok_or_else(|| request_error(request, "invalid_condition", format!("unsupported wait condition '{}': expected one of infra_ready, activation_settled, verification_settled, usable, acceptable, teardown_settled", condition_name)))?;
+    let timeout = wait_timeout();
+    let poll_interval = wait_poll_interval();
+    let deadline = Instant::now() + timeout;
+    let status_request = EngineRequest {
+        operation: EngineOperation::Status,
+        target: request.target.clone(),
+        selection: WorkspaceSelection::default(),
+        wait_for: None,
+    };
+    let mut attempts = 0usize;
+
+    loop {
+        attempts += 1;
+        let status_response = execute_status_operation(&status_request, repo_context)?;
+        let met = wait_condition_met(condition, &status_response);
+
+        if met {
+            let mut diagnostics = status_response.diagnostics;
+            diagnostics.push(DiagnosticMessage {
+                level: DiagnosticLevel::Info,
+                code: Some("wait_condition_met".to_string()),
+                message: format!(
+                    "Condition '{}' was met after {} attempt(s).",
+                    condition_name, attempts
+                ),
+                workspace_path: None,
+                item_key: None,
+                details: Some(BTreeMap::from([
+                    ("condition".to_string(), json!(condition_name)),
+                    ("attempts".to_string(), json!(attempts)),
+                ])),
+            });
+
+            return Ok(build_response_with_environment(
+                request,
+                OperationResultKind::Succeeded,
+                format!(
+                    "condition '{}' met for environment '{}' after {} attempt(s)",
+                    condition_name,
+                    request
+                        .target
+                        .as_ref()
+                        .map(|target| target.environment.as_str())
+                        .unwrap_or("unknown"),
+                    attempts
+                ),
+                status_response.environment,
+                status_response.workspaces,
+                status_response.outputs,
+                diagnostics,
+            ));
+        }
+
+        if status_response.result.kind == OperationResultKind::Degraded {
+            let mut diagnostics = status_response.diagnostics;
+            diagnostics.push(DiagnosticMessage {
+                level: DiagnosticLevel::Warning,
+                code: Some("wait_condition_blocked".to_string()),
+                message: format!(
+                    "Condition '{}' could not be evaluated cleanly because status is degraded.",
+                    condition_name
+                ),
+                workspace_path: None,
+                item_key: None,
+                details: Some(BTreeMap::from([(
+                    "condition".to_string(),
+                    json!(condition_name),
+                )])),
+            });
+
+            return Ok(build_response_with_environment(
+                request,
+                OperationResultKind::Blocked,
+                format!(
+                    "condition '{}' blocked for environment '{}' because status is degraded",
+                    condition_name,
+                    request
+                        .target
+                        .as_ref()
+                        .map(|target| target.environment.as_str())
+                        .unwrap_or("unknown")
+                ),
+                status_response.environment,
+                status_response.workspaces,
+                status_response.outputs,
+                diagnostics,
+            ));
+        }
+
+        if Instant::now() >= deadline {
+            let mut diagnostics = status_response.diagnostics;
+            diagnostics.push(DiagnosticMessage {
+                level: DiagnosticLevel::Warning,
+                code: Some("wait_condition_timeout".to_string()),
+                message: format!(
+                    "Timed out waiting for condition '{}' after {} attempt(s).",
+                    condition_name, attempts
+                ),
+                workspace_path: None,
+                item_key: None,
+                details: Some(BTreeMap::from([
+                    ("condition".to_string(), json!(condition_name)),
+                    ("attempts".to_string(), json!(attempts)),
+                    ("timeout_ms".to_string(), json!(timeout.as_millis() as u64)),
+                ])),
+            });
+
+            return Ok(build_response_with_environment(
+                request,
+                OperationResultKind::Blocked,
+                format!(
+                    "condition '{}' not met for environment '{}' within {}ms",
+                    condition_name,
+                    request
+                        .target
+                        .as_ref()
+                        .map(|target| target.environment.as_str())
+                        .unwrap_or("unknown"),
+                    timeout.as_millis()
+                ),
+                status_response.environment,
+                status_response.workspaces,
+                status_response.outputs,
+                diagnostics,
+            ));
+        }
+
+        thread::sleep(poll_interval);
+    }
+}
+
+fn execute_destroy_operation(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+) -> Result<EngineResponse, EngineError> {
+    let graph_context = load_graph_context(repo_context, request)?;
+    let tofu_report = inspect_tofu_resolution(&TofuResolutionRequest::default());
+    let tofu_resolution = tofu_report.clone().into_result().map_err(|error| {
+        request_error_with_details(
+            request,
+            "tofu_resolution_failed",
+            "could not resolve tofu using the configured source policy",
+            Some(BTreeMap::from([(
+                "attempts".to_string(),
+                json!(error.attempts),
+            )])),
+        )
+    })?;
+
+    let prepared_repo = prepare_execution_repo(&repo_context.repo_root, ".", request)?;
+    let environment_kind = graph_context
+        .graph
+        .environment_kind
+        .expect("destroy operation should have an environment kind");
+    let mut destroy_order = graph_context.topological_order.clone();
+    destroy_order.reverse();
+    let mut diagnostics = repo_context_diagnostics(repo_context);
+
+    for workspace_path in &destroy_order {
+        let workspace_config = repo_context
+            .config
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.path == *workspace_path)
+            .expect("destroy workspace should exist in config");
+        let workspace_execution = configure_workspace_execution(
+            request,
+            repo_context,
+            &prepared_repo,
+            workspace_config,
+            environment_kind,
+        )?;
+
+        append_auth_diagnostics(&mut diagnostics, workspace_path, &workspace_execution.auth);
+
+        run_tofu_command(
+            request,
+            &tofu_resolution,
+            &prepared_repo,
+            &workspace_execution,
+            workspace_path,
+            &["init", "-input=false", "-no-color"],
+            "tofu_init_failed",
+        )?;
+        run_tofu_command(
+            request,
+            &tofu_resolution,
+            &prepared_repo,
+            &workspace_execution,
+            workspace_path,
+            &["destroy", "-auto-approve", "-input=false", "-no-color"],
+            "tofu_destroy_failed",
+        )?;
+
+        if workspace_execution.uses_local_backend {
+            remove_local_backend_state(request, repo_context, workspace_path)?;
+        }
+    }
+
+    diagnostics.push(DiagnosticMessage {
+        level: DiagnosticLevel::Info,
+        code: Some("tofu_resolved".to_string()),
+        message: format!(
+            "Resolved tofu via {} at '{}' ({})",
+            tofu_source_label(tofu_resolution.source),
+            tofu_resolution.path.display(),
+            tofu_resolution.version
+        ),
+        workspace_path: None,
+        item_key: None,
+        details: Some(BTreeMap::from([
+            ("source".to_string(), json!(tofu_resolution.source)),
+            (
+                "path".to_string(),
+                json!(tofu_resolution.path.display().to_string()),
+            ),
+            ("version".to_string(), json!(tofu_resolution.version)),
+            ("attempts".to_string(), json!(tofu_report.attempts)),
+        ])),
+    });
+
+    for (index, workspace_path) in destroy_order.iter().enumerate() {
+        diagnostics.push(DiagnosticMessage {
+            level: DiagnosticLevel::Info,
+            code: Some("workspace_destroyed".to_string()),
+            message: format!("Destroyed workspace '{}'.", workspace_path),
+            workspace_path: Some(workspace_path.clone()),
+            item_key: None,
+            details: Some(BTreeMap::from([(
+                "reverse_topological_index".to_string(),
+                json!(index),
+            )])),
+        });
+    }
+
+    let workspace_snapshots = destroy_order
+        .iter()
+        .map(|workspace_path| WorkspaceSnapshot {
+            workspace_path: workspace_path.clone(),
+            lifecycle: None,
+            materialization: Some("absent".to_string()),
+            freshness: None,
+        })
+        .collect::<Vec<_>>();
+
+    Ok(build_response(
+        request,
+        OperationResultKind::Succeeded,
+        format_destroy_summary(
+            request
+                .target
+                .as_ref()
+                .map(|target| target.environment.as_str())
+                .unwrap_or("unknown"),
+            &destroy_order,
+        ),
+        workspace_snapshots,
+        BTreeMap::new(),
+        diagnostics,
+    ))
+}
+
 fn execute_converge_operation(
     request: &EngineRequest,
     repo_context: &RepoContext,
@@ -306,6 +824,7 @@ fn execute_converge_operation(
         .graph
         .environment_kind
         .expect("converge operation should have an environment kind");
+    let mut diagnostics = repo_context_diagnostics(repo_context);
 
     for workspace_path in &graph_context.topological_order {
         let workspace_config = repo_context
@@ -315,17 +834,21 @@ fn execute_converge_operation(
             .find(|workspace| workspace.path == *workspace_path)
             .expect("converge workspace should exist in config");
 
-        let uses_local_backend = configure_workspace_execution(
+        let workspace_execution = configure_workspace_execution(
             request,
+            repo_context,
             &prepared_repo,
             workspace_config,
             environment_kind,
         )?;
 
+        append_auth_diagnostics(&mut diagnostics, workspace_path, &workspace_execution.auth);
+
         run_tofu_command(
             request,
             &tofu_resolution,
             &prepared_repo,
+            &workspace_execution,
             workspace_path,
             &["init", "-input=false", "-no-color"],
             "tofu_init_failed",
@@ -334,17 +857,17 @@ fn execute_converge_operation(
             request,
             &tofu_resolution,
             &prepared_repo,
+            &workspace_execution,
             workspace_path,
             &["apply", "-auto-approve", "-input=false", "-no-color"],
             "tofu_apply_failed",
         )?;
 
-        if uses_local_backend {
+        if workspace_execution.uses_local_backend {
             persist_local_backend_state(request, repo_context, &prepared_repo, workspace_path)?;
         }
     }
 
-    let mut diagnostics = repo_context_diagnostics(repo_context);
     diagnostics.push(DiagnosticMessage {
         level: DiagnosticLevel::Info,
         code: Some("tofu_resolved".to_string()),
@@ -406,32 +929,6 @@ fn execute_converge_operation(
         BTreeMap::new(),
         diagnostics,
     ))
-}
-
-fn execute_placeholder_operation(
-    request: &EngineRequest,
-    repo_context: Option<&RepoContext>,
-) -> EngineResponse {
-    let mut diagnostics = repo_context
-        .map(repo_context_diagnostics)
-        .unwrap_or_default();
-    diagnostics.push(DiagnosticMessage {
-        level: DiagnosticLevel::Warning,
-        code: Some("not_implemented".to_string()),
-        message: "This CLI alpha command is not fully implemented yet.".to_string(),
-        workspace_path: None,
-        item_key: None,
-        details: None,
-    });
-
-    build_response(
-        request,
-        OperationResultKind::Partial,
-        placeholder_summary(request),
-        Vec::new(),
-        BTreeMap::new(),
-        diagnostics,
-    )
 }
 
 fn execute_doctor_operation(request: &EngineRequest, working_dir: &Path) -> EngineResponse {
@@ -935,33 +1432,6 @@ fn operation_name(operation: &EngineOperation) -> &'static str {
     }
 }
 
-fn placeholder_summary(request: &EngineRequest) -> String {
-    match request.operation {
-        EngineOperation::Converge => {
-            "CLI alpha placeholder: converge execution is not implemented in Rust yet.".to_string()
-        }
-        EngineOperation::Destroy => {
-            "CLI alpha placeholder: destroy execution is not implemented in Rust yet.".to_string()
-        }
-        EngineOperation::Status => {
-            "CLI alpha placeholder: status execution is not implemented in Rust yet.".to_string()
-        }
-        EngineOperation::Wait => format!(
-            "CLI alpha placeholder: waiting for condition '{}' is not implemented yet.",
-            request.wait_for.as_deref().unwrap_or_default()
-        ),
-        EngineOperation::Outputs => {
-            "CLI alpha placeholder: outputs execution is not implemented in Rust yet.".to_string()
-        }
-        EngineOperation::Graph => {
-            "CLI alpha placeholder: graph execution is not implemented in Rust yet.".to_string()
-        }
-        EngineOperation::Doctor => {
-            "CLI alpha placeholder: doctor execution is not implemented in Rust yet.".to_string()
-        }
-    }
-}
-
 fn repo_context_diagnostics(repo_context: &RepoContext) -> Vec<DiagnosticMessage> {
     let mut diagnostics = vec![DiagnosticMessage {
         level: DiagnosticLevel::Info,
@@ -987,6 +1457,868 @@ fn repo_context_diagnostics(repo_context: &RepoContext) -> Vec<DiagnosticMessage
     }
 
     diagnostics
+}
+
+fn module_api_host_override() -> Option<String> {
+    env::var(MODULE_API_HOST_OVERRIDE_ENV_VAR)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty() && value != CANONICAL_YAFFLE_MODULE_HOST)
+}
+
+fn effective_yaffle_module_host() -> String {
+    module_api_host_override().unwrap_or_else(|| CANONICAL_YAFFLE_MODULE_HOST.to_string())
+}
+
+fn rewrite_workspace_module_sources(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace_path: &str,
+) -> Result<(), EngineError> {
+    let workspace_dir = prepared_repo.repo_root.join(workspace_path);
+    let known_workspaces = repo_context
+        .config
+        .workspaces
+        .iter()
+        .map(|workspace| workspace.path.as_str())
+        .collect::<BTreeSet<_>>();
+    let override_host = module_api_host_override();
+
+    for entry in fs::read_dir(&workspace_dir).map_err(|error| {
+        request_error(
+            request,
+            "workspace_read_failed",
+            format!(
+                "Failed to read workspace directory '{}': {error}",
+                workspace_dir.display()
+            ),
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            request_error(
+                request,
+                "workspace_read_failed",
+                format!(
+                    "Failed to inspect workspace directory '{}': {error}",
+                    workspace_dir.display()
+                ),
+            )
+        })?;
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("tf") {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path).map_err(|error| {
+            request_error(
+                request,
+                "workspace_read_failed",
+                format!(
+                    "Failed to read workspace file '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        let mut body = hcl::from_str::<Body>(&content).map_err(|error| {
+            request_error(
+                request,
+                "workspace_parse_failed",
+                format!(
+                    "Failed to parse workspace file '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+        let mut rewritten_to_local_path = false;
+
+        for block in body.blocks_mut() {
+            if block.identifier() != "module" {
+                continue;
+            }
+
+            let mut rewrote_module_source = false;
+
+            for attribute in block.body.attributes_mut() {
+                if attribute.key() != "source" {
+                    continue;
+                }
+
+                let expression_text = attribute.expr.to_string();
+                if let Some(target_workspace) = local_same_repo_module_target(
+                    repo_context,
+                    &known_workspaces,
+                    workspace_path,
+                    &expression_text,
+                ) {
+                    attribute.expr =
+                        relative_workspace_path(workspace_path, &target_workspace).into();
+                    rewritten_to_local_path = true;
+                    rewrote_module_source = true;
+                }
+            }
+
+            if rewrote_module_source {
+                let existing_keys = block
+                    .body
+                    .attributes()
+                    .map(|attribute| attribute.key().to_string())
+                    .collect::<BTreeSet<_>>();
+
+                if !existing_keys.contains("environment") {
+                    block.body.extend([parse_hcl_attribute(
+                        request,
+                        "environment = var.environment",
+                    )?]);
+                }
+                if !existing_keys.contains("environment_kind") {
+                    block.body.extend([parse_hcl_attribute(
+                        request,
+                        "environment_kind = var.environment_kind",
+                    )?]);
+                }
+            }
+        }
+
+        let mut rendered = if rewritten_to_local_path {
+            hcl::format::to_string(&body).map_err(|error| {
+                request_error(
+                    request,
+                    "workspace_rewrite_failed",
+                    format!(
+                        "Failed to render rewritten workspace file '{}': {error}",
+                        path.display()
+                    ),
+                )
+            })?
+        } else {
+            content
+        };
+
+        if let Some(override_host) = &override_host {
+            if rendered.contains(CANONICAL_YAFFLE_MODULE_HOST) {
+                rendered = rendered.replace(CANONICAL_YAFFLE_MODULE_HOST, override_host);
+            }
+        }
+
+        fs::write(&path, rendered).map_err(|error| {
+            request_error(
+                request,
+                "workspace_rewrite_failed",
+                format!(
+                    "Failed to rewrite module sources or module host in '{}': {error}",
+                    path.display()
+                ),
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+impl PreparedWorkspaceAuth {
+    fn env_pairs(&self) -> Vec<(String, String)> {
+        self.tf_cli_config_file
+            .as_ref()
+            .map(|path| vec![("TF_CLI_CONFIG_FILE".to_string(), path.display().to_string())])
+            .unwrap_or_default()
+    }
+
+    fn tf_cli_config_file_path(&self) -> Option<String> {
+        self.tf_cli_config_file
+            .as_ref()
+            .map(|path| path.display().to_string())
+    }
+}
+
+fn append_auth_diagnostics(
+    diagnostics: &mut Vec<DiagnosticMessage>,
+    workspace_path: &str,
+    auth: &PreparedWorkspaceAuth,
+) {
+    for resolved in &auth.resolved_hosts {
+        diagnostics.push(DiagnosticMessage {
+            level: DiagnosticLevel::Info,
+            code: Some("auth_host_resolved".to_string()),
+            message: format!(
+                "Resolved local auth for host '{}' via {}.",
+                resolved.host,
+                auth_credential_source_name(resolved.source)
+            ),
+            workspace_path: Some(workspace_path.to_string()),
+            item_key: None,
+            details: Some(BTreeMap::from([
+                ("host".to_string(), json!(resolved.host)),
+                (
+                    "source".to_string(),
+                    json!(auth_credential_source_name(resolved.source)),
+                ),
+                (
+                    "tf_cli_config_file".to_string(),
+                    json!(auth.tf_cli_config_file_path()),
+                ),
+            ])),
+        });
+    }
+
+    for host in &auth.missing_hosts {
+        diagnostics.push(DiagnosticMessage {
+            level: DiagnosticLevel::Warning,
+            code: Some("auth_host_missing".to_string()),
+            message: format!(
+                "No local auth material was found for required host '{}'.",
+                host
+            ),
+            workspace_path: Some(workspace_path.to_string()),
+            item_key: None,
+            details: Some(BTreeMap::from([
+                ("host".to_string(), json!(host)),
+                (
+                    "expected_env_var".to_string(),
+                    json!(host_token_env_var_name(host)),
+                ),
+            ])),
+        });
+    }
+}
+
+fn auth_credential_source_name(source: AuthCredentialSource) -> &'static str {
+    match source {
+        AuthCredentialSource::CliConfig => "cli_config",
+        AuthCredentialSource::EnvToken => "env_token",
+    }
+}
+
+fn prepare_workspace_auth(
+    request: &EngineRequest,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace_path: &str,
+    workspace_dir: &Path,
+) -> Result<PreparedWorkspaceAuth, EngineError> {
+    let required_hosts = discover_workspace_auth_hosts(request, workspace_dir)?;
+    if required_hosts.is_empty() {
+        return Ok(PreparedWorkspaceAuth::default());
+    }
+
+    let existing_cli_config_path = discover_existing_cli_config_path();
+    let existing_hosts = existing_cli_config_path
+        .as_deref()
+        .map(discover_cli_credentials_hosts)
+        .unwrap_or_default();
+    let env_token_hosts = required_hosts
+        .iter()
+        .filter_map(|host| {
+            env::var(host_token_env_var_name(host))
+                .ok()
+                .map(|token| (host.clone(), token))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut resolved_hosts = env_token_hosts
+        .keys()
+        .map(|host| ResolvedAuthHost {
+            host: host.clone(),
+            source: AuthCredentialSource::EnvToken,
+        })
+        .collect::<Vec<_>>();
+    resolved_hosts.extend(
+        required_hosts
+            .iter()
+            .filter(|host| {
+                existing_hosts.contains(host.as_str()) && !env_token_hosts.contains_key(*host)
+            })
+            .map(|host| ResolvedAuthHost {
+                host: host.clone(),
+                source: AuthCredentialSource::CliConfig,
+            }),
+    );
+    resolved_hosts.sort_by(|left, right| left.host.cmp(&right.host));
+
+    let missing_hosts = required_hosts
+        .iter()
+        .filter(|host| {
+            !existing_hosts.contains(host.as_str()) && !env_token_hosts.contains_key(*host)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let tf_cli_config_file = if env_token_hosts.is_empty() {
+        existing_cli_config_path
+    } else {
+        Some(write_workspace_cli_credentials_file(
+            request,
+            prepared_repo,
+            workspace_path,
+            existing_cli_config_path.as_deref(),
+            &env_token_hosts,
+        )?)
+    };
+
+    Ok(PreparedWorkspaceAuth {
+        tf_cli_config_file,
+        required_hosts,
+        resolved_hosts,
+        missing_hosts,
+    })
+}
+
+fn discover_workspace_auth_hosts(
+    request: &EngineRequest,
+    workspace_dir: &Path,
+) -> Result<Vec<String>, EngineError> {
+    let body = load_workspace_hcl_body(request, workspace_dir)?;
+    let mut hosts = BTreeSet::new();
+    let mut references_module_registry_host_variable = false;
+
+    for block in body.blocks() {
+        match block.identifier() {
+            "terraform" => {
+                for nested in block.body().blocks() {
+                    match nested.identifier() {
+                        "cloud" => {
+                            hosts.insert(
+                                attribute_string_value(nested.body(), "hostname")
+                                    .unwrap_or_else(|| "app.terraform.io".to_string()),
+                            );
+                        }
+                        "backend" => {
+                            let backend_kind = nested
+                                .labels()
+                                .first()
+                                .map(|label| label.as_str())
+                                .unwrap_or_default();
+                            match backend_kind {
+                                "remote" => {
+                                    hosts.insert(
+                                        attribute_string_value(nested.body(), "hostname")
+                                            .unwrap_or_else(|| "app.terraform.io".to_string()),
+                                    );
+                                }
+                                "http" => {
+                                    if let Some(address) =
+                                        attribute_string_value(nested.body(), "address")
+                                    {
+                                        if let Some(host) = extract_url_host(&address) {
+                                            hosts.insert(host);
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            "module" => {
+                if let Some(source) = attribute_string_value(block.body(), "source") {
+                    if let Some(host) = parse_module_source_auth_host(&source) {
+                        hosts.insert(host);
+                    }
+                } else if module_source_uses_module_registry_host_variable(block.body()) {
+                    references_module_registry_host_variable = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if references_module_registry_host_variable {
+        hosts.insert(effective_yaffle_module_host());
+    }
+
+    Ok(hosts.into_iter().collect())
+}
+
+fn attribute_string_value(body: &Body, name: &str) -> Option<String> {
+    body.attributes()
+        .find(|attribute| attribute.key() == name)
+        .and_then(|attribute| {
+            attribute
+                .expr()
+                .evaluate(&HclContext::new())
+                .ok()
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        })
+}
+
+fn parse_module_source_auth_host(source: &str) -> Option<String> {
+    if source.contains("://") {
+        return None;
+    }
+
+    let parts = source.split('/').collect::<Vec<_>>();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let host = parts[0];
+    let looks_like_host = (host.contains('.') || host.contains(':'))
+        && host != "."
+        && host != ".."
+        && host
+            .chars()
+            .any(|character| character.is_ascii_alphanumeric());
+
+    if looks_like_host {
+        Some(host.to_string())
+    } else {
+        None
+    }
+}
+
+fn module_source_uses_module_registry_host_variable(body: &Body) -> bool {
+    body.attributes()
+        .find(|attribute| attribute.key() == "source")
+        .map(|attribute| {
+            attribute
+                .expr()
+                .to_string()
+                .contains("module_registry_host")
+        })
+        .unwrap_or(false)
+}
+
+fn local_same_repo_module_target(
+    repo_context: &RepoContext,
+    known_workspaces: &BTreeSet<&str>,
+    current_workspace_path: &str,
+    expression_text: &str,
+) -> Option<String> {
+    let reference = parse_module_source_reference(expression_text)?;
+    if reference.provider != "yaffle" {
+        return None;
+    }
+
+    if reference.host != CANONICAL_YAFFLE_MODULE_HOST
+        && reference.host != effective_yaffle_module_host()
+        && !reference.uses_module_registry_host_variable
+    {
+        return None;
+    }
+
+    if let Some(current_namespace) = &repo_context.current_namespace {
+        if reference.namespace != *current_namespace {
+            return None;
+        }
+    }
+
+    let target_workspace = module_name_to_workspace_path(&reference.module_name);
+    if target_workspace == current_workspace_path
+        || !known_workspaces.contains(target_workspace.as_str())
+    {
+        return None;
+    }
+
+    Some(target_workspace)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModuleSourceReference {
+    host: String,
+    namespace: String,
+    module_name: String,
+    provider: String,
+    uses_module_registry_host_variable: bool,
+}
+
+fn parse_module_source_reference(expression_text: &str) -> Option<ModuleSourceReference> {
+    let trimmed = expression_text.trim().trim_matches('"');
+    let parts = trimmed.split('/').collect::<Vec<_>>();
+    if parts.len() != 4 {
+        return None;
+    }
+
+    let host_segment = parts[0];
+    let uses_module_registry_host_variable = host_segment.contains("module_registry_host");
+    let host = if uses_module_registry_host_variable {
+        effective_yaffle_module_host()
+    } else {
+        host_segment.to_string()
+    };
+
+    Some(ModuleSourceReference {
+        host,
+        namespace: parts[1].to_string(),
+        module_name: parts[2].to_string(),
+        provider: parts[3].to_string(),
+        uses_module_registry_host_variable,
+    })
+}
+
+fn relative_workspace_path(from_workspace_path: &str, to_workspace_path: &str) -> String {
+    let from_parts = from_workspace_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+    let to_parts = to_workspace_path
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect::<Vec<_>>();
+
+    let mut common_prefix = 0usize;
+    while common_prefix < from_parts.len()
+        && common_prefix < to_parts.len()
+        && from_parts[common_prefix] == to_parts[common_prefix]
+    {
+        common_prefix += 1;
+    }
+
+    let mut relative_parts = Vec::new();
+    relative_parts
+        .extend(std::iter::repeat("..").take(from_parts.len().saturating_sub(common_prefix)));
+    relative_parts.extend(to_parts.into_iter().skip(common_prefix));
+
+    if relative_parts.is_empty() {
+        ".".to_string()
+    } else {
+        relative_parts.join("/")
+    }
+}
+
+fn extract_url_host(url: &str) -> Option<String> {
+    let remainder = url.split_once("://")?.1;
+    let authority = remainder.split('/').next()?;
+    let host = authority.rsplit('@').next()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_string())
+    }
+}
+
+fn discover_existing_cli_config_path() -> Option<PathBuf> {
+    if let Some(path) = env::var_os("TF_CLI_CONFIG_FILE").map(PathBuf::from) {
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+
+    let home = env::var_os("HOME").map(PathBuf::from)?;
+    let mut candidates = vec![
+        home.join(".terraformrc"),
+        home.join(".terraform.d/credentials.tfrc.json"),
+        home.join(".tofurc"),
+        home.join(".opentofu.d/credentials.tfrc.json"),
+    ];
+    if let Some(xdg_config_home) = env::var_os("XDG_CONFIG_HOME").map(PathBuf::from) {
+        candidates.push(xdg_config_home.join("opentofu/tofurc"));
+        candidates.push(xdg_config_home.join("opentofu/credentials.tfrc.json"));
+    }
+
+    candidates.into_iter().find(|path| path.is_file())
+}
+
+fn discover_cli_credentials_hosts(path: &Path) -> BTreeSet<String> {
+    let Ok(content) = fs::read_to_string(path) else {
+        return BTreeSet::new();
+    };
+
+    if path.extension().and_then(|value| value.to_str()) == Some("json")
+        || content.trim_start().starts_with('{')
+    {
+        return parse_json_credentials_hosts(&content);
+    }
+
+    parse_hcl_credentials_hosts(&content)
+}
+
+fn parse_json_credentials_hosts(content: &str) -> BTreeSet<String> {
+    serde_json::from_str::<Value>(content)
+        .ok()
+        .and_then(|value| value.get("credentials").and_then(Value::as_object).cloned())
+        .map(|credentials| credentials.into_iter().map(|(host, _)| host).collect())
+        .unwrap_or_default()
+}
+
+fn parse_hcl_credentials_hosts(content: &str) -> BTreeSet<String> {
+    let Ok(body) = hcl::from_str::<Body>(content) else {
+        return BTreeSet::new();
+    };
+
+    body.blocks()
+        .filter(|block| block.identifier() == "credentials")
+        .filter_map(|block| {
+            block
+                .labels()
+                .first()
+                .map(|label| label.as_str().to_string())
+        })
+        .collect()
+}
+
+fn write_workspace_cli_credentials_file(
+    request: &EngineRequest,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace_path: &str,
+    base_config_path: Option<&Path>,
+    env_token_hosts: &BTreeMap<String, String>,
+) -> Result<PathBuf, EngineError> {
+    let auth_dir = prepared_repo.repo_root.join(".yaffle/auth");
+    fs::create_dir_all(&auth_dir).map_err(|error| {
+        request_error(
+            request,
+            "auth_config_write_failed",
+            format!(
+                "Failed to create auth config directory for workspace '{}': {error}",
+                workspace_path
+            ),
+        )
+    })?;
+
+    let base_content = base_config_path
+        .and_then(|path| fs::read_to_string(path).ok())
+        .unwrap_or_default();
+    let output_path = auth_dir.join(format!("{}.tfrc", slugify_path(workspace_path)));
+
+    let content = if base_config_path
+        .map(|path| path.extension().and_then(|value| value.to_str()) == Some("json"))
+        .unwrap_or(false)
+        || base_content.trim_start().starts_with('{')
+        || base_config_path.is_none()
+    {
+        let mut credentials = base_config_path
+            .and_then(|_| serde_json::from_str::<Value>(&base_content).ok())
+            .and_then(|value| value.get("credentials").and_then(Value::as_object).cloned())
+            .unwrap_or_default();
+
+        for (host, token) in env_token_hosts {
+            credentials.insert(host.clone(), json!({ "token": token }));
+        }
+
+        serde_json::to_string_pretty(&json!({ "credentials": credentials })).map_err(|error| {
+            request_error(
+                request,
+                "auth_config_write_failed",
+                format!(
+                    "Failed to serialize auth config for workspace '{}': {error}",
+                    workspace_path
+                ),
+            )
+        })?
+    } else {
+        let mut content = base_content;
+        if !content.ends_with('\n') {
+            content.push('\n');
+        }
+        for (host, token) in env_token_hosts {
+            content.push_str(&format!(
+                "\ncredentials \"{host}\" {{\n  token = \"{}\"\n}}\n",
+                escape_hcl_string(token)
+            ));
+        }
+        content
+    };
+
+    fs::write(&output_path, content).map_err(|error| {
+        request_error(
+            request,
+            "auth_config_write_failed",
+            format!(
+                "Failed to write auth config for workspace '{}': {error}",
+                workspace_path
+            ),
+        )
+    })?;
+
+    Ok(output_path)
+}
+
+fn escape_hcl_string(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn host_token_env_var_name(host: &str) -> String {
+    format!(
+        "TF_TOKEN_{}",
+        host.chars()
+            .map(|character| match character {
+                '.' | ':' => '_',
+                other => other,
+            })
+            .collect::<String>()
+    )
+}
+
+fn classify_tofu_command_failure(
+    error_code: &str,
+    workspace_path: &str,
+    stderr: &str,
+    auth: &PreparedWorkspaceAuth,
+) -> Option<(String, String)> {
+    if error_code != "tofu_init_failed" {
+        return None;
+    }
+
+    let primary_host = auth
+        .required_hosts
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "unknown".to_string());
+
+    let normalized = stderr.to_ascii_lowercase();
+    if normalized.contains("connect: connection refused")
+        || normalized.contains("no such host")
+        || normalized.contains("failed to request discovery document")
+        || normalized.contains("timeout")
+    {
+        return Some((
+            "auth_host_unreachable".to_string(),
+            format!(
+                "Required backend or registry host '{}' was unreachable while initializing workspace '{}': {}",
+                primary_host, workspace_path, stderr
+            ),
+        ));
+    }
+
+    if normalized.contains("403 forbidden")
+        || normalized.contains("401 unauthorized")
+        || normalized.contains("unauthorized")
+        || normalized.contains("forbidden")
+    {
+        return Some((
+            "auth_host_unauthorized".to_string(),
+            format!(
+                "Local auth for required host '{}' was rejected while initializing workspace '{}': {}",
+                primary_host, workspace_path, stderr
+            ),
+        ));
+    }
+
+    if let Some(host) = auth.missing_hosts.first() {
+        return Some((
+            "auth_host_missing".to_string(),
+            format!(
+                "No local auth material was found for required host '{}' while initializing workspace '{}': {}",
+                host, workspace_path, stderr
+            ),
+        ));
+    }
+
+    None
+}
+
+fn derive_environment_materialization(observations: &[WorkspaceStatusObservation]) -> String {
+    if observations
+        .iter()
+        .any(|observation| observation.materialization == "partially_present")
+    {
+        return "partially_present".to_string();
+    }
+
+    let present_count = observations
+        .iter()
+        .filter(|observation| observation.materialization == "present")
+        .count();
+
+    if present_count == 0 {
+        "absent".to_string()
+    } else if present_count == observations.len() {
+        "present".to_string()
+    } else {
+        "partially_present".to_string()
+    }
+}
+
+fn format_status_summary(
+    environment_name: &str,
+    observations: &[WorkspaceStatusObservation],
+    environment_materialization: &str,
+) -> String {
+    let present_count = observations
+        .iter()
+        .filter(|observation| observation.materialization == "present")
+        .count();
+    let header = format!(
+        "status for environment '{}': {} ({} of {} workspaces present)",
+        environment_name,
+        environment_materialization,
+        present_count,
+        observations.len()
+    );
+
+    if observations.is_empty() {
+        return header;
+    }
+
+    let mut lines = vec![header, String::new()];
+    for observation in observations {
+        lines.push(format!(
+            "- {}: {} ({} outputs)",
+            observation.workspace_path,
+            observation.materialization,
+            observation.outputs.len()
+        ));
+    }
+
+    lines.join("\n")
+}
+
+fn format_destroy_summary(environment_name: &str, workspace_paths: &[String]) -> String {
+    let header = format!(
+        "destroyed {} workspace(s) for environment '{}'",
+        workspace_paths.len(),
+        environment_name
+    );
+
+    if workspace_paths.is_empty() {
+        return header;
+    }
+
+    let mut lines = vec![header, String::new()];
+    lines.extend(
+        workspace_paths
+            .iter()
+            .map(|workspace_path| format!("- {workspace_path}")),
+    );
+    lines.join("\n")
+}
+
+fn parse_wait_condition(value: &str) -> Option<WaitCondition> {
+    match value {
+        "infra_ready" => Some(WaitCondition::InfraReady),
+        "activation_settled" => Some(WaitCondition::ActivationSettled),
+        "verification_settled" => Some(WaitCondition::VerificationSettled),
+        "usable" => Some(WaitCondition::Usable),
+        "acceptable" => Some(WaitCondition::Acceptable),
+        "teardown_settled" => Some(WaitCondition::TeardownSettled),
+        _ => None,
+    }
+}
+
+fn wait_condition_met(condition: WaitCondition, status_response: &EngineResponse) -> bool {
+    let materialization = status_response
+        .environment
+        .as_ref()
+        .and_then(|environment| environment.materialization.as_deref());
+
+    match condition {
+        WaitCondition::TeardownSettled => materialization == Some("absent"),
+        WaitCondition::Usable => materialization == Some("present"),
+        WaitCondition::InfraReady
+        | WaitCondition::ActivationSettled
+        | WaitCondition::VerificationSettled
+        | WaitCondition::Acceptable => {
+            materialization == Some("present")
+                && status_response.result.kind == OperationResultKind::Succeeded
+        }
+    }
+}
+
+fn wait_timeout() -> Duration {
+    duration_from_env("YAFFLE_WAIT_TIMEOUT_MS", 30_000)
+}
+
+fn wait_poll_interval() -> Duration {
+    duration_from_env("YAFFLE_WAIT_POLL_MS", 1_000)
+}
+
+fn duration_from_env(variable: &str, default_ms: u64) -> Duration {
+    env::var(variable)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or_else(|| Duration::from_millis(default_ms))
 }
 
 fn prepare_execution_repo(
@@ -1049,10 +2381,11 @@ fn prepare_execution_repo(
 
 fn configure_workspace_execution(
     request: &EngineRequest,
+    repo_context: &RepoContext,
     prepared_repo: &PreparedExecutionRepo,
     workspace: &yaffle_config::Workspace,
     environment_kind: EnvironmentKind,
-) -> Result<bool, EngineError> {
+) -> Result<PreparedWorkspaceExecution, EngineError> {
     let environment_name = request
         .target
         .as_ref()
@@ -1060,6 +2393,7 @@ fn configure_workspace_execution(
         .unwrap_or_default();
     let workspace_dir = prepared_repo.repo_root.join(&workspace.path);
 
+    rewrite_workspace_module_sources(request, repo_context, prepared_repo, &workspace.path)?;
     ensure_injected_variable_declarations(request, &workspace_dir)?;
     write_workspace_variables_file(
         request,
@@ -1074,13 +2408,19 @@ fn configure_workspace_execution(
         write_local_backend_override(request, prepared_repo, &workspace_dir, &workspace.path)?;
     }
 
-    Ok(!has_explicit_backend)
+    let auth = prepare_workspace_auth(request, prepared_repo, &workspace.path, &workspace_dir)?;
+
+    Ok(PreparedWorkspaceExecution {
+        uses_local_backend: !has_explicit_backend,
+        auth,
+    })
 }
 
 fn run_tofu_command(
     request: &EngineRequest,
     tofu_resolution: &yaffle_tofu::TofuResolution,
     prepared_repo: &PreparedExecutionRepo,
+    workspace_execution: &PreparedWorkspaceExecution,
     workspace_path: &str,
     args: &[&str],
     error_code: &'static str,
@@ -1104,6 +2444,7 @@ fn run_tofu_command(
         .env("TF_DATA_DIR", &tf_data_dir)
         .env("TF_IN_AUTOMATION", "1")
         .env("TOFU_IN_AUTOMATION", "1")
+        .envs(workspace_execution.auth.env_pairs())
         .args(args)
         .output()
         .map_err(|error| {
@@ -1121,6 +2462,10 @@ fn run_tofu_command(
                         json!(workspace_dir.display().to_string()),
                     ),
                     (
+                        "tf_cli_config_file".to_string(),
+                        json!(workspace_execution.auth.tf_cli_config_file_path()),
+                    ),
+                    (
                         "repo_root".to_string(),
                         json!(prepared_repo.repo_root.display().to_string()),
                     ),
@@ -1130,20 +2475,38 @@ fn run_tofu_command(
         })?;
 
     if !output.status.success() {
+        let stderr = utf8_trimmed(&output.stderr);
+        let (failure_code, failure_message) = classify_tofu_command_failure(
+            error_code,
+            workspace_path,
+            &stderr,
+            &workspace_execution.auth,
+        )
+        .unwrap_or_else(|| {
+            (
+                error_code.to_string(),
+                format!(
+                    "tofu {} failed for workspace '{}': {}",
+                    args.join(" "),
+                    workspace_dir.display(),
+                    stderr
+                ),
+            )
+        });
+
         return Err(request_error_with_details(
             request,
-            error_code,
-            format!(
-                "tofu {} failed for workspace '{}': {}",
-                args.join(" "),
-                workspace_dir.display(),
-                utf8_trimmed(&output.stderr)
-            ),
+            failure_code,
+            failure_message,
             Some(BTreeMap::from([
                 ("workspace_path".to_string(), json!(workspace_path)),
                 (
                     "workspace_dir".to_string(),
                     json!(workspace_dir.display().to_string()),
+                ),
+                (
+                    "tf_cli_config_file".to_string(),
+                    json!(workspace_execution.auth.tf_cli_config_file_path()),
                 ),
                 (
                     "repo_root".to_string(),
@@ -1154,12 +2517,137 @@ fn run_tofu_command(
                     "exit_status".to_string(),
                     json!(output.status.code().unwrap_or_default()),
                 ),
-                ("stderr".to_string(), json!(utf8_trimmed(&output.stderr))),
+                ("stderr".to_string(), json!(stderr)),
+                (
+                    "required_auth_hosts".to_string(),
+                    json!(workspace_execution.auth.required_hosts),
+                ),
+                (
+                    "missing_auth_hosts".to_string(),
+                    json!(workspace_execution.auth.missing_hosts),
+                ),
             ])),
         ));
     }
 
     Ok(output)
+}
+
+fn inspect_workspace_status(
+    request: &EngineRequest,
+    prepared_repo: &PreparedExecutionRepo,
+    tofu_resolution: &yaffle_tofu::TofuResolution,
+    workspace_execution: &PreparedWorkspaceExecution,
+    workspace_path: &str,
+) -> Result<WorkspaceStatusObservation, EngineError> {
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+    let state_present = if workspace_execution.uses_local_backend {
+        local_backend_state_path(&prepared_repo.repo_root, environment_name, workspace_path)
+            .is_file()
+    } else {
+        probe_nonlocal_state_presence(
+            request,
+            tofu_resolution,
+            prepared_repo,
+            workspace_execution,
+            workspace_path,
+        )?
+    };
+
+    if !state_present {
+        return Ok(WorkspaceStatusObservation {
+            workspace_path: workspace_path.to_string(),
+            materialization: "absent".to_string(),
+            outputs: BTreeMap::new(),
+        });
+    }
+
+    let output = run_tofu_command(
+        request,
+        tofu_resolution,
+        prepared_repo,
+        workspace_execution,
+        workspace_path,
+        &["output", "-json", "-no-color"],
+        "tofu_output_failed",
+    )?;
+    let outputs = parse_terraform_outputs(request, workspace_path, &output.stdout)?;
+
+    Ok(WorkspaceStatusObservation {
+        workspace_path: workspace_path.to_string(),
+        materialization: "present".to_string(),
+        outputs,
+    })
+}
+
+fn probe_nonlocal_state_presence(
+    request: &EngineRequest,
+    tofu_resolution: &yaffle_tofu::TofuResolution,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace_execution: &PreparedWorkspaceExecution,
+    workspace_path: &str,
+) -> Result<bool, EngineError> {
+    let workspace_dir = prepared_repo.repo_root.join(workspace_path);
+    let tf_data_dir = prepared_repo.tf_data_dir.join(slugify_path(workspace_path));
+    fs::create_dir_all(&tf_data_dir).map_err(|error| {
+        request_error(
+            request,
+            "execution_workspace_prepare_failed",
+            format!(
+                "Failed to create TF_DATA_DIR for workspace '{}': {error}",
+                workspace_path
+            ),
+        )
+    })?;
+
+    let output = tofu_resolution
+        .command()
+        .current_dir(&workspace_dir)
+        .env("TF_DATA_DIR", &tf_data_dir)
+        .env("TF_IN_AUTOMATION", "1")
+        .env("TOFU_IN_AUTOMATION", "1")
+        .envs(workspace_execution.auth.env_pairs())
+        .args(["state", "pull"])
+        .output()
+        .map_err(|error| {
+            request_error(
+                request,
+                "tofu_state_pull_failed",
+                format!(
+                    "Failed to execute tofu state pull for workspace '{}': {error}",
+                    workspace_path
+                ),
+            )
+        })?;
+
+    if output.status.success() {
+        return Ok(true);
+    }
+
+    let stderr = utf8_trimmed(&output.stderr);
+    if stderr.contains("Unable to find remote state")
+        || stderr.contains("No stored state was found")
+        || stderr.contains("No state file was found")
+    {
+        return Ok(false);
+    }
+
+    Err(request_error_with_details(
+        request,
+        "tofu_state_pull_failed",
+        format!(
+            "tofu state pull failed for workspace '{}': {}",
+            workspace_path, stderr
+        ),
+        Some(BTreeMap::from([
+            ("workspace_path".to_string(), json!(workspace_path)),
+            ("stderr".to_string(), json!(stderr)),
+        ])),
+    ))
 }
 
 fn parse_terraform_outputs(
@@ -1256,6 +2744,12 @@ fn write_workspace_variables_file(
     environment_kind: EnvironmentKind,
 ) -> Result<(), EngineError> {
     let mut variables = workspace_variable_values(&workspace.variables);
+    if let Some(module_api_host_override) = module_api_host_override() {
+        variables.insert(
+            "module_registry_host".to_string(),
+            json!(module_api_host_override),
+        );
+    }
     variables.insert("environment".to_string(), json!(environment_name));
     variables.insert(
         "environment_kind".to_string(),
@@ -1370,13 +2864,8 @@ fn write_local_backend_override(
         .as_ref()
         .map(|target| target.environment.as_str())
         .unwrap_or("unknown");
-    let state_path = prepared_repo
-        .repo_root
-        .join(".yaffle")
-        .join("state")
-        .join(environment_name)
-        .join(workspace_path)
-        .join("terraform.tfstate");
+    let state_path =
+        local_backend_state_path(&prepared_repo.repo_root, environment_name, workspace_path);
 
     if let Some(parent) = state_path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
@@ -1419,18 +2908,16 @@ fn persist_local_backend_state(
         .as_ref()
         .map(|target| target.environment.as_str())
         .unwrap_or("unknown");
-    let source_state_dir = prepared_repo
-        .repo_root
-        .join(".yaffle")
-        .join("state")
-        .join(environment_name)
-        .join(workspace_path);
-    let destination_state_dir = repo_context
-        .repo_root
-        .join(".yaffle")
-        .join("state")
-        .join(environment_name)
-        .join(workspace_path);
+    let source_state_dir =
+        local_backend_state_path(&prepared_repo.repo_root, environment_name, workspace_path)
+            .parent()
+            .expect("local backend state path should have a parent")
+            .to_path_buf();
+    let destination_state_dir =
+        local_backend_state_path(&repo_context.repo_root, environment_name, workspace_path)
+            .parent()
+            .expect("local backend state path should have a parent")
+            .to_path_buf();
 
     if !source_state_dir.is_dir() {
         return Ok(());
@@ -1466,6 +2953,51 @@ fn persist_local_backend_state(
     }
 
     Ok(())
+}
+
+fn remove_local_backend_state(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    workspace_path: &str,
+) -> Result<(), EngineError> {
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+    let state_dir =
+        local_backend_state_path(&repo_context.repo_root, environment_name, workspace_path)
+            .parent()
+            .expect("local backend state path should have a parent")
+            .to_path_buf();
+
+    if !state_dir.exists() {
+        return Ok(());
+    }
+
+    fs::remove_dir_all(&state_dir).map_err(|error| {
+        request_error(
+            request,
+            "workspace_state_remove_failed",
+            format!(
+                "Failed to remove local state for workspace '{}': {error}",
+                workspace_path
+            ),
+        )
+    })
+}
+
+fn local_backend_state_path(
+    repo_root: &Path,
+    environment_name: &str,
+    workspace_path: &str,
+) -> PathBuf {
+    repo_root
+        .join(".yaffle")
+        .join("state")
+        .join(environment_name)
+        .join(workspace_path)
+        .join("terraform.tfstate")
 }
 
 fn terraform_output_type_name(value: Value) -> Option<String> {
@@ -1558,6 +3090,33 @@ fn load_workspace_hcl_body(
     Ok(body)
 }
 
+fn parse_hcl_attribute(
+    request: &EngineRequest,
+    snippet: &str,
+) -> Result<hcl::Attribute, EngineError> {
+    let body = hcl::from_str::<Body>(snippet).map_err(|error| {
+        request_error(
+            request,
+            "workspace_rewrite_failed",
+            format!(
+                "Failed to parse generated HCL attribute '{}': {error}",
+                snippet
+            ),
+        )
+    })?;
+
+    body.into_attributes().next().ok_or_else(|| {
+        request_error(
+            request,
+            "workspace_rewrite_failed",
+            format!(
+                "Generated HCL attribute '{}' produced no attribute",
+                snippet
+            ),
+        )
+    })
+}
+
 fn copy_repo_for_execution(source: &Path, destination: &Path) -> io::Result<()> {
     fs::create_dir_all(destination)?;
 
@@ -1611,6 +3170,26 @@ fn build_response(
     outputs: BTreeMap<String, TerraformOutput>,
     diagnostics: Vec<DiagnosticMessage>,
 ) -> EngineResponse {
+    build_response_with_environment(
+        request,
+        result_kind,
+        summary,
+        None,
+        workspaces,
+        outputs,
+        diagnostics,
+    )
+}
+
+fn build_response_with_environment(
+    request: &EngineRequest,
+    result_kind: OperationResultKind,
+    summary: impl Into<String>,
+    environment: Option<EnvironmentSnapshot>,
+    workspaces: Vec<WorkspaceSnapshot>,
+    outputs: BTreeMap<String, TerraformOutput>,
+    diagnostics: Vec<DiagnosticMessage>,
+) -> EngineResponse {
     EngineResponse {
         contract_version: CONTRACT_VERSION,
         operation: request.operation.clone(),
@@ -1620,7 +3199,7 @@ fn build_response(
             kind: result_kind,
             summary: summary.into(),
         },
-        environment: None,
+        environment,
         workspaces,
         outputs,
         diagnostics,
@@ -2312,6 +3891,7 @@ mod tests {
     use super::*;
 
     static TOFU_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    static AUTH_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
     #[test]
     fn executes_graph_from_nested_workspace_directory() {
@@ -2436,48 +4016,6 @@ module "shared" {
     }
 
     #[test]
-    fn dispatches_placeholder_operations_through_shared_repo_context() {
-        let repo = TempDir::new().expect("temp dir should exist");
-
-        fs::write(
-            repo.path().join("yaffle.toml"),
-            r#"version = 1
-
-[[environments]]
-name = "main"
-
-[[workspaces]]
-path = "infra/shared"
-environments = ["main"]
-"#,
-        )
-        .expect("config should be written");
-
-        let response = execute(
-            &EngineRequest {
-                operation: EngineOperation::Status,
-                target: Some(EnvironmentTarget {
-                    environment: "main".to_string(),
-                }),
-                selection: WorkspaceSelection::default(),
-                wait_for: None,
-            },
-            repo.path(),
-        )
-        .expect("status placeholder should execute");
-
-        assert_eq!(response.result.kind, OperationResultKind::Partial);
-        assert!(response
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code.as_deref() == Some("config_loaded")));
-        assert!(response
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.code.as_deref() == Some("not_implemented")));
-    }
-
-    #[test]
     fn validates_outputs_workspace_selection_in_engine_dispatch() {
         let error = execute(
             &EngineRequest {
@@ -2511,6 +4049,218 @@ environments = ["main"]
         .expect_err("wait should require a non-empty condition");
 
         assert_eq!(error.error.code, "invalid_condition");
+    }
+
+    #[test]
+    fn discovers_auth_hosts_from_workspace_hcl() {
+        let repo = TempDir::new().expect("temp dir should exist");
+        let workspace_dir = repo.path().join("infra/app");
+        fs::create_dir_all(&workspace_dir).expect("workspace dir should exist");
+        fs::write(
+            workspace_dir.join("main.tf"),
+            r#"terraform {
+  cloud {
+    hostname = "yaffle.dev"
+  }
+
+  backend "remote" {}
+}
+
+module "private" {
+  source = "registry.internal:8443/test-org/service/aws"
+}
+
+module "relative" {
+  source = "../modules/shared"
+}
+"#,
+        )
+        .expect("fixture file should be written");
+
+        let hosts = discover_workspace_auth_hosts(
+            &EngineRequest {
+                operation: EngineOperation::Status,
+                target: Some(EnvironmentTarget {
+                    environment: "main".to_string(),
+                }),
+                selection: WorkspaceSelection::default(),
+                wait_for: None,
+            },
+            &workspace_dir,
+        )
+        .expect("auth hosts should be discovered");
+
+        assert_eq!(
+            hosts,
+            vec![
+                "app.terraform.io".to_string(),
+                "registry.internal:8443".to_string(),
+                "yaffle.dev".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn prepares_workspace_auth_from_env_token() {
+        let repo = TempDir::new().expect("temp dir should exist");
+        let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock should succeed");
+        let workspace_dir = repo.path().join("infra/app");
+        fs::create_dir_all(&workspace_dir).expect("workspace dir should exist");
+        fs::write(
+            workspace_dir.join("main.tf"),
+            r#"terraform {
+  cloud {
+    hostname = "yaffle.dev"
+  }
+}
+"#,
+        )
+        .expect("fixture file should be written");
+        let previous_cli_config = env::var_os("TF_CLI_CONFIG_FILE");
+        env::remove_var("TF_CLI_CONFIG_FILE");
+        env::set_var("TF_TOKEN_yaffle_dev", "test-token");
+
+        let request = EngineRequest {
+            operation: EngineOperation::Status,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        };
+        let prepared_repo = prepare_execution_repo(repo.path(), "infra/app", &request)
+            .expect("prepared repo should exist");
+        let auth = prepare_workspace_auth(
+            &request,
+            &prepared_repo,
+            "infra/app",
+            &prepared_repo.repo_root.join("infra/app"),
+        )
+        .expect("workspace auth should be prepared");
+
+        env::remove_var("TF_TOKEN_yaffle_dev");
+        if let Some(previous_cli_config) = previous_cli_config {
+            env::set_var("TF_CLI_CONFIG_FILE", previous_cli_config);
+        }
+
+        assert_eq!(auth.required_hosts, vec!["yaffle.dev".to_string()]);
+        assert!(auth.missing_hosts.is_empty());
+        assert!(auth
+            .resolved_hosts
+            .iter()
+            .any(|resolved| resolved.host == "yaffle.dev"
+                && resolved.source == AuthCredentialSource::EnvToken));
+
+        let config_path = auth
+            .tf_cli_config_file
+            .as_ref()
+            .expect("auth config file should be generated");
+        let config = fs::read_to_string(config_path).expect("auth config should be readable");
+        assert!(config.contains("yaffle.dev"));
+        assert!(config.contains("test-token"));
+    }
+
+    #[test]
+    fn applies_module_api_host_override_in_prepared_workspace() {
+        let repo = TempDir::new().expect("temp dir should exist");
+        let _guard = AUTH_ENV_LOCK.lock().expect("auth env lock should succeed");
+        let workspace_dir = repo.path().join("infra/app");
+        fs::create_dir_all(&workspace_dir).expect("workspace dir should exist");
+        fs::write(
+            workspace_dir.join("main.tf"),
+            r#"terraform {
+  cloud {
+    hostname = "yaffle.dev"
+  }
+}
+
+module "shared" {
+  source = "yaffle.dev/test-org--fixture/infra--shared/yaffle"
+}
+"#,
+        )
+        .expect("fixture file should be written");
+
+        let previous_module_api_host = env::var_os(MODULE_API_HOST_OVERRIDE_ENV_VAR);
+        env::set_var(MODULE_API_HOST_OVERRIDE_ENV_VAR, "yaffle.local:6969");
+
+        let request = EngineRequest {
+            operation: EngineOperation::Status,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        };
+        let prepared_repo = prepare_execution_repo(repo.path(), "infra/app", &request)
+            .expect("prepared repo should exist");
+        let workspace = yaffle_config::Workspace {
+            path: "infra/app".to_string(),
+            environments: yaffle_config::EnvironmentSelector::Named(vec!["main".to_string()]),
+            variables: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        };
+        let repo_context = RepoContext {
+            repo_root: repo.path().to_path_buf(),
+            config_path: repo.path().join("yaffle.toml"),
+            config: YaffleConfig {
+                version: 1,
+                environments: vec![yaffle_config::Environment {
+                    name: "main".to_string(),
+                }],
+                workspaces: vec![workspace.clone()],
+                cloud: yaffle_config::CloudConfig::default(),
+            },
+            current_namespace: Some("test-org--fixture".to_string()),
+        };
+
+        let execution = configure_workspace_execution(
+            &request,
+            &repo_context,
+            &prepared_repo,
+            &workspace,
+            EnvironmentKind::Named,
+        )
+        .expect("workspace execution should be prepared");
+
+        if let Some(previous_module_api_host) = previous_module_api_host {
+            env::set_var(MODULE_API_HOST_OVERRIDE_ENV_VAR, previous_module_api_host);
+        } else {
+            env::remove_var(MODULE_API_HOST_OVERRIDE_ENV_VAR);
+        }
+
+        let rewritten = fs::read_to_string(prepared_repo.repo_root.join("infra/app/main.tf"))
+            .expect("rewritten workspace file should be readable");
+        let tfvars = fs::read_to_string(
+            prepared_repo
+                .repo_root
+                .join("infra/app/yaffle.auto.tfvars.json"),
+        )
+        .expect("tfvars file should be readable");
+
+        assert!(rewritten.contains("yaffle.local:6969"));
+        assert!(tfvars.contains("module_registry_host"));
+        assert_eq!(
+            execution.auth.required_hosts,
+            vec!["yaffle.local:6969".to_string()]
+        );
+    }
+
+    #[test]
+    fn classifies_unreachable_init_failure_before_missing_auth() {
+        let classification = classify_tofu_command_failure(
+            "tofu_init_failed",
+            "apps/marketing/infra",
+            "Failed to request discovery document: connect: connection refused",
+            &PreparedWorkspaceAuth {
+                required_hosts: vec!["yaffle.local:6969".to_string()],
+                missing_hosts: vec!["yaffle.local:6969".to_string()],
+                ..PreparedWorkspaceAuth::default()
+            },
+        )
+        .expect("init failure should be classified");
+
+        assert_eq!(classification.0, "auth_host_unreachable");
     }
 
     #[test]

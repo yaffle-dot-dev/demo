@@ -19,6 +19,11 @@ import {
   listStateVersionsForModule,
 } from "../../db/queries/state-versions.ts"
 import {
+  findHostedOutputModuleById,
+  findHostedOutputModuleVersion,
+  listHostedOutputModuleVersions,
+} from "../../db/queries/principals.ts"
+import {
   tfcAuth,
   type TfcAuthContext,
 } from "../../middleware/tfc-auth.ts"
@@ -43,6 +48,7 @@ import {
   type ModuleConsumerWorkspace,
   type ProducerConfigState,
 } from "../../lib/workspace-exports.ts"
+import { buildHostedModuleVersion, parseHostedModuleVersion } from "../../lib/principal-tokens.ts"
 
 // Hono context variables for TFC auth
 type TfcVariables = {
@@ -85,7 +91,8 @@ const ARCHIVE_TOKEN_TTL_MS = 5 * 60 * 1000 // 5 minutes
 
 interface ArchiveTokenPayload {
   exp: number
-  stateVersionId: string
+  stateVersionId?: string
+  hostedOutputModuleId?: string
   outputNames?: string[]
 }
 
@@ -135,7 +142,10 @@ function verifyArchiveToken(path: string, token: string): ArchiveTokenPayload | 
     return null
   }
 
-  if (typeof payload.stateVersionId !== "string" || payload.stateVersionId.length === 0) {
+  if (
+    typeof payload.stateVersionId !== "string" &&
+    (typeof payload.hostedOutputModuleId !== "string" || payload.hostedOutputModuleId.length === 0)
+  ) {
     return null
   }
 
@@ -402,6 +412,39 @@ registryRoute.get(
       )
     }
 
+    if (auth.type === "execution") {
+      if (auth.repoNamespace !== namespace || !auth.repoBindingId || !auth.environmentName) {
+        return c.json(
+          { errors: [{ status: "404", title: "Module not found" }] },
+          404,
+        )
+      }
+
+      const workspacePath = moduleNameToWorkspacePath(moduleName)
+      const versions = await listHostedOutputModuleVersions({
+        repoBindingId: auth.repoBindingId,
+        environmentName: auth.environmentName,
+        workspacePath,
+      })
+
+      if (versions.length === 0) {
+        return c.json(
+          { errors: [{ status: "404", title: "Module not found" }] },
+          404,
+        )
+      }
+
+      return c.json({
+        modules: [
+          {
+            versions: versions.map((record) => ({
+              version: buildHostedModuleVersion(record.versionSerial),
+            })),
+          },
+        ],
+      })
+    }
+
     // Parse namespace into org and repo
     const parsed = parseNamespace(namespace)
     if (!parsed) {
@@ -558,6 +601,52 @@ registryRoute.get(
         { errors: [{ status: "404", title: "Module not found" }] },
         404,
       )
+    }
+
+    if (auth.type === "execution") {
+      if (auth.repoNamespace !== namespace || !auth.repoBindingId || !auth.environmentName) {
+        return c.json(
+          { errors: [{ status: "404", title: "Module not found" }] },
+          404,
+        )
+      }
+
+      const versionSerial = parseHostedModuleVersion(version)
+      if (!versionSerial) {
+        return c.json(
+          { errors: [{ status: "400", title: "Invalid version format" }] },
+          400,
+        )
+      }
+
+      const workspacePath = moduleNameToWorkspacePath(moduleName)
+      const hostedModule = await findHostedOutputModuleVersion({
+        repoBindingId: auth.repoBindingId,
+        environmentName: auth.environmentName,
+        workspacePath,
+        versionSerial,
+      })
+
+      if (!hostedModule) {
+        return c.json(
+          { errors: [{ status: "404", title: "Module not found" }] },
+          404,
+        )
+      }
+
+      const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
+      const token = signArchiveUrl(archivePath, {
+        hostedOutputModuleId: hostedModule.id,
+      })
+      const params = new URLSearchParams({ token })
+      const archiveUrl = `${archivePath}?${params.toString()}`
+
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "X-Terraform-Get": archiveUrl,
+        },
+      })
     }
 
     // Parse namespace into org and repo
@@ -730,6 +819,30 @@ registryRoute.get(
       )
     }
 
+    if (archiveToken.hostedOutputModuleId) {
+      const hostedModule = await findHostedOutputModuleById(archiveToken.hostedOutputModuleId)
+      if (!hostedModule) {
+        return c.json(
+          { errors: [{ status: "404", title: "Module not found" }] },
+          404,
+        )
+      }
+
+      const archive = await generateShimModule({
+        workspacePath: hostedModule.workspacePath,
+        serial: hostedModule.versionSerial,
+        outputs: hostedModule.outputs as Record<string, unknown>,
+      })
+
+      return new Response(archive.buffer as ArrayBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/gzip",
+          "Content-Disposition": `attachment; filename="${moduleName}-${version}.tar.gz"`,
+        },
+      })
+    }
+
     // Parse namespace into org and repo
     const parsed = parseNamespace(namespace)
     if (!parsed) {
@@ -752,7 +865,15 @@ registryRoute.get(
     // Token was verified, no need for membership check on archive download
     // (membership was checked when the download URL was generated)
 
-    const stateVersion = await findStateVersionById(archiveToken.stateVersionId)
+    const stateVersionId = archiveToken.stateVersionId
+    if (!stateVersionId) {
+      return c.json(
+        { errors: [{ status: "404", title: "Module not found" }] },
+        404,
+      )
+    }
+
+    const stateVersion = await findStateVersionById(stateVersionId)
     if (!stateVersion || stateVersion.status !== "finalized") {
       return c.json(
         { errors: [{ status: "404", title: "Module not found" }] },

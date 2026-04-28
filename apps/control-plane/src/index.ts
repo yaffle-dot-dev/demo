@@ -22,6 +22,7 @@ import { integrationsRoute } from "./routes/integrations.ts"
 import { repoMappingsRoute } from "./routes/repo-mappings.ts"
 import { billingRoute } from "./routes/billing.ts"
 import { stripeWebhooksRoute } from "./routes/stripe-webhooks.ts"
+import { localFirstRoute } from "./routes/local-first.ts"
 import { auth } from "./lib/better-auth.ts"
 import {
   getSchedulerRuntimeInfo,
@@ -265,6 +266,7 @@ app.route("/api/integrations", integrationsRoute) // GitHub installation/repo li
 app.route("/api/orgs", repoMappingsRoute) // Repo-to-org mapping CRUD
 app.route("/api/orgs", billingRoute) // Billing checkout & portal
 app.route("/api/users", authApiRoute) // Custom user endpoints (e.g., /api/users/me)
+app.route("/api", localFirstRoute) // Anonymous sessions, execution tokens, hosted output modules
 app.route("/api/runner", runnerRoute) // Runner worker API (claim, heartbeat, complete)
 app.route("/api/scanner", scannerRoute) // Scanner worker API (claim, heartbeat, complete)
 app.route("/api/internal/provider-discovery", providerDiscoveryRoute)

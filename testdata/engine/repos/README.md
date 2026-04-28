@@ -23,6 +23,12 @@ Current fixtures:
 - `converge-environment-vars`
   - wildcard workspaces with undeclared `environment` / `environment_kind` inputs
   - used to verify injected variable declarations and transient env converge
+- `converge-local-module-source`
+  - same-repo Yaffle module source authored with canonical `yaffle.dev`
+  - used to verify local module path rewriting without a registry hop
+- `status-init-failure-mixed`
+  - one healthy local workspace and one broken local module reference
+  - used to verify status degrades instead of aborting on per-workspace init failures
 
 Rules:
 

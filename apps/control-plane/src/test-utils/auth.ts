@@ -201,6 +201,7 @@ export async function cleanupTestData(): Promise<void> {
   }
 
   // Use raw SQL for TRUNCATE CASCADE since Drizzle doesn't support it directly
+  await db.execute(sql`TRUNCATE TABLE principals CASCADE`)
   await db.execute(sql`TRUNCATE TABLE org_memberships CASCADE`)
   await db.execute(sql`TRUNCATE TABLE organizations CASCADE`)
   // Don't truncate users - they might be referenced by other tables

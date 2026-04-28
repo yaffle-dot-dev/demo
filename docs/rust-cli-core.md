@@ -83,6 +83,9 @@ Current implementation status:
 - explicit override is currently supported via `YAFFLE_TOFU_PATH`
 - bundled and managed slots exist in the resolver contract even though acquisition is not implemented yet
 - system `tofu` remains the active fallback path used by local dogfooding
+- authored Yaffle module/backend hosts stay canonical as `yaffle.dev`
+- local execution may rewrite that canonical host via `YAFFLE_MODULE_API_HOST` inside temporary execution repos
+- same-repo `yaffle.dev/.../workspace/yaffle` module sources are rewritten to local relative paths before local execution
 
 ## Local entrypoint
 

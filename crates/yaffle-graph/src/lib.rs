@@ -11,7 +11,7 @@ use thiserror::Error;
 use yaffle_config::{EnvironmentSelector, VariableValue, Workspace, YaffleConfig};
 use yaffle_contracts::WorkspaceSelection;
 
-const DEFAULT_ALLOWED_MODULE_HOSTS: [&str; 3] = ["yaffle.dev", "yaffle.local", ".ts.net"];
+const DEFAULT_ALLOWED_MODULE_HOSTS: [&str; 2] = ["yaffle.dev", ".ts.net"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WorkspaceNode {
@@ -656,11 +656,11 @@ mod tests {
     fn extracts_dependencies_from_module_sources() {
         let content = r#"
 module "shared" {
-  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--shared/yaffle"
+  source = "yaffle.dev/yaffle-dot-dev--yaffle/infra--shared/yaffle"
 }
 
 module "production" {
-  source = "yaffle.local:6969/yaffle-dot-dev--yaffle/infra--production/yaffle"
+  source = "yaffle.dev/yaffle-dot-dev--yaffle/infra--production/yaffle"
 }
 "#;
 

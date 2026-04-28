@@ -637,6 +637,87 @@ export const apiTokens = pgTable("api_tokens", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 })
 
+// =============================================================================
+// Local-First Principals and Hosted Output Modules
+// =============================================================================
+
+export const principals = pgTable("principals", {
+  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  type: text("type").notNull(), // 'account' | 'anonymous_session'
+  status: text("status").default("active").notNull(), // 'active' | 'expired' | 'revoked'
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
+})
+
+export const anonymousSessions = pgTable(
+  "anonymous_sessions",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    principalId: uuid("principal_id")
+      .references(() => principals.id, { onDelete: "cascade" })
+      .notNull(),
+    status: text("status").default("active").notNull(), // 'active' | 'expired' | 'revoked'
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("anonymous_sessions_principal_idx").on(t.principalId)],
+)
+
+export const principalRepoBindings = pgTable(
+  "principal_repo_bindings",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    principalId: uuid("principal_id")
+      .references(() => principals.id, { onDelete: "cascade" })
+      .notNull(),
+    canonicalRepoNamespace: text("canonical_repo_namespace").notNull(),
+    localRepoFingerprint: text("local_repo_fingerprint").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("principal_repo_bindings_unique").on(
+      t.principalId,
+      t.canonicalRepoNamespace,
+      t.localRepoFingerprint,
+    ),
+    index("principal_repo_bindings_principal_idx").on(t.principalId),
+  ],
+)
+
+export const hostedOutputModules = pgTable(
+  "hosted_output_modules",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    principalId: uuid("principal_id")
+      .references(() => principals.id, { onDelete: "cascade" })
+      .notNull(),
+    repoBindingId: uuid("repo_binding_id")
+      .references(() => principalRepoBindings.id, { onDelete: "cascade" })
+      .notNull(),
+    environmentName: text("environment_name").notNull(),
+    workspacePath: text("workspace_path").notNull(),
+    versionSerial: integer("version_serial").notNull(),
+    stateFingerprint: text("state_fingerprint").notNull(),
+    outputs: jsonb("outputs").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("hosted_output_modules_scope_version_unique").on(
+      t.repoBindingId,
+      t.environmentName,
+      t.workspacePath,
+      t.versionSerial,
+    ),
+    index("hosted_output_modules_scope_idx").on(
+      t.repoBindingId,
+      t.environmentName,
+      t.workspacePath,
+    ),
+  ],
+)
+
 export const oauthAuthorizationCodes = pgTable(
   "oauth_authorization_codes",
   {
