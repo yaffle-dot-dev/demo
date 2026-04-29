@@ -50,6 +50,13 @@ Primary public-ingress rate limiting should still live at the edge
 
 They are not meant to be Yaffle's only volumetric abuse defense.
 
+Current infra direction:
+
+- canonical `yaffle.dev` local-first ingress is rate-limited at the CloudFront
+  WAF layer
+- direct `api.*` control-plane ingress is backstopped with regional ALB WAF
+  rules so preview/direct API traffic does not bypass edge protection entirely
+
 ### Execution credential TTLs
 
 We need two different lifetime expectations.

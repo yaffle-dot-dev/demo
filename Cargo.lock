@@ -1945,9 +1945,12 @@ name = "yaffle-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "clap",
  "clap_complete",
+ "getrandom 0.3.4",
  "serde_json",
+ "sha2",
  "yaffle-config",
  "yaffle-contracts",
  "yaffle-engine",

@@ -16,17 +16,33 @@ pub const LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR: &str = "YAFFLE_LOCAL_FIRST_FEATURE_
 #[cfg(test)]
 pub(crate) static LOCAL_FIRST_ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StoredPrincipalType {
+    Account,
+    #[default]
+    AnonymousSession,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StoredPrincipalCredential {
+    #[serde(default, alias = "principalType")]
+    pub principal_type: StoredPrincipalType,
     #[serde(alias = "principalId")]
     pub principal_id: String,
-    #[serde(alias = "sessionId")]
-    pub session_id: String,
+    #[serde(default, alias = "sessionId")]
+    pub session_id: Option<String>,
     pub token: String,
     #[serde(alias = "issuedAt")]
     pub issued_at: String,
     #[serde(alias = "expiresAt")]
     pub expires_at: Option<String>,
+    #[serde(default, alias = "userId")]
+    pub user_id: Option<String>,
+    #[serde(default, alias = "userEmail")]
+    pub user_email: Option<String>,
+    #[serde(default, alias = "userName")]
+    pub user_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +87,14 @@ pub struct HostedOutputModulePublishResult {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudCliLoginResult {
+    #[serde(flatten)]
+    pub principal: StoredPrincipalCredential,
+    #[serde(default, alias = "convertedFromAnonymous")]
+    pub converted_from_anonymous: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecutionCredentialRequest<'a> {
     pub canonical_repo_namespace: &'a str,
@@ -112,6 +136,11 @@ pub enum LocalFirstError {
 #[derive(Debug, Deserialize)]
 struct AnonymousSessionResponseEnvelope {
     data: StoredPrincipalCredential,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudCliLoginResponseEnvelope {
+    data: CloudCliLoginResult,
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,6 +322,80 @@ pub fn module_api_base_url() -> Result<String, LocalFirstError> {
     Ok(format!("https://{host}"))
 }
 
+pub fn build_cloud_cli_authorize_url(
+    redirect_uri: &str,
+    code_challenge: &str,
+    state: &str,
+) -> Result<String, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let mut url = reqwest::Url::parse(&runtime.endpoint_url("/api/cloud/cli/authorize"))
+        .map_err(|error| LocalFirstError::Config(error.to_string()))?;
+    url.query_pairs_mut()
+        .append_pair("client_id", "yaffle-cli")
+        .append_pair("redirect_uri", redirect_uri)
+        .append_pair("response_type", "code")
+        .append_pair("code_challenge", code_challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("state", state)
+        .append_pair("feature_token", &runtime.feature_token);
+    Ok(url.to_string())
+}
+
+pub fn exchange_cloud_cli_login_code(
+    code: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+    current_principal: Option<&StoredPrincipalCredential>,
+) -> Result<CloudCliLoginResult, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let mut body = serde_json::Map::from_iter([
+        (
+            "grant_type".to_string(),
+            serde_json::Value::String("authorization_code".to_string()),
+        ),
+        (
+            "code".to_string(),
+            serde_json::Value::String(code.to_string()),
+        ),
+        (
+            "code_verifier".to_string(),
+            serde_json::Value::String(code_verifier.to_string()),
+        ),
+        (
+            "redirect_uri".to_string(),
+            serde_json::Value::String(redirect_uri.to_string()),
+        ),
+        (
+            "client_id".to_string(),
+            serde_json::Value::String("yaffle-cli".to_string()),
+        ),
+    ]);
+    if let Some(principal) = current_principal {
+        body.insert(
+            "current_principal_token".to_string(),
+            serde_json::Value::String(principal.token.clone()),
+        );
+    }
+    let response = runtime
+        .client
+        .post(runtime.endpoint_url("/api/cloud/cli/token"))
+        .headers(runtime.feature_headers()?)
+        .json(&body)
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    let login = response
+        .json::<CloudCliLoginResponseEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+    persist_principal(&login.principal)?;
+    Ok(login)
+}
+
 fn load_stored_principal() -> Result<Option<StoredPrincipalCredential>, LocalFirstError> {
     let path = local_auth_store_path()?;
     if !path.is_file() {
@@ -409,6 +512,8 @@ fn should_allow_insecure_localhost_tls(base_url: &str) -> bool {
     host == "localhost"
         || host == "127.0.0.1"
         || host == "::1"
+        || host == "yaffle.local"
+        || host.ends_with(".local")
         || host.starts_with("localhost.")
         || host.ends_with(".localhost")
 }
@@ -507,7 +612,11 @@ mod tests {
         restore_env(LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR, previous_feature_token);
 
         assert_eq!(principal.principal_id, "principal-test");
-        assert_eq!(principal.session_id, "session-test");
+        assert_eq!(
+            principal.principal_type,
+            StoredPrincipalType::AnonymousSession
+        );
+        assert_eq!(principal.session_id.as_deref(), Some("session-test"));
         assert_eq!(execution.repo_binding_id, "binding-test");
         assert_eq!(execution.token, "execution-token-test");
         assert_eq!(
@@ -529,11 +638,15 @@ mod tests {
 
         env::set_var("HOME", temp_home.path());
         persist_principal(&StoredPrincipalCredential {
+            principal_type: StoredPrincipalType::AnonymousSession,
             principal_id: "principal-test".to_string(),
-            session_id: "session-test".to_string(),
+            session_id: Some("session-test".to_string()),
             token: "principal-token-test".to_string(),
             issued_at: "2026-04-28T00:00:00Z".to_string(),
             expires_at: Some("2030-04-28T00:00:00Z".to_string()),
+            user_id: None,
+            user_email: None,
+            user_name: None,
         })
         .expect("principal should persist");
 
@@ -542,17 +655,37 @@ mod tests {
         assert_eq!(
             status.stored_principal,
             Some(StoredPrincipalCredential {
+                principal_type: StoredPrincipalType::AnonymousSession,
                 principal_id: "principal-test".to_string(),
-                session_id: "session-test".to_string(),
+                session_id: Some("session-test".to_string()),
                 token: "principal-token-test".to_string(),
                 issued_at: "2026-04-28T00:00:00Z".to_string(),
                 expires_at: Some("2030-04-28T00:00:00Z".to_string()),
+                user_id: None,
+                user_email: None,
+                user_name: None,
             })
         );
         assert!(clear_local_cloud_auth().expect("clear should succeed"));
         assert!(!status.auth_store_path.exists());
 
         restore_env("HOME", previous_home);
+    }
+
+    #[test]
+    fn allows_insecure_tls_for_local_dev_hosts() {
+        assert!(should_allow_insecure_localhost_tls(
+            "https://localhost:6969"
+        ));
+        assert!(should_allow_insecure_localhost_tls(
+            "https://yaffle.local:6969"
+        ));
+        assert!(should_allow_insecure_localhost_tls(
+            "https://foo.local:6969"
+        ));
+        assert!(!should_allow_insecure_localhost_tls(
+            "https://yaffle.tail66f312.ts.net:6969"
+        ));
     }
 
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {

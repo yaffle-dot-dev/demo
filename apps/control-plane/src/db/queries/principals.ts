@@ -1,4 +1,5 @@
-import { and, desc, eq, inArray, lte, max, or } from "drizzle-orm"
+import { and, asc, desc, eq, inArray, lte, max, or } from "drizzle-orm"
+import { uuidv7 } from "uuidv7"
 
 import { db } from "../../lib/db.ts"
 import {
@@ -47,6 +48,44 @@ export async function findAnonymousSessionById(
 export async function findPrincipalById(principalId: string): Promise<Principal | undefined> {
   return withDbSpan("select", "principals", async () => {
     const rows = await db.select().from(principals).where(eq(principals.id, principalId)).limit(1)
+    return rows[0]
+  })
+}
+
+export async function findAccountPrincipalByUserId(userId: string): Promise<Principal | undefined> {
+  return withDbSpan("select", "principals", async () => {
+    const rows = await db
+      .select()
+      .from(principals)
+      .where(and(eq(principals.type, "account"), eq(principals.userId, userId)))
+      .limit(1)
+    return rows[0]
+  })
+}
+
+export async function ensureAccountPrincipal(values: { userId: string }): Promise<Principal> {
+  return withDbSpan("upsert", "principals", async () => {
+    const existing = await findAccountPrincipalByUserId(values.userId)
+    if (existing) {
+      if (existing.status !== "active") {
+        const rows = await db
+          .update(principals)
+          .set({ status: "active", lastSeenAt: new Date() })
+          .where(eq(principals.id, existing.id))
+          .returning()
+        return rows[0]
+      }
+
+      return existing
+    }
+
+    const rows = await db
+      .insert(principals)
+      .values({
+        type: "account",
+        userId: values.userId,
+      })
+      .returning()
     return rows[0]
   })
 }
@@ -219,6 +258,158 @@ export async function findPrincipalRepoBindingById(
       .where(eq(principalRepoBindings.id, bindingId))
       .limit(1)
     return rows[0]
+  })
+}
+
+export async function migrateAnonymousPrincipalToAccount(values: {
+  anonymousPrincipalId: string
+  accountPrincipalId: string
+}): Promise<{
+  reboundBindingCount: number
+  mergedBindingCount: number
+  movedModuleCount: number
+}> {
+  return withDbSpan("update", "principals", async () => {
+    return db.transaction(async (tx) => {
+      const [anonymousPrincipal] = await tx
+        .select()
+        .from(principals)
+        .where(eq(principals.id, values.anonymousPrincipalId))
+        .limit(1)
+      const [accountPrincipal] = await tx
+        .select()
+        .from(principals)
+        .where(eq(principals.id, values.accountPrincipalId))
+        .limit(1)
+
+      if (!anonymousPrincipal || anonymousPrincipal.type !== "anonymous_session") {
+        throw new Error("anonymous principal not found")
+      }
+      if (!accountPrincipal || accountPrincipal.type !== "account") {
+        throw new Error("account principal not found")
+      }
+      if (anonymousPrincipal.status !== "active") {
+        return {
+          reboundBindingCount: 0,
+          mergedBindingCount: 0,
+          movedModuleCount: 0,
+        }
+      }
+
+      const now = new Date()
+      const anonymousBindings = await tx
+        .select()
+        .from(principalRepoBindings)
+        .where(eq(principalRepoBindings.principalId, anonymousPrincipal.id))
+
+      let reboundBindingCount = 0
+      let mergedBindingCount = 0
+      let movedModuleCount = 0
+
+      for (const anonymousBinding of anonymousBindings) {
+        const [accountBinding] = await tx
+          .select()
+          .from(principalRepoBindings)
+          .where(
+            and(
+              eq(principalRepoBindings.principalId, accountPrincipal.id),
+              eq(
+                principalRepoBindings.canonicalRepoNamespace,
+                anonymousBinding.canonicalRepoNamespace,
+              ),
+              eq(principalRepoBindings.localRepoFingerprint, anonymousBinding.localRepoFingerprint),
+            ),
+          )
+          .limit(1)
+
+        const anonymousModules = await tx
+          .select()
+          .from(hostedOutputModules)
+          .where(eq(hostedOutputModules.repoBindingId, anonymousBinding.id))
+          .orderBy(
+            asc(hostedOutputModules.environmentName),
+            asc(hostedOutputModules.workspacePath),
+            asc(hostedOutputModules.versionSerial),
+          )
+
+        if (!accountBinding) {
+          await tx
+            .update(principalRepoBindings)
+            .set({ principalId: accountPrincipal.id, lastSeenAt: now })
+            .where(eq(principalRepoBindings.id, anonymousBinding.id))
+          await tx
+            .update(hostedOutputModules)
+            .set({ principalId: accountPrincipal.id })
+            .where(eq(hostedOutputModules.repoBindingId, anonymousBinding.id))
+
+          reboundBindingCount += 1
+          movedModuleCount += anonymousModules.length
+          continue
+        }
+
+        mergedBindingCount += 1
+
+        const existingModules = await tx
+          .select()
+          .from(hostedOutputModules)
+          .where(eq(hostedOutputModules.repoBindingId, accountBinding.id))
+
+        const nextVersionByScope = new Map<string, number>()
+        for (const existingModule of existingModules) {
+          const scopeKey = `${existingModule.environmentName}\u0000${existingModule.workspacePath}`
+          const current = nextVersionByScope.get(scopeKey) ?? 0
+          nextVersionByScope.set(
+            scopeKey,
+            Math.max(current, existingModule.versionSerial),
+          )
+        }
+
+        for (const anonymousModule of anonymousModules) {
+          const scopeKey = `${anonymousModule.environmentName}\u0000${anonymousModule.workspacePath}`
+          const nextVersion = (nextVersionByScope.get(scopeKey) ?? 0) + 1
+          nextVersionByScope.set(scopeKey, nextVersion)
+
+          await tx.insert(hostedOutputModules).values({
+            id: uuidv7(),
+            principalId: accountPrincipal.id,
+            repoBindingId: accountBinding.id,
+            environmentName: anonymousModule.environmentName,
+            workspacePath: anonymousModule.workspacePath,
+            versionSerial: nextVersion,
+            stateFingerprint: anonymousModule.stateFingerprint,
+            outputs: anonymousModule.outputs,
+            createdAt: anonymousModule.createdAt,
+          })
+          movedModuleCount += 1
+        }
+
+        await tx
+          .delete(hostedOutputModules)
+          .where(eq(hostedOutputModules.repoBindingId, anonymousBinding.id))
+        await tx
+          .delete(principalRepoBindings)
+          .where(eq(principalRepoBindings.id, anonymousBinding.id))
+      }
+
+      await tx
+        .update(anonymousSessions)
+        .set({ status: "revoked", lastSeenAt: now })
+        .where(eq(anonymousSessions.principalId, anonymousPrincipal.id))
+      await tx
+        .update(principals)
+        .set({ status: "revoked", lastSeenAt: now })
+        .where(eq(principals.id, anonymousPrincipal.id))
+      await tx
+        .update(principals)
+        .set({ lastSeenAt: now })
+        .where(eq(principals.id, accountPrincipal.id))
+
+      return {
+        reboundBindingCount,
+        mergedBindingCount,
+        movedModuleCount,
+      }
+    })
   })
 }
 

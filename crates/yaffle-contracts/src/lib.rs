@@ -124,6 +124,8 @@ pub struct EngineResponse {
     pub environment: Option<EnvironmentSnapshot>,
     pub workspaces: Vec<WorkspaceSnapshot>,
     pub outputs: BTreeMap<String, TerraformOutput>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub workspace_outputs: BTreeMap<String, BTreeMap<String, TerraformOutput>>,
     pub diagnostics: Vec<DiagnosticMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metrics: Option<EngineMetrics>,

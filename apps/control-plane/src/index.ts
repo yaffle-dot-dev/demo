@@ -23,7 +23,13 @@ import { repoMappingsRoute } from "./routes/repo-mappings.ts"
 import { billingRoute } from "./routes/billing.ts"
 import { stripeWebhooksRoute } from "./routes/stripe-webhooks.ts"
 import { localFirstRoute } from "./routes/local-first.ts"
+import { cloudCliRoute } from "./routes/cloud-cli.ts"
 import { auth } from "./lib/better-auth.ts"
+import {
+  getLocalFirstGcRuntimeInfo,
+  startLocalFirstGcLoop,
+  stopLocalFirstGcLoop,
+} from "./lib/local-first-gc.ts"
 import {
   getSchedulerRuntimeInfo,
   startScheduler,
@@ -90,6 +96,7 @@ function printStartupBanner(input: {
   const yaffleEnv = process.env.YAFFLE_ENV ?? "development"
   const yaffleEnvSource = process.env.YAFFLE_ENV ? "env" : "default"
   const schedulerInfo = getSchedulerRuntimeInfo()
+  const localFirstGcInfo = getLocalFirstGcRuntimeInfo()
   const jobWorkerInfo = getJobWorkerRuntimeInfo()
   const runnerMode = schedulerInfo.spawnerType ?? resolveConfiguredRunnerMode()
   const scannerMode = process.env.YAFFLE_SCANNER_LAMBDA_FUNCTION ? "lambda" : runnerMode
@@ -113,6 +120,7 @@ function printStartupBanner(input: {
     `warm_runner_excluded_workspaces: ${warmRunnerHybrid.excludedWorkspacePaths.length > 0 ? warmRunnerHybrid.excludedWorkspacePaths.join(", ") : "none"}`,
     `scanner_mode: ${scannerMode}${scannerMode === "lambda" ? ` (${scannerDetail})` : ""}`,
     `scheduler: ${input.startSchedulerRole && !input.schedulerDisabled ? `enabled worker=${schedulerInfo.workerId ?? "pending"} leader=${schedulerInfo.isLeader} running=${schedulerInfo.isRunning}` : "disabled"}`,
+    `local_first_gc: ${input.startSchedulerRole && !input.schedulerDisabled && localFirstGcInfo.running ? `enabled interval=${localFirstGcInfo.intervalMs ?? "unknown"}ms` : "disabled"}`,
     `job_worker: ${input.startJobWorkerRole ? `enabled worker=${jobWorkerInfo.workerId ?? "pending"} running=${jobWorkerInfo.running}` : "disabled"}`,
     `runner_api_url: ${process.env.YAFFLE_RUNNER_API_URL ?? "unset"}`,
     `tfc_api_host: ${process.env.YAFFLE_TFC_API_HOST ?? "unset"}`,
@@ -148,6 +156,8 @@ function printStartupBanner(input: {
     schedulerIsLeader: schedulerInfo.isLeader,
     schedulerIsRunning: schedulerInfo.isRunning,
     schedulerElectionRunning: schedulerInfo.electionRunning,
+    localFirstGcRunning: localFirstGcInfo.running,
+    localFirstGcIntervalMs: localFirstGcInfo.intervalMs ?? undefined,
     jobWorkerEnabled: input.startJobWorkerRole,
     jobWorkerWorkerId: jobWorkerInfo.workerId ?? undefined,
     jobWorkerRunning: jobWorkerInfo.running,
@@ -190,6 +200,8 @@ if (startSchedulerRole && !schedulerDisabled) {
   // Start the IaC job scheduler
   await startScheduler()
   log.info("IaC job scheduler started")
+  startLocalFirstGcLoop()
+  log.info("Local-first GC loop started")
 } else if (startSchedulerRole && schedulerDisabled) {
   log.info("IaC job scheduler disabled via YAFFLE_DISABLE_SCHEDULER=true")
 } else {
@@ -266,6 +278,7 @@ app.route("/api/integrations", integrationsRoute) // GitHub installation/repo li
 app.route("/api/orgs", repoMappingsRoute) // Repo-to-org mapping CRUD
 app.route("/api/orgs", billingRoute) // Billing checkout & portal
 app.route("/api/users", authApiRoute) // Custom user endpoints (e.g., /api/users/me)
+app.route("/api/cloud", cloudCliRoute) // Account-backed CLI login and guest conversion
 app.route("/api", localFirstRoute) // Anonymous sessions, execution tokens, hosted output modules
 app.route("/api/runner", runnerRoute) // Runner worker API (claim, heartbeat, complete)
 app.route("/api/scanner", scannerRoute) // Scanner worker API (claim, heartbeat, complete)
@@ -290,6 +303,7 @@ log.info(`yaffle api listening on :${port}`, { port })
 async function shutdown() {
   log.info("shutting down")
   if (startSchedulerRole && !schedulerDisabled) {
+    stopLocalFirstGcLoop()
     await stopScheduler()
   }
   if (startJobWorkerRole) {

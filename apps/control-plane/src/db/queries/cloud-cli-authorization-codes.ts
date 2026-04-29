@@ -1,0 +1,50 @@
+import { createHash } from "node:crypto"
+
+import { eq } from "drizzle-orm"
+
+import { db } from "../../lib/db.ts"
+import { cloudCliAuthorizationCodes } from "../schema.ts"
+import { withDbSpan } from "../../lib/telemetry.ts"
+
+export type CloudCliAuthorizationCode = typeof cloudCliAuthorizationCodes.$inferSelect
+
+export interface CreateCloudCliAuthorizationCodeInput {
+  code: string
+  userId: string
+  codeChallenge: string
+  codeChallengeMethod: string
+  redirectUri: string
+  expiresAt: Date
+}
+
+export function hashCloudCliAuthorizationCode(code: string): string {
+  return createHash("sha256").update(code).digest("hex")
+}
+
+export async function createCloudCliAuthorizationCode(
+  input: CreateCloudCliAuthorizationCodeInput,
+): Promise<void> {
+  return withDbSpan("insert", "cloud_cli_authorization_codes", async () => {
+    await db.insert(cloudCliAuthorizationCodes).values({
+      codeHash: hashCloudCliAuthorizationCode(input.code),
+      userId: input.userId,
+      codeChallenge: input.codeChallenge,
+      codeChallengeMethod: input.codeChallengeMethod,
+      redirectUri: input.redirectUri,
+      expiresAt: input.expiresAt,
+    })
+  })
+}
+
+export async function takeCloudCliAuthorizationCode(
+  code: string,
+): Promise<CloudCliAuthorizationCode | undefined> {
+  return withDbSpan("delete", "cloud_cli_authorization_codes", async () => {
+    const rows = await db
+      .delete(cloudCliAuthorizationCodes)
+      .where(eq(cloudCliAuthorizationCodes.codeHash, hashCloudCliAuthorizationCode(code)))
+      .returning()
+
+    return rows[0]
+  })
+}

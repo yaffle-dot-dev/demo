@@ -232,6 +232,44 @@ fn outputs_remote_state_chain_fixture_supports_upstream_and_downstream_states() 
 }
 
 #[test]
+fn outputs_without_workspace_selection_group_results_by_workspace() {
+    let repo = copy_fixture_repo("outputs-remote-state-chain");
+
+    run_tofu_apply(repo.path(), "infra/shared");
+    run_tofu_apply(repo.path(), "apps/web/infra");
+
+    let response = execute(
+        &EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("outputs operation should resolve environment-wide outputs");
+
+    assert_eq!(response.result.kind, OperationResultKind::Succeeded);
+    assert!(response.outputs.is_empty());
+    assert_eq!(
+        response.workspace_outputs["infra/shared"]["domain"].value,
+        json!("shared.internal")
+    );
+    assert_eq!(
+        response.workspace_outputs["apps/web/infra"]["https_port"].value,
+        json!(8443)
+    );
+    assert!(response
+        .result
+        .summary
+        .contains("resolved 6 output(s) across 2 workspace(s) in environment 'main'"));
+    assert!(response.result.summary.contains("infra/shared:"));
+    assert!(response.result.summary.contains("apps/web/infra:"));
+}
+
+#[test]
 fn converge_remote_state_chain_fixture_persists_outputs_for_downstream_workspace() {
     let repo = copy_fixture_repo("outputs-remote-state-chain");
 

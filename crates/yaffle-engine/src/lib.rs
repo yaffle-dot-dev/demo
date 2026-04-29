@@ -33,8 +33,9 @@ const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
 const MODULE_API_HOST_OVERRIDE_ENV_VAR: &str = "YAFFLE_MODULE_API_HOST";
 
 pub use crate::local_first::{
-    clear_local_cloud_auth, load_local_cloud_auth_status, local_auth_store_path,
-    local_first_feature_token_configured, LocalCloudAuthStatus,
+    build_cloud_cli_authorize_url, clear_local_cloud_auth, exchange_cloud_cli_login_code,
+    load_local_cloud_auth_status, local_auth_store_path, local_first_feature_token_configured,
+    CloudCliLoginResult, LocalCloudAuthStatus, StoredPrincipalCredential, StoredPrincipalType,
 };
 use yaffle_config::{parse_yaffle_toml, validate_environment_name, YaffleConfig};
 pub use yaffle_contracts::{EngineError, EnvironmentTarget, WorkspaceSelection, CONTRACT_VERSION};
@@ -124,7 +125,6 @@ enum WaitCondition {
 enum SelectionMode {
     Any,
     None,
-    ExactlyOne,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -241,6 +241,67 @@ pub fn prepare_tf_login_exports(
         shell_single_quote(&credentials_path.display().to_string())
     )];
 
+    let workspace_dir = repo_context.repo_root.join(workspace_path);
+    let has_explicit_backend =
+        workspace_has_explicit_backend(&request, &workspace_dir).map_err(|error| {
+            request_error(
+                &request,
+                "workspace_backend_detect_failed",
+                format!(
+                    "Failed to inspect backend configuration for workspace '{}': {}",
+                    workspace_path, error.error.message
+                ),
+            )
+        })?;
+
+    if !has_explicit_backend {
+        let state_path =
+            local_backend_state_path(&repo_context.repo_root, environment_name, workspace_path);
+        let state_dir = state_path
+            .parent()
+            .expect("local backend state path should have a parent");
+        fs::create_dir_all(state_dir).map_err(|error| {
+            request_error(
+                &request,
+                "auth_config_write_failed",
+                format!(
+                    "Failed to create local state directory for workspace '{}': {error}",
+                    workspace_path
+                ),
+            )
+        })?;
+
+        let tf_data_dir =
+            local_tf_data_dir(&repo_context.repo_root, environment_name, workspace_path);
+        fs::create_dir_all(&tf_data_dir).map_err(|error| {
+            request_error(
+                &request,
+                "auth_config_write_failed",
+                format!(
+                    "Failed to create OpenTofu data directory for workspace '{}': {error}",
+                    workspace_path
+                ),
+            )
+        })?;
+
+        exports.push(format!(
+            "export TF_DATA_DIR={}",
+            shell_single_quote(&tf_data_dir.display().to_string())
+        ));
+
+        let state_arg = format!("-state={}", state_path.display());
+        for variable_name in [
+            "TF_CLI_ARGS_plan",
+            "TF_CLI_ARGS_apply",
+            "TF_CLI_ARGS_destroy",
+            "TF_CLI_ARGS_output",
+            "TF_CLI_ARGS_refresh",
+            "TF_CLI_ARGS_import",
+        ] {
+            exports.push(shell_append_export(variable_name, &state_arg));
+        }
+    }
+
     if let Some(module_host_override) = module_api_host_override() {
         exports.push(format!(
             "export TF_VAR_module_registry_host={}",
@@ -330,12 +391,6 @@ fn execute_outputs_operation(
     repo_context: &RepoContext,
 ) -> Result<EngineResponse, EngineError> {
     let graph_context = load_graph_context(repo_context, request)?;
-    let workspace_path = request
-        .selection
-        .workspaces
-        .first()
-        .cloned()
-        .expect("outputs execution should have exactly one workspace selection");
 
     let tofu_report = inspect_tofu_resolution(&TofuResolutionRequest::default());
     let tofu_resolution = tofu_report.clone().into_result().map_err(|error| {
@@ -350,86 +405,91 @@ fn execute_outputs_operation(
         )
     })?;
 
-    let prepared_repo = prepare_execution_repo(&repo_context.repo_root, &workspace_path, request)?;
+    let prepared_repo = prepare_execution_repo(&repo_context.repo_root, ".", request)?;
     let environment_kind = graph_context
         .graph
         .environment_kind
         .expect("outputs operation should have an environment kind");
-    let workspace_config = repo_context
-        .config
-        .workspaces
-        .iter()
-        .find(|workspace| workspace.path == workspace_path)
-        .expect("selected outputs workspace should exist in config");
     let mut diagnostics = repo_context_diagnostics(repo_context);
+    let mut workspace_outputs = BTreeMap::new();
 
-    let workspace_execution = configure_workspace_execution(
-        request,
-        repo_context,
-        &prepared_repo,
-        workspace_config,
-        environment_kind,
-    )?;
+    for workspace_path in &graph_context.topological_order {
+        let workspace_config = repo_context
+            .config
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.path == *workspace_path)
+            .expect("selected outputs workspace should exist in config");
 
-    append_auth_diagnostics(&mut diagnostics, &workspace_path, &workspace_execution.auth);
+        let workspace_execution = configure_workspace_execution(
+            request,
+            repo_context,
+            &prepared_repo,
+            workspace_config,
+            environment_kind,
+        )?;
 
-    run_tofu_command(
-        request,
-        &tofu_resolution,
-        &prepared_repo,
-        &workspace_execution,
-        &workspace_path,
-        &["init", "-input=false", "-no-color"],
-        "tofu_init_failed",
-    )?;
+        append_auth_diagnostics(&mut diagnostics, workspace_path, &workspace_execution.auth);
 
-    let output = run_tofu_command(
-        request,
-        &tofu_resolution,
-        &prepared_repo,
-        &workspace_execution,
-        &workspace_path,
-        &["output", "-json", "-no-color"],
-        "tofu_output_failed",
-    )?;
-    let outputs = parse_terraform_outputs(request, &workspace_path, &output.stdout)?;
+        run_tofu_command(
+            request,
+            &tofu_resolution,
+            &prepared_repo,
+            &workspace_execution,
+            workspace_path,
+            &["init", "-input=false", "-no-color"],
+            "tofu_init_failed",
+        )?;
 
-    diagnostics.push(DiagnosticMessage {
-        level: DiagnosticLevel::Info,
-        code: Some("tofu_resolved".to_string()),
-        message: format!(
-            "Resolved tofu via {} at '{}' ({})",
-            tofu_source_label(tofu_resolution.source),
-            tofu_resolution.path.display(),
-            tofu_resolution.version
-        ),
-        workspace_path: Some(workspace_path.clone()),
-        item_key: None,
-        details: Some(BTreeMap::from([
-            ("source".to_string(), json!(tofu_resolution.source)),
-            (
-                "path".to_string(),
-                json!(tofu_resolution.path.display().to_string()),
+        let output = run_tofu_command(
+            request,
+            &tofu_resolution,
+            &prepared_repo,
+            &workspace_execution,
+            workspace_path,
+            &["output", "-json", "-no-color"],
+            "tofu_output_failed",
+        )?;
+        let outputs = parse_terraform_outputs(request, workspace_path, &output.stdout)?;
+        workspace_outputs.insert(workspace_path.clone(), outputs.clone());
+
+        diagnostics.push(DiagnosticMessage {
+            level: DiagnosticLevel::Info,
+            code: Some("tofu_resolved".to_string()),
+            message: format!(
+                "Resolved tofu via {} at '{}' ({})",
+                tofu_source_label(tofu_resolution.source),
+                tofu_resolution.path.display(),
+                tofu_resolution.version
             ),
-            ("version".to_string(), json!(tofu_resolution.version)),
-            ("attempts".to_string(), json!(tofu_report.attempts)),
-        ])),
-    });
-    diagnostics.push(DiagnosticMessage {
-        level: DiagnosticLevel::Info,
-        code: Some("outputs_loaded".to_string()),
-        message: format!(
-            "Loaded {} output(s) for workspace '{}'.",
-            outputs.len(),
-            workspace_path
-        ),
-        workspace_path: Some(workspace_path.clone()),
-        item_key: None,
-        details: Some(BTreeMap::from([(
-            "output_keys".to_string(),
-            json!(outputs.keys().cloned().collect::<Vec<_>>()),
-        )])),
-    });
+            workspace_path: Some(workspace_path.clone()),
+            item_key: None,
+            details: Some(BTreeMap::from([
+                ("source".to_string(), json!(tofu_resolution.source)),
+                (
+                    "path".to_string(),
+                    json!(tofu_resolution.path.display().to_string()),
+                ),
+                ("version".to_string(), json!(tofu_resolution.version)),
+                ("attempts".to_string(), json!(tofu_report.attempts)),
+            ])),
+        });
+        diagnostics.push(DiagnosticMessage {
+            level: DiagnosticLevel::Info,
+            code: Some("outputs_loaded".to_string()),
+            message: format!(
+                "Loaded {} output(s) for workspace '{}'.",
+                outputs.len(),
+                workspace_path
+            ),
+            workspace_path: Some(workspace_path.clone()),
+            item_key: None,
+            details: Some(BTreeMap::from([(
+                "output_keys".to_string(),
+                json!(outputs.keys().cloned().collect::<Vec<_>>()),
+            )])),
+        });
+    }
 
     let workspace_snapshots = graph_context
         .graph
@@ -449,14 +509,31 @@ fn execute_outputs_operation(
         .map(|target| target.environment.as_str())
         .unwrap_or("unknown");
 
-    Ok(build_response(
+    let flat_outputs = if workspace_outputs.len() == 1 {
+        workspace_outputs
+            .values()
+            .next()
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        BTreeMap::new()
+    };
+
+    let mut response = build_response(
         request,
         OperationResultKind::Succeeded,
-        format_outputs_summary(environment_name, &workspace_path, &outputs),
+        format_outputs_summary(
+            environment_name,
+            &graph_context.topological_order,
+            &workspace_outputs,
+        ),
         workspace_snapshots,
-        outputs,
+        flat_outputs,
         diagnostics,
-    ))
+    );
+    response.workspace_outputs = workspace_outputs;
+
+    Ok(response)
 }
 
 fn execute_status_operation(
@@ -1487,17 +1564,7 @@ fn validate_request(request: &EngineRequest) -> Result<(), EngineError> {
                 ),
             ));
         }
-        SelectionMode::ExactlyOne if request.selection.workspaces.len() != 1 => {
-            return Err(request_error(
-                request,
-                "workspace_required",
-                format!(
-                    "Operation '{}' requires exactly one workspace selection.",
-                    operation_name(&request.operation)
-                ),
-            ));
-        }
-        SelectionMode::None | SelectionMode::ExactlyOne => {}
+        SelectionMode::None => {}
     }
 
     if request.operation == EngineOperation::Wait
@@ -1543,7 +1610,7 @@ fn operation_policy(operation: &EngineOperation) -> OperationPolicy {
         EngineOperation::Outputs => OperationPolicy {
             requires_target: true,
             requires_repo_context: true,
-            selection_mode: SelectionMode::ExactlyOne,
+            selection_mode: SelectionMode::Any,
         },
         EngineOperation::Graph => OperationPolicy {
             requires_target: false,
@@ -2762,32 +2829,75 @@ fn parse_terraform_outputs(
 
 fn format_outputs_summary(
     environment_name: &str,
-    workspace_path: &str,
-    outputs: &BTreeMap<String, TerraformOutput>,
+    workspace_order: &[String],
+    workspace_outputs: &BTreeMap<String, BTreeMap<String, TerraformOutput>>,
 ) -> String {
+    if workspace_order.len() == 1 {
+        let workspace_path = workspace_order
+            .first()
+            .expect("single-workspace outputs summary should have one workspace");
+        let outputs = workspace_outputs
+            .get(workspace_path)
+            .cloned()
+            .unwrap_or_default();
+        let header = format!(
+            "resolved {} output(s) for '{}' in environment '{}'",
+            outputs.len(),
+            workspace_path,
+            environment_name
+        );
+
+        if outputs.is_empty() {
+            return header;
+        }
+
+        let mut lines = vec![header, String::new()];
+        for (name, output) in outputs {
+            lines.push(format!("{name} = {}", render_output_value(&output)));
+        }
+
+        return lines.join("\n");
+    }
+
+    let output_count = workspace_outputs.values().map(BTreeMap::len).sum::<usize>();
     let header = format!(
-        "resolved {} output(s) for '{}' in environment '{}'",
-        outputs.len(),
-        workspace_path,
+        "resolved {} output(s) across {} workspace(s) in environment '{}'",
+        output_count,
+        workspace_order.len(),
         environment_name
     );
 
-    if outputs.is_empty() {
+    if workspace_order.is_empty() {
         return header;
     }
 
-    let mut lines = vec![header, String::new()];
-    for (name, output) in outputs {
-        let rendered_value = if output.sensitive == Some(true) {
-            "<sensitive>".to_string()
-        } else {
-            serde_json::to_string(&output.value).unwrap_or_else(|_| "<unserializable>".to_string())
-        };
+    let mut lines = vec![header];
+    for workspace_path in workspace_order {
+        lines.push(String::new());
+        lines.push(format!("{workspace_path}:"));
+        let outputs = workspace_outputs
+            .get(workspace_path)
+            .cloned()
+            .unwrap_or_default();
+        if outputs.is_empty() {
+            lines.push("  (no outputs)".to_string());
+            continue;
+        }
 
-        lines.push(format!("{name} = {rendered_value}"));
+        for (name, output) in outputs {
+            lines.push(format!("  {name} = {}", render_output_value(&output)));
+        }
     }
 
     lines.join("\n")
+}
+
+fn render_output_value(output: &TerraformOutput) -> String {
+    if output.sensitive == Some(true) {
+        "<sensitive>".to_string()
+    } else {
+        serde_json::to_string(&output.value).unwrap_or_else(|_| "<unserializable>".to_string())
+    }
 }
 
 fn maybe_publish_hosted_output_module(
@@ -3145,6 +3255,14 @@ fn local_backend_state_path(
         .join("terraform.tfstate")
 }
 
+fn local_tf_data_dir(repo_root: &Path, environment_name: &str, workspace_path: &str) -> PathBuf {
+    repo_root
+        .join(".yaffle")
+        .join("tf-data")
+        .join(environment_name)
+        .join(workspace_path)
+}
+
 fn terraform_output_type_name(value: Value) -> Option<String> {
     match value {
         Value::Null => None,
@@ -3294,6 +3412,13 @@ fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn shell_append_export(name: &str, prefix: &str) -> String {
+    format!(
+        "export {name}={}\"${{{name}:+ ${{{name}}}}}\"",
+        shell_single_quote(prefix)
+    )
+}
+
 fn build_response(
     request: &EngineRequest,
     result_kind: OperationResultKind,
@@ -3334,6 +3459,7 @@ fn build_response_with_environment(
         environment,
         workspaces,
         outputs,
+        workspace_outputs: BTreeMap::new(),
         diagnostics,
         metrics: None,
     }
@@ -4158,21 +4284,17 @@ module "shared" {
     }
 
     #[test]
-    fn validates_outputs_workspace_selection_in_engine_dispatch() {
-        let error = execute(
-            &EngineRequest {
-                operation: EngineOperation::Outputs,
-                target: Some(EnvironmentTarget {
-                    environment: "main".to_string(),
-                }),
-                selection: WorkspaceSelection::default(),
-                wait_for: None,
-            },
-            Path::new("/tmp"),
-        )
-        .expect_err("outputs should require exactly one workspace");
+    fn allows_outputs_without_workspace_selection_in_engine_dispatch() {
+        let request = EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        };
 
-        assert_eq!(error.error.code, "workspace_required");
+        assert!(validate_request(&request).is_ok());
     }
 
     #[test]
@@ -4540,6 +4662,13 @@ environments = ["main"]
             fs::read_to_string(config_path).expect("tf login credentials file should exist");
 
         assert!(config.contains("execution-token-shell-session"));
+        assert!(exports.contains("export TF_DATA_DIR='"));
+        assert!(exports.contains("export TF_CLI_ARGS_plan='-state="));
+        assert!(exports.contains("export TF_CLI_ARGS_apply='-state="));
+        assert!(exports.contains("export TF_CLI_ARGS_destroy='-state="));
+        assert!(exports.contains("export TF_CLI_ARGS_output='-state="));
+        assert!(exports.contains(".yaffle/state/main/apps/web/infra/terraform.tfstate"));
+        assert!(exports.contains(".yaffle/tf-data/main/apps/web/infra"));
     }
 
     #[test]

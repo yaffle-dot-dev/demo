@@ -644,10 +644,11 @@ export const apiTokens = pgTable("api_tokens", {
 export const principals = pgTable("principals", {
   id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
   type: text("type").notNull(), // 'account' | 'anonymous_session'
+  userId: text("user_id").references(() => user.id, { onDelete: "cascade" }),
   status: text("status").default("active").notNull(), // 'active' | 'expired' | 'revoked'
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
-})
+}, (t) => [unique("principals_user_id_unique").on(t.userId)])
 
 export const anonymousSessions = pgTable(
   "anonymous_sessions",
@@ -735,6 +736,22 @@ export const oauthAuthorizationCodes = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index("oauth_authorization_codes_expires_at_idx").on(t.expiresAt)],
+)
+
+export const cloudCliAuthorizationCodes = pgTable(
+  "cloud_cli_authorization_codes",
+  {
+    codeHash: text("code_hash").primaryKey(),
+    userId: text("user_id")
+      .references(() => user.id, { onDelete: "cascade" })
+      .notNull(),
+    codeChallenge: text("code_challenge").notNull(),
+    codeChallengeMethod: text("code_challenge_method").notNull(),
+    redirectUri: text("redirect_uri").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("cloud_cli_authorization_codes_expires_at_idx").on(t.expiresAt)],
 )
 
 // =============================================================================

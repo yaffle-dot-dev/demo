@@ -18,10 +18,19 @@ import {
   generateAnonymousSessionToken,
   generateExecutionToken,
 } from "../lib/principal-tokens.ts"
+import {
+  getLocalFirstOperationsCounter,
+  getLocalFirstPayloadBytesHistogram,
+} from "../lib/telemetry.ts"
 
 type PrincipalVariables = {
   principalAuth: PrincipalAuthContext
 }
+
+type LocalFirstOperation =
+  | "anonymous_session_bootstrap"
+  | "execution_token_mint"
+  | "output_module_publish"
 
 const LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR = "YAFFLE_LOCAL_FIRST_FEATURE_TOKEN"
 
@@ -65,13 +74,16 @@ const publishOutputModuleSchema = z.object({
 export const localFirstRoute = new Hono<{ Variables: PrincipalVariables }>()
 
 const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
+  const operation = localFirstOperationFromPath(c.req.path)
   const expectedToken = process.env[LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR]?.trim()
   if (!expectedToken) {
+    recordLocalFirstOperation(operation, "feature_disabled")
     return c.json({ error: { code: "NOT_FOUND", message: "not found" } }, 404)
   }
 
   const providedToken = c.req.header("feature-token")?.trim() ?? ""
   if (!featureTokenMatches(expectedToken, providedToken)) {
+    recordLocalFirstOperation(operation, "invalid_feature_token")
     return c.json(
       { error: { code: "INVALID_FEATURE_TOKEN", message: "invalid feature token" } },
       403,
@@ -89,6 +101,7 @@ function enforceRouteRateLimit(options: {
   return async (c, next) => {
     const rateLimitResponse = enforceRateLimit(c, options)
     if (rateLimitResponse) {
+      recordLocalFirstOperation(localFirstOperationFromPath(c.req.path), "rate_limited")
       return rateLimitResponse
     }
 
@@ -116,9 +129,11 @@ localFirstRoute.post("/sessions/anonymous", async (c) => {
     principalId: principal.id,
     sessionId: session.id,
   })
+  recordLocalFirstOperation("anonymous_session_bootstrap", "success")
 
   return c.json({
     data: {
+      principalType: "anonymous_session",
       principalId: principal.id,
       sessionId: session.id,
       token,
@@ -133,13 +148,14 @@ localFirstRoute.use("/output-modules", principalAuth())
 
 localFirstRoute.post("/execution-tokens", async (c) => {
   const principal = c.get("principalAuth")
-  const requestBody = await readJsonBody(c.req.raw)
+  const requestBody = await readJsonBody(c.req.raw, "execution_token_mint")
   if (requestBody instanceof Response) {
     return requestBody
   }
 
   const parseResult = executionTokenSchema.safeParse(requestBody)
   if (!parseResult.success) {
+    recordLocalFirstOperation("execution_token_mint", "invalid_request")
     return c.json({ error: { code: "INVALID_REQUEST", message: parseResult.error.errors[0]?.message ?? "invalid request" } }, 400)
   }
 
@@ -161,6 +177,9 @@ localFirstRoute.post("/execution-tokens", async (c) => {
     consumerWorkspacePath: body.consumerWorkspacePath,
     ttlMinutes,
   })
+  recordLocalFirstOperation("execution_token_mint", "success", {
+    session_kind: body.sessionKind,
+  })
 
   return c.json({
     data: {
@@ -173,17 +192,19 @@ localFirstRoute.post("/execution-tokens", async (c) => {
 
 localFirstRoute.put("/output-modules", async (c) => {
   const principal = c.get("principalAuth")
-  const requestBody = await readJsonBody(c.req.raw)
+  const requestBody = await readJsonBody(c.req.raw, "output_module_publish")
   if (requestBody instanceof Response) {
     return requestBody
   }
 
   const parseResult = publishOutputModuleSchema.safeParse(requestBody)
   if (!parseResult.success) {
+    recordLocalFirstOperation("output_module_publish", "invalid_request")
     return c.json({ error: { code: "INVALID_REQUEST", message: parseResult.error.errors[0]?.message ?? "invalid request" } }, 400)
   }
 
   const body = parseResult.data
+  const outputBytes = Buffer.byteLength(JSON.stringify(body.outputs), "utf8")
   const binding = await ensurePrincipalRepoBinding({
     principalId: principal.principalId,
     canonicalRepoNamespace: body.canonicalRepoNamespace,
@@ -197,6 +218,10 @@ localFirstRoute.put("/output-modules", async (c) => {
     stateFingerprint: body.stateFingerprint,
     outputs: body.outputs,
   })
+  getLocalFirstPayloadBytesHistogram().record(outputBytes, {
+    operation: "output_module_publish",
+  })
+  recordLocalFirstOperation("output_module_publish", "success")
 
   return c.json({
     data: {
@@ -211,12 +236,16 @@ localFirstRoute.put("/output-modules", async (c) => {
   }, 201)
 })
 
-async function readJsonBody(request: Request): Promise<unknown | Response> {
+async function readJsonBody(
+  request: Request,
+  operation: LocalFirstOperation,
+): Promise<unknown | Response> {
   try {
     const body = await readRequestBodyText(request, LOCAL_FIRST_BODY_MAX_BYTES)
     return body ? JSON.parse(body) : {}
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
+      recordLocalFirstOperation(operation, "request_too_large")
       return new Response(
         JSON.stringify({
           error: {
@@ -227,6 +256,7 @@ async function readJsonBody(request: Request): Promise<unknown | Response> {
         { status: 413, headers: { "Content-Type": "application/json" } },
       )
     }
+    recordLocalFirstOperation(operation, "invalid_json")
     return new Response(
       JSON.stringify({
         error: {
@@ -237,6 +267,28 @@ async function readJsonBody(request: Request): Promise<unknown | Response> {
       { status: 400, headers: { "Content-Type": "application/json" } },
     )
   }
+}
+
+function localFirstOperationFromPath(path: string): LocalFirstOperation {
+  if (path.endsWith("/sessions/anonymous")) {
+    return "anonymous_session_bootstrap"
+  }
+  if (path.endsWith("/execution-tokens")) {
+    return "execution_token_mint"
+  }
+  return "output_module_publish"
+}
+
+function recordLocalFirstOperation(
+  operation: LocalFirstOperation,
+  result: string,
+  attrs?: Record<string, string | number | boolean>,
+): void {
+  getLocalFirstOperationsCounter().add(1, {
+    operation,
+    result,
+    ...attrs,
+  })
 }
 
 function featureTokenMatches(expectedToken: string, providedToken: string): boolean {

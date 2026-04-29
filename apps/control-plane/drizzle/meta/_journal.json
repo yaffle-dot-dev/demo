@@ -148,6 +148,13 @@
       "when": 1777700000000,
       "tag": "0020_anonymous_session_principals",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1777800000000,
+      "tag": "0021_cloud_cli_account_principals",
+      "breakpoints": true
     }
   ]
 }

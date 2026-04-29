@@ -56,12 +56,14 @@ Current implementation status:
   Rust engine dispatcher
 - fixture-backed engine repos cover real local `tofu` execution paths
 - `yaffle tf login` emits scoped shell exports for raw `tofu`
+- `yaffle cloud login` now completes an account-backed browser login flow and
+  can replace a machine-local guest session with an account principal
 - `yaffle cloud status` and `yaffle cloud logout` now inspect and clear the
-  machine-local guest principal store
+  machine-local principal store
 - local-first hosted output-module transport is integrated behind the shared
   engine flow
 
-`init` and account-backed `cloud login` are still placeholder surfaces.
+`init` is still a placeholder surface.
 
 ## Tofu strategy
 
@@ -93,6 +95,9 @@ Current implementation status:
 - authored Yaffle module/backend hosts stay canonical as `yaffle.dev`
 - local execution may rewrite only the transport host via
   `YAFFLE_MODULE_API_HOST` inside temporary execution repos
+- local dogfooding should point that override at `https://yaffle.local:6969`
+  rather than `localhost`; the override needs to work for both the Rust client
+  and Terraform/OpenTofu registry host parsing
 - scoped Terraform/OpenTofu credentials are written under `~/.yaffle/auth/`
   for local-first module/backend auth and `yaffle tf login`
 

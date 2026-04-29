@@ -3,6 +3,7 @@ import { SignJWT, jwtVerify, type JWTPayload } from "jose"
 import { getEnv } from "./env.ts"
 
 export const DEFAULT_ANONYMOUS_SESSION_TTL_DAYS = 14
+export const DEFAULT_ACCOUNT_PRINCIPAL_TOKEN_TTL_DAYS = 30
 export const DEFAULT_EXECUTION_TOKEN_TTL_MINUTES = 15
 export const DEFAULT_SHELL_SESSION_EXECUTION_TOKEN_TTL_MINUTES = 4 * 60
 
@@ -10,6 +11,12 @@ export interface AnonymousSessionTokenPayload extends JWTPayload {
   token_type: "anonymous_session"
   principal_id: string
   session_id: string
+}
+
+export interface AccountPrincipalTokenPayload extends JWTPayload {
+  token_type: "account_principal"
+  principal_id: string
+  user_id: string
 }
 
 export interface ExecutionTokenPayload extends JWTPayload {
@@ -65,6 +72,43 @@ export async function verifyAnonymousSessionToken(
     }
 
     return payload as AnonymousSessionTokenPayload
+  } catch {
+    return null
+  }
+}
+
+export async function generateAccountPrincipalToken(params: {
+  principalId: string
+  userId: string
+  ttlDays?: number
+}): Promise<string> {
+  return new SignJWT({
+    token_type: "account_principal",
+    principal_id: params.principalId,
+    user_id: params.userId,
+  })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject(`principal:${params.principalId}`)
+    .setIssuedAt()
+    .setExpirationTime(`${params.ttlDays ?? DEFAULT_ACCOUNT_PRINCIPAL_TOKEN_TTL_DAYS}d`)
+    .sign(getJwtSecret("YAFFLE_PRINCIPAL_TOKEN_SECRET"))
+}
+
+export async function verifyAccountPrincipalToken(
+  token: string,
+): Promise<AccountPrincipalTokenPayload | null> {
+  try {
+    const { payload } = await jwtVerify(token, getJwtSecret("YAFFLE_PRINCIPAL_TOKEN_SECRET"))
+    if (
+      payload.sub?.startsWith("principal:") !== true ||
+      payload.token_type !== "account_principal" ||
+      typeof payload.principal_id !== "string" ||
+      typeof payload.user_id !== "string"
+    ) {
+      return null
+    }
+
+    return payload as AccountPrincipalTokenPayload
   } catch {
     return null
   }

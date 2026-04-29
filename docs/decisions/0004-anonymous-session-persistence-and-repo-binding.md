@@ -77,14 +77,14 @@ where they were created.
 
 ### Account upgrade direction
 
-Future account upgrade should link the current anonymous principal into an
+Account upgrade should link the current anonymous principal into an
 account-backed principal when possible.
 
 - hosted output modules and repo bindings should migrate when safe
 - durable ownership semantics begin only after the account-backed identity is in
   place
-- until upgrade ships, account login must not silently promise recovery of old
-  guest-owned artifacts
+- `yaffle cloud login` should explicitly tell the user when it converted a
+  machine-local guest session into an account-backed principal
 
 ## Consequences
 

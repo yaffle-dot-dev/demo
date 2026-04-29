@@ -332,6 +332,10 @@ function resetMeter(): void {
   _githubApiDuration = null
   _authDuration = null
   _authCounter = null
+  _localFirstOperationsCounter = null
+  _localFirstPayloadBytesHistogram = null
+  _localFirstGcRunsCounter = null
+  _localFirstGcRowsCounter = null
   _runQueueTime = null
   _sseSnapshotDuration = null
   _ssePayloadBytes = null
@@ -492,6 +496,51 @@ export function getAuthCounter(): typeof _authCounter & {} {
     })
   }
   return _authCounter
+}
+
+let _localFirstOperationsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: local-first auth and module transport operations, by operation/result. */
+export function getLocalFirstOperationsCounter(): typeof _localFirstOperationsCounter & {} {
+  if (!_localFirstOperationsCounter) {
+    _localFirstOperationsCounter = getMeter().createCounter("yaffle.local_first.operations", {
+      description: "Local-first auth and hosted output module operations",
+    })
+  }
+  return _localFirstOperationsCounter
+}
+
+let _localFirstPayloadBytesHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+/** Histogram: local-first payload size in bytes, by operation. */
+export function getLocalFirstPayloadBytesHistogram(): typeof _localFirstPayloadBytesHistogram & {} {
+  if (!_localFirstPayloadBytesHistogram) {
+    _localFirstPayloadBytesHistogram = getMeter().createHistogram("yaffle.local_first.payload.bytes", {
+      description: "Local-first payload size in bytes",
+      unit: "By",
+    })
+  }
+  return _localFirstPayloadBytesHistogram
+}
+
+let _localFirstGcRunsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: local-first GC runs, by result and reason. */
+export function getLocalFirstGcRunsCounter(): typeof _localFirstGcRunsCounter & {} {
+  if (!_localFirstGcRunsCounter) {
+    _localFirstGcRunsCounter = getMeter().createCounter("yaffle.local_first.gc.runs", {
+      description: "Local-first GC runs",
+    })
+  }
+  return _localFirstGcRunsCounter
+}
+
+let _localFirstGcRowsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+/** Counter: local-first GC rows touched, by phase and entity. */
+export function getLocalFirstGcRowsCounter(): typeof _localFirstGcRowsCounter & {} {
+  if (!_localFirstGcRowsCounter) {
+    _localFirstGcRowsCounter = getMeter().createCounter("yaffle.local_first.gc.rows", {
+      description: "Local-first GC rows touched",
+    })
+  }
+  return _localFirstGcRowsCounter
 }
 
 let _runQueueTime: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
