@@ -31,14 +31,24 @@ publish APIs remain gated behind `YAFFLE_LOCAL_FIRST_FEATURE_TOKEN`.
 
 - anonymous-session bootstrap is rate-limited to 20 requests per minute per
   client IP
-- execution-token mint and hosted output-module publish endpoints should also be
-  rate-limited, but with burst-tolerant thresholds high enough to avoid
-  penalizing normal multi-workspace converges
+- execution-token mint is rate-limited to 120 requests per minute per client IP
+- hosted output-module publish is rate-limited to 120 requests per minute per
+  client IP
 - local-first API request bodies are capped at 128 KiB
 - hosted output modules must fit inside the same request-size cap; over-limit
   publishes are rejected
 
 These are service-protection controls, not product-usage quotas.
+
+Primary public-ingress rate limiting should still live at the edge
+(CDN/WAF/reverse proxy) in production. App-level limits are a backstop for:
+
+- protecting semantic endpoints before body parsing, auth, DB writes, or module
+  publish work
+- self-hosted or local deployments that may not have a dedicated WAF layer
+- defense in depth if edge controls are missing or misconfigured
+
+They are not meant to be Yaffle's only volumetric abuse defense.
 
 ### Execution credential TTLs
 

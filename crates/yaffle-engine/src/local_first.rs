@@ -70,6 +70,22 @@ pub struct ExecutionCredentialRequest<'a> {
     pub local_repo_fingerprint: &'a str,
     pub environment_name: &'a str,
     pub consumer_workspace_path: &'a str,
+    pub session_kind: ExecutionCredentialKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionCredentialKind {
+    WorkspaceInit,
+    ShellSession,
+}
+
+impl ExecutionCredentialKind {
+    fn api_value(self) -> &'static str {
+        match self {
+            Self::WorkspaceInit => "workspace_init",
+            Self::ShellSession => "shell_session",
+        }
+    }
 }
 
 #[derive(Debug, Error)]
@@ -153,6 +169,7 @@ pub fn mint_execution_credential(
             "localRepoFingerprint": request.local_repo_fingerprint,
             "environmentName": request.environment_name,
             "consumerWorkspacePath": request.consumer_workspace_path,
+            "sessionKind": request.session_kind.api_value(),
         }))
         .send()
         .map_err(|error| LocalFirstError::Http(error.to_string()))?;
@@ -417,9 +434,21 @@ mod tests {
                 local_repo_fingerprint: "repo-fingerprint-1",
                 environment_name: "pr-42",
                 consumer_workspace_path: "apps/web/infra",
+                session_kind: ExecutionCredentialKind::WorkspaceInit,
             },
         )
         .expect("execution credential should mint");
+        let shell_session_execution = mint_execution_credential(
+            &principal,
+            &ExecutionCredentialRequest {
+                canonical_repo_namespace: "test-org--fixture",
+                local_repo_fingerprint: "repo-fingerprint-1",
+                environment_name: "pr-42",
+                consumer_workspace_path: "apps/web/infra",
+                session_kind: ExecutionCredentialKind::ShellSession,
+            },
+        )
+        .expect("shell session credential should mint");
         let published = publish_hosted_output_module(
             &principal,
             &HostedOutputModulePublishRequest {
@@ -449,6 +478,10 @@ mod tests {
         assert_eq!(principal.session_id, "session-test");
         assert_eq!(execution.repo_binding_id, "binding-test");
         assert_eq!(execution.token, "execution-token-test");
+        assert_eq!(
+            shell_session_execution.token,
+            "execution-token-shell-session"
+        );
         assert_eq!(published.version, "1.0.1");
         assert!(stored_path.ends_with(Path::new(".yaffle/auth/principal.json")));
         assert!(stored_path.is_file());
@@ -475,7 +508,7 @@ mod tests {
                 .expect("address should exist")
                 .to_string();
             let join_handle = thread::spawn(move || {
-                for _ in 0..3 {
+                for _ in 0..4 {
                     let (mut stream, _) = listener.accept().expect("connection should accept");
                     let mut buffer = [0_u8; 8192];
                     let bytes_read = stream.read(&mut buffer).expect("request should read");
@@ -488,7 +521,12 @@ mod tests {
                     } else if request.starts_with("POST /api/execution-tokens HTTP/1.1") {
                         assert!(request.contains("authorization: Bearer principal-token-test"));
                         assert!(request.contains("feature-token: test-feature-token"));
-                        let body = r#"{"data":{"token":"execution-token-test","repo_binding_id":"binding-test","expires_at":"2030-04-28T00:15:00Z"}}"#;
+                        let body = if request.contains(r#""sessionKind":"shell_session""#) {
+                            r#"{"data":{"token":"execution-token-shell-session","repo_binding_id":"binding-test","expires_at":"2030-04-28T04:00:00Z"}}"#
+                        } else {
+                            assert!(request.contains(r#""sessionKind":"workspace_init""#));
+                            r#"{"data":{"token":"execution-token-test","repo_binding_id":"binding-test","expires_at":"2030-04-28T00:15:00Z"}}"#
+                        };
                         write_response(&mut stream, body);
                     } else if request.starts_with("PUT /api/output-modules HTTP/1.1") {
                         assert!(request.contains("authorization: Bearer principal-token-test"));

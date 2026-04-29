@@ -13,6 +13,7 @@ import { enforceRateLimit, readRequestBodyText, RequestBodyTooLargeError } from 
 import {
   DEFAULT_ANONYMOUS_SESSION_TTL_DAYS,
   DEFAULT_EXECUTION_TOKEN_TTL_MINUTES,
+  DEFAULT_SHELL_SESSION_EXECUTION_TOKEN_TTL_MINUTES,
   buildHostedModuleVersion,
   generateAnonymousSessionToken,
   generateExecutionToken,
@@ -30,6 +31,18 @@ const ANONYMOUS_SESSION_RATE_LIMIT = {
   windowMs: 60_000,
 } as const
 
+const EXECUTION_TOKEN_RATE_LIMIT = {
+  bucket: "local-first-execution-token",
+  limit: 120,
+  windowMs: 60_000,
+} as const
+
+const OUTPUT_MODULE_PUBLISH_RATE_LIMIT = {
+  bucket: "local-first-output-module-publish",
+  limit: 120,
+  windowMs: 60_000,
+} as const
+
 const LOCAL_FIRST_BODY_MAX_BYTES = 128 * 1024
 
 const executionTokenSchema = z.object({
@@ -37,6 +50,7 @@ const executionTokenSchema = z.object({
   localRepoFingerprint: z.string().min(1),
   environmentName: z.string().min(1),
   consumerWorkspacePath: z.string().min(1),
+  sessionKind: z.enum(["workspace_init", "shell_session"]).default("workspace_init"),
 })
 
 const publishOutputModuleSchema = z.object({
@@ -67,16 +81,29 @@ const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
   return next()
 }
 
+function enforceRouteRateLimit(options: {
+  bucket: string
+  limit: number
+  windowMs: number
+}): MiddlewareHandler {
+  return async (c, next) => {
+    const rateLimitResponse = enforceRateLimit(c, options)
+    if (rateLimitResponse) {
+      return rateLimitResponse
+    }
+
+    return next()
+  }
+}
+
 localFirstRoute.use("/sessions/anonymous", enforceFeatureToken)
 localFirstRoute.use("/execution-tokens", enforceFeatureToken)
 localFirstRoute.use("/output-modules", enforceFeatureToken)
+localFirstRoute.use("/sessions/anonymous", enforceRouteRateLimit(ANONYMOUS_SESSION_RATE_LIMIT))
+localFirstRoute.use("/execution-tokens", enforceRouteRateLimit(EXECUTION_TOKEN_RATE_LIMIT))
+localFirstRoute.use("/output-modules", enforceRouteRateLimit(OUTPUT_MODULE_PUBLISH_RATE_LIMIT))
 
 localFirstRoute.post("/sessions/anonymous", async (c) => {
-  const rateLimitResponse = enforceRateLimit(c, ANONYMOUS_SESSION_RATE_LIMIT)
-  if (rateLimitResponse) {
-    return rateLimitResponse
-  }
-
   const principal = await createPrincipal({
     type: "anonymous_session",
   })
@@ -117,6 +144,9 @@ localFirstRoute.post("/execution-tokens", async (c) => {
   }
 
   const body = parseResult.data
+  const ttlMinutes = body.sessionKind === "shell_session"
+    ? DEFAULT_SHELL_SESSION_EXECUTION_TOKEN_TTL_MINUTES
+    : DEFAULT_EXECUTION_TOKEN_TTL_MINUTES
   const binding = await ensurePrincipalRepoBinding({
     principalId: principal.principalId,
     canonicalRepoNamespace: body.canonicalRepoNamespace,
@@ -128,15 +158,14 @@ localFirstRoute.post("/execution-tokens", async (c) => {
     canonicalRepoNamespace: body.canonicalRepoNamespace,
     environmentName: body.environmentName,
     consumerWorkspacePath: body.consumerWorkspacePath,
+    ttlMinutes,
   })
 
   return c.json({
     data: {
       token,
       repoBindingId: binding.id,
-      expiresAt: new Date(
-        Date.now() + DEFAULT_EXECUTION_TOKEN_TTL_MINUTES * 60 * 1000,
-      ).toISOString(),
+      expiresAt: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
     },
   }, 201)
 })

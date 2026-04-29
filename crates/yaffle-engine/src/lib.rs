@@ -26,8 +26,8 @@ use yaffle_tofu::{inspect_tofu_resolution, TofuResolutionRequest, TofuSourceKind
 use crate::local_first::{
     compute_local_repo_fingerprint, ensure_anonymous_principal,
     local_first_feature_token_configured, mint_execution_credential, publish_hosted_output_module,
-    ExecutionCredential, ExecutionCredentialRequest, HostedOutputModulePublishRequest,
-    LocalFirstError,
+    ExecutionCredential, ExecutionCredentialKind, ExecutionCredentialRequest,
+    HostedOutputModulePublishRequest, LocalFirstError,
 };
 
 const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
@@ -220,6 +220,7 @@ pub fn prepare_tf_login_exports(
             local_repo_fingerprint: &local_repo_fingerprint,
             environment_name,
             consumer_workspace_path: workspace_path,
+            session_kind: ExecutionCredentialKind::ShellSession,
         },
     )
     .map_err(|error| local_first_error(&request, "execution_token_mint_failed", error))?;
@@ -1806,6 +1807,7 @@ fn prepare_workspace_auth(
                         .map(|target| target.environment.as_str())
                         .unwrap_or("unknown"),
                     consumer_workspace_path: workspace_path,
+                    session_kind: ExecutionCredentialKind::WorkspaceInit,
                 },
             )
             .map_err(|error| local_first_error(request, "execution_token_mint_failed", error))?;
@@ -4016,8 +4018,11 @@ fn render_graph_cell(cell: GraphCell) -> char {
 mod tests {
     use std::env;
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
     use std::sync::{LazyLock, Mutex};
+    use std::thread;
 
     use tempfile::TempDir;
     use yaffle_contracts::{EngineOperation, OperationResultKind};
@@ -4424,6 +4429,117 @@ module "shared" {
     }
 
     #[test]
+    fn prepare_tf_login_exports_mints_shell_session_credential() {
+        let repo = TempDir::new().expect("temp dir should exist");
+        let temp_home = TempDir::new().expect("temp dir should exist");
+        let _guard = crate::local_first::LOCAL_FIRST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+
+        fs::create_dir_all(repo.path().join(".git")).expect("git dir should exist");
+        fs::write(
+            repo.path().join(".git/config"),
+            "[remote \"origin\"]\n  url = https://github.com/test-org/fixture.git\n",
+        )
+        .expect("git config should exist");
+        fs::write(
+            repo.path().join("yaffle.toml"),
+            r#"version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "apps/web/infra"
+environments = ["main"]
+"#,
+        )
+        .expect("config should be written");
+        write_workspace_file(
+            repo.path(),
+            "apps/web/infra/main.tf",
+            "locals { ready = true }\n",
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let authority = listener
+            .local_addr()
+            .expect("listener should have address")
+            .to_string();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().expect("connection should accept");
+                let mut buffer = [0_u8; 8192];
+                let bytes_read = stream.read(&mut buffer).expect("request should read");
+                let request = String::from_utf8_lossy(&buffer[..bytes_read]);
+
+                if request.starts_with("POST /api/sessions/anonymous HTTP/1.1") {
+                    assert!(request.contains("feature-token: test-feature-token"));
+                    let body = r#"{"data":{"principal_id":"principal-test","session_id":"session-test","token":"principal-token-test","issued_at":"2026-04-28T00:00:00Z","expires_at":"2030-04-28T00:00:00Z"}}"#;
+                    write_test_response(&mut stream, body);
+                } else if request.starts_with("POST /api/execution-tokens HTTP/1.1") {
+                    assert!(request.contains("authorization: Bearer principal-token-test"));
+                    assert!(request.contains(r#""sessionKind":"shell_session""#));
+                    let body = r#"{"data":{"token":"execution-token-shell-session","repo_binding_id":"binding-test","expires_at":"2030-04-28T04:00:00Z"}}"#;
+                    write_test_response(&mut stream, body);
+                } else {
+                    panic!("unexpected request: {request}");
+                }
+            }
+        });
+
+        let previous_home = env::var_os("HOME");
+        let previous_module_api_host = env::var_os(MODULE_API_HOST_OVERRIDE_ENV_VAR);
+        let previous_feature_token =
+            env::var_os(crate::local_first::LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR);
+
+        env::set_var("HOME", temp_home.path());
+        env::set_var(
+            MODULE_API_HOST_OVERRIDE_ENV_VAR,
+            format!("http://{authority}"),
+        );
+        env::set_var(
+            crate::local_first::LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR,
+            "test-feature-token",
+        );
+
+        let exports = prepare_tf_login_exports(repo.path(), "main", "apps/web/infra")
+            .expect("tf login exports should be prepared");
+
+        if let Some(previous_home) = previous_home {
+            env::set_var("HOME", previous_home);
+        } else {
+            env::remove_var("HOME");
+        }
+        if let Some(previous_module_api_host) = previous_module_api_host {
+            env::set_var(MODULE_API_HOST_OVERRIDE_ENV_VAR, previous_module_api_host);
+        } else {
+            env::remove_var(MODULE_API_HOST_OVERRIDE_ENV_VAR);
+        }
+        if let Some(previous_feature_token) = previous_feature_token {
+            env::set_var(
+                crate::local_first::LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR,
+                previous_feature_token,
+            );
+        } else {
+            env::remove_var(crate::local_first::LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR);
+        }
+
+        server.join().expect("server thread should exit cleanly");
+
+        let config_path = exports
+            .lines()
+            .find(|line| line.starts_with("export TF_CLI_CONFIG_FILE="))
+            .expect("tf login exports should include TF_CLI_CONFIG_FILE")
+            .trim_start_matches("export TF_CLI_CONFIG_FILE=")
+            .trim_matches('\'');
+        let config =
+            fs::read_to_string(config_path).expect("tf login credentials file should exist");
+
+        assert!(config.contains("execution-token-shell-session"));
+    }
+
+    #[test]
     fn doctor_reports_repo_health_for_valid_config() {
         let repo = TempDir::new().expect("temp dir should exist");
         let _guard = TOFU_OVERRIDE_LOCK.lock().expect("lock should succeed");
@@ -4612,6 +4728,17 @@ environments = ["main"]
         fs::create_dir_all(path.parent().expect("parent directory should exist"))
             .expect("directories should be created");
         fs::write(path, content).expect("workspace file should be written");
+    }
+
+    fn write_test_response(stream: &mut std::net::TcpStream, body: &str) {
+        let response = format!(
+            "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("response should write");
     }
 
     fn write_fake_tofu(path: PathBuf, version: &str) -> PathBuf {

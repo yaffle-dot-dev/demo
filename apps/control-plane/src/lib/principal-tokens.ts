@@ -4,6 +4,7 @@ import { getEnv } from "./env.ts"
 
 export const DEFAULT_ANONYMOUS_SESSION_TTL_DAYS = 14
 export const DEFAULT_EXECUTION_TOKEN_TTL_MINUTES = 15
+export const DEFAULT_SHELL_SESSION_EXECUTION_TOKEN_TTL_MINUTES = 4 * 60
 
 export interface AnonymousSessionTokenPayload extends JWTPayload {
   token_type: "anonymous_session"

@@ -18,6 +18,8 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+// This in-process limiter is a lightweight backstop for semantic endpoints.
+// It is not a substitute for production edge/CDN/WAF rate limiting.
 const rateLimitStore = new Map<string, RateLimitEntry>()
 
 function getClientAddress(c: Context): string {

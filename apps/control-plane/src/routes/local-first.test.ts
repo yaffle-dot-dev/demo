@@ -3,6 +3,7 @@ import { Hono } from "hono"
 import { gunzipSync } from "node:zlib"
 
 import { cleanupTestData } from "../test-utils/auth.ts"
+import { resetRateLimitStore } from "../lib/request-protection.ts"
 import { localFirstRoute } from "./local-first.ts"
 import { tfcRoute } from "./tfc/index.ts"
 
@@ -18,11 +19,13 @@ app.route("/tfc", tfcRoute)
 describe("localFirstRoute + execution-backed module registry", () => {
   beforeEach(async () => {
     process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN = TEST_FEATURE_TOKEN
+    resetRateLimitStore()
     await cleanupTestData()
   })
 
   afterEach(async () => {
     delete process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN
+    resetRateLimitStore()
     await cleanupTestData()
   })
 
@@ -247,6 +250,126 @@ describe("localFirstRoute + execution-backed module registry", () => {
     )
 
     expect(versionsRes.status).toBe(404)
+  })
+
+  test("issues a longer-lived shell-session execution token for yaffle tf login", async () => {
+    const sessionRes = await app.fetch(
+      new Request("http://localhost/api/sessions/anonymous", {
+        method: "POST",
+        headers: featureHeaders(),
+      }),
+    )
+    const sessionBody = await sessionRes.json() as { data: { token: string } }
+
+    const headers = {
+      ...featureHeaders(),
+      Authorization: `Bearer ${sessionBody.data.token}`,
+      "Content-Type": "application/json",
+    }
+
+    const workspaceInitRes = await app.fetch(
+      new Request("http://localhost/api/execution-tokens", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "main",
+          consumerWorkspacePath: "apps/web/infra",
+          sessionKind: "workspace_init",
+        }),
+      }),
+    )
+    expect(workspaceInitRes.status).toBe(201)
+    const workspaceInitBody = await workspaceInitRes.json() as {
+      data: { expiresAt: string }
+    }
+
+    const shellSessionRes = await app.fetch(
+      new Request("http://localhost/api/execution-tokens", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "main",
+          consumerWorkspacePath: "apps/web/infra",
+          sessionKind: "shell_session",
+        }),
+      }),
+    )
+    expect(shellSessionRes.status).toBe(201)
+    const shellSessionBody = await shellSessionRes.json() as {
+      data: { expiresAt: string }
+    }
+
+    const workspaceInitExpiryMs = Date.parse(workspaceInitBody.data.expiresAt)
+    const shellSessionExpiryMs = Date.parse(shellSessionBody.data.expiresAt)
+
+    expect(shellSessionExpiryMs - workspaceInitExpiryMs).toBeGreaterThan(3 * 60 * 60 * 1000)
+  })
+
+  test("rate limits hosted output-module publish bursts", async () => {
+    const sessionRes = await app.fetch(
+      new Request("http://localhost/api/sessions/anonymous", {
+        method: "POST",
+        headers: {
+          ...featureHeaders(),
+          "x-real-ip": "198.51.100.10",
+        },
+      }),
+    )
+    const sessionBody = await sessionRes.json() as { data: { token: string } }
+
+    const headers = {
+      ...featureHeaders(),
+      Authorization: `Bearer ${sessionBody.data.token}`,
+      "Content-Type": "application/json",
+      "x-real-ip": "198.51.100.10",
+    }
+
+    for (let index = 0; index < 120; index += 1) {
+      const response = await app.fetch(
+        new Request("http://localhost/api/output-modules", {
+          method: "PUT",
+          headers,
+          body: JSON.stringify({
+            canonicalRepoNamespace: "test-org--fixture",
+            localRepoFingerprint: "repo-fingerprint-1",
+            environmentName: "main",
+            workspacePath: "infra/shared",
+            stateFingerprint: `state-md5-${index}`,
+            outputs: {},
+          }),
+        }),
+      )
+
+      expect(response.status).toBe(201)
+    }
+
+    const rateLimitedRes = await app.fetch(
+      new Request("http://localhost/api/output-modules", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "main",
+          workspacePath: "infra/shared",
+          stateFingerprint: "state-md5-rate-limited",
+          outputs: {},
+        }),
+      }),
+    )
+
+    expect(rateLimitedRes.status).toBe(429)
+    expect(rateLimitedRes.headers.get("Retry-After")).toBeTruthy()
+    expect(await rateLimitedRes.json()).toEqual({
+      error: {
+        code: "RATE_LIMITED",
+        message: "rate limit exceeded",
+      },
+    })
   })
 })
 
