@@ -6,7 +6,12 @@ import type { Workspace } from "../db/queries/workspaces.ts"
 import { logger as log } from "../lib/telemetry.ts"
 import { findApiTokenByHash, hashToken, touchApiToken } from "../db/queries/api-tokens.ts"
 import { findOrgMembership } from "../db/queries/organizations.ts"
-import { findPrincipalRepoBindingById } from "../db/queries/principals.ts"
+import {
+  findAnonymousSessionById,
+  findPrincipalById,
+  findPrincipalRepoBindingById,
+  touchPrincipalActivity,
+} from "../db/queries/principals.ts"
 import { findStateVersionById } from "../db/queries/state-versions.ts"
 import { findWorkspaceById, findWorkspaceByLockId } from "../db/queries/workspaces.ts"
 import { verifyExecutionToken } from "../lib/principal-tokens.ts"
@@ -27,6 +32,7 @@ export interface TfcAuthContext {
   scopes: string[] // e.g., ["state:read", "state:write", "workspace:lock"]
   tokenId?: string
   principalId?: string
+  sessionId?: string
   repoBindingId?: string
   repoNamespace?: string
   environmentName?: string
@@ -122,9 +128,53 @@ export function tfcAuth(): MiddlewareHandler {
         )
       }
 
+      if (executionPayload.session_id) {
+        const record = await findAnonymousSessionById(executionPayload.session_id)
+        if (!record || record.principal.id !== executionPayload.principal_id) {
+          return c.json(
+            { errors: [{ status: "401", title: "Invalid token" }] },
+            401,
+          )
+        }
+
+        if (record.principal.status !== "active" || record.session.status !== "active") {
+          return c.json(
+            { errors: [{ status: "401", title: "Invalid token" }] },
+            401,
+          )
+        }
+
+        if (record.session.expiresAt && record.session.expiresAt.getTime() <= Date.now()) {
+          return c.json(
+            { errors: [{ status: "401", title: "Invalid token" }] },
+            401,
+          )
+        }
+
+        await touchPrincipalActivity({
+          principalId: record.principal.id,
+          sessionId: record.session.id,
+          repoBindingId: binding.id,
+        })
+      } else {
+        const principal = await findPrincipalById(executionPayload.principal_id)
+        if (!principal || principal.status !== "active") {
+          return c.json(
+            { errors: [{ status: "401", title: "Invalid token" }] },
+            401,
+          )
+        }
+
+        await touchPrincipalActivity({
+          principalId: principal.id,
+          repoBindingId: binding.id,
+        })
+      }
+
       c.set("tfcAuth", {
         type: "execution",
         principalId: executionPayload.principal_id,
+        sessionId: executionPayload.session_id,
         repoBindingId: executionPayload.repo_binding_id,
         repoNamespace: executionPayload.canonical_repo_namespace,
         environmentName: executionPayload.environment_name,
@@ -134,6 +184,7 @@ export function tfcAuth(): MiddlewareHandler {
 
       log.debug("Execution token authenticated", {
         principalId: executionPayload.principal_id,
+        sessionId: executionPayload.session_id,
         repoBindingId: executionPayload.repo_binding_id,
         environmentName: executionPayload.environment_name,
         consumerWorkspacePath: executionPayload.consumer_workspace_path,

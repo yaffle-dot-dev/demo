@@ -170,6 +170,11 @@ yaffle cloud status
 the current shell session and does not mutate global Terraform login state by
 default.
 
+`yaffle cloud status` inspects the machine-local Yaffle principal store and
+explains whether the CLI currently has a guest session. `yaffle cloud logout`
+deletes that local auth state. Guest sessions stay on the machine where they
+were created.
+
 ### Targeting rules
 
 For v1, these commands require explicit `--env`:

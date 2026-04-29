@@ -154,6 +154,7 @@ localFirstRoute.post("/execution-tokens", async (c) => {
   })
   const token = await generateExecutionToken({
     principalId: principal.principalId,
+    sessionId: principal.sessionId,
     repoBindingId: binding.id,
     canonicalRepoNamespace: body.canonicalRepoNamespace,
     environmentName: body.environmentName,

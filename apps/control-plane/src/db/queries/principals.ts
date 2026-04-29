@@ -1,4 +1,4 @@
-import { and, desc, eq, max } from "drizzle-orm"
+import { and, desc, eq, inArray, lte, max, or } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import {
@@ -44,18 +44,142 @@ export async function findAnonymousSessionById(
   })
 }
 
+export async function findPrincipalById(principalId: string): Promise<Principal | undefined> {
+  return withDbSpan("select", "principals", async () => {
+    const rows = await db.select().from(principals).where(eq(principals.id, principalId)).limit(1)
+    return rows[0]
+  })
+}
+
 export async function touchPrincipalSession(
   principalId: string,
   sessionId?: string,
 ): Promise<void> {
+  return touchPrincipalActivity({ principalId, sessionId })
+}
+
+export async function touchPrincipalActivity(values: {
+  principalId: string
+  sessionId?: string
+  repoBindingId?: string
+}): Promise<void> {
   return withDbSpan("update", "principals", async () => {
     const now = new Date()
-    await db.update(principals).set({ lastSeenAt: now }).where(eq(principals.id, principalId))
-    if (sessionId) {
+    await db.update(principals).set({ lastSeenAt: now }).where(eq(principals.id, values.principalId))
+    if (values.sessionId) {
       await db
         .update(anonymousSessions)
         .set({ lastSeenAt: now })
-        .where(eq(anonymousSessions.id, sessionId))
+        .where(eq(anonymousSessions.id, values.sessionId))
+    }
+    if (values.repoBindingId) {
+      await db
+        .update(principalRepoBindings)
+        .set({ lastSeenAt: now })
+        .where(eq(principalRepoBindings.id, values.repoBindingId))
+    }
+  })
+}
+
+export async function expireInactiveAnonymousSessions(cutoff: Date): Promise<{
+  principalCount: number
+  sessionCount: number
+}> {
+  return withDbSpan("update", "anonymous_sessions", async () => {
+    const now = new Date()
+    const stale = await db
+      .select({
+        principalId: principals.id,
+        sessionId: anonymousSessions.id,
+      })
+      .from(anonymousSessions)
+      .innerJoin(principals, eq(principals.id, anonymousSessions.principalId))
+      .where(
+        and(
+          eq(principals.type, "anonymous_session"),
+          eq(principals.status, "active"),
+          eq(anonymousSessions.status, "active"),
+          or(
+            lte(principals.lastSeenAt, cutoff),
+            lte(anonymousSessions.lastSeenAt, cutoff),
+            lte(anonymousSessions.expiresAt, now),
+          ),
+        ),
+      )
+
+    if (stale.length === 0) {
+      return { principalCount: 0, sessionCount: 0 }
+    }
+
+    const principalIds = [...new Set(stale.map((row) => row.principalId))]
+    const sessionIds = stale.map((row) => row.sessionId)
+
+    await db
+      .update(anonymousSessions)
+      .set({ status: "expired" })
+      .where(inArray(anonymousSessions.id, sessionIds))
+    await db
+      .update(principals)
+      .set({ status: "expired" })
+      .where(inArray(principals.id, principalIds))
+
+    return {
+      principalCount: principalIds.length,
+      sessionCount: sessionIds.length,
+    }
+  })
+}
+
+export async function deleteExpiredAnonymousPrincipalsBefore(cutoff: Date): Promise<{
+  principalCount: number
+  sessionCount: number
+  repoBindingCount: number
+  hostedOutputModuleCount: number
+}> {
+  return withDbSpan("delete", "principals", async () => {
+    const expiredPrincipals = await db
+      .select({ id: principals.id })
+      .from(principals)
+      .where(
+        and(
+          eq(principals.type, "anonymous_session"),
+          eq(principals.status, "expired"),
+          lte(principals.lastSeenAt, cutoff),
+        ),
+      )
+
+    if (expiredPrincipals.length === 0) {
+      return {
+        principalCount: 0,
+        sessionCount: 0,
+        repoBindingCount: 0,
+        hostedOutputModuleCount: 0,
+      }
+    }
+
+    const principalIds = expiredPrincipals.map((row) => row.id)
+    const [sessions, bindings, modules] = await Promise.all([
+      db
+        .select({ id: anonymousSessions.id })
+        .from(anonymousSessions)
+        .where(inArray(anonymousSessions.principalId, principalIds)),
+      db
+        .select({ id: principalRepoBindings.id })
+        .from(principalRepoBindings)
+        .where(inArray(principalRepoBindings.principalId, principalIds)),
+      db
+        .select({ id: hostedOutputModules.id })
+        .from(hostedOutputModules)
+        .where(inArray(hostedOutputModules.principalId, principalIds)),
+    ])
+
+    await db.delete(principals).where(inArray(principals.id, principalIds))
+
+    return {
+      principalCount: principalIds.length,
+      sessionCount: sessions.length,
+      repoBindingCount: bindings.length,
+      hostedOutputModuleCount: modules.length,
     }
   })
 }

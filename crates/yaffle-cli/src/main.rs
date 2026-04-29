@@ -9,7 +9,11 @@ use yaffle_contracts::{
     EngineError, EngineOperation, EngineResponse, EnvironmentTarget, ErrorPayload,
     WorkspaceSelection, CONTRACT_VERSION,
 };
-use yaffle_engine::{execute, prepare_tf_login_exports, EngineRequest};
+use yaffle_engine::{
+    clear_local_cloud_auth, execute, load_local_cloud_auth_status,
+    local_first_feature_token_configured, prepare_tf_login_exports, EngineRequest,
+    LocalCloudAuthStatus,
+};
 
 type CliResult = Result<(), CliFailure>;
 
@@ -315,19 +319,97 @@ fn run_tf_login(command: TfLoginCommand) -> CliResult {
 }
 
 fn run_cloud(command: CloudCommands) -> CliResult {
-    let summary = match command {
-        CloudCommands::Login => {
-            "CLI alpha placeholder: cloud login is not implemented in Rust yet."
-        }
-        CloudCommands::Logout => {
-            "CLI alpha placeholder: cloud logout is not implemented in Rust yet."
-        }
-        CloudCommands::Status => {
-            "CLI alpha placeholder: cloud status is not implemented in Rust yet."
-        }
+    match command {
+        CloudCommands::Login => print_placeholder(
+            "cloud",
+            "Account-backed `yaffle cloud login` is not implemented yet. For local-first work, Yaffle bootstraps a machine-local guest session automatically on first `yaffle converge` or `yaffle tf login`.",
+            false,
+        ),
+        CloudCommands::Logout => run_cloud_logout(),
+        CloudCommands::Status => run_cloud_status(),
+    }
+}
+
+fn run_cloud_status() -> CliResult {
+    let status = load_local_cloud_auth_status().map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "cloud_status_failed",
+            format!("Failed to inspect local Yaffle Cloud auth: {error}"),
+        )
+    })?;
+
+    println!("{}", render_cloud_status(&status));
+    Ok(())
+}
+
+fn run_cloud_logout() -> CliResult {
+    let status = load_local_cloud_auth_status().map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "cloud_logout_failed",
+            format!("Failed to inspect local Yaffle Cloud auth: {error}"),
+        )
+    })?;
+    let removed = clear_local_cloud_auth().map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "cloud_logout_failed",
+            format!("Failed to clear local Yaffle Cloud auth: {error}"),
+        )
+    })?;
+
+    if removed {
+        println!(
+            "Removed local Yaffle Cloud auth at {}. Any guest-owned hosted output modules stay tied to that deleted machine-local session.",
+            status.auth_store_path.display()
+        );
+    } else {
+        println!(
+            "No local Yaffle Cloud auth state found at {}.",
+            status.auth_store_path.display()
+        );
+    }
+
+    Ok(())
+}
+
+fn render_cloud_status(status: &LocalCloudAuthStatus) -> String {
+    let feature_token_note = if local_first_feature_token_configured() {
+        "Local-first guest bootstrap is enabled in this shell."
+    } else {
+        "Local-first guest bootstrap is unavailable in this shell until `YAFFLE_LOCAL_FIRST_FEATURE_TOKEN` is set."
     };
 
-    print_placeholder("cloud", summary, false)
+    let Some(principal) = &status.stored_principal else {
+        return format!(
+            "Yaffle Cloud status: no local auth state\nStore: {}\n{}\nA machine-local guest session will be created automatically on first `yaffle converge` or `yaffle tf login` once local-first access is enabled.",
+            status.auth_store_path.display(),
+            feature_token_note,
+        );
+    };
+
+    let lifecycle = if status.expired { "expired" } else { "active" };
+    let expires_at = principal.expires_at.as_deref().unwrap_or("unknown");
+
+    format!(
+        "Yaffle Cloud status: machine-local guest session ({lifecycle})\nPrincipal: {}\nSession: {}\nIssued: {}\nExpires: {}\nStore: {}\n{}\nGuest sessions stay on the machine where they were created. Deleting this file discards access to guest-owned hosted output modules. Account-backed login/upgrade is not implemented yet.",
+        principal.principal_id,
+        principal.session_id,
+        principal.issued_at,
+        expires_at,
+        status.auth_store_path.display(),
+        feature_token_note,
+    )
 }
 
 fn run_completion(command: CompletionCommand) -> CliResult {

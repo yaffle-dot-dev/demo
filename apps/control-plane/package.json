@@ -15,6 +15,7 @@
     "db:migrate": "drizzle-kit migrate",
     "backfill:environment-group-projections": "bun run src/scripts/backfill-environment-group-projections.ts",
     "backfill:run-group-workspace-metadata": "bun run src/scripts/backfill-run-group-workspace-metadata.ts",
+    "gc:local-first": "bun run src/scripts/run-local-first-gc.ts",
     "migrate:org-broker-roles": "bun run src/scripts/migrate-org-broker-roles.ts",
     "token:warm-runner": "bun run src/scripts/generate-warm-runner-token.ts",
     "spawn:warm-runner-ecs": "bun run src/scripts/spawn-warm-runner-ecs.ts"

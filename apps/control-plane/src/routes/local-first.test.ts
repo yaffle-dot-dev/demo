@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { gunzipSync } from "node:zlib"
 
+import { db } from "../lib/db.ts"
+import { verifyExecutionToken } from "../lib/principal-tokens.ts"
 import { cleanupTestData } from "../test-utils/auth.ts"
 import { resetRateLimitStore } from "../lib/request-protection.ts"
+import { anonymousSessions, principalRepoBindings, principals } from "../db/schema.ts"
 import { localFirstRoute } from "./local-first.ts"
 import { tfcRoute } from "./tfc/index.ts"
 
@@ -300,13 +304,107 @@ describe("localFirstRoute + execution-backed module registry", () => {
     )
     expect(shellSessionRes.status).toBe(201)
     const shellSessionBody = await shellSessionRes.json() as {
-      data: { expiresAt: string }
+      data: { expiresAt: string; token: string; repoBindingId: string }
     }
 
     const workspaceInitExpiryMs = Date.parse(workspaceInitBody.data.expiresAt)
     const shellSessionExpiryMs = Date.parse(shellSessionBody.data.expiresAt)
+    const shellSessionPayload = await verifyExecutionToken(shellSessionBody.data.token)
 
     expect(shellSessionExpiryMs - workspaceInitExpiryMs).toBeGreaterThan(3 * 60 * 60 * 1000)
+    expect(shellSessionPayload?.session_id).toBeTruthy()
+  })
+
+  test("execution-backed registry reads refresh anonymous activity timestamps", async () => {
+    const sessionRes = await app.fetch(
+      new Request("http://localhost/api/sessions/anonymous", {
+        method: "POST",
+        headers: featureHeaders(),
+      }),
+    )
+    const sessionBody = await sessionRes.json() as {
+      data: { token: string; principalId: string; sessionId: string }
+    }
+
+    const headers = {
+      ...featureHeaders(),
+      Authorization: `Bearer ${sessionBody.data.token}`,
+      "Content-Type": "application/json",
+    }
+
+    await app.fetch(
+      new Request("http://localhost/api/output-modules", {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "main",
+          workspacePath: "infra/shared",
+          stateFingerprint: "state-md5-v1",
+          outputs: {},
+        }),
+      }),
+    )
+
+    const executionTokenRes = await app.fetch(
+      new Request("http://localhost/api/execution-tokens", {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "main",
+          consumerWorkspacePath: "apps/web/infra",
+        }),
+      }),
+    )
+    const executionTokenBody = await executionTokenRes.json() as {
+      data: { token: string; repoBindingId: string }
+    }
+
+    const oldLastSeenAt = new Date("2026-04-01T00:00:00.000Z")
+    await db
+      .update(principals)
+      .set({ lastSeenAt: oldLastSeenAt })
+      .where(eq(principals.id, sessionBody.data.principalId))
+    await db
+      .update(anonymousSessions)
+      .set({ lastSeenAt: oldLastSeenAt })
+      .where(eq(anonymousSessions.id, sessionBody.data.sessionId))
+    await db
+      .update(principalRepoBindings)
+      .set({ lastSeenAt: oldLastSeenAt })
+      .where(eq(principalRepoBindings.id, executionTokenBody.data.repoBindingId))
+
+    const versionsRes = await app.fetch(
+      new Request(
+        "http://localhost/tfc/registry/v1/modules/test-org--fixture/infra--shared/yaffle/versions",
+        {
+          headers: {
+            Authorization: `Bearer ${executionTokenBody.data.token}`,
+          },
+        },
+      ),
+    )
+    expect(versionsRes.status).toBe(200)
+
+    const principalRows = await db
+      .select()
+      .from(principals)
+      .where(eq(principals.id, sessionBody.data.principalId))
+    const sessionRows = await db
+      .select()
+      .from(anonymousSessions)
+      .where(eq(anonymousSessions.id, sessionBody.data.sessionId))
+    const bindingRows = await db
+      .select()
+      .from(principalRepoBindings)
+      .where(eq(principalRepoBindings.id, executionTokenBody.data.repoBindingId))
+
+    expect(principalRows[0]?.lastSeenAt.getTime()).toBeGreaterThan(oldLastSeenAt.getTime())
+    expect(sessionRows[0]?.lastSeenAt.getTime()).toBeGreaterThan(oldLastSeenAt.getTime())
+    expect(bindingRows[0]?.lastSeenAt.getTime()).toBeGreaterThan(oldLastSeenAt.getTime())
   })
 
   test("rate limits hosted output-module publish bursts", async () => {

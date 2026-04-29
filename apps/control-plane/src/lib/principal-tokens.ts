@@ -15,6 +15,7 @@ export interface AnonymousSessionTokenPayload extends JWTPayload {
 export interface ExecutionTokenPayload extends JWTPayload {
   token_type: "execution"
   principal_id: string
+  session_id?: string
   repo_binding_id: string
   canonical_repo_namespace: string
   environment_name: string
@@ -71,6 +72,7 @@ export async function verifyAnonymousSessionToken(
 
 export async function generateExecutionToken(params: {
   principalId: string
+  sessionId?: string
   repoBindingId: string
   canonicalRepoNamespace: string
   environmentName: string
@@ -81,6 +83,7 @@ export async function generateExecutionToken(params: {
   return new SignJWT({
     token_type: "execution",
     principal_id: params.principalId,
+    ...(params.sessionId ? { session_id: params.sessionId } : {}),
     repo_binding_id: params.repoBindingId,
     canonical_repo_namespace: params.canonicalRepoNamespace,
     environment_name: params.environmentName,
@@ -101,6 +104,7 @@ export async function verifyExecutionToken(token: string): Promise<ExecutionToke
       payload.sub?.startsWith("principal:") !== true ||
       payload.token_type !== "execution" ||
       typeof payload.principal_id !== "string" ||
+      (payload.session_id !== undefined && typeof payload.session_id !== "string") ||
       typeof payload.repo_binding_id !== "string" ||
       typeof payload.canonical_repo_namespace !== "string" ||
       typeof payload.environment_name !== "string" ||

@@ -29,6 +29,13 @@ pub struct StoredPrincipalCredential {
     pub expires_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalCloudAuthStatus {
+    pub auth_store_path: PathBuf,
+    pub stored_principal: Option<StoredPrincipalCredential>,
+    pub expired: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionCredential {
     pub token: String,
@@ -229,6 +236,31 @@ pub fn compute_local_repo_fingerprint(repo_root: &Path) -> Result<String, LocalF
     hasher.update(canonical.to_string_lossy().as_bytes());
     let digest = hasher.finalize();
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+pub fn load_local_cloud_auth_status() -> Result<LocalCloudAuthStatus, LocalFirstError> {
+    let auth_store_path = local_auth_store_path()?;
+    let stored_principal = load_stored_principal()?;
+    let expired = stored_principal
+        .as_ref()
+        .map(principal_expired)
+        .unwrap_or(false);
+
+    Ok(LocalCloudAuthStatus {
+        auth_store_path,
+        stored_principal,
+        expired,
+    })
+}
+
+pub fn clear_local_cloud_auth() -> Result<bool, LocalFirstError> {
+    let path = local_auth_store_path()?;
+    if !path.exists() {
+        return Ok(false);
+    }
+
+    fs::remove_file(&path).map_err(|error| LocalFirstError::WriteStore(error.to_string()))?;
+    Ok(true)
 }
 
 pub fn local_auth_store_path() -> Result<PathBuf, LocalFirstError> {
@@ -485,6 +517,42 @@ mod tests {
         assert_eq!(published.version, "1.0.1");
         assert!(stored_path.ends_with(Path::new(".yaffle/auth/principal.json")));
         assert!(stored_path.is_file());
+    }
+
+    #[test]
+    fn reports_and_clears_local_cloud_auth_status() {
+        let _guard = LOCAL_FIRST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp_home = TempDir::new().expect("temp dir should exist");
+        let previous_home = env::var_os("HOME");
+
+        env::set_var("HOME", temp_home.path());
+        persist_principal(&StoredPrincipalCredential {
+            principal_id: "principal-test".to_string(),
+            session_id: "session-test".to_string(),
+            token: "principal-token-test".to_string(),
+            issued_at: "2026-04-28T00:00:00Z".to_string(),
+            expires_at: Some("2030-04-28T00:00:00Z".to_string()),
+        })
+        .expect("principal should persist");
+
+        let status = load_local_cloud_auth_status().expect("status should load");
+        assert!(!status.expired);
+        assert_eq!(
+            status.stored_principal,
+            Some(StoredPrincipalCredential {
+                principal_id: "principal-test".to_string(),
+                session_id: "session-test".to_string(),
+                token: "principal-token-test".to_string(),
+                issued_at: "2026-04-28T00:00:00Z".to_string(),
+                expires_at: Some("2030-04-28T00:00:00Z".to_string()),
+            })
+        );
+        assert!(clear_local_cloud_auth().expect("clear should succeed"));
+        assert!(!status.auth_store_path.exists());
+
+        restore_env("HOME", previous_home);
     }
 
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {

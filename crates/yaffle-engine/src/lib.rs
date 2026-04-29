@@ -24,15 +24,18 @@ use yaffle_graph::{
 use yaffle_tofu::{inspect_tofu_resolution, TofuResolutionRequest, TofuSourceKind};
 
 use crate::local_first::{
-    compute_local_repo_fingerprint, ensure_anonymous_principal,
-    local_first_feature_token_configured, mint_execution_credential, publish_hosted_output_module,
-    ExecutionCredential, ExecutionCredentialKind, ExecutionCredentialRequest,
-    HostedOutputModulePublishRequest, LocalFirstError,
+    compute_local_repo_fingerprint, ensure_anonymous_principal, mint_execution_credential,
+    publish_hosted_output_module, ExecutionCredential, ExecutionCredentialKind,
+    ExecutionCredentialRequest, HostedOutputModulePublishRequest, LocalFirstError,
 };
 
 const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
 const MODULE_API_HOST_OVERRIDE_ENV_VAR: &str = "YAFFLE_MODULE_API_HOST";
 
+pub use crate::local_first::{
+    clear_local_cloud_auth, load_local_cloud_auth_status, local_auth_store_path,
+    local_first_feature_token_configured, LocalCloudAuthStatus,
+};
 use yaffle_config::{parse_yaffle_toml, validate_environment_name, YaffleConfig};
 pub use yaffle_contracts::{EngineError, EnvironmentTarget, WorkspaceSelection, CONTRACT_VERSION};
 

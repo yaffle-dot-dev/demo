@@ -56,10 +56,12 @@ Current implementation status:
   Rust engine dispatcher
 - fixture-backed engine repos cover real local `tofu` execution paths
 - `yaffle tf login` emits scoped shell exports for raw `tofu`
+- `yaffle cloud status` and `yaffle cloud logout` now inspect and clear the
+  machine-local guest principal store
 - local-first hosted output-module transport is integrated behind the shared
   engine flow
 
-`init` and `cloud *` are still placeholder surfaces.
+`init` and account-backed `cloud login` are still placeholder surfaces.
 
 ## Tofu strategy
 
