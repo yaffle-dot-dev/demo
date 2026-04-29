@@ -3,22 +3,51 @@
 This document describes Yaffle's authentication system, user management, and
 organization membership model.
 
+Important: this file primarily covers account-backed web auth. Local-first CLI
+auth now also uses principal credentials, anonymous sessions, and short-lived
+execution tokens as described in:
+
+- `docs/decisions/0002-local-first-principals-and-hosted-output-modules.md`
+- `docs/decisions/0003-anonymous-session-abuse-quota-and-gc.md`
+- `docs/decisions/0004-anonymous-session-persistence-and-repo-binding.md`
+
 ## Overview
+
+Yaffle currently has two auth planes:
+
+- account-backed web auth for the control plane and frontend
+- principal-scoped local-first auth for CLI bootstrap, hosted output-module
+  publication, and module-registry reads
 
 Yaffle uses [BetterAuth](https://better-auth.com) for authentication with GitHub
 OAuth as the identity provider. Users authenticate via GitHub, and their access
 to organizations is managed through a membership system that's decoupled from
 GitHub's organization model.
 
+Local-first CLI auth is separate:
+
+- the CLI may bootstrap an `anonymous_session` principal without a signup wall
+- the CLI stores that principal locally on the machine
+- the CLI exchanges it for short-lived execution tokens scoped to repo,
+  environment, and consumer workspace
+- execution tokens are for `yaffle.dev` module/backend auth, not general account
+  sessions
+
 ### Key Concepts
 
 - **User**: A Yaffle user, identified by BetterAuth. Can have multiple linked
   accounts (GitHub, future SSO providers).
+- **Principal**: The actor used for local-first auth, quota, audit, and hosted
+  output-module ownership. Principal types are `account` and
+  `anonymous_session`.
 - **Organization**: A Yaffle-native entity that owns previews, connections, and
   settings. Not tied 1:1 to GitHub orgs.
 - **GitHub Installation**: Links a Yaffle org to a GitHub App installation,
   enabling webhooks and API access.
 - **Membership**: Associates a user with an organization and defines their role.
+
+Routes must enforce the correct auth model for their resource type. BetterAuth
+session cookies and principal tokens are not interchangeable.
 
 ---
 

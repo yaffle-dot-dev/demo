@@ -10,6 +10,7 @@ rather than the product semantics.
 
 - CLI alpha implementation breakdown: <https://linear.app/yaffledev/document/cli-alpha-implementation-breakdown-465cd63a5f50>
 - Rust engine contract and cloud shell boundary: <https://linear.app/yaffledev/document/rust-engine-contract-and-cloud-shell-boundary-74150a5fcf0e>
+- `docs/decisions/0002-local-first-principals-and-hosted-output-modules.md`
 
 ## Direction
 
@@ -46,15 +47,19 @@ This is the chosen direction unless explicitly revised in Linear.
 
 ## Current status
 
-The Rust shell is allowed to be hollow initially.
+The Rust CLI is no longer just a hollow shell.
 
-That means:
+Current implementation status:
 
 - the canonical command tree exists
-- command parsing and help are real
-- command execution may still return placeholder summaries while engine behavior is implemented
+- graph/doctor/outputs/converge/status/wait/destroy execute through the shared
+  Rust engine dispatcher
+- fixture-backed engine repos cover real local `tofu` execution paths
+- `yaffle tf login` emits scoped shell exports for raw `tofu`
+- local-first hosted output-module transport is integrated behind the shared
+  engine flow
 
-This is intentional for the CLI alpha phase.
+`init` and `cloud *` are still placeholder surfaces.
 
 ## Tofu strategy
 
@@ -84,8 +89,10 @@ Current implementation status:
 - bundled and managed slots exist in the resolver contract even though acquisition is not implemented yet
 - system `tofu` remains the active fallback path used by local dogfooding
 - authored Yaffle module/backend hosts stay canonical as `yaffle.dev`
-- local execution may rewrite that canonical host via `YAFFLE_MODULE_API_HOST` inside temporary execution repos
-- same-repo `yaffle.dev/.../workspace/yaffle` module sources are rewritten to local relative paths before local execution
+- local execution may rewrite only the transport host via
+  `YAFFLE_MODULE_API_HOST` inside temporary execution repos
+- scoped Terraform/OpenTofu credentials are written under `~/.yaffle/auth/`
+  for local-first module/backend auth and `yaffle tf login`
 
 ## Local entrypoint
 

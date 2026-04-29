@@ -3,6 +3,21 @@
 Infrastructure as a Product - A TFC-compatible module registry that auto-generates
 typed modules from workspace outputs.
 
+Important: the current local-first contract is defined in
+`docs/decisions/0002-local-first-principals-and-hosted-output-modules.md`.
+When this document conflicts with that ADR, the ADR wins.
+
+For the current Rust engine path:
+
+- `yaffle.dev` remains the canonical authored host in Terraform/OpenTofu source
+  strings
+- local execution publishes Yaffle-hosted output modules instead of rewriting
+  same-repo module sources to local filesystem paths
+- downstream module resolution uses short-lived execution credentials installed
+  through `TF_CLI_CONFIG_FILE`
+- raw `tofu` is supported through
+  `eval "$(yaffle tf login --env <env> --workspace <workspace>)"`
+
 ## Overview
 
 Platform teams publish infrastructure, app teams consume it like any Terraform module:

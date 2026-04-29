@@ -65,12 +65,26 @@ product.
 - single operator
 - local credentials
 - local execution
+- local provider credentials remain bring-your-own via env/profile/config
 - no durable shared API
 - no always-on webhook receiver
 - no forge-native event lifecycle
 
 Local mode may be compatible with OpenTofu-compatible backends, but backend
 compatibility is not a separately supported product tier.
+
+### Local-first cloud assist
+
+Local-first does not mean local-only.
+
+The local CLI may explicitly use Yaffle Cloud for:
+
+- hosted output-module publish/read transport on `yaffle.dev`
+- short-lived execution credentials for module/backend auth
+- raw `tofu` bootstrap through `yaffle tf login`
+
+This does not make provider execution remote. Providers still run locally and
+provider credentials remain local.
 
 ## Canonical nouns
 
@@ -145,11 +159,16 @@ yaffle wait
 yaffle outputs
 yaffle graph
 yaffle doctor
+yaffle tf login
 
 yaffle cloud login
 yaffle cloud logout
 yaffle cloud status
 ```
+
+`yaffle tf login` is the explicit raw-`tofu` bridge. It emits shell exports for
+the current shell session and does not mutate global Terraform login state by
+default.
 
 ### Targeting rules
 
@@ -659,7 +678,7 @@ The CLI must not:
 - silently drop cross-repo dependencies
 - silently ignore cloud-only repo/workflow requirements
 - silently fabricate forge or cloud context
-- pretend it is brokering cloud-managed credentials when it is only running OpenTofu locally
+- pretend it is brokering provider credentials when it is only running OpenTofu locally
 
 ## Canonical user stories
 
