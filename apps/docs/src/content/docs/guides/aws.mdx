@@ -7,7 +7,8 @@ import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
 
 # Set up IAM access for Yaffle
 
-Create one IAM role in your AWS account, then paste that role ARN in Yaffle.
+Create one IAM role in your AWS account for the default setup, or multiple roles if you
+want environment isolation, then paste those role ARNs in Yaffle.
 
 ## Quick start
 
@@ -27,6 +28,18 @@ Create one IAM role in your AWS account, then paste that role ARN in Yaffle.
 4. **Paste role ARN in Yaffle Step 3** and save the connection.
 </Steps>
 
+<Aside type="note">
+Yaffle includes an STS session tag named `environment` on AWS role assumptions
+for values like `production`, `staging`, or `pr-42`.
+
+For the default setup, you do not need to add any tag-based conditions. You only
+need your trust policy to allow both `sts:AssumeRole` and `sts:TagSession`.
+
+If you use the Terraform bootstrap module on this page, this is already configured
+for you. If you write the trust policy yourself, include `sts:TagSession` in the
+allowed actions.
+</Aside>
+
 ---
 
 ## Step 2. Set up IAM access for Yaffle
@@ -38,8 +51,8 @@ Create one IAM role in your AWS account, then paste that role ARN in Yaffle.
     Create `yaffle-bootstrap.tf`:
 
     ```hcl title="yaffle-bootstrap.tf"
-    module "yaffle_bootstrap" {
-      source = "git::https://github.com/yaffle-dot-dev/yaffle.git//infra_modules/public/bootstrap-yaffle/aws?ref=main"
+     module "yaffle_bootstrap" {
+       source = "git::https://github.com/yaffle-dot-dev/yaffle.git//infra_modules/public/bootstrap-yaffle/aws?ref=main"
 
       yaffle_principal_arn = "<paste-from-yaffle-step-1>"
       external_id          = "<paste-from-yaffle-step-1>"
@@ -95,7 +108,9 @@ Create one IAM role in your AWS account, then paste that role ARN in Yaffle.
               - Effect: Allow
                 Principal:
                   AWS: !Ref YafflePrincipalArn
-                Action: "sts:AssumeRole"
+                Action:
+                  - "sts:AssumeRole"
+                  - "sts:TagSession"
                 Condition:
                   StringEquals:
                     "sts:ExternalId": !Ref ExternalId
@@ -153,7 +168,10 @@ Create one IAM role in your AWS account, then paste that role ARN in Yaffle.
           "Principal": {
             "AWS": "<paste-yaffle-principal-arn>"
           },
-          "Action": "sts:AssumeRole",
+          "Action": [
+            "sts:AssumeRole",
+            "sts:TagSession"
+          ],
           "Condition": {
             "StringEquals": {
               "sts:ExternalId": "<paste-external-id>"
@@ -192,13 +210,140 @@ Default bootstrap creates one role with:
 
 - Trust policy for your **Yaffle principal ARN**
 - Required `ExternalId` condition
+- Permission for Yaffle to pass the `environment` STS session tag via `sts:TagSession`
 - `AdministratorAccess` permissions
 
 <Aside type="tip">
-This default is intentional for a fast, reliable Terraform runner setup.
+The default setup is still a single broad execution role. The session tag is attached
+automatically, but nothing about your access model changes unless you choose to add
+tag-based trust or IAM conditions.
 </Aside>
 
 ## Optional policy customization
 
 If your org requires least privilege, you can customize policy attachments.
 Keep in mind Yaffle still needs all permissions required by your Terraform resources.
+
+## Optional: cross-environment safety guardrails
+
+If you want stronger safety boundaries, you can use Yaffle's `environment` session tag
+to keep one environment from mutating another.
+
+Yaffle automatically assumes AWS roles with an STS session tag:
+
+- `environment=production` for a production environment
+- `environment=staging` for a named non-main environment
+- `environment=pr-42` for preview environments
+
+You can use that tag in both the role trust policy and attached IAM policies.
+
+### Recommended model
+
+- **Protected environment role:** broad access, trust requires a specific environment like `production`
+- **General environment role:** broad read access, own-environment writes only, trust rejects the protected environment and uses IAM guardrails for the rest
+
+### Terraform example
+
+```hcl title="yaffle-bootstrap-isolated.tf"
+data "aws_iam_policy_document" "yaffle_non_main_guardrails" {
+  statement {
+    sid         = "DenyWritesOutsideEnvironment"
+    effect      = "Deny"
+    not_actions = [
+      "ec2:Describe*",
+      "ecs:Describe*",
+      "ecs:List*",
+      "route53:Get*",
+      "route53:List*",
+      "s3:Get*",
+      "s3:List*",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringNotEqualsIfExists"
+      variable = "aws:ResourceTag/environment"
+      values   = ["&{aws:PrincipalTag/environment}"]
+    }
+  }
+
+  statement {
+    sid    = "DenyCreatesOutsideEnvironment"
+    effect = "Deny"
+    actions = [
+      "ec2:Create*",
+      "ec2:RunInstances",
+      "ecs:Create*",
+      "iam:Create*",
+      "iam:Put*",
+      "lambda:Create*",
+      "rds:Create*",
+      "route53:ChangeResourceRecordSets",
+      "s3:CreateBucket",
+      "s3:PutBucket*",
+      "s3:PutObject*",
+    ]
+    resources = ["*"]
+
+    condition {
+      test     = "StringNotEqualsIfExists"
+      variable = "aws:RequestTag/environment"
+      values   = ["&{aws:PrincipalTag/environment}"]
+    }
+  }
+}
+
+resource "aws_iam_policy" "yaffle_non_main_guardrails" {
+  name   = "yaffle-non-main-guardrails"
+  policy = data.aws_iam_policy_document.yaffle_non_main_guardrails.json
+}
+
+module "yaffle_production" {
+  source = "git::https://github.com/yaffle-dot-dev/yaffle.git//infra_modules/public/bootstrap-yaffle/aws?ref=main"
+
+  yaffle_principal_arn    = "<paste-from-yaffle-step-1>"
+  external_id             = "<production-external-id>"
+  role_name               = "yaffle-assume-role-production-use1"
+  environment             = "production"
+  required_session_tag_keys = ["environment"]
+  required_session_tag_equals = {
+    environment = "production"
+  }
+}
+
+module "yaffle_other_environments" {
+  source = "git::https://github.com/yaffle-dot-dev/yaffle.git//infra_modules/public/bootstrap-yaffle/aws?ref=main"
+
+  yaffle_principal_arn    = "<paste-from-yaffle-step-1>"
+  external_id             = "<other-environments-external-id>"
+  role_name               = "yaffle-assume-role-other-envs-use1"
+  environment             = "shared"
+  required_session_tag_keys = ["environment"]
+  required_session_tag_not_equals = {
+    environment = "production"
+  }
+  managed_policy_arns = [
+    "arn:aws:iam::aws:policy/AdministratorAccess",
+    aws_iam_policy.yaffle_non_main_guardrails.arn,
+  ]
+}
+```
+
+<Aside type="note">
+If you prefer a permissions boundary instead of explicit deny policies, pass
+`permissions_boundary_arn` to the bootstrap module and keep the same session-tag trust rules.
+</Aside>
+
+You can substitute any protected environment name here, not just `production`.
+The important pattern is that Yaffle supplies the session tag and your trust/policy
+logic decides whether that tag should be unrestricted, pinned to one environment,
+or used to compare against resource tags.
+
+### In Yaffle
+
+Create separate AWS connections for each role:
+
+- **Protected environment connection:** scoped to `production` (or your chosen protected environment), uses the matching role ARN and external ID
+- **General environments connection:** scoped to `staging`, `pr-*`, or any other environments, uses the second role ARN and external ID
+
+Use the same workspace scopes on both connections unless you intentionally want different coverage.

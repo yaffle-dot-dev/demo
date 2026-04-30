@@ -56,3 +56,81 @@ variable "deployer_principal_arns" {
   description = "AWS principals allowed to assume the shared human deployer roles"
   default     = ["arn:aws:iam::870923192739:user/alauni"]
 }
+
+variable "self_hosted_org_broker_role_arn" {
+  type        = string
+  description = "Dogfood org broker role ARN trusted by the self-hosted execution roles"
+  default     = "arn:aws:iam::870923192739:role/yaffle-org-broker-019d174b-c7cd-722d-8b09-73411e0613e0"
+
+  validation {
+    condition     = can(regex("^arn:aws(-[a-z]+)?:iam::[0-9]{12}:role/.+$", var.self_hosted_org_broker_role_arn))
+    error_message = "self_hosted_org_broker_role_arn must be a valid IAM role ARN."
+  }
+}
+
+variable "self_hosted_main_execution_role_name" {
+  type        = string
+  description = "Dogfood execution role name for the main environment"
+  default     = "yaffle-assume-role-main-use1"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9+=,.@_-]{1,64}$", var.self_hosted_main_execution_role_name))
+    error_message = "self_hosted_main_execution_role_name must be a valid IAM role name (1-64 chars)."
+  }
+}
+
+variable "self_hosted_non_main_execution_role_name" {
+  type        = string
+  description = "Dogfood execution role name shared by non-main environments"
+  default     = "yaffle-assume-role-non-main-use1"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9+=,.@_-]{1,64}$", var.self_hosted_non_main_execution_role_name))
+    error_message = "self_hosted_non_main_execution_role_name must be a valid IAM role name (1-64 chars)."
+  }
+}
+
+variable "self_hosted_main_external_id" {
+  type        = string
+  description = "External ID required to assume the dogfood main execution role"
+  default     = "yaffle-yaffle-dot-dev-main-291y5h"
+
+  validation {
+    condition     = length(trimspace(var.self_hosted_main_external_id)) > 0
+    error_message = "self_hosted_main_external_id must not be empty."
+  }
+}
+
+variable "self_hosted_non_main_external_id" {
+  type        = string
+  description = "External ID required to assume the dogfood non-main execution role"
+  default     = "yaffle-yaffle-dot-dev-main-kkinn1"
+
+  validation {
+    condition     = length(trimspace(var.self_hosted_non_main_external_id)) > 0
+    error_message = "self_hosted_non_main_external_id must not be empty."
+  }
+}
+
+variable "self_hosted_main_managed_policy_arns" {
+  type        = list(string)
+  description = "Managed policies attached to the dogfood main execution role"
+  default     = ["arn:aws:iam::aws:policy/AdministratorAccess"]
+}
+
+variable "self_hosted_non_main_managed_policy_arns" {
+  type        = list(string)
+  description = "Managed policies attached to the dogfood non-main execution role"
+  default     = ["arn:aws:iam::aws:policy/AdministratorAccess"]
+}
+
+variable "self_hosted_non_main_permissions_boundary_name" {
+  type        = string
+  description = "Managed policy name for the non-main execution permissions boundary"
+  default     = "yaffle-non-main-execution-boundary"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9+=,.@_-]{1,128}$", var.self_hosted_non_main_permissions_boundary_name))
+    error_message = "self_hosted_non_main_permissions_boundary_name must be a valid IAM policy name."
+  }
+}

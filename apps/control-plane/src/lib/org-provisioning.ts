@@ -161,7 +161,7 @@ function orgBrokerRoleName(orgId: string): string {
   return `yaffle-org-broker-${orgId}`
 }
 
-function buildOrgBrokerPolicy(params: {
+export function buildOrgBrokerPolicy(params: {
   orgSlug: string
   kmsKeyArn: string
   customerRoleArns: string[]
@@ -199,7 +199,10 @@ function buildOrgBrokerPolicy(params: {
           {
             Sid: "DenyAllAssumeRole",
             Effect: "Deny",
-            Action: "sts:AssumeRole",
+            Action: [
+              "sts:AssumeRole",
+              "sts:TagSession",
+            ],
             Resource: "*",
           },
         ]
@@ -209,6 +212,12 @@ function buildOrgBrokerPolicy(params: {
             Effect: "Allow",
             Action: "sts:AssumeRole",
             Resource: normalizedRoleArns,
+          },
+          {
+            Sid: "TagCustomerRoleSessions",
+            Effect: "Allow",
+            Action: "sts:TagSession",
+            Resource: "*",
           },
         ]),
     ],

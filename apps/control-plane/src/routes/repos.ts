@@ -1187,7 +1187,7 @@ interface SerializedPreview {
   id: string
   workspacePath: string
   status: string
-  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required" | "error"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
@@ -1208,10 +1208,11 @@ function serializePreview(p: {
   createdAt: Date
   blockedReason?: string | null
 }, readiness: {
-  status: "ready" | "missing" | "conflict" | "not_required"
+  status: "ready" | "missing" | "conflict" | "not_required" | "error"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
+  blockedReason?: string | null
 }): SerializedPreview {
   return {
     id: p.id,

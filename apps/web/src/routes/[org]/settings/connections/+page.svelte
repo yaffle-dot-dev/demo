@@ -5,6 +5,10 @@
   import CopyButton from "$lib/components/CopyButton.svelte"
   import ActionButton from "$lib/components/ActionButton.svelte"
   import {
+    buildConnectionScopeValidation,
+    type ProviderCredentialSignatureSummary,
+  } from "$lib/connection-scope-validation"
+  import {
     getOrgConnection,
     listEnvironments,
   } from "$lib/api"
@@ -90,11 +94,7 @@
   let missingRequirements = $state<MissingRequirement[]>([])
   let loadingRequirements = $state(false)
   let requirementsError = $state<string | null>(null)
-  let knownProviderSignatures = $state<Array<{
-    providerType: string
-    displayName: string
-    suggestedCredentialProviderType: "envvar" | "iam_role"
-  }>>([])
+  let knownProviderSignatures = $state<ProviderCredentialSignatureSummary[]>([])
   let awsSetupMethod = $state<AwsSetupMethod>("terraform")
   let copiedAwsField = $state<string | null>(null)
   let copiedAwsSnippet = $state(false)
@@ -322,16 +322,23 @@
     ...aggregatedUnconfiguredConnections,
   ])
   const isEditing = $derived(editingConnectionId !== null)
-  const knownEnvironmentOptions = $derived.by(() => {
-    const options = new Set<string>(suggestedEnvironments)
-    options.add("pr-*")
-    return [...options].sort()
-  })
-  const knownWorkspaceOptions = $derived.by(() => {
-    const options = new Set<string>(suggestedWorkspaces)
-    options.add("infra/*")
-    return [...options].sort()
-  })
+  const scopeValidation = $derived.by(() =>
+    buildConnectionScopeValidation({
+      connections: connectionsState,
+      providerSignatures: knownProviderSignatures,
+      missingRequirements,
+      editingConnectionId,
+      selectedConnectionType,
+      selectedEnvironments,
+      selectedWorkspaces,
+      envVarEntries,
+      suggestedEnvironments,
+      suggestedWorkspaces,
+    })
+  )
+  const knownEnvironmentOptions = $derived(scopeValidation.environmentOptions)
+  const knownWorkspaceOptions = $derived(scopeValidation.workspaceOptions)
+  const scopeConflictMessages = $derived(scopeValidation.conflictMessages)
 
   const matchingEnvironmentSuggestions = $derived.by(() => {
     const query = customEnvironmentInput.trim().toLowerCase()
@@ -341,8 +348,10 @@
 
     return knownEnvironmentOptions
       .filter((option) =>
-        option.toLowerCase().includes(query) && !selectedEnvironments.includes(option)
+        option.value.toLowerCase().includes(query) && !selectedEnvironments.includes(option.value)
       )
+      .filter((option) => option.available)
+      .map((option) => option.value)
       .slice(0, 8)
   })
 
@@ -354,8 +363,10 @@
 
     return knownWorkspaceOptions
       .filter((option) =>
-        option.toLowerCase().includes(query) && !selectedWorkspaces.includes(option)
+        option.value.toLowerCase().includes(query) && !selectedWorkspaces.includes(option.value)
       )
+      .filter((option) => option.available)
+      .map((option) => option.value)
       .slice(0, 8)
   })
 
@@ -798,6 +809,14 @@ aws iam attach-role-policy \
       })
   }
 
+  function hasCompleteEnvVarEntries(entries: EnvVarEntry[]): boolean {
+    try {
+      return normalizeEnvVarEntries(entries).length > 0
+    } catch {
+      return false
+    }
+  }
+
   function isValidIamRoleArn(value: string): boolean {
     return /^arn:aws(-[a-z]+)?:iam::\d{12}:role\/.+$/.test(value.trim())
   }
@@ -1009,11 +1028,7 @@ aws iam attach-role-policy \
       })
 
       const body = await response.json() as {
-        data?: Array<{
-          providerType: string
-          displayName: string
-          suggestedCredentialProviderType: "envvar" | "iam_role"
-        }>
+        data?: ProviderCredentialSignatureSummary[]
       }
 
       if (response.ok && body.data) {
@@ -1229,7 +1244,10 @@ aws iam attach-role-policy \
                 <select
                   id="connection-type"
                   bind:value={selectedConnectionType}
-                  class="w-full appearance-none rounded-lg border border-border bg-surface px-3 py-2.5 pr-10 text-sm text-text outline-none transition focus:border-border-strong"
+                  class={`w-full appearance-none rounded-lg border px-3 py-2.5 pr-10 text-sm outline-none transition ${isEditing
+                    ? "border-border bg-surface-raised text-text-muted"
+                    : "border-border bg-surface text-text focus:border-border-strong"}`}
+                  disabled={isEditing}
                 >
                   <option value="envvar">API token / env vars</option>
                   <option value="iam-role">AWS role</option>
@@ -1336,138 +1354,149 @@ aws iam attach-role-policy \
                   />
                 </div>
 
-                <div class="rounded-lg border border-border bg-surface p-4 space-y-4">
-                  <div>
-                    <h5 class="text-sm font-medium text-text">Step 1. Bootstrap values</h5>
-                    <p class="mt-1 text-xs text-text-dim">
-                      Use these values when creating the IAM role in your AWS account.
-                      {#if awsPrincipalArn}
-                        This principal ARN is your organization broker role.
-                      {:else}
-                        Your org broker role is not configured yet. Run org provisioning migration first.
-                      {/if}
-                    </p>
+                {#if isEditing}
+                  <div class="rounded-lg border border-border bg-surface p-4 text-sm text-text-dim">
+                    AWS role ARN and external ID are fixed after creation. To switch this connection to a
+                    different role, create a new AWS connection and then narrow or delete this one.
+                  </div>
+                {:else}
+                  <div class="rounded-lg border border-border bg-surface p-4 space-y-4">
+                    <div>
+                      <h5 class="text-sm font-medium text-text">Step 1. Bootstrap values</h5>
+                      <p class="mt-1 text-xs text-text-dim">
+                        Use these values when creating the IAM role in your AWS account.
+                        {#if awsPrincipalArn}
+                          This principal ARN is your organization broker role.
+                        {:else}
+                          Your org broker role is not configured yet. Run org provisioning migration first.
+                        {/if}
+                      </p>
+                    </div>
+
+                    <div class="space-y-3">
+                      <div>
+                        <div class="text-xs text-text-dim">Yaffle principal ARN</div>
+                        <div class="mt-1 flex gap-2">
+                          <input
+                            readonly
+                            value={awsBootstrapValues.yafflePrincipalArn}
+                            class="w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-text"
+                          />
+                          <button
+                            type="button"
+                            class="rounded-md border border-border px-3 py-2 text-xs text-text transition hover:bg-surface-raised"
+                            onclick={() => copyAwsValue("principal", awsBootstrapValues.yafflePrincipalArn)}
+                          >
+                            {copiedAwsField === "principal" ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-xs text-text-dim">External ID</div>
+                        <div class="mt-1 flex gap-2">
+                          <input
+                            readonly
+                            value={externalIdInput.trim() || awsBootstrapValues.suggestedExternalId}
+                            class="w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-text"
+                          />
+                          <button
+                            type="button"
+                            class="rounded-md border border-border px-3 py-2 text-xs text-text transition hover:bg-surface-raised"
+                            onclick={() => copyAwsValue("external-id", externalIdInput.trim() || awsBootstrapValues.suggestedExternalId)}
+                          >
+                            {copiedAwsField === "external-id" ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                      </div>
+
+                      <div>
+                        <div class="text-xs text-text-dim">Suggested role name</div>
+                        <div class="mt-1 flex gap-2">
+                          <input
+                            bind:value={awsRoleNameInput}
+                            class="w-full rounded-md border border-border bg-surface px-3 py-2 text-text outline-none transition focus:border-border-strong"
+                            placeholder={awsBootstrapValues.suggestedRoleName}
+                          />
+                          <button
+                            type="button"
+                            class="rounded-md border border-border px-3 py-2 text-xs text-text transition hover:bg-surface-raised"
+                            onclick={() => copyAwsValue("role-name", awsRoleNameInput.trim() || awsBootstrapValues.suggestedRoleName)}
+                          >
+                            {copiedAwsField === "role-name" ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
 
-                  <div class="space-y-3">
+                  <div class="rounded-lg border border-border bg-surface p-4 space-y-4">
                     <div>
-                      <div class="text-xs text-text-dim">Yaffle principal ARN</div>
-                      <div class="mt-1 flex gap-2">
-                        <input
-                          readonly
-                          value={awsBootstrapValues.yafflePrincipalArn}
-                          class="w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-text"
-                        />
-                        <button
-                          type="button"
-                          class="rounded-md border border-border px-3 py-2 text-xs text-text transition hover:bg-surface-raised"
-                          onclick={() => copyAwsValue("principal", awsBootstrapValues.yafflePrincipalArn)}
+                      <h5 class="text-sm font-medium text-text">Step 2. Choose setup method</h5>
+                      <p class="mt-1 text-xs text-text-dim">
+                        Follow the AWS setup guide for step-by-step instructions for each method,
+                        then paste the resulting role ARN in Step 3.
+                        <a
+                          href="https://yaffle.local:6969/docs/guides/aws/"
+                          class="ml-1 text-yaffle-400 underline decoration-dotted hover:text-yaffle-300"
+                          target="_blank"
+                          rel="noreferrer"
                         >
-                          {copiedAwsField === "principal" ? "Copied" : "Copy"}
-                        </button>
-                      </div>
+                          Open AWS setup guide
+                        </a>
+                      </p>
                     </div>
 
-                    <div>
-                      <div class="text-xs text-text-dim">External ID</div>
-                      <div class="mt-1 flex gap-2">
-                        <input
-                          readonly
-                          value={externalIdInput.trim() || awsBootstrapValues.suggestedExternalId}
-                          class="w-full rounded-md border border-border bg-surface-raised px-3 py-2 text-text"
-                        />
-                        <button
-                          type="button"
-                          class="rounded-md border border-border px-3 py-2 text-xs text-text transition hover:bg-surface-raised"
-                          onclick={() => copyAwsValue("external-id", externalIdInput.trim() || awsBootstrapValues.suggestedExternalId)}
-                        >
-                          {copiedAwsField === "external-id" ? "Copied" : "Copy"}
-                        </button>
-                      </div>
-                    </div>
-
-                    <div>
-                      <div class="text-xs text-text-dim">Suggested role name</div>
-                      <div class="mt-1 flex gap-2">
-                        <input
-                          bind:value={awsRoleNameInput}
-                          class="w-full rounded-md border border-border bg-surface px-3 py-2 text-text outline-none transition focus:border-border-strong"
-                          placeholder={awsBootstrapValues.suggestedRoleName}
-                        />
-                        <button
-                          type="button"
-                          class="rounded-md border border-border px-3 py-2 text-xs text-text transition hover:bg-surface-raised"
-                          onclick={() => copyAwsValue("role-name", awsRoleNameInput.trim() || awsBootstrapValues.suggestedRoleName)}
-                        >
-                          {copiedAwsField === "role-name" ? "Copied" : "Copy"}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div class="rounded-lg border border-border bg-surface p-4 space-y-4">
-                  <div>
-                    <h5 class="text-sm font-medium text-text">Step 2. Choose setup method</h5>
-                    <p class="mt-1 text-xs text-text-dim">
-                      Follow the AWS setup guide for step-by-step instructions for each method,
-                      then paste the resulting role ARN in Step 3.
-                      <a
-                        href="https://yaffle.local:6969/docs/guides/aws/"
-                        class="ml-1 text-yaffle-400 underline decoration-dotted hover:text-yaffle-300"
-                        target="_blank"
-                        rel="noreferrer"
+                    <div class="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        class={`rounded-md border px-3 py-1.5 text-xs transition ${awsSetupMethod === "terraform"
+                          ? "border-border-strong bg-surface-raised text-text"
+                          : "border-border text-text-dim hover:bg-surface"}`}
+                        onclick={() => awsSetupMethod = "terraform"}
                       >
-                        Open AWS setup guide
-                      </a>
-                    </p>
-                  </div>
-
-                  <div class="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      class={`rounded-md border px-3 py-1.5 text-xs transition ${awsSetupMethod === "terraform"
-                        ? "border-border-strong bg-surface-raised text-text"
-                        : "border-border text-text-dim hover:bg-surface"}`}
-                      onclick={() => awsSetupMethod = "terraform"}
-                    >
-                      Terraform (Recommended)
-                    </button>
-                    <button
-                      type="button"
-                      class={`rounded-md border px-3 py-1.5 text-xs transition ${awsSetupMethod === "cloudformation"
-                        ? "border-border-strong bg-surface-raised text-text"
-                        : "border-border text-text-dim hover:bg-surface"}`}
-                      onclick={() => awsSetupMethod = "cloudformation"}
-                    >
-                      CloudFormation
-                    </button>
-                    <button
-                      type="button"
-                      class={`rounded-md border px-3 py-1.5 text-xs transition ${awsSetupMethod === "cli"
-                        ? "border-border-strong bg-surface-raised text-text"
-                        : "border-border text-text-dim hover:bg-surface"}`}
-                      onclick={() => awsSetupMethod = "cli"}
-                    >
-                      AWS CLI
-                    </button>
-                  </div>
-
-                  <div class="relative rounded-md border border-border bg-surface-raised p-3">
-                    <div class="absolute right-2 top-2 z-10">
-                      <CopyButton copied={copiedAwsSnippet} title="Copy setup snippet" onclick={copyAwsSnippet} />
+                        Terraform (Recommended)
+                      </button>
+                      <button
+                        type="button"
+                        class={`rounded-md border px-3 py-1.5 text-xs transition ${awsSetupMethod === "cloudformation"
+                          ? "border-border-strong bg-surface-raised text-text"
+                          : "border-border text-text-dim hover:bg-surface"}`}
+                        onclick={() => awsSetupMethod = "cloudformation"}
+                      >
+                        CloudFormation
+                      </button>
+                      <button
+                        type="button"
+                        class={`rounded-md border px-3 py-1.5 text-xs transition ${awsSetupMethod === "cli"
+                          ? "border-border-strong bg-surface-raised text-text"
+                          : "border-border text-text-dim hover:bg-surface"}`}
+                        onclick={() => awsSetupMethod = "cli"}
+                      >
+                        AWS CLI
+                      </button>
                     </div>
-                    <pre class="overflow-x-auto whitespace-pre-wrap text-xs text-text"><code>{activeAwsSnippet}</code></pre>
-                  </div>
 
-                  <p class="text-xs text-text-dim">Use the guide for exact steps and output retrieval.</p>
-                </div>
+                    <div class="relative rounded-md border border-border bg-surface-raised p-3">
+                      <div class="absolute right-2 top-2 z-10">
+                        <CopyButton copied={copiedAwsSnippet} title="Copy setup snippet" onclick={copyAwsSnippet} />
+                      </div>
+                      <pre class="overflow-x-auto whitespace-pre-wrap text-xs text-text"><code>{activeAwsSnippet}</code></pre>
+                    </div>
+
+                    <p class="text-xs text-text-dim">Use the guide for exact steps and output retrieval.</p>
+                  </div>
+                {/if}
 
                 <div class="rounded-lg border border-border bg-surface p-4 space-y-3">
                   <div>
                     <h5 class="text-sm font-medium text-text">Step 3. Enter role details</h5>
                     <p class="mt-1 text-xs text-text-dim">
-                      Validation currently checks ARN syntax. Runtime assume-role verification will be added in a follow-up.
+                      {#if isEditing}
+                        Role target changes are disabled here to prevent accidental replacement of another AWS connection.
+                      {:else}
+                        Validation currently checks ARN syntax. Runtime assume-role verification will be added in a follow-up.
+                      {/if}
                     </p>
                   </div>
 
@@ -1475,7 +1504,10 @@ aws iam attach-role-policy \
                     <div class="text-text-dim">Role ARN</div>
                     <input
                       bind:value={roleArnInput}
-                      class="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-text outline-none transition focus:border-border-strong"
+                      readonly={isEditing}
+                      class={`mt-1 w-full rounded-md border px-3 py-2 outline-none transition ${isEditing
+                        ? "border-border bg-surface-raised text-text-muted"
+                        : "border-border bg-surface text-text focus:border-border-strong"}`}
                       placeholder={`arn:aws:iam::123456789012:role/${awsRoleNameInput.trim() || awsBootstrapValues.suggestedRoleName}`}
                     />
                   </div>
@@ -1484,7 +1516,10 @@ aws iam attach-role-policy \
                     <div class="text-text-dim">External ID</div>
                     <input
                       bind:value={externalIdInput}
-                      class="mt-1 w-full rounded-md border border-border bg-surface px-3 py-2 text-text outline-none transition focus:border-border-strong"
+                      readonly={isEditing}
+                      class={`mt-1 w-full rounded-md border px-3 py-2 outline-none transition ${isEditing
+                        ? "border-border bg-surface-raised text-text-muted"
+                        : "border-border bg-surface text-text focus:border-border-strong"}`}
                       placeholder={awsBootstrapValues.suggestedExternalId}
                     />
                   </div>
@@ -1502,12 +1537,17 @@ aws iam attach-role-policy \
                   {#each knownEnvironmentOptions as option}
                     <button
                       type="button"
-                      class={`rounded-full border px-3 py-1.5 text-xs transition ${selectedEnvironments.includes(option)
-                        ? "border-border-strong bg-surface-raised text-text"
-                        : "border-border text-text-dim hover:bg-surface"}`}
-                      onclick={() => toggleScopeValue("environment", option)}
+                      disabled={!option.available && !option.selected}
+                      class={`rounded-full border px-3 py-1.5 text-xs transition ${option.selected
+                        ? option.conflicting
+                          ? "border-red-500/60 bg-red-500/10 text-red-300"
+                          : "border-border-strong bg-surface-raised text-text"
+                        : option.available
+                          ? "border-border text-text-dim hover:border-border-strong hover:bg-surface hover:text-text"
+                          : "border-border text-text-dim opacity-40"}`}
+                      onclick={() => toggleScopeValue("environment", option.value)}
                     >
-                      {option}
+                      {option.value}
                     </button>
                   {/each}
                 </div>
@@ -1549,12 +1589,17 @@ aws iam attach-role-policy \
                   {#each knownWorkspaceOptions as option}
                     <button
                       type="button"
-                      class={`rounded-full border px-3 py-1.5 text-xs transition ${selectedWorkspaces.includes(option)
-                        ? "border-border-strong bg-surface-raised text-text"
-                        : "border-border text-text-dim hover:bg-surface"}`}
-                      onclick={() => toggleScopeValue("workspace", option)}
+                      disabled={!option.available && !option.selected}
+                      class={`rounded-full border px-3 py-1.5 text-xs transition ${option.selected
+                        ? option.conflicting
+                          ? "border-red-500/60 bg-red-500/10 text-red-300"
+                          : "border-border-strong bg-surface-raised text-text"
+                        : option.available
+                          ? "border-border text-text-dim hover:border-border-strong hover:bg-surface hover:text-text"
+                          : "border-border text-text-dim opacity-40"}`}
+                      onclick={() => toggleScopeValue("workspace", option.value)}
                     >
-                      {option}
+                      {option.value}
                     </button>
                   {/each}
                 </div>
@@ -1598,6 +1643,14 @@ aws iam attach-role-policy \
               {createError}
             </div>
           {/if}
+
+          {#if scopeConflictMessages.length > 0}
+            <div class="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              {#each scopeConflictMessages as message}
+                <div>{message}</div>
+              {/each}
+            </div>
+          {/if}
         </div>
 
         <div class="border-t border-border bg-surface-raised">
@@ -1616,7 +1669,7 @@ aws iam attach-role-policy \
             <button
               class="rounded-md border border-border px-3 py-2 text-sm text-text transition hover:bg-surface disabled:opacity-50"
               onclick={submitCreateConnection}
-              disabled={creating || !connectionName.trim() || (selectedConnectionType === "envvar" ? normalizeEnvVarEntries(envVarEntries).length === 0 : !roleArnInput.trim())}
+              disabled={creating || scopeConflictMessages.length > 0 || !connectionName.trim() || (selectedConnectionType === "envvar" ? !hasCompleteEnvVarEntries(envVarEntries) : !roleArnInput.trim())}
             >
               {creating ? "Saving..." : isEditing ? "Save changes" : "Save connection"}
             </button>

@@ -202,6 +202,20 @@ function listIamRoleTargets(connections: Array<{ credentialProviderType: string 
   return [...targets].sort()
 }
 
+function getIamRoleTarget(config: unknown): {
+  roleArn: string | null
+  externalId: string | null
+} {
+  const parsed = typeof config === "object" && config !== null
+    ? config as Record<string, unknown>
+    : {}
+
+  return {
+    roleArn: typeof parsed.roleArn === "string" ? parsed.roleArn : null,
+    externalId: typeof parsed.externalId === "string" ? parsed.externalId : null,
+  }
+}
+
 function buildProviderInferenceMetadata(payload: z.infer<typeof createConnectionSchema>, resolvedProviderType: string): {
   inferred: boolean
   source: "envvar_keys"
@@ -1319,6 +1333,24 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
       backingStore: "ssm_parameter_store",
     }
   } else {
+    const existingTarget = getIamRoleTarget(existing.config)
+    const nextExternalId = payload.externalId ?? null
+
+    if (
+      existingTarget.roleArn !== null
+      && (payload.roleArn !== existingTarget.roleArn || nextExternalId !== existingTarget.externalId)
+    ) {
+      return c.json(
+        {
+          error: {
+            code: "CONNECTION_ASSUME_ROLE_TARGET_IMMUTABLE",
+            message: "AWS role ARN and external ID cannot be changed in place. Create a new AWS connection, then narrow or delete the old one.",
+          },
+        },
+        409,
+      )
+    }
+
     secretArn = `iam-role:${payload.roleArn}`
     secretStore = "inline-config"
     secretPath = null

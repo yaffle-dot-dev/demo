@@ -410,6 +410,10 @@
         : "Conflicting connections"
     }
 
+    if (workspace.preview.connectionStatus === "error") {
+      return "Connection check failed"
+    }
+
     return "Blocked"
   }
 

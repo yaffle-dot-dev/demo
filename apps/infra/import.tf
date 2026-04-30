@@ -88,13 +88,13 @@ import {
 
 import {
   for_each = local.import_main
-  to       = aws_route53_record.www
+  to       = aws_route53_record.www[0]
   id       = "Z0749074TAIKLLRRH3OM_www.yaffle.dev_A"
 }
 
 import {
   for_each = local.import_main
-  to       = aws_route53_record.www_aaaa
+  to       = aws_route53_record.www_aaaa[0]
   id       = "Z0749074TAIKLLRRH3OM_www.yaffle.dev_AAAA"
 }
 
@@ -106,6 +106,6 @@ import {
 
 import {
   for_each = local.import_main
-  to       = cloudflare_dns_record.www
+  to       = cloudflare_dns_record.www[0]
   id       = "${local.cloudflare_zone_id}/6c7fc12a49ae3832681868e0cfd82a2f"
 }

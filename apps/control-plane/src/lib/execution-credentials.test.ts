@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 
 import type { Connection } from "../db/queries/connections.ts"
 import {
+  formatConnectionBlockedReason,
   getConnectionReadinessForDeploymentWithDeps,
   resolveExecutionCredentialsForDeploymentWithDeps,
 } from "./execution-credentials.ts"
@@ -105,6 +106,22 @@ describe("execution credential resolution", () => {
       })
     }
   })
+
+  test("passes the deployment environment to connection resolution", async () => {
+    let resolvedEnvironmentName: string | null = null
+
+    const result = await resolveExecutionCredentialsForDeploymentWithDeps(deployment, {
+      getProvidersForDeployment: async () => ["aws"],
+      listConnectionsForOrg: async () => [mockConnection({ id: "conn-aws", name: "aws-conn" })],
+      resolveConnectionEnv: async (_connection, currentDeployment) => {
+        resolvedEnvironmentName = currentDeployment.environmentName
+        return { AWS_ACCESS_KEY_ID: "AKIA_TEST" }
+      },
+    })
+
+    expect(result.ok).toBe(true)
+    expect(resolvedEnvironmentName === "production").toBe(true)
+  })
 })
 
 describe("connection readiness", () => {
@@ -166,5 +183,19 @@ describe("connection readiness", () => {
         provider: "aws",
       },
     ])
+  })
+
+  test("returns an error readiness when provider extraction fails", async () => {
+    const readiness = await getConnectionReadinessForDeploymentWithDeps(deployment, {
+      getProvidersForDeployment: async () => {
+        throw new Error("The specified key does not exist.")
+      },
+      listConnectionsForOrg: async () => [],
+      resolveConnectionEnv: async () => ({}),
+    })
+
+    expect(readiness.status).toBe("error")
+    expect(readiness.blockedReason).toBe("Connection readiness unavailable for this workspace")
+    expect(formatConnectionBlockedReason(readiness)).toBe("Connection readiness unavailable for this workspace")
   })
 })

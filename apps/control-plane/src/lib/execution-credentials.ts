@@ -27,7 +27,7 @@ export type ExecutionCredentialResolution = {
 }
 
 export interface ConnectionReadiness {
-  status: "ready" | "missing" | "conflict" | "not_required"
+  status: "ready" | "missing" | "conflict" | "not_required" | "error"
   requiredProviders: string[]
   missingProviders: string[]
   conflictProviders: string[]
@@ -36,11 +36,16 @@ export interface ConnectionReadiness {
     name: string
     provider: string
   }>
+  blockedReason?: string | null
 }
 
 export function formatConnectionBlockedReason(
-  readiness: Pick<ConnectionReadiness, "status" | "missingProviders" | "conflictProviders">,
+  readiness: Pick<ConnectionReadiness, "status" | "missingProviders" | "conflictProviders" | "blockedReason">,
 ): string | null {
+  if (readiness.status === "error") {
+    return readiness.blockedReason?.trim() || "Connection readiness unavailable"
+  }
+
   if (readiness.status === "missing") {
     return readiness.missingProviders.length > 0
       ? `Missing connections: ${readiness.missingProviders.join(", ")}`
@@ -62,7 +67,10 @@ interface ExecutionResolutionDeps {
     deployment: ProviderRequirementDeployment,
   ) => Promise<ExtractedProviderRequirement[]>
   listConnectionsForOrg: (orgId: string) => Promise<Connection[]>
-  resolveConnectionEnv: (connection: Connection) => Promise<Record<string, string>>
+  resolveConnectionEnv: (
+    connection: Connection,
+    deployment: Pick<WorkspaceDeployment, "environmentName">,
+  ) => Promise<Record<string, string>>
 }
 
 async function loadProviderRequirements(
@@ -80,7 +88,10 @@ async function loadProviderRequirements(
   }))
 }
 
-async function resolveConnectionEnv(connection: Connection): Promise<Record<string, string>> {
+async function resolveConnectionEnvForDeployment(
+  connection: Connection,
+  deployment: Pick<WorkspaceDeployment, "environmentName">,
+): Promise<Record<string, string>> {
   const org = await findOrgById(connection.orgId)
   if (!org?.iamRoleArn) {
     throw new Error(`Organization ${connection.orgId} is missing broker role ARN`)
@@ -126,6 +137,13 @@ async function resolveConnectionEnv(connection: Connection): Promise<Record<stri
       RoleSessionName: `yaffle-run-${connection.id.slice(0, 8)}`,
       ExternalId: typeof config.externalId === "string" ? config.externalId : undefined,
       DurationSeconds: 3600,
+      Tags: [
+        {
+          Key: "environment",
+          Value: deployment.environmentName,
+        },
+      ],
+      TransitiveTagKeys: ["environment"],
     }))
 
     if (!assumed.Credentials?.AccessKeyId || !assumed.Credentials.SecretAccessKey || !assumed.Credentials.SessionToken) {
@@ -150,7 +168,7 @@ export async function resolveExecutionCredentialsForDeployment(
     getProvidersForDeployment: getRequiredProvidersForDeployment,
     getProviderRequirementsForDeployment: getRequiredProviderRequirementsForDeployment,
     listConnectionsForOrg,
-    resolveConnectionEnv,
+    resolveConnectionEnv: resolveConnectionEnvForDeployment,
   })
 }
 
@@ -185,7 +203,7 @@ export async function resolveExecutionCredentialsForDeploymentWithDeps(
       continue
     }
 
-    Object.assign(env, await deps.resolveConnectionEnv(matches[0]))
+    Object.assign(env, await deps.resolveConnectionEnv(matches[0], deployment))
   }
 
   if (missingProviders.length > 0 || conflictProviders.length > 0) {
@@ -225,7 +243,7 @@ export async function getConnectionReadinessForDeployment(
     getProvidersForDeployment: getRequiredProvidersForDeployment,
     getProviderRequirementsForDeployment: getRequiredProviderRequirementsForDeployment,
     listConnectionsForOrg,
-    resolveConnectionEnv,
+    resolveConnectionEnv: resolveConnectionEnvForDeployment,
   })
 }
 
@@ -233,10 +251,32 @@ export async function getConnectionReadinessForDeploymentWithDeps(
   deployment: Pick<WorkspaceDeployment, "orgId" | "environmentName" | "workspacePath" | "runGroupId"> & ProviderRequirementDeployment,
   deps: ExecutionResolutionDeps,
 ): Promise<ConnectionReadiness> {
-  const [requirements, connections] = await Promise.all([
-    loadProviderRequirements(deployment, deps),
-    deps.listConnectionsForOrg(deployment.orgId),
-  ])
+  const connectionsPromise = deps.listConnectionsForOrg(deployment.orgId)
+
+  let requirements: ExtractedProviderRequirement[]
+  try {
+    requirements = await loadProviderRequirements(deployment, deps)
+  } catch (error) {
+    logger.error("connection_readiness.provider_extraction_failed", {
+      error: error instanceof Error ? error.message : String(error),
+      orgId: deployment.orgId,
+      repo: deployment.repo,
+      environment: deployment.environmentName,
+      workspacePath: deployment.workspacePath,
+      runGroupId: deployment.runGroupId ?? undefined,
+    })
+
+    return {
+      status: "error",
+      requiredProviders: [],
+      missingProviders: [],
+      conflictProviders: [],
+      matchedConnections: [],
+      blockedReason: "Connection readiness unavailable for this workspace",
+    }
+  }
+
+  const connections = await connectionsPromise
 
   const providers = requirements.map((requirement) => requirement.providerType)
 
@@ -247,6 +287,7 @@ export async function getConnectionReadinessForDeploymentWithDeps(
       missingProviders: [],
       conflictProviders: [],
       matchedConnections: [],
+      blockedReason: null,
     }
   }
 
@@ -301,5 +342,6 @@ export async function getConnectionReadinessForDeploymentWithDeps(
     missingProviders,
     conflictProviders,
     matchedConnections,
+    blockedReason: null,
   }
 }

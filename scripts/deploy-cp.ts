@@ -85,6 +85,16 @@ function renderControlPlaneTaskDefinition(
 async function resolveControlPlaneSecretOverrides(
   environment: string,
 ): Promise<ControlPlaneSecretOverrides> {
+  const overrideAgentTokenSecretArn = process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN_SECRET_ARN?.trim()
+  const overrideCallbackSecretArn = process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET_ARN?.trim()
+
+  if (overrideAgentTokenSecretArn || overrideCallbackSecretArn) {
+    return {
+      providerDiscoveryAgentTokenSecretArn: overrideAgentTokenSecretArn || undefined,
+      providerDiscoveryCallbackSecretArn: overrideCallbackSecretArn || undefined,
+    }
+  }
+
   const outputs = await fetchOutputs({
     workspace: "apps/provider-discovery-agent/infra",
     environment,

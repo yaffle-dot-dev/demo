@@ -40,6 +40,60 @@ variable "managed_policy_arns" {
   default     = ["arn:aws:iam::aws:policy/AdministratorAccess"]
 }
 
+variable "permissions_boundary_arn" {
+  type        = string
+  description = "Optional permissions boundary ARN to apply to the role"
+  default     = null
+  nullable    = true
+
+  validation {
+    condition = (
+      var.permissions_boundary_arn == null
+      || can(regex("^arn:aws(-[a-z]+)?:iam::[0-9]{12}:policy/.+$", var.permissions_boundary_arn))
+    )
+    error_message = "permissions_boundary_arn must be null or a valid IAM policy ARN."
+  }
+}
+
+variable "allowed_session_tag_keys" {
+  type        = list(string)
+  description = "Session tag keys the trusted principal may pass when assuming this role"
+  default     = ["environment"]
+}
+
+variable "required_session_tag_keys" {
+  type        = list(string)
+  description = "Session tag keys that must be present when assuming this role"
+  default     = []
+
+  validation {
+    condition     = length(setsubtract(toset(var.required_session_tag_keys), toset(var.allowed_session_tag_keys))) == 0
+    error_message = "required_session_tag_keys must be a subset of allowed_session_tag_keys."
+  }
+}
+
+variable "required_session_tag_equals" {
+  type        = map(string)
+  description = "Session tag key/value pairs that must match exactly when assuming this role"
+  default     = {}
+
+  validation {
+    condition     = length(setsubtract(toset(keys(var.required_session_tag_equals)), toset(var.allowed_session_tag_keys))) == 0
+    error_message = "required_session_tag_equals keys must be included in allowed_session_tag_keys."
+  }
+}
+
+variable "required_session_tag_not_equals" {
+  type        = map(string)
+  description = "Session tag key/value pairs that must not match when assuming this role"
+  default     = {}
+
+  validation {
+    condition     = length(setsubtract(toset(keys(var.required_session_tag_not_equals)), toset(var.allowed_session_tag_keys))) == 0
+    error_message = "required_session_tag_not_equals keys must be included in allowed_session_tag_keys."
+  }
+}
+
 variable "tags" {
   type        = map(string)
   description = "Additional tags to apply"

@@ -49,6 +49,15 @@ export function getWorkspaceDisplayRuns(params: {
 }
 
 export function getWorkspaceConnectionBlockReason(workspace: WorkspaceWithRuns): string | null {
+  if (workspace.preview.connectionStatus === "error") {
+    const explicitReason = workspace.preview.blockedReason?.trim()
+    if (explicitReason) {
+      return explicitReason
+    }
+
+    return "Connection readiness unavailable"
+  }
+
   if (workspace.preview.connectionStatus === "missing") {
     const explicitReason = workspace.preview.blockedReason?.trim()
     if (explicitReason) {

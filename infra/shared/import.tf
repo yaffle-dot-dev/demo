@@ -28,6 +28,18 @@ import {
 
 import {
   for_each = local.import_main
+  to       = module.self_hosted_main_execution_role.aws_iam_role.yaffle_role
+  id       = var.self_hosted_main_execution_role_name
+}
+
+import {
+  for_each = local.import_main
+  to       = module.self_hosted_main_execution_role.aws_iam_role_policy_attachment.managed[0]
+  id       = "${var.self_hosted_main_execution_role_name}/arn:aws:iam::aws:policy/AdministratorAccess"
+}
+
+import {
+  for_each = local.import_main
   to       = aws_iam_role_policy.github_actions_ci_ecr
   id       = "yaffle-github-actions-ci:ecr-push"
 }

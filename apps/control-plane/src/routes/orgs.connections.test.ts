@@ -221,6 +221,7 @@ describe("org connections routes", () => {
         environmentScope: ["staging"],
         workspaceScope: ["infra/*"],
         roleArn: "arn:aws:iam::123456789012:role/yaffle-staging",
+        externalId: "external-staging",
       }),
     })
     const created = await createRes.json()
@@ -236,14 +237,54 @@ describe("org connections routes", () => {
         credentialProviderType: "iam_role",
         environmentScope: ["staging", "production"],
         workspaceScope: ["infra/*"],
-        roleArn: "arn:aws:iam::123456789012:role/yaffle-staging-v2",
+        roleArn: "arn:aws:iam::123456789012:role/yaffle-staging",
+        externalId: "external-staging",
       }),
     })
 
     expect(updateRes.status).toBe(200)
     const body = await updateRes.json()
     expect(body.data.name).toBe("aws staging updated")
-    expect(body.data.secretArn).toContain("iam-role:arn:aws:iam::123456789012:role/yaffle-staging-v2")
+    expect(body.data.secretArn).toContain("iam-role:arn:aws:iam::123456789012:role/yaffle-staging")
+  })
+
+  test("rejects changing iam role targets in place", async () => {
+    const createRes = await req("/api/orgs/connections-test-org/connections", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "aws split candidate",
+        providerType: "aws",
+        credentialProviderType: "iam_role",
+        environmentScope: ["main", "pr-*"],
+        workspaceScope: ["infra/*"],
+        roleArn: "arn:aws:iam::123456789012:role/yaffle-main",
+        externalId: "main-external-id",
+      }),
+    })
+    const created = await createRes.json()
+
+    const updateRes = await req(`/api/orgs/connections-test-org/connections/${created.data.id}`, {
+      method: "PATCH",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        name: "aws split candidate",
+        providerType: "aws",
+        credentialProviderType: "iam_role",
+        environmentScope: ["pr-*"] ,
+        workspaceScope: ["infra/*"],
+        roleArn: "arn:aws:iam::123456789012:role/yaffle-non-main",
+        externalId: "non-main-external-id",
+      }),
+    })
+
+    expect(updateRes.status).toBe(409)
+    const body = await updateRes.json()
+    expect(body.error.code).toBe("CONNECTION_ASSUME_ROLE_TARGET_IMMUTABLE")
   })
 
   test("rejects changing credential provider type in place", async () => {

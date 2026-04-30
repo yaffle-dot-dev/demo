@@ -118,8 +118,9 @@
     try {
       const envRes = await listEnvironments({ org })
       environments = envRes.data
-    } catch {
-      environments = []
+      error = ""
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e)
     }
   }
 

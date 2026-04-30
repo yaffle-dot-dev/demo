@@ -175,6 +175,25 @@ output "app_deployer_role_arn" {
   description = "IAM role ARN for human app deployers"
 }
 
+output "self_hosted_main_execution_role_arn" {
+  value       = module.self_hosted_main_execution_role.role_arn
+  description = "IAM role ARN for Yaffle's dogfood main execution role"
+}
+
+output "self_hosted_non_main_execution_role_arn" {
+  value       = module.self_hosted_non_main_execution_role.role_arn
+  description = "IAM role ARN for Yaffle's dogfood non-main execution role"
+}
+
+output "self_hosted_non_main_execution_guardrail_policy_arns" {
+  value = [
+    aws_iam_policy.self_hosted_non_main_write_scope_guardrails.arn,
+    aws_iam_policy.self_hosted_non_main_create_scope_guardrails.arn,
+    aws_iam_policy.self_hosted_non_main_sensitive_guardrails.arn,
+  ]
+  description = "Managed policy ARNs that guard non-main Yaffle execution roles"
+}
+
 # -----------------------------------------------------------------------------
 # ACM Certificate
 # -----------------------------------------------------------------------------

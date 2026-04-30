@@ -96,7 +96,7 @@ export interface EnvironmentWorkspace {
   previewId: string
   workspacePath: string
   status: string
-  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required" | "error"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
@@ -157,7 +157,7 @@ export interface WorkspacePreview {
   id: string
   workspacePath: string
   status: string
-  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required" | "error"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
