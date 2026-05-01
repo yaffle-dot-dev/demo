@@ -17,6 +17,7 @@ import {
   getRequiredProviderRequirementsForDeployment,
   getRequiredProvidersForDeployment,
 } from "../lib/provider-requirements.ts"
+import { logger, withSpan } from "../lib/telemetry.ts"
 
 const listQuerySchema = z.object({
   org: z.string().min(1),
@@ -26,6 +27,85 @@ const listQuerySchema = z.object({
 })
 
 export const environmentsRoute = new Hono()
+
+const ENVIRONMENTS_CACHE_TTL_MS = 3_000
+const ENVIRONMENTS_SLOW_REQUEST_MS = 5_000
+const ENVIRONMENTS_LARGE_HEAP_DELTA_BYTES = 64 * 1024 * 1024
+
+interface MemorySnapshot {
+  heapUsed: number
+  rss: number
+}
+
+interface EnvironmentsLoadStats {
+  deploymentCount: number
+  runGroupCount: number
+  environmentCount: number
+  workspaceCount: number
+}
+
+interface EnvironmentsLoadResult {
+  environments: EnvironmentGroup[]
+  stats: EnvironmentsLoadStats
+  phaseMetrics: Record<string, number>
+}
+
+interface EnvironmentsCacheEntry {
+  expiresAt: number
+  value?: EnvironmentsLoadResult
+  inFlight?: Promise<EnvironmentsLoadResult>
+}
+
+const environmentsCache = new Map<string, EnvironmentsCacheEntry>()
+
+function getMemorySnapshot(): MemorySnapshot {
+  const usage = process.memoryUsage()
+  return {
+    heapUsed: usage.heapUsed,
+    rss: usage.rss,
+  }
+}
+
+function summarizeEnvironmentCounts(environments: EnvironmentGroup[]): Pick<EnvironmentsLoadStats, "environmentCount" | "workspaceCount"> {
+  return {
+    environmentCount: environments.length,
+    workspaceCount: environments.reduce((total, environment) => total + environment.workspaces.length, 0),
+  }
+}
+
+function setPhaseMetric(
+  metrics: Record<string, number>,
+  phase: string,
+  startedAtMs: number,
+  endedAtMs = Date.now(),
+  memoryBefore?: MemorySnapshot,
+  memoryAfter?: MemorySnapshot,
+): void {
+  metrics[`${phase}.durationMs`] = endedAtMs - startedAtMs
+
+  if (memoryBefore && memoryAfter) {
+    metrics[`${phase}.heapDeltaBytes`] = memoryAfter.heapUsed - memoryBefore.heapUsed
+    metrics[`${phase}.rssDeltaBytes`] = memoryAfter.rss - memoryBefore.rss
+  }
+}
+
+async function profileSubphase<T>(
+  metrics: Record<string, number>,
+  phase: string,
+  fn: () => Promise<T>,
+  count: (result: T) => number,
+): Promise<T> {
+  const startedAt = Date.now()
+  const memoryBefore = getMemorySnapshot()
+  const result = await fn()
+  const endedAt = Date.now()
+  const memoryAfter = getMemorySnapshot()
+
+  setPhaseMetric(metrics, phase, startedAt, endedAt, memoryBefore, memoryAfter)
+  metrics[`${phase}.itemCount`] = count(result)
+
+  return result
+}
 
 interface EnvironmentWorkspace {
   previewId: string
@@ -152,15 +232,158 @@ async function fetchEnvironments(
   repo?: string,
   detailLevel: "full" | "dag" = "full",
 ): Promise<EnvironmentGroup[]> {
+  return withSpan("environments.fetch", async (span) => {
+    const cacheKey = `${orgId}:${repo ?? "*"}:${detailLevel}`
+    const startedAt = Date.now()
+    const memoryBefore = getMemorySnapshot()
+    let cacheResult: "hit" | "coalesced" | "miss" = "miss"
+
+    const setSpanAttributes = (result: EnvironmentsLoadResult | null): void => {
+      const memoryAfter = getMemorySnapshot()
+      const durationMs = Date.now() - startedAt
+      const heapUsedDeltaBytes = memoryAfter.heapUsed - memoryBefore.heapUsed
+      const rssDeltaBytes = memoryAfter.rss - memoryBefore.rss
+
+      const spanAttrs: Record<string, string | number> = {
+        "yaffle.org_id": orgId,
+        "yaffle.repo": repo ?? "",
+        "environments.detail_level": detailLevel,
+        "environments.cache_result": cacheResult,
+        "environments.duration_ms": durationMs,
+        "process.heap_used_before_bytes": memoryBefore.heapUsed,
+        "process.heap_used_after_bytes": memoryAfter.heapUsed,
+        "process.heap_used_delta_bytes": heapUsedDeltaBytes,
+        "process.rss_before_bytes": memoryBefore.rss,
+        "process.rss_after_bytes": memoryAfter.rss,
+        "process.rss_delta_bytes": rssDeltaBytes,
+      }
+
+      const logAttrs: Record<string, string | number> = {
+        orgId,
+        repo: repo ?? "",
+        detailLevel,
+        cacheResult,
+        durationMs,
+        heapUsedBeforeBytes: memoryBefore.heapUsed,
+        heapUsedAfterBytes: memoryAfter.heapUsed,
+        heapUsedDeltaBytes,
+        rssBeforeBytes: memoryBefore.rss,
+        rssAfterBytes: memoryAfter.rss,
+        rssDeltaBytes,
+      }
+
+      if (result) {
+        spanAttrs["environments.deployments_scanned"] = result.stats.deploymentCount
+        spanAttrs["environments.run_groups_scanned"] = result.stats.runGroupCount
+        spanAttrs["environments.environments_returned"] = result.stats.environmentCount
+        spanAttrs["environments.workspaces_returned"] = result.stats.workspaceCount
+        for (const [key, value] of Object.entries(result.phaseMetrics)) {
+          spanAttrs[`environments.phase.${key}`] = value
+        }
+
+        logAttrs.deploymentCount = result.stats.deploymentCount
+        logAttrs.runGroupCount = result.stats.runGroupCount
+        logAttrs.environmentCount = result.stats.environmentCount
+        logAttrs.workspaceCount = result.stats.workspaceCount
+        for (const [key, value] of Object.entries(result.phaseMetrics)) {
+          logAttrs[key] = value
+        }
+      }
+
+      span.setAttributes(spanAttrs)
+
+      if (
+        durationMs >= ENVIRONMENTS_SLOW_REQUEST_MS
+        || heapUsedDeltaBytes >= ENVIRONMENTS_LARGE_HEAP_DELTA_BYTES
+      ) {
+        logger.warn("environments.fetch.profile", logAttrs)
+      }
+    }
+
+    const now = Date.now()
+    const cached = environmentsCache.get(cacheKey)
+
+    if (cached?.value && cached.expiresAt > now) {
+      cacheResult = "hit"
+      setSpanAttributes(cached.value)
+      return cached.value.environments
+    }
+
+    if (cached?.inFlight) {
+      cacheResult = "coalesced"
+      const result = await cached.inFlight
+      setSpanAttributes(result)
+      return result.environments
+    }
+
+    const loadPromise = loadEnvironments(orgId, repo, detailLevel)
+    environmentsCache.set(cacheKey, {
+      expiresAt: now + ENVIRONMENTS_CACHE_TTL_MS,
+      inFlight: loadPromise,
+    })
+
+    try {
+      const result = await loadPromise
+      environmentsCache.set(cacheKey, {
+        expiresAt: Date.now() + ENVIRONMENTS_CACHE_TTL_MS,
+        value: result,
+      })
+      setSpanAttributes(result)
+      return result.environments
+    } catch (error) {
+      environmentsCache.delete(cacheKey)
+      setSpanAttributes(null)
+      logger.error("environments.fetch.failed", {
+        error: error instanceof Error ? error.message : String(error),
+        orgId,
+        repo: repo ?? undefined,
+        detailLevel,
+        cacheResult,
+      })
+      throw error
+    }
+  })
+}
+
+async function loadEnvironments(
+  orgId: string,
+  repo?: string,
+  detailLevel: "full" | "dag" = "full",
+): Promise<EnvironmentsLoadResult> {
+  const phaseMetrics: Record<string, number> = {}
+  const listDeploymentsStartedAt = Date.now()
+  const listDeploymentsMemoryBefore = getMemorySnapshot()
   const result = await listDeployments(orgId, {
     repo,
     environmentKind: "named",
     limit: 250,
   })
+  setPhaseMetric(
+    phaseMetrics,
+    "listDeployments",
+    listDeploymentsStartedAt,
+    Date.now(),
+    listDeploymentsMemoryBefore,
+    getMemorySnapshot(),
+  )
 
   // Filter out destroyed workspaces - they're no longer in the config
   const activePreviews = result.items.filter((p) => p.status !== "destroyed")
-  if (activePreviews.length === 0) return []
+  if (activePreviews.length === 0) {
+    return {
+      environments: [],
+      stats: {
+        deploymentCount: 0,
+        runGroupCount: 0,
+        environmentCount: 0,
+        workspaceCount: 0,
+      },
+      phaseMetrics,
+    }
+  }
+
+  const metadataStart = Date.now()
+  const metadataMemoryBefore = getMemorySnapshot()
 
   const deploymentIds = activePreviews.map((p) => p.id)
   const deploymentRunGroupIds = [...new Set(
@@ -171,6 +394,8 @@ async function fetchEnvironments(
 
   if (detailLevel === "dag") {
     const groups = new Map<string, EnvironmentGroup>()
+    const dagGroupingStartedAt = Date.now()
+    const dagGroupingMemoryBefore = getMemorySnapshot()
 
     for (const preview of activePreviews) {
       const key = `${preview.repo}:${preview.environmentName}`
@@ -217,19 +442,68 @@ async function fetchEnvironments(
       }
     }
 
-    return Array.from(groups.values())
+    setPhaseMetric(
+      phaseMetrics,
+      "groupEnvironmentsDag",
+      dagGroupingStartedAt,
+      Date.now(),
+      dagGroupingMemoryBefore,
+      getMemorySnapshot(),
+    )
+
+    const environments = Array.from(groups.values())
+    return {
+      environments,
+      stats: {
+        deploymentCount: activePreviews.length,
+        runGroupCount: deploymentRunGroupIds.length,
+        ...summarizeEnvironmentCounts(environments),
+      },
+      phaseMetrics,
+    }
   }
 
-  // Batch fetch all data in parallel (5 queries instead of N*4)
+  // Batch fetch all supporting data in parallel, but profile each source separately.
   const [applyRunsMap, allRunsMap, orgConnections, metadataByRunGroupWorkspaceKey] = await Promise.all([
-    findLatestRunsForDeployments(deploymentIds, "apply"),
-    findLatestRunsForDeployments(deploymentIds),
-    listConnectionsForOrg(orgId),
-    findRunGroupWorkspaceMetadataForRunGroups(deploymentRunGroupIds),
+    profileSubphase(
+      phaseMetrics,
+      "loadSupportingData.applyRuns",
+      () => findLatestRunsForDeployments(deploymentIds, "apply"),
+      (result) => result.size,
+    ),
+    profileSubphase(
+      phaseMetrics,
+      "loadSupportingData.allRuns",
+      () => findLatestRunsForDeployments(deploymentIds),
+      (result) => result.size,
+    ),
+    profileSubphase(
+      phaseMetrics,
+      "loadSupportingData.orgConnections",
+      () => listConnectionsForOrg(orgId),
+      (result) => result.length,
+    ),
+    profileSubphase(
+      phaseMetrics,
+      "loadSupportingData.workspaceMetadata",
+      () => findRunGroupWorkspaceMetadataForRunGroups(deploymentRunGroupIds),
+      (result) => result.size,
+    ),
   ])
+
+  setPhaseMetric(
+    phaseMetrics,
+    "loadSupportingData",
+    metadataStart,
+    Date.now(),
+    metadataMemoryBefore,
+    getMemorySnapshot(),
+  )
 
   // Build connection readiness for each deployment using the pre-fetched connections
   const readinessMap = new Map<string, ConnectionReadiness>()
+  const readinessStart = Date.now()
+  const readinessMemoryBefore = getMemorySnapshot()
   await Promise.all(
     activePreviews.map(async (preview) => {
       const readiness = await getConnectionReadinessForDeploymentWithDeps(preview, {
@@ -246,8 +520,18 @@ async function fetchEnvironments(
       readinessMap.set(preview.id, readiness)
     }),
   )
+  setPhaseMetric(
+    phaseMetrics,
+    "buildReadiness",
+    readinessStart,
+    Date.now(),
+    readinessMemoryBefore,
+    getMemorySnapshot(),
+  )
 
   const groups = new Map<string, EnvironmentGroup>()
+  const groupStart = Date.now()
+  const groupMemoryBefore = getMemorySnapshot()
 
   for (const preview of activePreviews) {
     const key = `${preview.repo}:${preview.environmentName}`
@@ -300,8 +584,25 @@ async function fetchEnvironments(
       existing.updatedAt = candidateTime
     }
   }
+  setPhaseMetric(
+    phaseMetrics,
+    "groupEnvironments",
+    groupStart,
+    Date.now(),
+    groupMemoryBefore,
+    getMemorySnapshot(),
+  )
 
-  return Array.from(groups.values())
+  const environments = Array.from(groups.values())
+  return {
+    environments,
+    stats: {
+      deploymentCount: activePreviews.length,
+      runGroupCount: deploymentRunGroupIds.length,
+      ...summarizeEnvironmentCounts(environments),
+    },
+    phaseMetrics,
+  }
 }
 
 function aggregateStatus(workspaces: EnvironmentWorkspace[]): string {

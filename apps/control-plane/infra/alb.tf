@@ -41,7 +41,7 @@ resource "aws_lb_target_group" "control_plane" {
     unhealthy_threshold = 3
     timeout             = 5
     interval            = 30
-    path                = "/api/health"
+    path                = "/api/ready"
     matcher             = "200"
   }
 

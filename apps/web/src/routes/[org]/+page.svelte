@@ -43,6 +43,9 @@
   let loading = $state(false)
   let pageError = $state("")
   let namedEnvironmentsError = $state("")
+  let namedRefreshInFlight = false
+  let namedRefreshQueued = false
+  let namedRefreshTimer: ReturnType<typeof setTimeout> | null = null
 
   $effect(() => {
     environments = data.initialEnvironments
@@ -119,6 +122,13 @@
   }
 
   async function refreshEnvironments() {
+    if (namedRefreshInFlight) {
+      namedRefreshQueued = true
+      return
+    }
+
+    namedRefreshInFlight = true
+
     try {
       const envRes = await listEnvironments({ org })
       environments = envRes.data
@@ -126,7 +136,29 @@
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       namedEnvironmentsError = `Named environments could not refresh. Showing last known data. ${message}`
+    } finally {
+      namedRefreshInFlight = false
+
+      if (namedRefreshQueued) {
+        namedRefreshQueued = false
+        scheduleEnvironmentsRefresh(250)
+      }
     }
+  }
+
+  function scheduleEnvironmentsRefresh(delayMs = 750) {
+    if (!browser) {
+      return
+    }
+
+    if (namedRefreshTimer) {
+      clearTimeout(namedRefreshTimer)
+    }
+
+    namedRefreshTimer = setTimeout(() => {
+      namedRefreshTimer = null
+      void refreshEnvironments()
+    }, delayMs)
   }
 
   // Refresh environments when preview SSE data changes
@@ -134,7 +166,7 @@
     void stream.hasReceivedSnapshot
     void stream.previews
     if (browser && stream.hasReceivedSnapshot) {
-      refreshEnvironments()
+      scheduleEnvironmentsRefresh()
     }
   })
 
@@ -253,7 +285,12 @@
       void loadUserContext()
     })
 
-    return unsubscribe
+    return () => {
+      if (namedRefreshTimer) {
+        clearTimeout(namedRefreshTimer)
+      }
+      unsubscribe()
+    }
   })
 
   // Persist showInactive preference

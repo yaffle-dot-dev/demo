@@ -25,6 +25,16 @@ export type TfRunListItem = Pick<
   | "completedAt"
   | "createdAt"
 >
+
+export type TfRunLatestSummaryItem = Pick<
+  TfRun,
+  | "id"
+  | "deploymentId"
+  | "runType"
+  | "status"
+  | "planSummary"
+  | "completedAt"
+>
 export type TfRunOutputsItem = Pick<
   TfRun,
   | "id"
@@ -49,6 +59,17 @@ function selectRunListFields() {
     startedAt: tfRuns.startedAt,
     completedAt: tfRuns.completedAt,
     createdAt: tfRuns.createdAt,
+  }
+}
+
+function selectLatestRunSummaryFields() {
+  return {
+    id: tfRuns.id,
+    deploymentId: tfRuns.deploymentId,
+    runType: tfRuns.runType,
+    status: tfRuns.status,
+    planSummary: tfRuns.planSummary,
+    completedAt: tfRuns.completedAt,
   }
 }
 
@@ -201,28 +222,24 @@ export async function appendRunLog(
 export async function findLatestRunsForDeployments(
   deploymentIds: string[],
   runType?: RunType,
-): Promise<Map<string, TfRun>> {
+): Promise<Map<string, TfRunLatestSummaryItem>> {
   if (deploymentIds.length === 0) return new Map()
 
   return withDbSpan("select", "tf_runs", async () => {
-    const idPlaceholders = sql.join(deploymentIds.map(id => sql`${id}`), sql`,`)
-    const conditions = [sql`${tfRuns.deploymentId} IN (${idPlaceholders})`]
+    const conditions = [inArray(tfRuns.deploymentId, deploymentIds)]
     if (runType) {
       conditions.push(eq(tfRuns.runType, runType))
     }
 
     const rows = await db
-      .select()
+      .selectDistinctOn([tfRuns.deploymentId], selectLatestRunSummaryFields())
       .from(tfRuns)
       .where(and(...conditions))
-      .orderBy(tfRuns.deploymentId, desc(tfRuns.createdAt))
+      .orderBy(tfRuns.deploymentId, desc(tfRuns.createdAt), desc(tfRuns.id))
 
-    // Keep only the first (latest) row per deployment
-    const map = new Map<string, TfRun>()
+    const map = new Map<string, TfRunLatestSummaryItem>()
     for (const row of rows) {
-      if (!map.has(row.deploymentId)) {
-        map.set(row.deploymentId, row)
-      }
+      map.set(row.deploymentId, row)
     }
     return map
   })

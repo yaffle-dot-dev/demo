@@ -133,7 +133,7 @@ resource "aws_ecs_task_definition" "control_plane" {
       }
 
       healthCheck = {
-        command     = ["CMD-SHELL", "bun -e \"fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+        command     = ["CMD-SHELL", "bun -e \"fetch('http://localhost:3000/api/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -173,9 +173,15 @@ resource "aws_ecs_service" "control_plane" {
     container_port   = 3000
   }
 
-  # Allow deployments to proceed even if desired count can't be reached
-  deployment_minimum_healthy_percent = local.is_preview ? 0 : 50
+  # Keep serving tasks healthy during non-preview rollouts
+  deployment_minimum_healthy_percent = local.is_preview ? 0 : 100
   deployment_maximum_percent         = 200
+  health_check_grace_period_seconds  = local.is_preview ? 0 : 90
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   # Enable ECS managed tags for cost allocation
   enable_ecs_managed_tags = true
