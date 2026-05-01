@@ -1,5 +1,7 @@
 import type { DependencyGraph, Run, WorkspaceWithRuns } from "$lib/api"
 
+import { getWorkspaceDegradationMessage } from "$lib/environment-degradation"
+
 const QUEUED_WORKSPACE_STATUSES = new Set(["pending", "queued"])
 const TERMINAL_RUN_STATUSES = new Set(["success", "failed", "cancelled", "skipped", "system_error"])
 
@@ -49,13 +51,9 @@ export function getWorkspaceDisplayRuns(params: {
 }
 
 export function getWorkspaceConnectionBlockReason(workspace: WorkspaceWithRuns): string | null {
-  if (workspace.preview.connectionStatus === "error") {
-    const explicitReason = workspace.preview.blockedReason?.trim()
-    if (explicitReason) {
-      return explicitReason
-    }
-
-    return "Connection readiness unavailable"
+  const degradationMessage = getWorkspaceDegradationMessage(workspace.preview)
+  if (degradationMessage) {
+    return degradationMessage
   }
 
   if (workspace.preview.connectionStatus === "missing") {

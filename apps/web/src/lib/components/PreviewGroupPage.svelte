@@ -413,6 +413,10 @@
       return "missing connections"
     }
 
+    if (selectedWorkspace?.preview.degradation) {
+      return "metadata degraded"
+    }
+
     return "blocked"
   })
 

@@ -161,6 +161,20 @@ describe("workspace-status", () => {
     expect(getWorkspaceConnectionBlockReason(workspace)).toBeNull()
   })
 
+  test("shows workspace degradation reasons separately from connection status", () => {
+    const workspace = createWorkspace("infra", "pending")
+    workspace.preview.degradation = {
+      kind: "provider_requirements_unavailable",
+      errorKind: "workspace_cache_missing",
+      message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+      retryable: false,
+    }
+
+    expect(getWorkspaceConnectionBlockReason(workspace)).toBe(
+      "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+    )
+  })
+
   test("detects upstream workspaces blocked by missing connections", () => {
     const graph: DependencyGraph = {
       workspaces: ["app", "infra"],

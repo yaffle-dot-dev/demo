@@ -410,8 +410,8 @@
         : "Conflicting connections"
     }
 
-    if (workspace.preview.connectionStatus === "error") {
-      return "Connection check failed"
+    if (workspace.preview.degradation) {
+      return "Metadata degraded"
     }
 
     return "Blocked"

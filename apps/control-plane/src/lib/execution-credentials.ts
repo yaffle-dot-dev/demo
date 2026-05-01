@@ -8,6 +8,7 @@ import { findOrgById } from "../db/queries/organizations.ts"
 import { getConnectionSecret } from "./connection-secrets.ts"
 import { assumeOrgBrokerRole } from "./org-broker-auth.ts"
 import {
+  buildProviderRequirementsDegradation,
   connectionMatches,
   getRequiredProviderRequirementsForDeployment,
   getRequiredProvidersForDeployment,
@@ -24,10 +25,18 @@ export type ExecutionCredentialResolution = {
   ok: false
   missingProviders: string[]
   conflictProviders: string[]
+  degradation: WorkspaceDegradation | null
+}
+
+export interface WorkspaceDegradation {
+  kind: "provider_requirements_unavailable"
+  errorKind: "workspace_cache_missing" | "access_denied" | "metadata_missing" | "metadata_pending" | "unknown"
+  message: string
+  retryable: boolean
 }
 
 export interface ConnectionReadiness {
-  status: "ready" | "missing" | "conflict" | "not_required" | "error"
+  status: "ready" | "missing" | "conflict" | "not_required"
   requiredProviders: string[]
   missingProviders: string[]
   conflictProviders: string[]
@@ -36,16 +45,12 @@ export interface ConnectionReadiness {
     name: string
     provider: string
   }>
-  blockedReason?: string | null
+  degradation?: WorkspaceDegradation | null
 }
 
 export function formatConnectionBlockedReason(
-  readiness: Pick<ConnectionReadiness, "status" | "missingProviders" | "conflictProviders" | "blockedReason">,
+  readiness: Pick<ConnectionReadiness, "status" | "missingProviders" | "conflictProviders">,
 ): string | null {
-  if (readiness.status === "error") {
-    return readiness.blockedReason?.trim() || "Connection readiness unavailable"
-  }
-
   if (readiness.status === "missing") {
     return readiness.missingProviders.length > 0
       ? `Missing connections: ${readiness.missingProviders.join(", ")}`
@@ -59,6 +64,10 @@ export function formatConnectionBlockedReason(
   }
 
   return null
+}
+
+function buildWorkspaceDegradation(error: unknown): WorkspaceDegradation {
+  return buildProviderRequirementsDegradation(error)
 }
 
 interface ExecutionResolutionDeps {
@@ -176,10 +185,21 @@ export async function resolveExecutionCredentialsForDeploymentWithDeps(
   deployment: Pick<WorkspaceDeployment, "orgId" | "environmentName" | "workspacePath" | "runGroupId"> & ProviderRequirementDeployment,
   deps: ExecutionResolutionDeps,
 ): Promise<ExecutionCredentialResolution> {
-  const [requirements, connections] = await Promise.all([
-    loadProviderRequirements(deployment, deps),
-    deps.listConnectionsForOrg(deployment.orgId),
-  ])
+  const connectionsPromise = deps.listConnectionsForOrg(deployment.orgId)
+
+  let requirements: ExtractedProviderRequirement[]
+  try {
+    requirements = await loadProviderRequirements(deployment, deps)
+  } catch (error) {
+    return {
+      ok: false,
+      missingProviders: [],
+      conflictProviders: [],
+      degradation: buildWorkspaceDegradation(error),
+    }
+  }
+
+  const connections = await connectionsPromise
 
   const missingProviders: string[] = []
   const missingRequirements: ExtractedProviderRequirement[] = []
@@ -227,6 +247,7 @@ export async function resolveExecutionCredentialsForDeploymentWithDeps(
       ok: false,
       missingProviders,
       conflictProviders,
+      degradation: null,
     }
   }
 
@@ -257,22 +278,13 @@ export async function getConnectionReadinessForDeploymentWithDeps(
   try {
     requirements = await loadProviderRequirements(deployment, deps)
   } catch (error) {
-    logger.error("connection_readiness.provider_extraction_failed", {
-      error: error instanceof Error ? error.message : String(error),
-      orgId: deployment.orgId,
-      repo: deployment.repo,
-      environment: deployment.environmentName,
-      workspacePath: deployment.workspacePath,
-      runGroupId: deployment.runGroupId ?? undefined,
-    })
-
     return {
-      status: "error",
+      status: "not_required",
       requiredProviders: [],
       missingProviders: [],
       conflictProviders: [],
       matchedConnections: [],
-      blockedReason: "Connection readiness unavailable for this workspace",
+      degradation: buildWorkspaceDegradation(error),
     }
   }
 
@@ -287,7 +299,7 @@ export async function getConnectionReadinessForDeploymentWithDeps(
       missingProviders: [],
       conflictProviders: [],
       matchedConnections: [],
-      blockedReason: null,
+      degradation: null,
     }
   }
 
@@ -342,6 +354,6 @@ export async function getConnectionReadinessForDeploymentWithDeps(
     missingProviders,
     conflictProviders,
     matchedConnections,
-    blockedReason: null,
+    degradation: null,
   }
 }

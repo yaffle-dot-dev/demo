@@ -29,6 +29,7 @@ import { getEnv } from "./env.ts"
 import { completeRunGroupCheck } from "./run-group-checks.ts"
 import { buildStateKey, previewStatePrefix, environmentStatePrefix } from "./runner.ts"
 import { events } from "./events.ts"
+import { persistRunGroupWorkspaceMetadataFromArchive } from "./run-group-workspace-metadata.ts"
 import { logger } from "./telemetry.ts"
 
 /**
@@ -61,6 +62,12 @@ export async function completeRunGroup(
   if (workspaceS3Key) {
     await updateRunGroupWorkspaceS3Key(runGroupId, workspaceS3Key)
   }
+  await persistRunGroupWorkspaceMetadataFromArchive({
+    runGroup,
+    workspacePaths: executionOrder,
+    workspaceS3Key: workspaceS3Key ?? null,
+    source: "scan_job",
+  })
 
   logger.info("Completing run group from scan result", {
     runGroupId,

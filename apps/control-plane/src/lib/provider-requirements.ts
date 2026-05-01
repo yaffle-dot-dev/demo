@@ -1,22 +1,21 @@
 import { readdir, readFile, stat } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 
-import { cleanupWorkspace } from "./workspace.ts"
-import { createWorkspaceCache } from "./workspace-cache.ts"
 import { scopeListAllows } from "./connection-scope.ts"
 import type { Connection } from "../db/queries/connections.ts"
 import {
-  findRunGroupById,
-  findRunGroupsByIds,
-  type RunGroup,
-} from "../db/queries/run-groups.ts"
+  buildRunGroupWorkspaceMetadataKey,
+  findRunGroupWorkspaceMetadata,
+  findRunGroupWorkspaceMetadataForRunGroups,
+  type RunGroupWorkspaceMetadata,
+} from "../db/queries/run-group-workspace-metadata.ts"
 import {
   getConnectionRequirementsDurationHistogram,
   getConnectionRequirementsDeploymentsScannedHistogram,
   getConnectionRequirementsProvidersScannedHistogram,
-  getConnectionRequirementsProviderCacheCounter,
   withSpan,
 } from "./telemetry.ts"
+import { logger } from "./telemetry.ts"
 
 export interface ProviderRequirementDeployment {
   orgId: string
@@ -29,6 +28,30 @@ export interface ProviderRequirementDeployment {
 export interface ExtractedProviderRequirement {
   providerType: string
   providerSource: string | null
+}
+
+export type WorkspaceMetadataErrorKind =
+  | "workspace_cache_missing"
+  | "access_denied"
+  | "metadata_missing"
+  | "metadata_pending"
+  | "unknown"
+
+export interface ProviderRequirementsDegradation {
+  kind: "provider_requirements_unavailable"
+  errorKind: WorkspaceMetadataErrorKind
+  message: string
+  retryable: boolean
+}
+
+export class WorkspaceMetadataUnavailableError extends Error {
+  readonly degradation: ProviderRequirementsDegradation
+
+  constructor(degradation: ProviderRequirementsDegradation) {
+    super(degradation.message)
+    this.name = "WorkspaceMetadataUnavailableError"
+    this.degradation = degradation
+  }
 }
 
 function providerDeploymentKey(deployment: ProviderRequirementDeployment): string {
@@ -59,16 +82,7 @@ export interface MissingConnectionRequirement {
   recommended: string
 }
 
-const workspaceProviderCache = new Map<string, string[]>()
-
-const PROVIDER_CACHE_MAX_ENTRIES = 500
-const PROVIDER_CACHE_TTL_MS = 10 * 60 * 1000
 const DEFAULT_EXTRACTION_CONCURRENCY = 4
-
-interface WorkspaceProviderCacheEntry {
-  requirements: ExtractedProviderRequirement[]
-  expiresAt: number
-}
 
 function normalizeRequirementKey(providerType: string): string {
   return providerType.trim().toLowerCase()
@@ -106,53 +120,121 @@ function normalizeProviderRequirements(
   return [...deduped.values()].sort((a, b) => a.providerType.localeCompare(b.providerType))
 }
 
-const workspaceProviderCacheV2 = new Map<string, WorkspaceProviderCacheEntry>()
-
-function getCachedWorkspaceProviders(key: string): string[] | null {
-  const requirements = getCachedWorkspaceProviderRequirements(key)
-  if (!requirements) {
-    return null
+export function classifyWorkspaceExtractionError(error: unknown): WorkspaceMetadataErrorKind {
+  const message = error instanceof Error ? error.message : String(error)
+  if (message.includes("The specified key does not exist") || message.includes("NoSuchKey")) {
+    return "workspace_cache_missing"
   }
-
-  return requirements.map((requirement) => requirement.providerType)
+  if (message.includes("AccessDenied") || message.includes("Unauthorized")) {
+    return "access_denied"
+  }
+  return "unknown"
 }
 
-function getCachedWorkspaceProviderRequirements(key: string): ExtractedProviderRequirement[] | null {
-  const cached = workspaceProviderCacheV2.get(key)
-  if (!cached) {
-    getConnectionRequirementsProviderCacheCounter().add(1, { result: "miss" })
-    return null
+export function buildProviderRequirementsDegradation(
+  error: unknown,
+): ProviderRequirementsDegradation {
+  if (error instanceof WorkspaceMetadataUnavailableError) {
+    return error.degradation
   }
 
-  if (cached.expiresAt <= Date.now()) {
-    workspaceProviderCacheV2.delete(key)
-    getConnectionRequirementsProviderCacheCounter().add(1, { result: "expired" })
-    return null
-  }
+  const errorKind = classifyWorkspaceExtractionError(error)
 
-  workspaceProviderCacheV2.delete(key)
-  workspaceProviderCacheV2.set(key, cached)
-  getConnectionRequirementsProviderCacheCounter().add(1, { result: "hit" })
-  return cached.requirements
+  switch (errorKind) {
+    case "workspace_cache_missing":
+      return {
+        kind: "provider_requirements_unavailable",
+        errorKind,
+        message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+        retryable: false,
+      }
+    case "access_denied":
+      return {
+        kind: "provider_requirements_unavailable",
+        errorKind,
+        message: "Yaffle could not inspect this workspace because access to the cached workspace archive was denied.",
+        retryable: false,
+      }
+    default:
+      return {
+        kind: "provider_requirements_unavailable",
+        errorKind,
+        message: "Yaffle could not inspect this workspace to determine required providers.",
+        retryable: true,
+      }
+  }
 }
 
-function setCachedWorkspaceProviders(key: string, requirements: ExtractedProviderRequirement[]): void {
-  if (workspaceProviderCacheV2.size >= PROVIDER_CACHE_MAX_ENTRIES) {
-    const oldestKey = workspaceProviderCacheV2.keys().next().value
-    if (oldestKey) {
-      workspaceProviderCacheV2.delete(oldestKey)
-      getConnectionRequirementsProviderCacheCounter().add(1, { result: "evict" })
+function buildStoredMetadataDegradation(metadata: Pick<
+  RunGroupWorkspaceMetadata,
+  "errorKind" | "errorMessage" | "retryable"
+>): ProviderRequirementsDegradation {
+  const errorKind = (metadata.errorKind ?? "unknown") as WorkspaceMetadataErrorKind
+
+  if (metadata.errorMessage) {
+    return {
+      kind: "provider_requirements_unavailable",
+      errorKind,
+      message: metadata.errorMessage,
+      retryable: metadata.retryable,
     }
   }
 
-  workspaceProviderCacheV2.set(key, {
-    requirements,
-    expiresAt: Date.now() + PROVIDER_CACHE_TTL_MS,
-  })
+  switch (errorKind) {
+    case "workspace_cache_missing":
+      return {
+        kind: "provider_requirements_unavailable",
+        errorKind,
+        message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+        retryable: false,
+      }
+    case "access_denied":
+      return {
+        kind: "provider_requirements_unavailable",
+        errorKind,
+        message: "Yaffle could not inspect this workspace because access to provider metadata was denied.",
+        retryable: false,
+      }
+    case "metadata_missing":
+      return {
+        kind: "provider_requirements_unavailable",
+        errorKind,
+        message: "Provider metadata is missing for this workspace. Rerun this environment to regenerate it.",
+        retryable: false,
+      }
+    case "metadata_pending":
+      return {
+        kind: "provider_requirements_unavailable",
+        errorKind,
+        message: "Provider metadata is still being prepared for this workspace.",
+        retryable: true,
+      }
+    default:
+      return {
+        kind: "provider_requirements_unavailable",
+        errorKind,
+        message: "Yaffle could not inspect this workspace to determine required providers.",
+        retryable: true,
+      }
+  }
 }
 
-function workspaceExtractionKey(workspaceS3Key: string, workspacePath: string): string {
-  return `${workspaceS3Key}:${workspacePath}`
+function metadataRowToRequirements(
+  metadata: Pick<RunGroupWorkspaceMetadata, "providerRequirements">,
+): ExtractedProviderRequirement[] {
+  const raw = Array.isArray(metadata.providerRequirements) ? metadata.providerRequirements : []
+
+  return normalizeProviderRequirements(raw.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) {
+      return []
+    }
+
+    const requirement = entry as Record<string, unknown>
+    return [{
+      providerType: typeof requirement.providerType === "string" ? requirement.providerType : "",
+      providerSource: typeof requirement.providerSource === "string" ? requirement.providerSource : null,
+    } satisfies ExtractedProviderRequirement]
+  }))
 }
 
 async function findTerraformFiles(dir: string): Promise<string[]> {
@@ -257,7 +339,9 @@ async function extractProvidersFromDir(
   }
 }
 
-async function extractProviderRequirements(workspaceDir: string): Promise<ExtractedProviderRequirement[]> {
+export async function extractProviderRequirementsFromWorkspaceDir(
+  workspaceDir: string,
+): Promise<ExtractedProviderRequirement[]> {
   const requirements = new Map<string, ExtractedProviderRequirement>()
   const visitedDirs = new Set<string>()
   await extractProvidersFromDir(workspaceDir, requirements, visitedDirs)
@@ -299,7 +383,7 @@ function recommendedProviderType(provider: string): string {
 export async function getRequiredProvidersForDeployment(
   deployment: ProviderRequirementDeployment,
   opts?: {
-    runGroup?: Pick<RunGroup, "id" | "workspaceS3Key"> | null
+    metadata?: RunGroupWorkspaceMetadata | null
   },
 ): Promise<string[]> {
   const requirements = await getRequiredProviderRequirementsForDeployment(deployment, opts)
@@ -309,70 +393,72 @@ export async function getRequiredProvidersForDeployment(
 export async function getRequiredProviderRequirementsForDeployment(
   deployment: ProviderRequirementDeployment,
   opts?: {
-    runGroup?: Pick<RunGroup, "id" | "workspaceS3Key"> | null
+    metadata?: RunGroupWorkspaceMetadata | null
   },
 ): Promise<ExtractedProviderRequirement[]> {
   if (!deployment.runGroupId) {
     return []
   }
 
-  const runGroup = opts?.runGroup ?? await findRunGroupById(deployment.runGroupId)
-  if (!runGroup?.workspaceS3Key) {
-    return []
-  }
-  const workspaceS3Key = runGroup.workspaceS3Key
+  const metadata = opts?.metadata
+    ?? await findRunGroupWorkspaceMetadata(deployment.runGroupId, deployment.workspacePath)
 
-  const cacheKey = workspaceExtractionKey(workspaceS3Key, deployment.workspacePath)
-  const cached = getCachedWorkspaceProviderRequirements(cacheKey)
-  if (cached) {
-    return cached
-  }
-
-  return withSpan("connections.extract_workspace_providers", async (span) => {
-    span.setAttributes({
-      "connections.workspace_s3_key": workspaceS3Key,
-      "connections.workspace_path": deployment.workspacePath,
+  if (!metadata) {
+    logger.warn("connection_readiness.degraded", {
+      orgId: deployment.orgId,
+      repo: deployment.repo,
+      environment: deployment.environmentName,
+      workspacePath: deployment.workspacePath,
+      runGroupId: deployment.runGroupId,
+      degradationKind: "provider_requirements_unavailable",
+      errorKind: "metadata_missing",
+      retryable: false,
     })
 
-    const workspaceCache = createWorkspaceCache()
-    const repoDir = await workspaceCache.extractWorkspaceToTemp(workspaceS3Key)
+    throw new WorkspaceMetadataUnavailableError({
+      kind: "provider_requirements_unavailable",
+      errorKind: "metadata_missing",
+      message: "Provider metadata is missing for this workspace. Rerun this environment to regenerate it.",
+      retryable: false,
+    })
+  }
 
-    try {
-      const workspaceDir = join(repoDir, deployment.workspacePath)
-      const requirements = await extractProviderRequirements(workspaceDir)
-      setCachedWorkspaceProviders(cacheKey, requirements)
-      return requirements
-    } finally {
-      await cleanupWorkspace(repoDir)
-    }
-  })
+  if (metadata.extractionStatus === "failed") {
+    throw new WorkspaceMetadataUnavailableError(buildStoredMetadataDegradation(metadata))
+  }
+
+  if (metadata.extractionStatus !== "ready") {
+    throw new WorkspaceMetadataUnavailableError({
+      kind: "provider_requirements_unavailable",
+      errorKind: "metadata_pending",
+      message: "Provider metadata is still being prepared for this workspace.",
+      retryable: true,
+    })
+  }
+
+  return metadataRowToRequirements(metadata)
 }
 
 export async function getRequiredProvidersForDeployments(
   deployments: ProviderRequirementDeployment[],
   opts?: {
     extractionConcurrency?: number
-    runGroupsById?: Map<string, Pick<RunGroup, "id" | "workspaceS3Key">>
+    metadataByRunGroupWorkspaceKey?: Map<string, RunGroupWorkspaceMetadata>
   },
 ): Promise<Map<string, string[]>> {
   if (deployments.length === 0) {
     return new Map()
   }
 
-  const extractionConcurrency = Math.max(1, opts?.extractionConcurrency ?? DEFAULT_EXTRACTION_CONCURRENCY)
   const runGroupIds = [...new Set(
     deployments
       .map((deployment) => deployment.runGroupId)
       .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
   )]
 
-  const runGroupsById = opts?.runGroupsById ?? await findRunGroupsByIds(runGroupIds)
+  const metadataByRunGroupWorkspaceKey = opts?.metadataByRunGroupWorkspaceKey
+    ?? await findRunGroupWorkspaceMetadataForRunGroups(runGroupIds)
   const providersByDeployment = new Map<string, string[]>()
-  const missingByArchive = new Map<string, Array<{
-    deploymentKey: string
-    workspaceCacheKey: string
-    workspacePath: string
-  }>>()
 
   for (const deployment of deployments) {
     const deploymentKey = providerDeploymentKey(deployment)
@@ -382,99 +468,21 @@ export async function getRequiredProvidersForDeployments(
       continue
     }
 
-    const runGroup = runGroupsById.get(deployment.runGroupId)
-    if (!runGroup?.workspaceS3Key) {
+    const metadata = metadataByRunGroupWorkspaceKey.get(
+      buildRunGroupWorkspaceMetadataKey(deployment.runGroupId, deployment.workspacePath),
+    )
+    if (!metadata || metadata.extractionStatus !== "ready") {
       providersByDeployment.set(deploymentKey, [])
       continue
     }
 
-    const workspaceCacheKey = workspaceExtractionKey(runGroup.workspaceS3Key, deployment.workspacePath)
-    const cached = getCachedWorkspaceProviders(workspaceCacheKey)
-    if (cached) {
-      providersByDeployment.set(deploymentKey, cached)
-      continue
-    }
-
-    const existing = missingByArchive.get(runGroup.workspaceS3Key)
-    if (existing) {
-      existing.push({
-        deploymentKey,
-        workspaceCacheKey,
-        workspacePath: deployment.workspacePath,
-      })
-    } else {
-      missingByArchive.set(runGroup.workspaceS3Key, [{
-        deploymentKey,
-        workspaceCacheKey,
-        workspacePath: deployment.workspacePath,
-      }])
-    }
+    providersByDeployment.set(
+      deploymentKey,
+      metadataRowToRequirements(metadata).map((requirement) => requirement.providerType),
+    )
   }
-
-  const workspaceCache = createWorkspaceCache()
-  const archiveEntries = [...missingByArchive.entries()]
-
-  await mapWithConcurrency(archiveEntries, extractionConcurrency, async ([workspaceS3Key, workspaces]) => {
-    await withSpan("connections.extract_workspace_providers_batch", async (span) => {
-      span.setAttributes({
-        "connections.workspace_s3_key": workspaceS3Key,
-        "connections.workspace_count": workspaces.length,
-      })
-
-      const repoDir = await workspaceCache.extractWorkspaceToTemp(workspaceS3Key)
-
-      try {
-        await Promise.all(workspaces.map(async (workspace) => {
-          let requirements: ExtractedProviderRequirement[] = []
-
-          try {
-            requirements = await extractProviderRequirements(join(repoDir, workspace.workspacePath))
-          } catch {
-            requirements = []
-          }
-
-          setCachedWorkspaceProviders(workspace.workspaceCacheKey, requirements)
-          providersByDeployment.set(
-            workspace.deploymentKey,
-            requirements.map((requirement) => requirement.providerType),
-          )
-        }))
-      } finally {
-        await cleanupWorkspace(repoDir)
-      }
-    })
-  })
 
   return providersByDeployment
-}
-
-async function mapWithConcurrency<T, R>(
-  items: T[],
-  concurrency: number,
-  worker: (item: T) => Promise<R>,
-): Promise<R[]> {
-  if (items.length === 0) {
-    return []
-  }
-
-  const results = new Array<R>(items.length)
-  let index = 0
-
-  const runWorker = async (): Promise<void> => {
-    while (index < items.length) {
-      const current = index
-      index += 1
-      results[current] = await worker(items[current])
-    }
-  }
-
-  const workers = Array.from(
-    { length: Math.min(concurrency, items.length) },
-    () => runWorker(),
-  )
-
-  await Promise.all(workers)
-  return results
 }
 
 export interface FindMissingConnectionRequirementsOptions {
@@ -506,58 +514,10 @@ export async function findMissingConnectionRequirements(params: {
         .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
     )]
 
-    const runGroupsById = opts.getProvidersForDeployment
-      ? new Map<string, RunGroup>()
-      : await findRunGroupsByIds(runGroupIds)
-
-    const deploymentsByExtractionKey = new Map<string, ProviderRequirementDeployment[]>()
-
-    for (const deployment of params.deployments) {
-      if (!deployment.runGroupId) {
-        continue
-      }
-
-      const key = opts.getProvidersForDeployment
-        ? `${deployment.runGroupId}:${deployment.workspacePath}`
-        : (() => {
-          const runGroup = runGroupsById.get(deployment.runGroupId)
-          if (!runGroup?.workspaceS3Key) {
-            return null
-          }
-          return workspaceExtractionKey(runGroup.workspaceS3Key, deployment.workspacePath)
-        })()
-
-      if (!key) {
-        continue
-      }
-
-      const current = deploymentsByExtractionKey.get(key)
-      if (current) {
-        current.push(deployment)
-      } else {
-        deploymentsByExtractionKey.set(key, [deployment])
-      }
-    }
-
-    const providersByExtractionKey = new Map<string, string[]>()
-    const extractionEntries = [...deploymentsByExtractionKey.entries()]
-
-    await mapWithConcurrency(extractionEntries, extractionConcurrency, async ([key, deployments]) => {
-      const deployment = deployments[0]
-
-      let providers: string[] = []
-      try {
-        providers = opts.getProvidersForDeployment
-          ? await opts.getProvidersForDeployment(deployment)
-          : await getRequiredProvidersForDeployment(deployment, {
-            runGroup: runGroupsById.get(deployment.runGroupId ?? "") ?? null,
-          })
-      } catch {
-        providers = []
-      }
-
-      providersByExtractionKey.set(key, providers)
-    })
+    const metadataByRunGroupWorkspaceKey = opts.getProvidersForDeployment
+      ? new Map<string, RunGroupWorkspaceMetadata>()
+      : await findRunGroupWorkspaceMetadataForRunGroups(runGroupIds)
+    const providersByRunGroupWorkspaceKey = new Map<string, string[]>()
 
     let providersScanned = 0
     const missing: MissingConnectionRequirement[] = []
@@ -567,21 +527,24 @@ export async function findMissingConnectionRequirements(params: {
         continue
       }
 
-      const key = opts.getProvidersForDeployment
-        ? `${deployment.runGroupId}:${deployment.workspacePath}`
-        : (() => {
-          const runGroup = runGroupsById.get(deployment.runGroupId)
-          if (!runGroup?.workspaceS3Key) {
-            return null
-          }
-          return workspaceExtractionKey(runGroup.workspaceS3Key, deployment.workspacePath)
-        })()
+      const metadataKey = buildRunGroupWorkspaceMetadataKey(deployment.runGroupId, deployment.workspacePath)
+      let providers = providersByRunGroupWorkspaceKey.get(metadataKey)
 
-      if (!key) {
-        continue
+      if (!providers) {
+        providers = opts.getProvidersForDeployment
+          ? await opts.getProvidersForDeployment(deployment)
+          : (() => {
+            const metadata = metadataByRunGroupWorkspaceKey.get(metadataKey)
+            if (!metadata || metadata.extractionStatus !== "ready") {
+              return []
+            }
+
+            return metadataRowToRequirements(metadata).map((requirement) => requirement.providerType)
+          })()
+
+        providersByRunGroupWorkspaceKey.set(metadataKey, providers)
       }
 
-      const providers = providersByExtractionKey.get(key) ?? []
       providersScanned += providers.length
 
       for (const provider of providers) {
@@ -604,7 +567,7 @@ export async function findMissingConnectionRequirements(params: {
     getConnectionRequirementsProvidersScannedHistogram().record(providersScanned)
     span.setAttributes({
       "connections.providers_scanned": providersScanned,
-      "connections.extractions_total": extractionEntries.length,
+      "connections.extractions_total": runGroupIds.length,
     })
 
     return missing.sort((a, b) =>
@@ -620,6 +583,5 @@ export async function findMissingConnectionRequirements(params: {
 }
 
 export function clearWorkspaceProviderCacheForTests(): void {
-  workspaceProviderCache.clear()
-  workspaceProviderCacheV2.clear()
+  // No-op. Provider requirements are now read durably from Postgres.
 }

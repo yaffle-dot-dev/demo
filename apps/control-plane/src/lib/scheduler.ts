@@ -881,6 +881,9 @@ export class Scheduler {
       const resolution = await resolveExecutionCredentialsForDeployment(jobContext.deployment)
       if (!resolution.ok) {
         const parts: string[] = []
+        if (resolution.degradation) {
+          parts.push(resolution.degradation.message)
+        }
         if (resolution.missingProviders.length > 0) {
           parts.push(`Missing connections: ${resolution.missingProviders.join(", ")}`)
         }
@@ -893,7 +896,7 @@ export class Scheduler {
         await markJobBlocked(job.id, reason)
         await releaseJobSpawnLease(job.id, lease.leaseToken)
         getSchedulerSpawnSuppressedCounter().add(1, {
-          reason: "connections_not_ready",
+          reason: resolution.degradation ? "metadata_unavailable" : "connections_not_ready",
           job_type: job.jobType,
           spawner: this.spawnerType,
         })

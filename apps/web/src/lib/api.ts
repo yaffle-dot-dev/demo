@@ -92,15 +92,23 @@ export interface ApiError {
   error: { code: string; message: string }
 }
 
+export interface WorkspaceDegradation {
+  kind: "provider_requirements_unavailable"
+  errorKind: "workspace_cache_missing" | "access_denied" | "metadata_missing" | "metadata_pending" | "unknown"
+  message: string
+  retryable: boolean
+}
+
 export interface EnvironmentWorkspace {
   previewId: string
   workspacePath: string
   status: string
-  connectionStatus: "ready" | "missing" | "conflict" | "not_required" | "error"
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
   blockedReason: string | null
+  degradation?: WorkspaceDegradation | null
   headSha: string
   lastRunId: string | null
   lastRunType: string | null
@@ -157,11 +165,12 @@ export interface WorkspacePreview {
   id: string
   workspacePath: string
   status: string
-  connectionStatus: "ready" | "missing" | "conflict" | "not_required" | "error"
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
   blockedReason: string | null
+  degradation?: WorkspaceDegradation | null
   stateKey: string
   mode: string
   requireApproval: boolean

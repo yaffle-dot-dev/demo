@@ -14,8 +14,8 @@ import {
 } from "../db/queries/tf-runs.ts"
 import { getSpansForRun } from "../db/queries/resource-spans.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
+import { findRunGroupWorkspaceMetadataForRunGroups } from "../db/queries/run-group-workspace-metadata.ts"
 import {
-  findRunGroupsByIds,
   listRunGroupsForPr,
   listRunGroupsForBranch,
   listRunGroupsForEnvironment,
@@ -36,6 +36,7 @@ import {
   formatConnectionBlockedReason,
   getConnectionReadinessForDeployment,
   getConnectionReadinessForDeploymentWithDeps,
+  type WorkspaceDegradation,
 } from "../lib/execution-credentials.ts"
 import {
   getRequiredProviderRequirementsForDeployment,
@@ -747,13 +748,13 @@ async function buildEnvironmentSnapshotData(params: {
       .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
   )]
 
-  const [runsByDeployment, latestApplyByDeployment, orgConnections, runGroupsById] = await Promise.all([
+  const [runsByDeployment, latestApplyByDeployment, orgConnections, metadataByRunGroupWorkspaceKey] = await Promise.all([
     visibleRunGroupIds.length > 0
       ? listRunsForDeployments(deploymentIds, { runGroupIds: visibleRunGroupIds })
       : listRunsForDeployments(deploymentIds),
     findLatestSuccessfulRunsForDeployments(deploymentIds, "apply"),
     listConnectionsForOrg(params.orgId),
-    findRunGroupsByIds(deploymentRunGroupIds),
+    findRunGroupWorkspaceMetadataForRunGroups(deploymentRunGroupIds),
   ])
 
   const readinessEntries = await Promise.all(
@@ -761,11 +762,15 @@ async function buildEnvironmentSnapshotData(params: {
       const readiness = await getConnectionReadinessForDeploymentWithDeps(deployment, {
         getProvidersForDeployment: (currentDeployment) =>
           getRequiredProvidersForDeployment(currentDeployment, {
-            runGroup: runGroupsById.get(currentDeployment.runGroupId ?? "") ?? null,
+            metadata: currentDeployment.runGroupId
+              ? metadataByRunGroupWorkspaceKey.get(`${currentDeployment.runGroupId}:${currentDeployment.workspacePath}`) ?? null
+              : null,
           }),
         getProviderRequirementsForDeployment: (currentDeployment) =>
           getRequiredProviderRequirementsForDeployment(currentDeployment, {
-            runGroup: runGroupsById.get(currentDeployment.runGroupId ?? "") ?? null,
+            metadata: currentDeployment.runGroupId
+              ? metadataByRunGroupWorkspaceKey.get(`${currentDeployment.runGroupId}:${currentDeployment.workspacePath}`) ?? null
+              : null,
           }),
         listConnectionsForOrg: async () => orgConnections,
         resolveConnectionEnv: async () => ({}),
@@ -1187,11 +1192,12 @@ interface SerializedPreview {
   id: string
   workspacePath: string
   status: string
-  connectionStatus: "ready" | "missing" | "conflict" | "not_required" | "error"
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
   blockedReason: string | null
+  degradation: WorkspaceDegradation | null
   stateKey: string
   mode: string
   requireApproval: boolean
@@ -1208,11 +1214,11 @@ function serializePreview(p: {
   createdAt: Date
   blockedReason?: string | null
 }, readiness: {
-  status: "ready" | "missing" | "conflict" | "not_required" | "error"
+  status: "ready" | "missing" | "conflict" | "not_required"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
-  blockedReason?: string | null
+  degradation?: WorkspaceDegradation | null
 }): SerializedPreview {
   return {
     id: p.id,
@@ -1223,6 +1229,7 @@ function serializePreview(p: {
     conflictProviders: readiness.conflictProviders,
     matchedConnections: readiness.matchedConnections,
     blockedReason: formatConnectionBlockedReason(readiness),
+    degradation: readiness.degradation ?? null,
     stateKey: p.stateKey,
     mode: p.mode,
     requireApproval: p.requireApproval,

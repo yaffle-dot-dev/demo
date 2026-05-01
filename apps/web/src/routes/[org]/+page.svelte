@@ -23,6 +23,9 @@
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import ConnectionBlockedBadge from "$lib/components/ConnectionBlockedBadge.svelte"
   import PlanLimitedBadge from "$lib/components/PlanLimitedBadge.svelte"
+  import {
+    summarizeEnvironmentDegradation,
+  } from "$lib/environment-degradation"
 
   type PageData = {
     initialEnvironments: EnvironmentGroup[]
@@ -38,7 +41,8 @@
   let showInactive = $state(false)
   let environments = $state<EnvironmentGroup[]>([])
   let loading = $state(false)
-  let error = $state("")
+  let pageError = $state("")
+  let namedEnvironmentsError = $state("")
 
   $effect(() => {
     environments = data.initialEnvironments
@@ -110,7 +114,7 @@
       const orgRole = orgsRes.data.find((item) => item.slug === org)?.role ?? ""
       canManageConnections = orgRole === "admin"
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      pageError = e instanceof Error ? e.message : String(e)
     }
   }
 
@@ -118,9 +122,10 @@
     try {
       const envRes = await listEnvironments({ org })
       environments = envRes.data
-      error = ""
+      namedEnvironmentsError = ""
     } catch (e) {
-      error = e instanceof Error ? e.message : String(e)
+      const message = e instanceof Error ? e.message : String(e)
+      namedEnvironmentsError = `Named environments could not refresh. Showing last known data. ${message}`
     }
   }
 
@@ -279,6 +284,12 @@
         </div>
       </div>
 
+      {#if namedEnvironmentsError}
+        <div class="mt-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+          {namedEnvironmentsError}
+        </div>
+      {/if}
+
       {#if loading}
         <div class="mt-4">
           <AsyncLoader
@@ -291,13 +302,19 @@
       {:else}
         <div class="mt-4 grid grid-cols-1 gap-3">
           {#each environments as env (env.repo + env.environmentName)}
-            <div class="rounded-lg border border-border bg-surface p-3 hover:border-yaffle-500/40 transition-colors">
+            {@const degradationSummary = summarizeEnvironmentDegradation(env)}
+            <div class={`rounded-lg border bg-surface p-3 transition-colors hover:border-yaffle-500/40 ${degradationSummary ? "border-amber-500/40" : "border-border"}`}>
               <div class="flex items-start justify-between">
                 <div>
                   <div class="flex items-center gap-2">
                     <a href={`${base}/${org}/${env.repo}/env/${env.environmentName}`} class="font-medium text-text hover:text-yaffle-400 transition-colors">{env.repo}</a>
                     <RefBadge label={env.environmentName} href={githubTreeUrl({ org, repo: env.repo }, refName(env.ref))} />
                     <RunGroupStatusBadge statuses={env.workspaces.map(w => w.status)} />
+                    {#if degradationSummary}
+                      <span class="rounded px-2 py-0.5 text-xs font-medium bg-amber-500/15 text-amber-200">
+                        {degradationSummary.totalWorkspaces} degraded workspace{degradationSummary.totalWorkspaces === 1 ? "" : "s"}
+                      </span>
+                    {/if}
                     {#if countConnectionBlockedWorkspaces(env) > 0}
                       <ConnectionBlockedBadge
                         {org}
@@ -324,6 +341,20 @@
                   {#if listUsedConnections(env)}
                     <div class="mt-2 text-xs text-text-dim">
                       Using: {listUsedConnections(env)}
+                    </div>
+                  {/if}
+
+                  {#if degradationSummary}
+                    <div class="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                      <div class="font-medium">Some workspace metadata could not be loaded.</div>
+                      {#each degradationSummary.groups as group}
+                        <div class="mt-2">
+                          <div>{group.message}</div>
+                          <div class="mt-1 font-mono text-[11px] text-amber-100/90">
+                            Affected: {group.workspaces.join(", ")}
+                          </div>
+                        </div>
+                      {/each}
                     </div>
                   {/if}
                 </div>
@@ -365,9 +396,9 @@
   </div>
 
   <!-- Error -->
-  {#if error}
+  {#if pageError}
     <div class="bg-red-950/50 border border-red-800 rounded px-4 py-3 text-sm text-red-300">
-      {error}
+      {pageError}
     </div>
   {/if}
 

@@ -254,6 +254,32 @@ export const runGroups = pgTable("run_groups", {
   completedAt: timestamp("completed_at", { withTimezone: true }),
 })
 
+export const runGroupWorkspaceMetadata = pgTable(
+  "run_group_workspace_metadata",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    runGroupId: uuid("run_group_id")
+      .references(() => runGroups.id, { onDelete: "cascade" })
+      .notNull(),
+    workspacePath: text("workspace_path").notNull(),
+    providerRequirements: jsonb("provider_requirements").default(sql`'[]'::jsonb`).notNull(),
+    extractionStatus: text("extraction_status").default("pending").notNull(),
+    degradationKind: text("degradation_kind"),
+    errorKind: text("error_kind"),
+    errorMessage: text("error_message"),
+    retryable: boolean("retryable").default(false).notNull(),
+    source: text("source").default("scan_job").notNull(),
+    extractedAt: timestamp("extracted_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("run_group_workspace_metadata_group_workspace").on(t.runGroupId, t.workspacePath),
+    index("run_group_workspace_metadata_group_idx").on(t.runGroupId),
+    index("run_group_workspace_metadata_status_idx").on(t.extractionStatus),
+  ],
+)
+
 // =============================================================================
 // Scan Jobs (dependency scanning worker jobs)
 // =============================================================================

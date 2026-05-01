@@ -5,11 +5,13 @@ import { z } from "zod"
 import { listDeployments } from "../db/queries/workspace-deployments.ts"
 import { findLatestRunsForDeployments } from "../db/queries/tf-runs.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
+import { findRunGroupWorkspaceMetadataForRunGroups } from "../db/queries/run-group-workspace-metadata.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 import {
   formatConnectionBlockedReason,
   getConnectionReadinessForDeploymentWithDeps,
   type ConnectionReadiness,
+  type WorkspaceDegradation,
 } from "../lib/execution-credentials.ts"
 import {
   getRequiredProviderRequirementsForDeployment,
@@ -29,11 +31,12 @@ interface EnvironmentWorkspace {
   previewId: string
   workspacePath: string
   status: string
-  connectionStatus: "ready" | "missing" | "conflict" | "not_required" | "error"
+  connectionStatus: "ready" | "missing" | "conflict" | "not_required"
   missingProviders: string[]
   conflictProviders: string[]
   matchedConnections: Array<{ id: string; name: string; provider: string }>
   blockedReason: string | null
+  degradation: WorkspaceDegradation | null
   headSha: string
   lastRunId: string | null
   lastRunType: string | null
@@ -160,6 +163,11 @@ async function fetchEnvironments(
   if (activePreviews.length === 0) return []
 
   const deploymentIds = activePreviews.map((p) => p.id)
+  const deploymentRunGroupIds = [...new Set(
+    activePreviews
+      .map((preview) => preview.runGroupId)
+      .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
+  )]
 
   if (detailLevel === "dag") {
     const groups = new Map<string, EnvironmentGroup>()
@@ -175,6 +183,7 @@ async function fetchEnvironments(
         conflictProviders: [],
         matchedConnections: [],
         blockedReason: null,
+        degradation: null,
         headSha: preview.headSha,
         lastRunId: null,
         lastRunType: null,
@@ -212,10 +221,11 @@ async function fetchEnvironments(
   }
 
   // Batch fetch all data in parallel (5 queries instead of N*4)
-  const [applyRunsMap, allRunsMap, orgConnections] = await Promise.all([
+  const [applyRunsMap, allRunsMap, orgConnections, metadataByRunGroupWorkspaceKey] = await Promise.all([
     findLatestRunsForDeployments(deploymentIds, "apply"),
     findLatestRunsForDeployments(deploymentIds),
     listConnectionsForOrg(orgId),
+    findRunGroupWorkspaceMetadataForRunGroups(deploymentRunGroupIds),
   ])
 
   // Build connection readiness for each deployment using the pre-fetched connections
@@ -224,7 +234,12 @@ async function fetchEnvironments(
     activePreviews.map(async (preview) => {
       const readiness = await getConnectionReadinessForDeploymentWithDeps(preview, {
         getProvidersForDeployment: getRequiredProvidersForDeployment,
-        getProviderRequirementsForDeployment: getRequiredProviderRequirementsForDeployment,
+        getProviderRequirementsForDeployment: (deployment) =>
+          getRequiredProviderRequirementsForDeployment(deployment, {
+            metadata: deployment.runGroupId
+              ? metadataByRunGroupWorkspaceKey.get(`${deployment.runGroupId}:${deployment.workspacePath}`) ?? null
+              : null,
+          }),
         listConnectionsForOrg: async () => orgConnections,
         resolveConnectionEnv: async () => ({}), // Not needed for readiness check
       })
@@ -250,6 +265,7 @@ async function fetchEnvironments(
       conflictProviders: connectionReadiness.conflictProviders,
       matchedConnections: connectionReadiness.matchedConnections,
       blockedReason: formatConnectionBlockedReason(connectionReadiness),
+      degradation: connectionReadiness.degradation ?? null,
       headSha: preview.headSha,
       lastRunId: latestRun?.id ?? null,
       lastRunType: latestRun?.runType ?? null,

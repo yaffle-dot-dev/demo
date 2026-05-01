@@ -122,6 +122,26 @@ describe("execution credential resolution", () => {
     expect(result.ok).toBe(true)
     expect(resolvedEnvironmentName === "production").toBe(true)
   })
+
+  test("returns degraded resolution when provider metadata is unavailable", async () => {
+    const result = await resolveExecutionCredentialsForDeploymentWithDeps(deployment, {
+      getProvidersForDeployment: async () => {
+        throw new Error("The specified key does not exist.")
+      },
+      listConnectionsForOrg: async () => [],
+      resolveConnectionEnv: async () => ({}),
+    })
+
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.degradation).toEqual({
+        kind: "provider_requirements_unavailable",
+        errorKind: "workspace_cache_missing",
+        message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+        retryable: false,
+      })
+    }
+  })
 })
 
 describe("connection readiness", () => {
@@ -185,7 +205,7 @@ describe("connection readiness", () => {
     ])
   })
 
-  test("returns an error readiness when provider extraction fails", async () => {
+  test("returns degraded readiness when provider extraction fails", async () => {
     const readiness = await getConnectionReadinessForDeploymentWithDeps(deployment, {
       getProvidersForDeployment: async () => {
         throw new Error("The specified key does not exist.")
@@ -194,8 +214,13 @@ describe("connection readiness", () => {
       resolveConnectionEnv: async () => ({}),
     })
 
-    expect(readiness.status).toBe("error")
-    expect(readiness.blockedReason).toBe("Connection readiness unavailable for this workspace")
-    expect(formatConnectionBlockedReason(readiness)).toBe("Connection readiness unavailable for this workspace")
+    expect(readiness.status).toBe("not_required")
+    expect(readiness.degradation).toEqual({
+      kind: "provider_requirements_unavailable",
+      errorKind: "workspace_cache_missing",
+      message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+      retryable: false,
+    })
+    expect(formatConnectionBlockedReason(readiness)).toBeNull()
   })
 })

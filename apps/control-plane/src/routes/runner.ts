@@ -512,6 +512,9 @@ warmRunnerRoute.post("/claim-next", async (c) => {
         "org.id": auth.runnerToken.org_id,
         missingProviders: resolution.missingProviders,
         conflictProviders: resolution.conflictProviders,
+        degradationKind: resolution.degradation?.kind,
+        degradationErrorKind: resolution.degradation?.errorKind,
+        degradationMessage: resolution.degradation?.message,
       })
       continue
     }
@@ -1277,6 +1280,9 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
   const credentialResolution = await resolveExecutionCredentialsForDeployment(deployment)
   if (!credentialResolution.ok) {
     const parts: string[] = []
+    if (credentialResolution.degradation) {
+      parts.push(credentialResolution.degradation.message)
+    }
     if (credentialResolution.missingProviders.length > 0) {
       parts.push(`missing connections for: ${credentialResolution.missingProviders.join(", ")}`)
     }
@@ -1285,8 +1291,13 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
     }
 
     return c.json(
-      { error: { code: "CONNECTIONS_NOT_READY", message: parts.join("; ") } },
-      409,
+      {
+        error: {
+          code: credentialResolution.degradation ? "WORKSPACE_METADATA_UNAVAILABLE" : "CONNECTIONS_NOT_READY",
+          message: parts.join("; "),
+        },
+      },
+      credentialResolution.degradation ? 424 : 409,
     )
   }
 
