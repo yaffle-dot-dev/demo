@@ -8,7 +8,7 @@ type EnvironmentResponse = {
 
 export const load: PageLoad = async ({ fetch, params }) => {
   const response = await fetch(
-    `/api/orgs/${encodeURIComponent(params.org)}/repos/${encodeURIComponent(params.repo)}/environment/${encodeURIComponent(params.name)}?view=dag`,
+    `/api/orgs/${encodeURIComponent(params.org)}/repos/${encodeURIComponent(params.repo)}/environment/${encodeURIComponent(params.name)}`,
   )
 
   if (!response.ok) {

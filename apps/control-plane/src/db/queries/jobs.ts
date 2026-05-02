@@ -258,3 +258,38 @@ export async function findActiveProjectionRebuildJob(params: {
     return rows[0]
   })
 }
+
+export async function findRecentProjectionRebuildJob(params: {
+  orgId: string
+  repo?: string
+  environmentKind?: string
+  environmentName?: string
+  since: Date
+}): Promise<Job | undefined> {
+  return withDbSpan("select", "jobs", async () => {
+    const conditions = [
+      eq(jobs.orgId, params.orgId),
+      eq(jobs.jobType, "rebuild_environment_group_projections"),
+      inArray(jobs.status, ["pending", "running", "completed"]),
+      gte(jobs.createdAt, params.since),
+      params.repo
+        ? sql`${jobs.payload} ->> 'repo' = ${params.repo}`
+        : sql`${jobs.payload} ->> 'repo' is null`,
+      params.environmentKind
+        ? sql`${jobs.payload} ->> 'environmentKind' = ${params.environmentKind}`
+        : sql`${jobs.payload} ->> 'environmentKind' is null`,
+      params.environmentName
+        ? sql`${jobs.payload} ->> 'environmentName' = ${params.environmentName}`
+        : sql`${jobs.payload} ->> 'environmentName' is null`,
+    ]
+
+    const rows = await db
+      .select()
+      .from(jobs)
+      .where(and(...conditions))
+      .orderBy(desc(jobs.createdAt), desc(jobs.id))
+      .limit(1)
+
+    return rows[0]
+  })
+}

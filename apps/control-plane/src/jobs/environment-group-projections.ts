@@ -3,10 +3,13 @@ import { z } from "zod"
 import {
   createJob,
   findActiveProjectionRebuildJob,
+  findRecentProjectionRebuildJob,
   type Job,
 } from "../db/queries/jobs.ts"
 import { rebuildEnvironmentGroupProjections } from "../lib/projections/environment-groups.ts"
 import { logger } from "../lib/telemetry.ts"
+
+const PROJECTION_REBUILD_DEBOUNCE_MS = 3_000
 
 const rebuildEnvironmentGroupProjectionsPayloadSchema = z.object({
   orgId: z.string().uuid(),
@@ -27,10 +30,19 @@ export async function enqueueEnvironmentGroupProjectionRebuild(
     return
   }
 
+  const recent = await findRecentProjectionRebuildJob({
+    ...payload,
+    since: new Date(Date.now() - PROJECTION_REBUILD_DEBOUNCE_MS),
+  })
+  if (recent) {
+    return
+  }
+
   await createJob({
     orgId: payload.orgId,
     jobType: "rebuild_environment_group_projections",
     payload,
+    runAt: new Date(Date.now() + PROJECTION_REBUILD_DEBOUNCE_MS),
   })
 }
 

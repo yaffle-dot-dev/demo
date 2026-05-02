@@ -37,10 +37,19 @@ export interface JobUpdateEvent {
   previewId: string
 }
 
+export interface EnvironmentGroupProjectionUpdateEvent {
+  orgId: string
+  repo: string
+  environmentKind: EnvironmentKind
+  environmentName: string
+  emittedAt: string
+}
+
 type EventMap = {
   "run:update": RunUpdateEvent
   "deployment:update": DeploymentUpdateEvent
   "job:update": JobUpdateEvent
+  "environment_group_projection:update": EnvironmentGroupProjectionUpdateEvent
 }
 
 type EventName = keyof EventMap
@@ -106,6 +115,22 @@ class YaffleEvents {
     })
   }
 
+  emitEnvironmentGroupProjectionUpdate(
+    orgId: string,
+    repo: string,
+    environmentKind: EnvironmentKind,
+    environmentName: string,
+  ): void {
+    getSseEventsEmittedCounter().add(1, { type: "environment_group_projection_update" })
+    this.emit("environment_group_projection:update", {
+      orgId,
+      repo,
+      environmentKind,
+      environmentName,
+      emittedAt: new Date().toISOString(),
+    })
+  }
+
   onRunUpdate(handler: (event: RunUpdateEvent) => void): void {
     this.ensureListener()
     this.emitter.on("run:update", handler)
@@ -131,6 +156,15 @@ class YaffleEvents {
 
   offJobUpdate(handler: (event: JobUpdateEvent) => void): void {
     this.emitter.off("job:update", handler)
+  }
+
+  onEnvironmentGroupProjectionUpdate(handler: (event: EnvironmentGroupProjectionUpdateEvent) => void): void {
+    this.ensureListener()
+    this.emitter.on("environment_group_projection:update", handler)
+  }
+
+  offEnvironmentGroupProjectionUpdate(handler: (event: EnvironmentGroupProjectionUpdateEvent) => void): void {
+    this.emitter.off("environment_group_projection:update", handler)
   }
 
   private emit<T extends EventName>(type: T, payload: EventMap[T]): void {
@@ -226,6 +260,7 @@ class YaffleEvents {
       case "run:update":
       case "deployment:update":
       case "job:update":
+      case "environment_group_projection:update":
         this.emitter.emit(parsed.type, parsed.payload)
         return
       default:

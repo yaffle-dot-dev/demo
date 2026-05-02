@@ -16,7 +16,7 @@ export const load: PageLoad = async ({ fetch, params }) => {
   const org = encodeURIComponent(params.org)
 
   const [environmentsResponse, previewsResponse] = await Promise.all([
-    fetch(`/api/environments?org=${org}&view=dag`),
+    fetch(`/api/environments?org=${org}`),
     fetch(`/api/previews/overview?org=${org}`),
   ])
 
