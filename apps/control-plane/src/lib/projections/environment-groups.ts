@@ -40,6 +40,7 @@ export interface EnvironmentGroupProjectionWorkspacePayload {
   requireApproval: boolean
   approvers: string[] | null
   createdAt: string
+  headUpdatedAt: string
   headSha: string
   authorGithubId: number | null
   authorLogin: string | null
@@ -215,6 +216,7 @@ export async function buildEnvironmentGroupProjectionRows(params: {
         requireApproval: deployment.requireApproval,
         approvers: normalizeApprovers(deployment.approvers),
         createdAt: deployment.createdAt.toISOString(),
+        headUpdatedAt: deployment.statusChangedAt.toISOString(),
         headSha: deployment.headSha,
         authorGithubId: deployment.authorGithubId ?? null,
         authorLogin: deployment.authorLogin ?? null,
@@ -242,7 +244,7 @@ export async function buildEnvironmentGroupProjectionRows(params: {
           ref: deployment.ref,
           headSha: deployment.headSha,
           status: deployment.status,
-          updatedAt: latestRun?.completedAt?.toISOString() ?? deployment.createdAt.toISOString(),
+          updatedAt: deployment.statusChangedAt.toISOString(),
           dependencyGraph,
           workspaces: [workspacePayload],
         })
@@ -251,8 +253,11 @@ export async function buildEnvironmentGroupProjectionRows(params: {
 
       existing.workspaces.push(workspacePayload)
       existing.status = aggregateStatus(existing.workspaces)
-      if (latestRun?.completedAt && latestRun.completedAt.toISOString() > existing.updatedAt) {
-        existing.updatedAt = latestRun.completedAt.toISOString()
+      const candidateUpdatedAt = deployment.statusChangedAt.toISOString()
+      if (candidateUpdatedAt > existing.updatedAt) {
+        existing.updatedAt = candidateUpdatedAt
+        existing.headSha = deployment.headSha
+        existing.ref = deployment.ref
       }
     }
 
@@ -278,7 +283,7 @@ export async function buildEnvironmentGroupProjectionRows(params: {
         workspaceCount: payload.workspaces.length,
         blockedWorkspaceCount,
         degradedWorkspaceCount,
-        version: 1,
+        version: 2,
         payload,
         rebuiltAt,
         rebuildError: null,

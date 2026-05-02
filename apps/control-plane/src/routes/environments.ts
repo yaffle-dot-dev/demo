@@ -85,6 +85,10 @@ async function loadEnvironmentGroupsFromProjections(
     environmentKind: "named",
   })
 
+  if (rows.some((row) => row.version < 2)) {
+    return []
+  }
+
   const environments: EnvironmentGroup[] = []
   for (const row of rows) {
     const payload = parseEnvironmentGroupProjectionPayload(row.payload)
@@ -505,7 +509,7 @@ async function loadEnvironments(
           environmentName: preview.environmentName,
           headSha: preview.headSha,
           status: preview.status,
-          updatedAt: preview.createdAt.toISOString(),
+          updatedAt: preview.statusChangedAt.toISOString(),
           dependencyGraph: null,
           workspaces: [workspace],
         })
@@ -513,13 +517,12 @@ async function loadEnvironments(
       }
 
       existing.workspaces.push(workspace)
-      if (preview.headSha !== existing.headSha) {
-        existing.headSha = preview.headSha
-      }
       existing.status = aggregateStatus(existing.workspaces)
-      const candidateTime = preview.createdAt.toISOString()
+      const candidateTime = preview.statusChangedAt.toISOString()
       if (new Date(candidateTime) > new Date(existing.updatedAt)) {
         existing.updatedAt = candidateTime
+        existing.headSha = preview.headSha
+        existing.ref = preview.ref
       }
     }
 
@@ -641,29 +644,28 @@ async function loadEnvironments(
 
     const existing = groups.get(key)
     if (!existing) {
-        groups.set(key, {
-          repo: preview.repo,
-          ref: preview.ref,
-          environmentName: preview.environmentName,
-          headSha: preview.headSha,
-          status: preview.status,
-          updatedAt: latestRun?.completedAt?.toISOString() ?? preview.createdAt.toISOString(),
-          dependencyGraph: null,
-          workspaces: [workspace],
-        })
+      groups.set(key, {
+        repo: preview.repo,
+        ref: preview.ref,
+        environmentName: preview.environmentName,
+        headSha: preview.headSha,
+        status: preview.status,
+        updatedAt: preview.statusChangedAt.toISOString(),
+        dependencyGraph: null,
+        workspaces: [workspace],
+      })
       continue
     }
 
     existing.workspaces.push(workspace)
-    if (preview.headSha !== existing.headSha) {
-      existing.headSha = preview.headSha
-    }
 
     existing.status = aggregateStatus(existing.workspaces)
 
-    const candidateTime = latestRun?.completedAt?.toISOString() ?? preview.createdAt.toISOString()
+    const candidateTime = preview.statusChangedAt.toISOString()
     if (new Date(candidateTime) > new Date(existing.updatedAt)) {
       existing.updatedAt = candidateTime
+      existing.headSha = preview.headSha
+      existing.ref = preview.ref
     }
   }
   setPhaseMetric(

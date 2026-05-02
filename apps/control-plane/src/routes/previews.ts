@@ -62,7 +62,7 @@ async function buildPreviewOverviewSnapshot(params: {
     environmentKind: "transient",
   })
 
-  if (projectedGroups.length > 0) {
+  if (projectedGroups.length > 0 && projectedGroups.every((row) => row.version >= 2)) {
     const filteredGroups = projectedGroups
       .map((row) => ({ row, payload: parseEnvironmentGroupProjectionPayload(row.payload) }))
       .filter((entry) => entry.payload?.environmentKind === "transient")
@@ -104,6 +104,7 @@ async function buildPreviewOverviewSnapshot(params: {
         requireApproval: workspace.requireApproval,
         approvers: workspace.approvers,
         createdAt: workspace.createdAt,
+        headUpdatedAt: workspace.headUpdatedAt,
       }))
     })
 
@@ -672,6 +673,7 @@ interface SerializedPreview {
   requireApproval: boolean
   approvers: string[] | null
   createdAt: string
+  headUpdatedAt: string
 }
 
 function serializePreview(p: {
@@ -691,6 +693,7 @@ function serializePreview(p: {
   requireApproval: boolean
   approvers: unknown
   createdAt: Date
+  statusChangedAt: Date
 }): SerializedPreview {
   const approvers = Array.isArray(p.approvers)
     ? p.approvers.filter((entry) => typeof entry === "string")
@@ -712,5 +715,6 @@ function serializePreview(p: {
     requireApproval: p.requireApproval,
     approvers,
     createdAt: p.createdAt.toISOString(),
+    headUpdatedAt: p.statusChangedAt.toISOString(),
   }
 }

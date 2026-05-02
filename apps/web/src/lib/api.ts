@@ -21,6 +21,7 @@ export interface Preview {
   requireApproval: boolean
   approvers: string[] | null
   createdAt: string
+  headUpdatedAt: string
 }
 
 export interface Run {

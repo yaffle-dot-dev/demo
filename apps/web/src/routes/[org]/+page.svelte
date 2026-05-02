@@ -94,7 +94,7 @@
     environmentName: string
     ref: string
     headSha: string
-    createdAt: string
+    headUpdatedAt: string
     /** GitHub user ID of the PR author (stable identifier) */
     authorGithubId: number | null
     /** GitHub username of the PR author (for display) */
@@ -177,16 +177,21 @@
     for (const preview of list) {
       const key = `${preview.repo}:${preview.environmentName}`
       const existing = map.get(key)
-      const createdAt = existing
-        ? new Date(existing.createdAt) > new Date(preview.createdAt)
-          ? existing.createdAt
-          : preview.createdAt
-        : preview.createdAt
+      const candidateTime = new Date(preview.headUpdatedAt).getTime()
+      const existingTime = existing ? new Date(existing.headUpdatedAt).getTime() : Number.NEGATIVE_INFINITY
+      const usePreviewHead = candidateTime >= existingTime
 
-      const headSha = existing?.headSha ?? preview.headSha
-      const ref = existing?.ref ?? preview.ref
-      const authorGithubId = existing?.authorGithubId ?? preview.authorGithubId ?? null
-      const authorLogin = existing?.authorLogin ?? preview.authorLogin ?? null
+      const headUpdatedAt = existing && !usePreviewHead
+        ? existing.headUpdatedAt
+        : preview.headUpdatedAt
+      const headSha = usePreviewHead ? preview.headSha : existing!.headSha
+      const ref = usePreviewHead ? preview.ref : existing!.ref
+      const authorGithubId = usePreviewHead
+        ? preview.authorGithubId ?? existing?.authorGithubId ?? null
+        : existing!.authorGithubId
+      const authorLogin = usePreviewHead
+        ? preview.authorLogin ?? existing?.authorLogin ?? null
+        : existing!.authorLogin
 
       const group: PreviewGroup = {
         key,
@@ -195,7 +200,7 @@
         environmentName: preview.environmentName,
         ref,
         headSha,
-        createdAt,
+        headUpdatedAt,
         authorGithubId,
         authorLogin,
         workspaces: existing ? [...existing.workspaces, preview] : [preview],
@@ -205,7 +210,7 @@
     }
 
     return Array.from(map.values()).sort((a, b) => {
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      return new Date(b.headUpdatedAt).getTime() - new Date(a.headUpdatedAt).getTime()
     })
   }
 
@@ -481,7 +486,7 @@
                         {refName(group.ref)}
                       </span>
                       <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                      <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
+                      <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
                     </div>
                   </div>
                   <div class="text-right text-xs text-text-dim">
@@ -532,7 +537,7 @@
                         {refName(group.ref)}
                       </span>
                       <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                      <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
+                      <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
                       {#if group.authorLogin}
                         <span class="text-text-dim text-xs">@{group.authorLogin}</span>
                       {/if}
@@ -579,7 +584,7 @@
                         {refName(group.ref)}
                       </span>
                   <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                  <span class="text-text-dim text-xs">{formatRelativeTime(group.createdAt)}</span>
+                  <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
                   {#if group.authorLogin}
                     <span class="text-text-dim text-xs">@{group.authorLogin}</span>
                   {/if}

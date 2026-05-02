@@ -10,7 +10,8 @@ import {
 } from "../test-utils/auth.ts"
 
 import { db } from "../lib/db.ts"
-import { organizations, previews, tfRuns, orgMemberships, approvals } from "../db/schema.ts"
+import { rebuildEnvironmentGroupProjections } from "../lib/projections/environment-groups.ts"
+import { organizations, previews, tfRuns, orgMemberships, approvals, environmentGroupProjections } from "../db/schema.ts"
 import { previewsRoute } from "./previews.ts"
 
 // Mount the route under /api/previews like the real app
@@ -99,6 +100,7 @@ beforeEach(async () => {
   // Clean up test data between tests (but keep user/org/membership)
   await db.delete(approvals)
   await db.delete(tfRuns)
+  await db.delete(environmentGroupProjections)
   await db.delete(previews)
 })
 
@@ -106,6 +108,7 @@ afterAll(async () => {
   // Full cleanup
   await db.delete(approvals)
   await db.delete(tfRuns)
+  await db.delete(environmentGroupProjections)
   await db.delete(previews)
   await db.delete(orgMemberships)
   await db.delete(organizations)
@@ -153,6 +156,19 @@ describe("GET /api/previews", () => {
     expect(body.data[0]).toHaveProperty("id")
     expect(body.data[0]).toHaveProperty("repo", "test-repo")
     expect(body.data[0]).toHaveProperty("createdAt")
+    expect(body.data[0]).toHaveProperty("headUpdatedAt")
+  })
+
+  test("serializes headUpdatedAt from status changes", async () => {
+    const createdAt = new Date("2026-01-01T00:00:00Z")
+    const statusChangedAt = new Date("2026-01-02T03:04:05Z")
+    await seedPreview({ createdAt, statusChangedAt })
+
+    const res = await req("/api/previews?org=test-org")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.data[0].createdAt).toBe(createdAt.toISOString())
+    expect(body.data[0].headUpdatedAt).toBe(statusChangedAt.toISOString())
   })
 
   test("filters by repo", async () => {
@@ -212,6 +228,32 @@ describe("GET /api/previews", () => {
     expect(res.status).toBe(400)
     const body = await res.json()
     expect(body.error.code).toBe("VALIDATION_ERROR")
+  })
+})
+
+describe("GET /api/previews/overview", () => {
+  test("uses projected headUpdatedAt for grouped preview cards", async () => {
+    const createdAt = new Date("2026-01-01T00:00:00Z")
+    const statusChangedAt = new Date("2026-01-02T03:04:05Z")
+
+    await seedPreview({
+      createdAt,
+      statusChangedAt,
+      environmentName: "pr-42-overview",
+    })
+
+    await rebuildEnvironmentGroupProjections({
+      orgId: ctx.org.id,
+      environmentKind: "transient",
+    })
+
+    const res = await req("/api/previews/overview?org=test-org")
+    expect(res.status).toBe(200)
+    const body = await res.json()
+
+    expect(body.data).toHaveLength(1)
+    expect(body.data[0].createdAt).toBe(createdAt.toISOString())
+    expect(body.data[0].headUpdatedAt).toBe(statusChangedAt.toISOString())
   })
 })
 
