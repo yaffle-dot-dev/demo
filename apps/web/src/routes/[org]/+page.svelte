@@ -424,190 +424,188 @@
           <h2 class="text-xl font-semibold">Transient environments</h2>
         </div>
         <div class="text-right text-sm text-text-dim">
-          <div class="font-mono text-xs">{activeGroups.length} groups</div>
-          <div class="font-mono text-xs">{previews.length} workspaces</div>
+          <div class="font-mono text-xs">{activeGroups.length} environments</div>
         </div>
       </div>
+      <div class="mt-4 flex items-center">
+        <label class="flex items-center gap-2 text-sm text-text-muted">
+          <input type="checkbox" bind:checked={showInactive} />
+          Show destroyed
+        </label>
+      </div>
+
+      {#if pageError}
+        <div class="mt-4 bg-red-950/50 border border-red-800 rounded px-4 py-3 text-sm text-red-300">
+          {pageError}
+        </div>
+      {/if}
+
+      {#if loading}
+        <div class="mt-4">
+          <AsyncLoader
+            title="Loading transient environments"
+            message="Pulling active PR run groups and workspace updates."
+          />
+        </div>
+      {:else if activeGroups.length === 0}
+        <div class="mt-4 text-text-dim text-sm py-10 text-center">
+          No active PR environments.
+        </div>
+      {:else}
+        <div class="mt-4 space-y-6">
+          {#if myGithubId}
+            <section class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h2 class="text-sm font-medium text-text-muted">Your PRs</h2>
+                <span class="text-xs text-text-dim">{yourGroups.length} environments</span>
+              </div>
+              {#if yourGroups.length === 0}
+                <div class="text-text-dim text-sm py-6 text-center">No active PR environments.</div>
+              {:else}
+                <div class="grid grid-cols-1 gap-4">
+                  {#each yourGroups as group (group.key)}
+                    <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
+                      <div class="flex items-start justify-between">
+                        <div>
+                          <div class="flex items-center gap-3">
+                            <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                              {group.repo}
+                            </a>
+                            <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
+                            <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
+                            {#if group.workspaces.some(w => w.status === "plan_limited")}
+                              <PlanLimitedBadge {org} />
+                            {/if}
+                          </div>
+                          <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
+                            <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
+                              {refName(group.ref)}
+                            </span>
+                            <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
+                            <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
+                          </div>
+                        </div>
+                        <div class="text-right text-xs text-text-dim">
+                          {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
+                        </div>
+                      </div>
+
+                      <div class="mt-3">
+                        <WorkspaceDag
+                          {org}
+                          repo={group.repo}
+                          environmentName={group.environmentName}
+                          workspaces={group.workspaces}
+                          dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
+                        />
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </section>
+
+            <section class="space-y-3">
+              <div class="flex items-center justify-between">
+                <h2 class="text-sm font-medium text-text-muted">Other PRs</h2>
+                <span class="text-xs text-text-dim">{otherGroups.length} environments</span>
+              </div>
+              {#if otherGroups.length === 0}
+                <div class="text-text-dim text-sm py-6 text-center">No other active PR environments.</div>
+              {:else}
+                <div class="grid grid-cols-1 gap-4">
+                  {#each otherGroups as group (group.key)}
+                    <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
+                      <div class="flex items-start justify-between">
+                        <div>
+                          <div class="flex items-center gap-3">
+                            <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                              {group.repo}
+                            </a>
+                            <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
+                            <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
+                            {#if group.workspaces.some(w => w.status === "plan_limited")}
+                              <PlanLimitedBadge {org} />
+                            {/if}
+                          </div>
+                          <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
+                            <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
+                              {refName(group.ref)}
+                            </span>
+                            <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
+                            <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
+                            {#if group.authorLogin}
+                              <span class="text-text-dim text-xs">@{group.authorLogin}</span>
+                            {/if}
+                          </div>
+                        </div>
+                        <div class="text-right text-xs text-text-dim">
+                          {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
+                        </div>
+                      </div>
+
+                      <div class="mt-3">
+                        <WorkspaceDag
+                          {org}
+                          repo={group.repo}
+                          environmentName={group.environmentName}
+                          workspaces={group.workspaces}
+                          dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
+                        />
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </section>
+          {:else}
+            <div class="grid grid-cols-1 gap-4">
+              {#each activeGroups as group (group.key)}
+                <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
+                  <div class="flex items-start justify-between">
+                    <div>
+                      <div class="flex items-center gap-3">
+                        <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                          {group.repo}
+                        </a>
+                        <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
+                        <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
+                        {#if group.workspaces.some(w => w.status === "plan_limited")}
+                          <PlanLimitedBadge {org} />
+                        {/if}
+                      </div>
+                      <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
+                        <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
+                          {refName(group.ref)}
+                        </span>
+                        <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
+                        <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
+                        {#if group.authorLogin}
+                          <span class="text-text-dim text-xs">@{group.authorLogin}</span>
+                        {/if}
+                      </div>
+                    </div>
+                    <div class="text-right text-xs text-text-dim">
+                      {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
+                    </div>
+                  </div>
+
+                  <div class="mt-3">
+                    <WorkspaceDag
+                      {org}
+                      repo={group.repo}
+                      environmentName={group.environmentName}
+                      workspaces={group.workspaces}
+                      dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
+                    />
+                  </div>
+                </div>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
     </div>
   </section>
-
-  <!-- Filter: just show destroyed toggle -->
-  <div class="flex items-center">
-    <label class="flex items-center gap-2 text-sm text-text-muted">
-      <input type="checkbox" bind:checked={showInactive} />
-      Show destroyed
-    </label>
-  </div>
-
-  <!-- Error -->
-  {#if pageError}
-    <div class="bg-red-950/50 border border-red-800 rounded px-4 py-3 text-sm text-red-300">
-      {pageError}
-    </div>
-  {/if}
-
-  <!-- Loading -->
-  {#if loading}
-    <AsyncLoader
-      title="Loading transient environments"
-      message="Pulling active PR run groups and workspace updates."
-    />
-  {:else if activeGroups.length === 0}
-    <div class="text-text-dim text-sm py-10 text-center">
-      No active PR environments.
-    </div>
-  {:else}
-    {#if myGithubId}
-      <section class="space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-sm font-medium text-text-muted">Your PRs</h2>
-          <span class="text-xs text-text-dim">{yourGroups.length} groups</span>
-        </div>
-        {#if yourGroups.length === 0}
-          <div class="text-text-dim text-sm py-6 text-center">No active PR environments.</div>
-        {:else}
-          <div class="grid grid-cols-1 gap-4">
-            {#each yourGroups as group (group.key)}
-              <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
-                <div class="flex items-start justify-between">
-                  <div>
-                    <div class="flex items-center gap-3">
-                      <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
-                        {group.repo}
-                      </a>
-                      <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
-                      <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
-                      {#if group.workspaces.some(w => w.status === "plan_limited")}
-                        <PlanLimitedBadge {org} />
-                      {/if}
-                    </div>
-                    <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
-                      <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                        {refName(group.ref)}
-                      </span>
-                      <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                      <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
-                    </div>
-                  </div>
-                  <div class="text-right text-xs text-text-dim">
-                    {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
-                  </div>
-                </div>
-
-                <div class="mt-3">
-                  <WorkspaceDag
-                    {org}
-                    repo={group.repo}
-                    environmentName={group.environmentName}
-                    workspaces={group.workspaces}
-                    dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
-                  />
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </section>
-
-      <section class="space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-sm font-medium text-text-muted">Other PRs</h2>
-          <span class="text-xs text-text-dim">{otherGroups.length} groups</span>
-        </div>
-        {#if otherGroups.length === 0}
-          <div class="text-text-dim text-sm py-6 text-center">No other active PR environments.</div>
-        {:else}
-          <div class="grid grid-cols-1 gap-4">
-            {#each otherGroups as group (group.key)}
-              <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
-                <div class="flex items-start justify-between">
-                  <div>
-                    <div class="flex items-center gap-3">
-                      <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
-                        {group.repo}
-                      </a>
-                      <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
-                      <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
-                      {#if group.workspaces.some(w => w.status === "plan_limited")}
-                        <PlanLimitedBadge {org} />
-                      {/if}
-                    </div>
-                    <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
-                      <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                        {refName(group.ref)}
-                      </span>
-                      <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                      <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
-                      {#if group.authorLogin}
-                        <span class="text-text-dim text-xs">@{group.authorLogin}</span>
-                      {/if}
-                    </div>
-                  </div>
-                  <div class="text-right text-xs text-text-dim">
-                    {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
-                  </div>
-                </div>
-
-                <div class="mt-3">
-                  <WorkspaceDag
-                    {org}
-                    repo={group.repo}
-                    environmentName={group.environmentName}
-                    workspaces={group.workspaces}
-                    dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
-                  />
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </section>
-    {:else}
-      <!-- No user handle - show all PR environments without yours/others split -->
-      <div class="grid grid-cols-1 gap-4">
-        {#each activeGroups as group (group.key)}
-          <div class="rounded-lg border border-border bg-surface-raised p-4 hover:border-yaffle-500/40 transition-colors">
-            <div class="flex items-start justify-between">
-              <div>
-                <div class="flex items-center gap-3">
-                  <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
-                    {group.repo}
-                  </a>
-                  <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
-                  <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
-                  {#if group.workspaces.some(w => w.status === "plan_limited")}
-                    <PlanLimitedBadge {org} />
-                  {/if}
-                </div>
-                <div class="flex flex-wrap gap-4 text-sm text-text-muted mt-2">
-                      <span class="font-mono text-xs bg-surface-overlay px-1.5 py-0.5 rounded">
-                        {refName(group.ref)}
-                      </span>
-                  <span class="font-mono text-xs text-text-dim">{shortSha(group.headSha)}</span>
-                  <span class="text-text-dim text-xs">{formatRelativeTime(group.headUpdatedAt)}</span>
-                  {#if group.authorLogin}
-                    <span class="text-text-dim text-xs">@{group.authorLogin}</span>
-                  {/if}
-                </div>
-              </div>
-              <div class="text-right text-xs text-text-dim">
-                {group.workspaces.length} workspace{group.workspaces.length === 1 ? "" : "s"}
-              </div>
-            </div>
-
-            <div class="mt-3">
-              <WorkspaceDag
-                {org}
-                repo={group.repo}
-                environmentName={group.environmentName}
-                workspaces={group.workspaces}
-                dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
-              />
-            </div>
-          </div>
-        {/each}
-      </div>
-    {/if}
-  {/if}
 </div>
 {/if}
