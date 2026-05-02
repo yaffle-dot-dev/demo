@@ -1,16 +1,19 @@
 import { join } from "node:path"
 
 import type { RunGroup } from "../db/queries/run-groups.ts"
+import type { EnvironmentKind } from "./config-toml.ts"
 
 import {
   upsertRunGroupWorkspaceMetadata,
   type RunGroupWorkspaceMetadataInsert,
 } from "../db/queries/run-group-workspace-metadata.ts"
+import { findDeploymentsByRunGroup } from "../db/queries/workspace-deployments.ts"
 import {
   buildProviderRequirementsDegradation,
   extractProviderRequirementsFromWorkspaceDir,
   type ProviderRequirementsDegradation,
 } from "./provider-requirements.ts"
+import { enqueueEnvironmentGroupProjectionRebuild } from "../jobs/environment-group-projections.ts"
 import { logger, withSpan } from "./telemetry.ts"
 import { cleanupWorkspace } from "./workspace.ts"
 import { createWorkspaceCache } from "./workspace-cache.ts"
@@ -101,6 +104,15 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
       })
 
       await upsertRunGroupWorkspaceMetadata(rows)
+      const deployments = await findDeploymentsByRunGroup(params.runGroup.id)
+      for (const deployment of deployments) {
+        await enqueueEnvironmentGroupProjectionRebuild({
+          orgId: deployment.orgId,
+          repo: deployment.repo,
+          environmentKind: deployment.environmentKind as EnvironmentKind,
+          environmentName: deployment.environmentName,
+        })
+      }
       return
     }
 
@@ -129,6 +141,15 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
       })
 
       await upsertRunGroupWorkspaceMetadata(rows)
+      const deployments = await findDeploymentsByRunGroup(params.runGroup.id)
+      for (const deployment of deployments) {
+        await enqueueEnvironmentGroupProjectionRebuild({
+          orgId: deployment.orgId,
+          repo: deployment.repo,
+          environmentKind: deployment.environmentKind as EnvironmentKind,
+          environmentName: deployment.environmentName,
+        })
+      }
       return
     }
 
@@ -174,6 +195,15 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
       }
 
       await upsertRunGroupWorkspaceMetadata(rows)
+      const deployments = await findDeploymentsByRunGroup(params.runGroup.id)
+      for (const deployment of deployments) {
+        await enqueueEnvironmentGroupProjectionRebuild({
+          orgId: deployment.orgId,
+          repo: deployment.repo,
+          environmentKind: deployment.environmentKind as EnvironmentKind,
+          environmentName: deployment.environmentName,
+        })
+      }
     } finally {
       await cleanupWorkspace(repoDir)
     }

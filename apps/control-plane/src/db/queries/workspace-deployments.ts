@@ -7,6 +7,7 @@ import { workspaceDeployments } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 import { events } from "../../lib/events.ts"
 import type { EnvironmentKind } from "../../lib/config-toml.ts"
+import { enqueueEnvironmentGroupProjectionRebuild } from "../../jobs/environment-group-projections.ts"
 
 export type WorkspaceDeployment = typeof workspaceDeployments.$inferSelect
 export type NewWorkspaceDeployment = typeof workspaceDeployments.$inferInsert
@@ -223,7 +224,17 @@ export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<
       })
       .returning()
 
-    return rows[0]
+    const row = rows[0]
+    if (row) {
+      await enqueueEnvironmentGroupProjectionRebuild({
+        orgId: row.orgId,
+        repo: row.repo,
+        environmentKind: row.environmentKind as EnvironmentKind,
+        environmentName: row.environmentName,
+      })
+    }
+
+    return row
   })
 }
 
@@ -251,6 +262,12 @@ export async function updateDeploymentStatus(
     if (updated.length > 0) {
       const { orgId, repo, environmentKind, environmentName, runGroupId } = updated[0]
       events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+      await enqueueEnvironmentGroupProjectionRebuild({
+        orgId,
+        repo,
+        environmentKind: environmentKind as EnvironmentKind,
+        environmentName,
+      })
 
       if (runGroupId) {
         const { syncRunGroupCheckFromDeployments } = await import("../../lib/run-group-checks.ts")
@@ -296,6 +313,12 @@ export async function updateDeploymentHead(
     if (updated.length > 0) {
       const { orgId, repo, environmentKind, environmentName } = updated[0]
       events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+      await enqueueEnvironmentGroupProjectionRebuild({
+        orgId,
+        repo,
+        environmentKind: environmentKind as EnvironmentKind,
+        environmentName,
+      })
     }
   })
 }

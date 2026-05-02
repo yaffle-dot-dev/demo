@@ -280,6 +280,43 @@ export const runGroupWorkspaceMetadata = pgTable(
   ],
 )
 
+export const environmentGroupProjections = pgTable(
+  "environment_group_projections",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    repo: text("repo").notNull(),
+    environmentKind: text("environment_kind").notNull(),
+    environmentName: text("environment_name").notNull(),
+    sourceKind: text("source_kind"),
+    sourceMetadata: jsonb("source_metadata"),
+    status: text("status").notNull(),
+    headSha: text("head_sha").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
+    workspaceCount: integer("workspace_count").default(0).notNull(),
+    blockedWorkspaceCount: integer("blocked_workspace_count").default(0).notNull(),
+    degradedWorkspaceCount: integer("degraded_workspace_count").default(0).notNull(),
+    version: integer("version").default(1).notNull(),
+    payload: jsonb("payload").notNull(),
+    rebuiltAt: timestamp("rebuilt_at", { withTimezone: true }).notNull(),
+    rebuildError: text("rebuild_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    rowUpdatedAt: timestamp("row_updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("environment_group_projections_org_repo_kind_name").on(
+      t.orgId,
+      t.repo,
+      t.environmentKind,
+      t.environmentName,
+    ),
+    index("environment_group_projections_org_kind_idx").on(t.orgId, t.environmentKind),
+    index("environment_group_projections_org_repo_idx").on(t.orgId, t.repo),
+  ],
+)
+
 // =============================================================================
 // Scan Jobs (dependency scanning worker jobs)
 // =============================================================================

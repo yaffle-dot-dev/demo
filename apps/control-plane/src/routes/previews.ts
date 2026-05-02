@@ -3,8 +3,10 @@ import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
 import { findDeploymentById, listDeployments, pauseDeployment } from "../db/queries/workspace-deployments.ts"
+import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { listApprovals } from "../db/queries/approvals.ts"
 import { getLatestDependencyGraphsForOrg } from "../db/queries/run-groups.ts"
+import { parseEnvironmentGroupProjectionPayload } from "../lib/projections/environment-groups.ts"
 import { logger } from "../lib/telemetry.ts"
 import {
   requireOrgAccess,
@@ -54,6 +56,77 @@ async function buildPreviewOverviewSnapshot(params: {
   limit?: number
   cursor?: string
 }): Promise<PreviewOverviewSnapshot> {
+  const projectedGroups = await listEnvironmentGroupProjections({
+    orgId: params.orgId,
+    repo: params.repo,
+    environmentKind: "transient",
+  })
+
+  if (projectedGroups.length > 0) {
+    const filteredGroups = projectedGroups
+      .map((row) => ({ row, payload: parseEnvironmentGroupProjectionPayload(row.payload) }))
+      .filter((entry) => entry.payload?.environmentKind === "transient")
+      .filter((entry) => {
+        const payload = entry.payload!
+        const prNumber = typeof payload.sourceMetadata?.prNumber === "number" ? payload.sourceMetadata.prNumber : null
+        if (params.prNumber !== undefined && prNumber !== params.prNumber) {
+          return false
+        }
+        if (params.status && payload.status !== params.status) {
+          return false
+        }
+        if (params.cursor && payload.updatedAt >= params.cursor) {
+          return false
+        }
+        return true
+      })
+      .sort((left, right) => right.payload!.updatedAt.localeCompare(left.payload!.updatedAt))
+
+    const limitedGroups = params.limit ? filteredGroups.slice(0, params.limit) : filteredGroups
+    const data = limitedGroups.flatMap((entry) => {
+      const payload = entry.payload!
+      const prNumber = typeof payload.sourceMetadata?.prNumber === "number" ? payload.sourceMetadata.prNumber : null
+
+      return payload.workspaces.map((workspace) => ({
+        id: workspace.deploymentId,
+        repo: payload.repo,
+        prNumber,
+        environmentKind: payload.environmentKind,
+        environmentName: payload.environmentName,
+        workspacePath: workspace.workspacePath,
+        ref: payload.ref,
+        headSha: payload.headSha,
+        authorGithubId: workspace.authorGithubId ?? payload.sourceMetadata?.authorGithubId ?? null,
+        authorLogin: workspace.authorLogin ?? payload.sourceMetadata?.authorLogin ?? null,
+        status: workspace.status,
+        stateKey: workspace.stateKey,
+        mode: workspace.mode,
+        requireApproval: workspace.requireApproval,
+        approvers: workspace.approvers,
+        createdAt: workspace.createdAt,
+      }))
+    })
+
+    const dependencyGraphs = Object.fromEntries(
+      limitedGroups.flatMap((entry) => {
+        const payload = entry.payload!
+        return payload.dependencyGraph
+          ? [[`${payload.repo}:${payload.environmentName}`, payload.dependencyGraph]]
+          : []
+      }),
+    )
+
+    const nextCursor = params.limit && filteredGroups.length > limitedGroups.length
+      ? limitedGroups[limitedGroups.length - 1]?.payload?.updatedAt ?? null
+      : null
+
+    return {
+      data,
+      dependencyGraphs,
+      nextCursor,
+    }
+  }
+
   const [result, dependencyGraphs] = await Promise.all([
     listDeployments(params.orgId, {
       repo: params.repo,

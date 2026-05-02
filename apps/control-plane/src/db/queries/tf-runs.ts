@@ -3,10 +3,13 @@ import { and, desc, eq, inArray, sql } from "drizzle-orm"
 import type { RunStatus, RunType } from "@yaffle/shared"
 
 import { db } from "../../lib/db.ts"
+import type { EnvironmentKind } from "../../lib/config-toml.ts"
 import { tfRuns } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
 import { events } from "../../lib/events.ts"
 import { recomputeRunGroupStatus } from "./run-groups.ts"
+import { findDeploymentById } from "./workspace-deployments.ts"
+import { enqueueEnvironmentGroupProjectionRebuild } from "../../jobs/environment-group-projections.ts"
 
 export type TfRun = typeof tfRuns.$inferSelect
 export type NewTfRun = typeof tfRuns.$inferInsert
@@ -94,7 +97,17 @@ function groupRunsByDeployment(rows: TfRunListItem[]): Map<string, TfRunListItem
 export async function createTfRun(values: NewTfRun): Promise<TfRun> {
   return withDbSpan("insert", "tf_runs", async () => {
     const rows = await db.insert(tfRuns).values(values).returning()
-    return rows[0]
+    const row = rows[0]
+    const deployment = await findDeploymentById(values.deploymentId)
+    if (deployment) {
+      await enqueueEnvironmentGroupProjectionRebuild({
+        orgId: deployment.orgId,
+        repo: deployment.repo,
+        environmentKind: deployment.environmentKind as EnvironmentKind,
+        environmentName: deployment.environmentName,
+      })
+    }
+    return row
   })
 }
 
@@ -124,9 +137,19 @@ export async function updateRunStatus(
       .update(tfRuns)
       .set({ status, ...extra })
       .where(eq(tfRuns.id, runId))
-      .returning({ runGroupId: tfRuns.runGroupId })
+      .returning({ runGroupId: tfRuns.runGroupId, deploymentId: tfRuns.deploymentId })
 
     events.emitRunUpdate(runId, previewId)
+
+    const deployment = updated?.deploymentId ? await findDeploymentById(updated.deploymentId) : undefined
+    if (deployment) {
+      await enqueueEnvironmentGroupProjectionRebuild({
+        orgId: deployment.orgId,
+        repo: deployment.repo,
+        environmentKind: deployment.environmentKind as EnvironmentKind,
+        environmentName: deployment.environmentName,
+      })
+    }
 
     // Recompute run group status if this run belongs to a group
     if (updated?.runGroupId) {

@@ -19,6 +19,7 @@ import {
   type OrgProvisionPayload,
 } from "../jobs/org-provision.ts"
 import { handleProviderDiscoveryJob } from "../jobs/provider-discovery.ts"
+import { handleEnvironmentGroupProjectionRebuildJob } from "../jobs/environment-group-projections.ts"
 import { logger } from "./telemetry.ts"
 
 export interface JobWorkerConfig {
@@ -112,7 +113,11 @@ async function pollAndProcess(): Promise<void> {
   if (!state.workerId) return
 
   // Try to claim a job
-  const job = await claimJob(state.workerId, ["org_provision", "provider_discovery"])
+  const job = await claimJob(state.workerId, [
+    "org_provision",
+    "provider_discovery",
+    "rebuild_environment_group_projections",
+  ])
   if (!job) return
 
   logger.info("Job claimed", {
@@ -161,6 +166,9 @@ async function processJob(job: Job): Promise<void> {
       break
     case "provider_discovery":
       await handleProviderDiscoveryJob(job)
+      break
+    case "rebuild_environment_group_projections":
+      await handleEnvironmentGroupProjectionRebuildJob(job)
       break
     default:
       throw new Error(`Unknown job type: ${job.jobType}`)

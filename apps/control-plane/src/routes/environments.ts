@@ -5,6 +5,7 @@ import { z } from "zod"
 import { listDeployments } from "../db/queries/workspace-deployments.ts"
 import { findLatestRunsForDeployments } from "../db/queries/tf-runs.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
+import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { findRunGroupWorkspaceMetadataForRunGroups } from "../db/queries/run-group-workspace-metadata.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 import {
@@ -17,6 +18,7 @@ import {
   getRequiredProviderRequirementsForDeployment,
   getRequiredProvidersForDeployment,
 } from "../lib/provider-requirements.ts"
+import { parseEnvironmentGroupProjectionPayload } from "../lib/projections/environment-groups.ts"
 import { logger, withSpan } from "../lib/telemetry.ts"
 
 const listQuerySchema = z.object({
@@ -71,6 +73,54 @@ function summarizeEnvironmentCounts(environments: EnvironmentGroup[]): Pick<Envi
     environmentCount: environments.length,
     workspaceCount: environments.reduce((total, environment) => total + environment.workspaces.length, 0),
   }
+}
+
+async function loadEnvironmentGroupsFromProjections(
+  orgId: string,
+  repo?: string,
+): Promise<EnvironmentGroup[]> {
+  const rows = await listEnvironmentGroupProjections({
+    orgId,
+    repo,
+    environmentKind: "named",
+  })
+
+  const environments: EnvironmentGroup[] = []
+  for (const row of rows) {
+    const payload = parseEnvironmentGroupProjectionPayload(row.payload)
+    if (!payload || payload.environmentKind !== "named") {
+      continue
+    }
+
+    environments.push({
+      repo: payload.repo,
+      ref: payload.ref,
+      environmentName: payload.environmentName,
+      headSha: payload.headSha,
+      status: payload.status,
+      updatedAt: payload.updatedAt,
+      dependencyGraph: payload.dependencyGraph,
+      workspaces: payload.workspaces.map((workspace) => ({
+        previewId: workspace.deploymentId,
+        workspacePath: workspace.workspacePath,
+        status: workspace.status,
+        connectionStatus: workspace.connectionStatus,
+        missingProviders: workspace.missingProviders,
+        conflictProviders: workspace.conflictProviders,
+        matchedConnections: workspace.matchedConnections,
+        blockedReason: workspace.blockedReason,
+        degradation: workspace.degradation ?? null,
+        headSha: workspace.headSha,
+        lastRunId: workspace.lastRunId,
+        lastRunType: workspace.lastRunType,
+        lastRunStatus: workspace.lastRunStatus,
+        lastRunCompletedAt: workspace.lastRunCompletedAt,
+        planSummary: workspace.planSummary,
+      })),
+    })
+  }
+
+  return environments
 }
 
 function setPhaseMetric(
@@ -132,6 +182,10 @@ interface EnvironmentGroup {
   headSha: string
   status: string
   updatedAt: string
+  dependencyGraph: {
+    workspaces: string[]
+    edges: [string, string][]
+  } | null
   workspaces: EnvironmentWorkspace[]
 }
 
@@ -351,6 +405,32 @@ async function loadEnvironments(
   detailLevel: "full" | "dag" = "full",
 ): Promise<EnvironmentsLoadResult> {
   const phaseMetrics: Record<string, number> = {}
+
+  const projectionStartedAt = Date.now()
+  const projectionMemoryBefore = getMemorySnapshot()
+  const projectedEnvironments = await loadEnvironmentGroupsFromProjections(orgId, repo)
+  setPhaseMetric(
+    phaseMetrics,
+    "loadProjectionRows",
+    projectionStartedAt,
+    Date.now(),
+    projectionMemoryBefore,
+    getMemorySnapshot(),
+  )
+  phaseMetrics["loadProjectionRows.itemCount"] = projectedEnvironments.length
+
+  if (projectedEnvironments.length > 0) {
+    return {
+      environments: projectedEnvironments,
+      stats: {
+        deploymentCount: projectedEnvironments.reduce((total, environment) => total + environment.workspaces.length, 0),
+        runGroupCount: 0,
+        ...summarizeEnvironmentCounts(projectedEnvironments),
+      },
+      phaseMetrics,
+    }
+  }
+
   const listDeploymentsStartedAt = Date.now()
   const listDeploymentsMemoryBefore = getMemorySnapshot()
   const result = await listDeployments(orgId, {
@@ -426,6 +506,7 @@ async function loadEnvironments(
           headSha: preview.headSha,
           status: preview.status,
           updatedAt: preview.createdAt.toISOString(),
+          dependencyGraph: null,
           workspaces: [workspace],
         })
         continue
@@ -560,15 +641,16 @@ async function loadEnvironments(
 
     const existing = groups.get(key)
     if (!existing) {
-      groups.set(key, {
-        repo: preview.repo,
-        ref: preview.ref,
-        environmentName: preview.environmentName,
-        headSha: preview.headSha,
-        status: preview.status,
-        updatedAt: latestRun?.completedAt?.toISOString() ?? preview.createdAt.toISOString(),
-        workspaces: [workspace],
-      })
+        groups.set(key, {
+          repo: preview.repo,
+          ref: preview.ref,
+          environmentName: preview.environmentName,
+          headSha: preview.headSha,
+          status: preview.status,
+          updatedAt: latestRun?.completedAt?.toISOString() ?? preview.createdAt.toISOString(),
+          dependencyGraph: null,
+          workspaces: [workspace],
+        })
       continue
     }
 

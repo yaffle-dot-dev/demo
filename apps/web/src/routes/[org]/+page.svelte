@@ -90,7 +90,8 @@
   interface PreviewGroup {
     key: string
     repo: string
-    prNumber: number
+    prNumber: number | null
+    environmentName: string
     ref: string
     headSha: string
     createdAt: string
@@ -174,7 +175,7 @@
     const map = new Map<string, PreviewGroup>()
 
     for (const preview of list) {
-      const key = `${preview.repo}#${preview.prNumber}`
+      const key = `${preview.repo}:${preview.environmentName}`
       const existing = map.get(key)
       const createdAt = existing
         ? new Date(existing.createdAt) > new Date(preview.createdAt)
@@ -191,6 +192,7 @@
         key,
         repo: preview.repo,
         prNumber: preview.prNumber,
+        environmentName: preview.environmentName,
         ref,
         headSha,
         createdAt,
@@ -402,7 +404,7 @@
                   repo={env.repo}
                   environmentName={env.environmentName}
                   workspaces={env.workspaces}
-                  dependencyGraph={getDependencyGraph(env.repo, env.environmentName)}
+                  dependencyGraph={env.dependencyGraph ?? getDependencyGraph(env.repo, env.environmentName)}
                 />
               </div>
             </div>
@@ -465,10 +467,10 @@
                 <div class="flex items-start justify-between">
                   <div>
                     <div class="flex items-center gap-3">
-                      <a href={`${base}/${org}/${group.repo}/env/pr-${group.prNumber}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                      <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                         {group.repo}
                       </a>
-                      <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
+                      <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
                       <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
                       {#if group.workspaces.some(w => w.status === "plan_limited")}
                         <PlanLimitedBadge {org} />
@@ -491,9 +493,9 @@
                   <WorkspaceDag
                     {org}
                     repo={group.repo}
-                    environmentName="pr-{group.prNumber}"
+                    environmentName={group.environmentName}
                     workspaces={group.workspaces}
-                    dependencyGraph={getDependencyGraph(group.repo, `pr-${group.prNumber}`)}
+                    dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
                   />
                 </div>
               </div>
@@ -516,10 +518,10 @@
                 <div class="flex items-start justify-between">
                   <div>
                     <div class="flex items-center gap-3">
-                      <a href={`${base}/${org}/${group.repo}/env/pr-${group.prNumber}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                      <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                         {group.repo}
                       </a>
-                      <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
+                      <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
                       <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
                       {#if group.workspaces.some(w => w.status === "plan_limited")}
                         <PlanLimitedBadge {org} />
@@ -545,9 +547,9 @@
                   <WorkspaceDag
                     {org}
                     repo={group.repo}
-                    environmentName="pr-{group.prNumber}"
+                    environmentName={group.environmentName}
                     workspaces={group.workspaces}
-                    dependencyGraph={getDependencyGraph(group.repo, `pr-${group.prNumber}`)}
+                    dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
                   />
                 </div>
               </div>
@@ -563,10 +565,10 @@
             <div class="flex items-start justify-between">
               <div>
                 <div class="flex items-center gap-3">
-                  <a href={`${base}/${org}/${group.repo}/env/pr-${group.prNumber}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
+                  <a href={`${base}/${org}/${group.repo}/env/${group.environmentName}`} class="text-lg font-medium text-text hover:text-yaffle-400 transition-colors">
                     {group.repo}
                   </a>
-                  <span class="font-mono text-sm text-text-muted">#{group.prNumber}</span>
+                  <span class="font-mono text-sm text-text-muted">{group.prNumber != null ? `#${group.prNumber}` : group.environmentName}</span>
                   <RunGroupStatusBadge statuses={group.workspaces.map(w => w.status)} />
                   {#if group.workspaces.some(w => w.status === "plan_limited")}
                     <PlanLimitedBadge {org} />
@@ -592,9 +594,9 @@
               <WorkspaceDag
                 {org}
                 repo={group.repo}
-                environmentName="pr-{group.prNumber}"
+                environmentName={group.environmentName}
                 workspaces={group.workspaces}
-                dependencyGraph={getDependencyGraph(group.repo, `pr-${group.prNumber}`)}
+                dependencyGraph={getDependencyGraph(group.repo, group.environmentName)}
               />
             </div>
           </div>

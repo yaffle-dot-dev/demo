@@ -6,6 +6,8 @@ export interface Preview {
   id: string
   repo: string
   prNumber: number
+  environmentKind: string
+  environmentName: string
   workspacePath: string
   ref: string
   headSha: string
@@ -124,6 +126,7 @@ export interface EnvironmentGroup {
   headSha: string
   status: string
   updatedAt: string
+  dependencyGraph?: DependencyGraph | null
   workspaces: EnvironmentWorkspace[]
 }
 
