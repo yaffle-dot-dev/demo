@@ -2,7 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
 use std::io;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -39,6 +41,58 @@ pub use crate::local_first::{
 };
 use yaffle_config::{parse_yaffle_toml, validate_environment_name, YaffleConfig};
 pub use yaffle_contracts::{EngineError, EnvironmentTarget, WorkspaceSelection, CONTRACT_VERSION};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConvergeWorkspacePhase {
+    PreparingAuth,
+    InitializingTofu,
+    ApplyingTofu,
+    RecordingState,
+    CollectingOutputs,
+    PublishingOutputs,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EngineProgressEvent {
+    ConvergePlan {
+        environment_name: String,
+        workspaces: Vec<String>,
+        dag: String,
+    },
+    WorkspacePhase {
+        workspace_path: String,
+        phase: ConvergeWorkspacePhase,
+    },
+    TofuLog {
+        workspace_path: String,
+        stream: TofuLogStream,
+        line: String,
+    },
+    WorkspaceOutputs {
+        workspace_path: String,
+        outputs: BTreeMap<String, TerraformOutput>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TofuLogStream {
+    Stdout,
+    Stderr,
+}
+
+pub trait EngineProgressReporter {
+    fn emit(&mut self, event: EngineProgressEvent);
+}
+
+impl<F> EngineProgressReporter for F
+where
+    F: FnMut(EngineProgressEvent),
+{
+    fn emit(&mut self, event: EngineProgressEvent) {
+        self(event)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineRequest {
@@ -135,6 +189,22 @@ struct OperationPolicy {
 }
 
 pub fn execute(request: &EngineRequest, working_dir: &Path) -> Result<EngineResponse, EngineError> {
+    execute_internal(request, working_dir, None)
+}
+
+pub fn execute_with_progress(
+    request: &EngineRequest,
+    working_dir: &Path,
+    reporter: &mut dyn EngineProgressReporter,
+) -> Result<EngineResponse, EngineError> {
+    execute_internal(request, working_dir, Some(reporter))
+}
+
+fn execute_internal(
+    request: &EngineRequest,
+    working_dir: &Path,
+    mut reporter: Option<&mut dyn EngineProgressReporter>,
+) -> Result<EngineResponse, EngineError> {
     validate_request(request)?;
 
     let policy = operation_policy(&request.operation);
@@ -156,6 +226,7 @@ pub fn execute(request: &EngineRequest, working_dir: &Path) -> Result<EngineResp
             repo_context
                 .as_ref()
                 .expect("converge execution should always have repo context"),
+            &mut reporter,
         ),
         EngineOperation::Outputs => execute_outputs_operation(
             request,
@@ -983,6 +1054,7 @@ fn execute_destroy_operation(
 fn execute_converge_operation(
     request: &EngineRequest,
     repo_context: &RepoContext,
+    reporter: &mut Option<&mut dyn EngineProgressReporter>,
 ) -> Result<EngineResponse, EngineError> {
     let graph_context = load_graph_context(repo_context, request)?;
     let tofu_report = inspect_tofu_resolution(&TofuResolutionRequest::default());
@@ -1005,7 +1077,27 @@ fn execute_converge_operation(
         .expect("converge operation should have an environment kind");
     let mut diagnostics = repo_context_diagnostics(repo_context);
 
+    emit_progress(
+        reporter,
+        EngineProgressEvent::ConvergePlan {
+            environment_name: request
+                .target
+                .as_ref()
+                .map(|target| target.environment.clone())
+                .unwrap_or_default(),
+            workspaces: graph_context.topological_order.clone(),
+            dag: render_graph_dag(&graph_context.graph, &graph_context.topological_order),
+        },
+    );
+
     for workspace_path in &graph_context.topological_order {
+        emit_progress(
+            reporter,
+            EngineProgressEvent::WorkspacePhase {
+                workspace_path: workspace_path.clone(),
+                phase: ConvergeWorkspacePhase::PreparingAuth,
+            },
+        );
         let workspace_config = repo_context
             .config
             .workspaces
@@ -1023,6 +1115,13 @@ fn execute_converge_operation(
 
         append_auth_diagnostics(&mut diagnostics, workspace_path, &workspace_execution.auth);
 
+        emit_progress(
+            reporter,
+            EngineProgressEvent::WorkspacePhase {
+                workspace_path: workspace_path.clone(),
+                phase: ConvergeWorkspacePhase::InitializingTofu,
+            },
+        );
         run_tofu_command(
             request,
             &tofu_resolution,
@@ -1032,7 +1131,14 @@ fn execute_converge_operation(
             &["init", "-input=false", "-no-color"],
             "tofu_init_failed",
         )?;
-        run_tofu_command(
+        emit_progress(
+            reporter,
+            EngineProgressEvent::WorkspacePhase {
+                workspace_path: workspace_path.clone(),
+                phase: ConvergeWorkspacePhase::ApplyingTofu,
+            },
+        );
+        run_tofu_command_with_progress(
             request,
             &tofu_resolution,
             &prepared_repo,
@@ -1040,12 +1146,27 @@ fn execute_converge_operation(
             workspace_path,
             &["apply", "-auto-approve", "-input=false", "-no-color"],
             "tofu_apply_failed",
+            reporter,
         )?;
 
         if workspace_execution.uses_local_backend {
+            emit_progress(
+                reporter,
+                EngineProgressEvent::WorkspacePhase {
+                    workspace_path: workspace_path.clone(),
+                    phase: ConvergeWorkspacePhase::RecordingState,
+                },
+            );
             persist_local_backend_state(request, repo_context, &prepared_repo, workspace_path)?;
         }
 
+        emit_progress(
+            reporter,
+            EngineProgressEvent::WorkspacePhase {
+                workspace_path: workspace_path.clone(),
+                phase: ConvergeWorkspacePhase::CollectingOutputs,
+            },
+        );
         let output = run_tofu_command(
             request,
             &tofu_resolution,
@@ -1056,7 +1177,21 @@ fn execute_converge_operation(
             "tofu_output_failed",
         )?;
         let outputs = parse_terraform_outputs(request, workspace_path, &output.stdout)?;
+        emit_progress(
+            reporter,
+            EngineProgressEvent::WorkspaceOutputs {
+                workspace_path: workspace_path.clone(),
+                outputs: outputs.clone(),
+            },
+        );
 
+        emit_progress(
+            reporter,
+            EngineProgressEvent::WorkspacePhase {
+                workspace_path: workspace_path.clone(),
+                phase: ConvergeWorkspacePhase::PublishingOutputs,
+            },
+        );
         if let Some(published_version) =
             maybe_publish_hosted_output_module(request, repo_context, workspace_path, &outputs)?
         {
@@ -1081,6 +1216,14 @@ fn execute_converge_operation(
                 )])),
             });
         }
+
+        emit_progress(
+            reporter,
+            EngineProgressEvent::WorkspacePhase {
+                workspace_path: workspace_path.clone(),
+                phase: ConvergeWorkspacePhase::Completed,
+            },
+        );
     }
 
     diagnostics.push(DiagnosticMessage {
@@ -2566,6 +2709,50 @@ fn run_tofu_command(
     args: &[&str],
     error_code: &'static str,
 ) -> Result<std::process::Output, EngineError> {
+    run_tofu_command_internal(
+        request,
+        tofu_resolution,
+        prepared_repo,
+        workspace_execution,
+        workspace_path,
+        args,
+        error_code,
+        None,
+    )
+}
+
+fn run_tofu_command_with_progress(
+    request: &EngineRequest,
+    tofu_resolution: &yaffle_tofu::TofuResolution,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace_execution: &PreparedWorkspaceExecution,
+    workspace_path: &str,
+    args: &[&str],
+    error_code: &'static str,
+    reporter: &mut Option<&mut dyn EngineProgressReporter>,
+) -> Result<std::process::Output, EngineError> {
+    run_tofu_command_internal(
+        request,
+        tofu_resolution,
+        prepared_repo,
+        workspace_execution,
+        workspace_path,
+        args,
+        error_code,
+        Some(reporter),
+    )
+}
+
+fn run_tofu_command_internal(
+    request: &EngineRequest,
+    tofu_resolution: &yaffle_tofu::TofuResolution,
+    prepared_repo: &PreparedExecutionRepo,
+    workspace_execution: &PreparedWorkspaceExecution,
+    workspace_path: &str,
+    args: &[&str],
+    error_code: &'static str,
+    mut reporter: Option<&mut Option<&mut dyn EngineProgressReporter>>,
+) -> Result<std::process::Output, EngineError> {
     let workspace_dir = prepared_repo.repo_root.join(workspace_path);
     let tf_data_dir = prepared_repo.tf_data_dir.join(slugify_path(workspace_path));
     fs::create_dir_all(&tf_data_dir).map_err(|error| {
@@ -2579,41 +2766,56 @@ fn run_tofu_command(
         )
     })?;
 
-    let output = tofu_resolution
-        .command()
-        .current_dir(&workspace_dir)
-        .env("TF_DATA_DIR", &tf_data_dir)
-        .env("TF_IN_AUTOMATION", "1")
-        .env("TOFU_IN_AUTOMATION", "1")
-        .envs(workspace_execution.auth.env_pairs())
-        .args(args)
-        .output()
-        .map_err(|error| {
-            request_error_with_details(
-                request,
-                error_code,
-                format!(
-                    "Failed to execute tofu command '{}' for workspace '{}': {error}",
-                    args.join(" "),
-                    workspace_dir.display()
-                ),
-                Some(BTreeMap::from([
-                    (
-                        "workspace_dir".to_string(),
-                        json!(workspace_dir.display().to_string()),
+    let output = if let Some(reporter_ref) = reporter.as_mut() {
+        run_tofu_command_streaming(
+            request,
+            tofu_resolution,
+            &workspace_dir,
+            &tf_data_dir,
+            workspace_execution,
+            workspace_path,
+            args,
+            error_code,
+            &prepared_repo.repo_root,
+            reporter_ref,
+        )?
+    } else {
+        tofu_resolution
+            .command()
+            .current_dir(&workspace_dir)
+            .env("TF_DATA_DIR", &tf_data_dir)
+            .env("TF_IN_AUTOMATION", "1")
+            .env("TOFU_IN_AUTOMATION", "1")
+            .envs(workspace_execution.auth.env_pairs())
+            .args(args)
+            .output()
+            .map_err(|error| {
+                request_error_with_details(
+                    request,
+                    error_code,
+                    format!(
+                        "Failed to execute tofu command '{}' for workspace '{}': {error}",
+                        args.join(" "),
+                        workspace_dir.display()
                     ),
-                    (
-                        "tf_cli_config_file".to_string(),
-                        json!(workspace_execution.auth.tf_cli_config_file_path()),
-                    ),
-                    (
-                        "repo_root".to_string(),
-                        json!(prepared_repo.repo_root.display().to_string()),
-                    ),
-                    ("args".to_string(), json!(args)),
-                ])),
-            )
-        })?;
+                    Some(BTreeMap::from([
+                        (
+                            "workspace_dir".to_string(),
+                            json!(workspace_dir.display().to_string()),
+                        ),
+                        (
+                            "tf_cli_config_file".to_string(),
+                            json!(workspace_execution.auth.tf_cli_config_file_path()),
+                        ),
+                        (
+                            "repo_root".to_string(),
+                            json!(prepared_repo.repo_root.display().to_string()),
+                        ),
+                        ("args".to_string(), json!(args)),
+                    ])),
+                )
+            })?
+    };
 
     if !output.status.success() {
         let stderr = utf8_trimmed(&output.stderr);
@@ -2672,6 +2874,168 @@ fn run_tofu_command(
     }
 
     Ok(output)
+}
+
+fn run_tofu_command_streaming(
+    request: &EngineRequest,
+    tofu_resolution: &yaffle_tofu::TofuResolution,
+    workspace_dir: &Path,
+    tf_data_dir: &Path,
+    workspace_execution: &PreparedWorkspaceExecution,
+    workspace_path: &str,
+    args: &[&str],
+    error_code: &'static str,
+    repo_root: &Path,
+    reporter: &mut Option<&mut dyn EngineProgressReporter>,
+) -> Result<std::process::Output, EngineError> {
+    let mut child = tofu_resolution
+        .command()
+        .current_dir(workspace_dir)
+        .env("TF_DATA_DIR", tf_data_dir)
+        .env("TF_IN_AUTOMATION", "1")
+        .env("TOFU_IN_AUTOMATION", "1")
+        .envs(workspace_execution.auth.env_pairs())
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            request_error_with_details(
+                request,
+                error_code,
+                format!(
+                    "Failed to execute tofu command '{}' for workspace '{}': {error}",
+                    args.join(" "),
+                    workspace_dir.display()
+                ),
+                Some(BTreeMap::from([
+                    (
+                        "workspace_dir".to_string(),
+                        json!(workspace_dir.display().to_string()),
+                    ),
+                    (
+                        "tf_cli_config_file".to_string(),
+                        json!(workspace_execution.auth.tf_cli_config_file_path()),
+                    ),
+                    (
+                        "repo_root".to_string(),
+                        json!(repo_root.display().to_string()),
+                    ),
+                    ("args".to_string(), json!(args)),
+                ])),
+            )
+        })?;
+
+    let stdout = child.stdout.take().expect("child stdout should be piped");
+    let stderr = child.stderr.take().expect("child stderr should be piped");
+    let (line_tx, line_rx) = std::sync::mpsc::channel::<(TofuLogStream, String)>();
+
+    let stdout_reader = spawn_tofu_log_reader(stdout, TofuLogStream::Stdout, line_tx.clone());
+    let stderr_reader = spawn_tofu_log_reader(stderr, TofuLogStream::Stderr, line_tx);
+
+    let status = loop {
+        match child.try_wait().map_err(|error| {
+            request_error_with_details(
+                request,
+                error_code,
+                format!(
+                    "Failed to wait for tofu command '{}' in workspace '{}': {error}",
+                    args.join(" "),
+                    workspace_dir.display()
+                ),
+                Some(BTreeMap::from([(
+                    "workspace_path".to_string(),
+                    json!(workspace_path),
+                )])),
+            )
+        })? {
+            Some(status) => break status,
+            None => {
+                while let Ok((stream, line)) = line_rx.recv_timeout(Duration::from_millis(40)) {
+                    emit_progress(
+                        reporter,
+                        EngineProgressEvent::TofuLog {
+                            workspace_path: workspace_path.to_string(),
+                            stream,
+                            line,
+                        },
+                    );
+                }
+            }
+        }
+    };
+
+    let stdout_bytes = stdout_reader
+        .join()
+        .expect("stdout reader should finish")
+        .map_err(|error| {
+            request_error(
+                request,
+                error_code,
+                format!(
+                    "Failed to read tofu stdout for workspace '{}': {error}",
+                    workspace_path
+                ),
+            )
+        })?;
+    let stderr_bytes = stderr_reader
+        .join()
+        .expect("stderr reader should finish")
+        .map_err(|error| {
+            request_error(
+                request,
+                error_code,
+                format!(
+                    "Failed to read tofu stderr for workspace '{}': {error}",
+                    workspace_path
+                ),
+            )
+        })?;
+
+    for (stream, line) in line_rx.try_iter() {
+        emit_progress(
+            reporter,
+            EngineProgressEvent::TofuLog {
+                workspace_path: workspace_path.to_string(),
+                stream,
+                line,
+            },
+        );
+    }
+
+    Ok(std::process::Output {
+        status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+    })
+}
+
+fn spawn_tofu_log_reader<R: io::Read + Send + 'static>(
+    reader: R,
+    stream: TofuLogStream,
+    sender: std::sync::mpsc::Sender<(TofuLogStream, String)>,
+) -> thread::JoinHandle<io::Result<Vec<u8>>> {
+    thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let mut reader = BufReader::new(reader);
+        let mut line = Vec::new();
+
+        loop {
+            line.clear();
+            let bytes_read = reader.read_until(b'\n', &mut line)?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            buffer.extend_from_slice(&line);
+            let rendered = String::from_utf8_lossy(&line).trim().to_string();
+            if !rendered.is_empty() {
+                let _ = sender.send((stream, rendered));
+            }
+        }
+
+        Ok(buffer)
+    })
 }
 
 fn inspect_workspace_status(
@@ -3419,6 +3783,15 @@ fn shell_append_export(name: &str, prefix: &str) -> String {
     )
 }
 
+fn emit_progress(
+    reporter: &mut Option<&mut dyn EngineProgressReporter>,
+    event: EngineProgressEvent,
+) {
+    if let Some(reporter) = reporter.as_mut() {
+        (**reporter).emit(event);
+    }
+}
+
 fn build_response(
     request: &EngineRequest,
     result_kind: OperationResultKind,
@@ -3633,7 +4006,7 @@ fn local_first_error(
     code: impl Into<String>,
     error: LocalFirstError,
 ) -> EngineError {
-    request_error(request, code, error.to_string())
+    request_error(request, code, error.friendly_message())
 }
 
 fn find_yaffle_toml(start: &Path) -> Option<PathBuf> {

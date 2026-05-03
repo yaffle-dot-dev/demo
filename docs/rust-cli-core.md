@@ -55,6 +55,8 @@ Current implementation status:
 - graph/doctor/outputs/converge/status/wait/destroy execute through the shared
   Rust engine dispatcher
 - fixture-backed engine repos cover real local `tofu` execution paths
+- `yaffle converge` now defaults to an interactive terminal experience in a TTY
+  and falls back to `--plain` / `--json` when needed
 - `yaffle tf login` emits scoped shell exports for raw `tofu`
 - `yaffle cloud login` now completes an account-backed browser login flow and
   can replace a machine-local guest session with an account principal

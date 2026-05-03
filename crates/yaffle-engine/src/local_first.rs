@@ -133,6 +133,20 @@ pub enum LocalFirstError {
     Api(String),
 }
 
+impl LocalFirstError {
+    pub fn friendly_message(&self) -> String {
+        match self {
+            LocalFirstError::Http(message) => format!(
+                "Yaffle could not reach the local-first backend. Check that the control plane is running and that `YAFFLE_MODULE_API_HOST` points to the right local host.\n\nTransport detail: {message}"
+            ),
+            LocalFirstError::Api(message) => format!(
+                "The local-first backend rejected this request.\n\nBackend detail: {message}"
+            ),
+            _ => self.to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct AnonymousSessionResponseEnvelope {
     data: StoredPrincipalCredential,
