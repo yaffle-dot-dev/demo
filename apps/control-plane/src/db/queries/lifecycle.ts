@@ -42,6 +42,13 @@ export async function updateLifecycleRun(
   })
 }
 
+export async function findLifecycleRunById(runId: string): Promise<LifecycleRun | undefined> {
+  return withDbSpan("select", "lifecycle_runs", async () => {
+    const rows = await db.select().from(lifecycleRuns).where(eq(lifecycleRuns.id, runId)).limit(1)
+    return rows[0]
+  })
+}
+
 export async function createLifecycleItem(
   values: typeof lifecycleItems.$inferInsert,
 ): Promise<LifecycleItem> {

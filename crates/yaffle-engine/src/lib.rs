@@ -40,9 +40,10 @@ const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
 const MODULE_API_HOST_OVERRIDE_ENV_VAR: &str = "YAFFLE_MODULE_API_HOST";
 
 pub use crate::local_first::{
-    build_cloud_cli_authorize_url, clear_local_cloud_auth, exchange_cloud_cli_login_code,
-    load_local_cloud_auth_status, local_auth_store_path, local_first_feature_token_configured,
-    CloudCliLoginResult, LocalCloudAuthStatus, StoredPrincipalCredential, StoredPrincipalType,
+    build_cloud_cli_authorize_url, check_lifecycle_admission, clear_local_cloud_auth,
+    exchange_cloud_cli_login_code, load_local_cloud_auth_status, local_auth_store_path,
+    local_first_feature_token_configured, CloudCliLoginResult, LifecycleAdmissionRequest,
+    LocalCloudAuthStatus, StoredPrincipalCredential, StoredPrincipalType,
 };
 use yaffle_config::{
     environment_name_matches_patterns, parse_yaffle_toml, validate_environment_name,
@@ -1099,6 +1100,13 @@ fn execute_converge_operation(
         .as_ref()
         .map(|target| target.environment.as_str())
         .unwrap_or("unknown");
+    if selected_workspaces_have_lifecycle_hooks(
+        repo_context,
+        environment_name,
+        &graph_context.topological_order,
+    ) {
+        preflight_environment_governance(request, repo_context, environment_name)?;
+    }
     let mut lifecycle_run_context = None;
     let mut lifecycle_results = Vec::new();
 
@@ -3426,6 +3434,78 @@ fn lifecycle_hooks_for_environment<'a>(
         .collect()
 }
 
+fn selected_workspaces_have_lifecycle_hooks(
+    repo_context: &RepoContext,
+    environment_name: &str,
+    workspace_paths: &[String],
+) -> bool {
+    workspace_paths.iter().any(|workspace_path| {
+        repo_context
+            .config
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.path == *workspace_path)
+            .map(|workspace| {
+                !lifecycle_hooks_for_environment(workspace, environment_name, "activation")
+                    .is_empty()
+                    || !lifecycle_hooks_for_environment(workspace, environment_name, "verification")
+                        .is_empty()
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn preflight_environment_governance(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    environment_name: &str,
+) -> Result<(), EngineError> {
+    if !local_first_feature_token_configured() {
+        return Err(request_error(
+            request,
+            "lifecycle_backend_unavailable",
+            "Lifecycle governance requires the local-first backend. Set `YAFFLE_LOCAL_FIRST_FEATURE_TOKEN` and a reachable `YAFFLE_MODULE_API_HOST` before converging lifecycle-managed environments.",
+        ));
+    }
+
+    let canonical_repo_namespace = repo_context.current_namespace.as_ref().ok_or_else(|| {
+        request_error(
+            request,
+            "repo_namespace_unresolved",
+            "Could not infer repo namespace for lifecycle governance. Configure a canonical git remote before converging lifecycle-managed environments.",
+        )
+    })?;
+    let principal = ensure_anonymous_principal()
+        .map_err(|error| local_first_error(request, "lifecycle_principal_failed", error))?;
+    let local_repo_fingerprint = compute_local_repo_fingerprint(&repo_context.repo_root)
+        .map_err(|error| local_first_error(request, "repo_fingerprint_failed", error))?;
+    let decision = check_lifecycle_admission(
+        &principal,
+        &LifecycleAdmissionRequest {
+            canonical_repo_namespace,
+            local_repo_fingerprint: &local_repo_fingerprint,
+            environment_name,
+            execution_mode: "local",
+        },
+    )
+    .map_err(|error| local_first_error(request, "lifecycle_admission_failed", error))?;
+
+    if !decision.allowed {
+        return Err(request_error(
+            request,
+            "environment_governance_blocked",
+            decision.reason.unwrap_or_else(|| {
+                format!(
+                    "Environment '{}' is blocked by lifecycle governance policy in this execution context.",
+                    environment_name
+                )
+            }),
+        ));
+    }
+
+    Ok(())
+}
+
 fn ensure_lifecycle_dispatch_context(
     request: &EngineRequest,
     repo_context: &RepoContext,
@@ -3524,6 +3604,30 @@ fn execute_lifecycle_hooks_for_workspace(
         )
         .map_err(|error| local_first_error(request, "lifecycle_item_create_failed", error))?;
 
+        if item.state == "blocked" || item.on_completion_url.is_none() {
+            diagnostics.push(DiagnosticMessage {
+                level: match hook.failure {
+                    LifecycleFailurePolicy::Failed => DiagnosticLevel::Error,
+                    LifecycleFailurePolicy::Degraded => DiagnosticLevel::Warning,
+                },
+                code: Some(format!("{}_item_blocked", phase)),
+                message: format!(
+                    "{} item '{}' was blocked before dispatch.",
+                    title_case_phase(phase),
+                    hook.key
+                ),
+                workspace_path: Some(workspace_path.to_string()),
+                item_key: Some(hook.key.clone()),
+                details: Some(BTreeMap::from([("state".to_string(), json!(item.state))])),
+            });
+
+            results.push(LifecycleItemResult {
+                state: item.state,
+                failure_policy: hook.failure,
+            });
+            continue;
+        }
+
         let dispatch_result = dispatch_lifecycle_webhook(
             request,
             &context,
@@ -3536,7 +3640,10 @@ fn execute_lifecycle_hooks_for_workspace(
         );
 
         if let Err(error) = dispatch_result {
-            let _ = report_lifecycle_failure(&item.on_completion_url, error.error.message.clone());
+            let _ = report_lifecycle_failure(
+                item.on_completion_url.as_deref().unwrap_or_default(),
+                error.error.message.clone(),
+            );
             return Err(error);
         }
 

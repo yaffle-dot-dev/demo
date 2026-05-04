@@ -837,6 +837,27 @@ export const lifecycleCompletionTokens = pgTable(
   (t) => [index("lifecycle_completion_tokens_expires_idx").on(t.expiresAt)],
 )
 
+export const environmentPolicies = pgTable(
+  "environment_policies",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    repoFullName: text("repo_full_name").notNull(),
+    environmentName: text("environment_name").notNull(),
+    minimumPrincipalTier: text("minimum_principal_tier").notNull(), // 'anonymous' | 'free_local' | 'paid_cloud'
+    lifecycleDispatch: text("lifecycle_dispatch").notNull(), // 'auto' | 'central'
+    allowedDestinationClasses: text("allowed_destination_classes").array().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("environment_policies_org_repo_env_unique").on(t.orgId, t.repoFullName, t.environmentName),
+    index("environment_policies_repo_env_idx").on(t.repoFullName, t.environmentName),
+  ],
+)
+
 // =============================================================================
 // Distributed Leases
 // =============================================================================

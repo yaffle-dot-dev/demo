@@ -8,13 +8,17 @@ import {
   createLifecycleEvent,
   createLifecycleItem,
   createLifecycleRun,
+  findLifecycleRunById,
   findLifecycleItemById,
   getLatestLifecycleState,
   issueLifecycleCompletionToken,
   updateLifecycleItem,
   updateLifecycleRun,
 } from "../db/queries/lifecycle.ts"
-import { ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
+import { findEnvironmentPolicy } from "../db/queries/environment-policies.ts"
+import { ensurePrincipalRepoBinding, findPrincipalRepoBindingById } from "../db/queries/principals.ts"
+import { findOrgMembership, findOrgById } from "../db/queries/organizations.ts"
+import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { buildPublicUrl } from "../lib/public-origin.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
 import { enforceRateLimit, readRequestBodyText, RequestBodyTooLargeError } from "../lib/request-protection.ts"
@@ -44,6 +48,8 @@ const createRunSchema = z.object({
   environmentName: z.string().min(1),
   executionMode: z.enum(["local", "cloud"]),
 })
+
+const admissionSchema = createRunSchema
 
 const createItemSchema = z.object({
   runId: z.string().uuid(),
@@ -108,6 +114,29 @@ lifecycleRoute.use("/state", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/runs", principalAuth())
 lifecycleRoute.use("/items", principalAuth())
 lifecycleRoute.use("/state", principalAuth())
+lifecycleRoute.use("/admission", enforceFeatureToken)
+lifecycleRoute.use("/admission", enforceRouteRateLimit(lifecycleCreateRateLimit))
+lifecycleRoute.use("/admission", principalAuth())
+
+lifecycleRoute.post("/admission", async (c) => {
+  const principal = c.get("principalAuth")
+  const requestBody = await readJsonBody(c.req.raw)
+  if (requestBody instanceof Response) {
+    return requestBody
+  }
+  const parsed = admissionSchema.safeParse(requestBody)
+  if (!parsed.success) {
+    return c.json({ error: { code: "INVALID_REQUEST", message: parsed.error.errors[0]?.message ?? "invalid request" } }, 400)
+  }
+
+  const body = parsed.data
+  const decision = await evaluateEnvironmentAdmission(principal, body.canonicalRepoNamespace, {
+    environmentName: body.environmentName,
+    executionMode: body.executionMode,
+  })
+
+  return c.json({ data: decision })
+})
 
 lifecycleRoute.post("/runs", async (c) => {
   const principal = c.get("principalAuth")
@@ -157,6 +186,60 @@ lifecycleRoute.post("/items", async (c) => {
   }
 
   const body = parsed.data
+  const run = await findLifecycleRunById(body.runId)
+  if (!run || run.principalId !== principal.principalId) {
+    return c.json({ error: { code: "NOT_FOUND", message: "lifecycle run not found" } }, 404)
+  }
+
+  const resolvedBinding = await findPrincipalRepoBindingById(run.repoBindingId)
+  if (!resolvedBinding) {
+    return c.json({ error: { code: "NOT_FOUND", message: "repo binding not found" } }, 404)
+  }
+
+  const governance = await evaluateLifecycleGovernance(principal, resolvedBinding.canonicalRepoNamespace, {
+    environmentName: run.environmentName,
+    destinationClass: body.destinationClass,
+    dispatchMode: body.dispatchMode,
+  })
+
+  if (!governance.allowed) {
+    const blockedItem = await createLifecycleItem({
+      runId: body.runId,
+      workspacePath: body.workspacePath,
+      key: body.key,
+      phase: body.phase,
+      kind: body.kind,
+      state: "blocked",
+      failurePolicy: body.failurePolicy,
+      scopes: body.scopes,
+      destinationUrl: body.destinationUrl,
+      destinationClass: body.destinationClass,
+      dispatchMode: body.dispatchMode,
+      summary: "Blocked by environment governance policy",
+      reason: governance.reason,
+      metadata: body.metadata ?? {},
+    })
+    await createLifecycleEvent({
+      itemId: blockedItem.id,
+      eventType: "blocked",
+      payload: {
+        principalId: principal.principalId,
+        workspacePath: body.workspacePath,
+        key: body.key,
+        phase: body.phase,
+        reason: governance.reason,
+      },
+    })
+
+    return c.json({
+      data: {
+        id: blockedItem.id,
+        state: blockedItem.state,
+        onCompletionUrl: null,
+      },
+    }, 201)
+  }
+
   const item = await createLifecycleItem({
     runId: body.runId,
     workspacePath: body.workspacePath,
@@ -351,4 +434,136 @@ async function readJsonBody(request: Request): Promise<unknown | Response> {
       { status: 400, headers: { "Content-Type": "application/json" } },
     )
   }
+}
+
+type PrincipalTier = "anonymous" | "free_local" | "paid_cloud"
+
+async function evaluateLifecycleGovernance(
+  principal: PrincipalAuthContext,
+  canonicalRepoNamespace: string,
+  values: {
+    environmentName: string
+    destinationClass: "public" | "private_local"
+    dispatchMode: "local" | "cloud"
+  },
+): Promise<{ allowed: boolean; reason?: string }> {
+  const admission = await evaluateEnvironmentAdmission(principal, canonicalRepoNamespace, {
+    environmentName: values.environmentName,
+    executionMode: values.dispatchMode,
+  })
+  if (!admission.allowed) {
+    return admission
+  }
+
+  const policyContext = await resolveEnvironmentPolicyContext(canonicalRepoNamespace, values.environmentName)
+  if (!policyContext.policy) {
+    return { allowed: true }
+  }
+
+  if (!policyContext.policy.allowedDestinationClasses.includes(values.destinationClass)) {
+    return {
+      allowed: false,
+      reason: `Environment '${values.environmentName}' does not allow '${values.destinationClass}' lifecycle destinations.`,
+    }
+  }
+
+  return { allowed: true }
+}
+
+async function evaluateEnvironmentAdmission(
+  principal: PrincipalAuthContext,
+  canonicalRepoNamespace: string,
+  values: {
+    environmentName: string
+    executionMode: "local" | "cloud"
+  },
+): Promise<{ allowed: boolean; reason?: string }> {
+  const policyContext = await resolveEnvironmentPolicyContext(
+    canonicalRepoNamespace,
+    values.environmentName,
+  )
+  if (!policyContext.policy || !policyContext.orgId) {
+    return { allowed: true }
+  }
+
+  const principalTier = await resolvePrincipalTier(principal, policyContext.orgId)
+  if (principalTierRank(principalTier) < principalTierRank(policyContext.policy.minimumPrincipalTier as PrincipalTier)) {
+    return {
+      allowed: false,
+      reason: `Environment '${values.environmentName}' requires principal tier '${policyContext.policy.minimumPrincipalTier}', but this run is '${principalTier}'.`,
+    }
+  }
+
+  if (policyContext.policy.lifecycleDispatch === "central" && values.executionMode !== "cloud") {
+    return {
+      allowed: false,
+      reason: `Environment '${values.environmentName}' requires central execution for governed runs, but this run is '${values.executionMode}'.`,
+    }
+  }
+
+  return { allowed: true }
+}
+
+async function resolveEnvironmentPolicyContext(
+  canonicalRepoNamespace: string,
+  environmentName: string,
+): Promise<{ repoFullName: string | null; orgId: string | null; policy: Awaited<ReturnType<typeof findEnvironmentPolicy>> }> {
+  const repoFullName = repo_full_name_from_namespace(canonicalRepoNamespace)
+  if (!repoFullName) {
+    return { repoFullName: null, orgId: null, policy: undefined }
+  }
+
+  const repo = await findRepoByFullName(repoFullName)
+  if (!repo?.orgId) {
+    return { repoFullName, orgId: null, policy: undefined }
+  }
+
+  const policy = await findEnvironmentPolicy({
+    orgId: repo.orgId,
+    repoFullName,
+    environmentName,
+  })
+  return { repoFullName, orgId: repo.orgId, policy }
+}
+
+async function resolvePrincipalTier(
+  principal: PrincipalAuthContext,
+  orgId: string,
+): Promise<PrincipalTier> {
+  if (principal.type === "anonymous_session") {
+    return "anonymous"
+  }
+  if (!principal.userId) {
+    return "free_local"
+  }
+
+  const membership = await findOrgMembership(orgId, principal.userId)
+  if (!membership) {
+    return "free_local"
+  }
+  const org = await findOrgById(orgId)
+  if (org && org.planTier !== "free" && ["active", "trialing"].includes(org.subscriptionStatus)) {
+    return "paid_cloud"
+  }
+
+  return "free_local"
+}
+
+function principalTierRank(tier: PrincipalTier): number {
+  switch (tier) {
+    case "anonymous":
+      return 0
+    case "free_local":
+      return 1
+    case "paid_cloud":
+      return 2
+  }
+}
+
+function repo_full_name_from_namespace(canonicalRepoNamespace: string): string | null {
+  const [owner, repo] = canonicalRepoNamespace.split("--")
+  if (!owner || !repo) {
+    return null
+  }
+  return `${owner}/${repo}`
 }

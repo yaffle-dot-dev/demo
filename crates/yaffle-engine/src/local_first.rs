@@ -114,7 +114,7 @@ pub struct LifecycleItemHandle {
     pub id: String,
     pub state: String,
     #[serde(alias = "onCompletionUrl")]
-    pub on_completion_url: String,
+    pub on_completion_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -180,6 +180,20 @@ pub struct LifecycleItemRequest<'a> {
     pub summary: Option<&'a str>,
     pub metadata: &'a serde_json::Map<String, serde_json::Value>,
     pub callback_ttl_minutes: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LifecycleAdmissionRequest<'a> {
+    pub canonical_repo_namespace: &'a str,
+    pub local_repo_fingerprint: &'a str,
+    pub environment_name: &'a str,
+    pub execution_mode: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleAdmissionDecision {
+    pub allowed: bool,
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -272,6 +286,11 @@ struct LifecycleItemSnapshotResponseEnvelope {
 #[derive(Debug, Deserialize)]
 struct LifecycleStateResponseEnvelope {
     data: Option<LifecycleStateSnapshot>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LifecycleAdmissionResponseEnvelope {
+    data: LifecycleAdmissionDecision,
 }
 
 #[derive(Debug, Deserialize)]
@@ -395,6 +414,34 @@ pub fn create_lifecycle_run(
 
     response
         .json::<LifecycleRunResponseEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
+}
+
+pub fn check_lifecycle_admission(
+    principal: &StoredPrincipalCredential,
+    request: &LifecycleAdmissionRequest<'_>,
+) -> Result<LifecycleAdmissionDecision, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .post(runtime.endpoint_url("/api/lifecycle/admission"))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .json(&serde_json::json!({
+            "canonicalRepoNamespace": request.canonical_repo_namespace,
+            "localRepoFingerprint": request.local_repo_fingerprint,
+            "environmentName": request.environment_name,
+            "executionMode": request.execution_mode,
+        }))
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<LifecycleAdmissionResponseEnvelope>()
         .map(|value| value.data)
         .map_err(|error| LocalFirstError::Http(error.to_string()))
 }

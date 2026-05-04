@@ -681,6 +681,7 @@ fn converge_activation_webhook_fixture_dispatches_and_settles_activation() {
         backend_addr,
         lifecycle_state.clone(),
         backend_stop.clone(),
+        true,
     );
     let hook_thread = spawn_activation_receiver(hook_listener, hook_stop.clone());
 
@@ -749,6 +750,60 @@ fn converge_activation_webhook_fixture_dispatches_and_settles_activation() {
     assert_eq!(conditions.get("acceptable"), Some(&true));
 }
 
+#[test]
+fn converge_blocks_before_infra_when_environment_governance_requires_cloud() {
+    let _guard = WAIT_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let repo = copy_fixture_repo("converge-activation-webhook");
+    write_fixture_git_remote(repo.path());
+
+    let backend_listener = TcpListener::bind("127.0.0.1:0").expect("backend listener should bind");
+    let backend_addr = backend_listener
+        .local_addr()
+        .expect("backend listener should have address");
+    let lifecycle_state = Arc::new(StdMutex::new(FakeLifecycleState::default()));
+    let backend_stop = Arc::new(AtomicBool::new(false));
+    let backend_thread = spawn_fake_lifecycle_backend(
+        backend_listener,
+        backend_addr,
+        lifecycle_state,
+        backend_stop.clone(),
+        false,
+    );
+
+    let previous_feature_token = env::var_os("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN");
+    let previous_module_api_host = env::var_os("YAFFLE_MODULE_API_HOST");
+    env::set_var("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN", "test-feature-token");
+    env::set_var("YAFFLE_MODULE_API_HOST", format!("http://{backend_addr}"));
+
+    let error = execute(
+        &EngineRequest {
+            operation: EngineOperation::Converge,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect_err("converge should be blocked by environment governance");
+
+    restore_env_var("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN", previous_feature_token);
+    restore_env_var("YAFFLE_MODULE_API_HOST", previous_module_api_host);
+    backend_stop.store(true, Ordering::SeqCst);
+    wake_listener(backend_addr);
+    backend_thread.join().expect("backend thread should finish");
+
+    assert_eq!(error.error.code, "environment_governance_blocked");
+    assert!(error.error.message.contains("requires central execution"));
+    assert!(!repo
+        .path()
+        .join(".yaffle/state/main/infra/single/terraform.tfstate")
+        .exists());
+}
+
 struct FakeLifecycleState {
     activation_state: String,
     activation_summary: Option<String>,
@@ -774,6 +829,7 @@ fn spawn_fake_lifecycle_backend(
     backend_addr: std::net::SocketAddr,
     lifecycle_state: Arc<StdMutex<FakeLifecycleState>>,
     stop: Arc<AtomicBool>,
+    admission_allowed: bool,
 ) -> thread::JoinHandle<()> {
     thread::spawn(move || {
         listener
@@ -826,6 +882,17 @@ fn spawn_fake_lifecycle_backend(
                                     "executionMode": "local",
                                     "status": "running",
                                     "startedAt": "2026-05-04T00:00:00Z"
+                                }
+                            }),
+                        );
+                    } else if request.starts_with("POST /api/lifecycle/admission HTTP/1.1") {
+                        write_http_json(
+                            &mut stream,
+                            200,
+                            json!({
+                                "data": {
+                                    "allowed": admission_allowed,
+                                    "reason": if admission_allowed { serde_json::Value::Null } else { json!("Environment 'main' requires central execution for governed runs, but this run is 'local'.") }
                                 }
                             }),
                         );

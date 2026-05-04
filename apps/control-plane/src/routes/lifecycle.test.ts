@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { Hono } from "hono"
+import { db } from "../lib/db.ts"
 
 import { resetRateLimitStore } from "../lib/request-protection.ts"
-import { cleanupTestData } from "../test-utils/auth.ts"
+import { cleanupTestData, createTestOrg } from "../test-utils/auth.ts"
+import { environmentPolicies, repositories } from "../db/schema.ts"
 import { lifecycleRoute } from "./lifecycle.ts"
 import { localFirstRoute } from "./local-first.ts"
 
@@ -122,5 +124,91 @@ describe("lifecycleRoute", () => {
     }
     expect(itemAfterBody.data.state).toBe("succeeded")
     expect(itemAfterBody.data.summary).toBe("preview is ready")
+  })
+
+  test("blocks lifecycle items that violate protected environment governance", async () => {
+    const org = await createTestOrg({ slug: "protected-org" })
+    await db.insert(repositories).values({
+      orgId: org.id,
+      githubId: 987654321,
+      name: "fixture",
+      fullName: "test-org/fixture",
+      defaultBranch: "main",
+      isActive: true,
+    })
+    await db.insert(environmentPolicies).values({
+      orgId: org.id,
+      repoFullName: "test-org/fixture",
+      environmentName: "main",
+      minimumPrincipalTier: "paid_cloud",
+      lifecycleDispatch: "central",
+      allowedDestinationClasses: ["public"],
+    })
+
+    const sessionRes = await app.fetch(
+      new Request("http://localhost/api/sessions/anonymous", {
+        method: "POST",
+        headers: featureHeaders(),
+      }),
+    )
+    const sessionBody = await sessionRes.json() as { data: { token: string } }
+
+    const authHeaders = {
+      ...featureHeaders(),
+      Authorization: `Bearer ${sessionBody.data.token}`,
+      "Content-Type": "application/json",
+    }
+
+    const runRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/runs", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "main",
+          executionMode: "local",
+        }),
+      }),
+    )
+    const runBody = await runRes.json() as { data: { id: string } }
+
+    const itemRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/items", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          runId: runBody.data.id,
+          workspacePath: "apps/web/infra",
+          key: "preview-ready",
+          phase: "activation",
+          kind: "webhook",
+          failurePolicy: "failed",
+          scopes: ["usable", "acceptable"],
+          destinationUrl: "http://localhost:8787/hooks/preview-ready",
+          destinationClass: "private_local",
+          dispatchMode: "local",
+          callbackTtlMinutes: 60,
+        }),
+      }),
+    )
+    expect(itemRes.status).toBe(201)
+    const itemBody = await itemRes.json() as {
+      data: { state: string; onCompletionUrl: string | null }
+    }
+    expect(itemBody.data.state).toBe("blocked")
+    expect(itemBody.data.onCompletionUrl).toBeNull()
+
+    const stateRes = await app.fetch(
+      new Request(
+        "http://localhost/api/lifecycle/state?canonicalRepoNamespace=test-org--fixture&localRepoFingerprint=repo-fingerprint-1&environmentName=main",
+        { headers: authHeaders },
+      ),
+    )
+    const stateBody = await stateRes.json() as {
+      data: { items: Array<{ state: string; reason: string }> }
+    }
+    expect(stateBody.data.items[0]?.state).toBe("blocked")
+    expect(stateBody.data.items[0]?.reason).toContain("requires principal tier 'paid_cloud'")
   })
 })
