@@ -12,6 +12,9 @@ mod local_first;
 
 use hcl::eval::{Context as HclContext, Evaluate};
 use hcl::Body;
+use hmac::{Hmac, Mac};
+use reqwest::blocking::Client;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -26,9 +29,11 @@ use yaffle_graph::{
 use yaffle_tofu::{inspect_tofu_resolution, TofuResolutionRequest, TofuSourceKind};
 
 use crate::local_first::{
-    compute_local_repo_fingerprint, ensure_anonymous_principal, mint_execution_credential,
+    compute_local_repo_fingerprint, create_lifecycle_item, create_lifecycle_run,
+    ensure_anonymous_principal, get_lifecycle_item, get_lifecycle_state, mint_execution_credential,
     publish_hosted_output_module, ExecutionCredential, ExecutionCredentialKind,
-    ExecutionCredentialRequest, HostedOutputModulePublishRequest, LocalFirstError,
+    ExecutionCredentialRequest, HostedOutputModulePublishRequest, LifecycleItemRequest,
+    LifecycleRunRequest, LocalFirstError,
 };
 
 const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
@@ -39,7 +44,10 @@ pub use crate::local_first::{
     load_local_cloud_auth_status, local_auth_store_path, local_first_feature_token_configured,
     CloudCliLoginResult, LocalCloudAuthStatus, StoredPrincipalCredential, StoredPrincipalType,
 };
-use yaffle_config::{parse_yaffle_toml, validate_environment_name, YaffleConfig};
+use yaffle_config::{
+    environment_name_matches_patterns, parse_yaffle_toml, validate_environment_name,
+    LifecycleFailurePolicy, LifecycleHook, LifecycleWebhookAuthScheme, YaffleConfig,
+};
 pub use yaffle_contracts::{EngineError, EnvironmentTarget, WorkspaceSelection, CONTRACT_VERSION};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -738,37 +746,47 @@ fn execute_status_operation(
         }
     }
 
-    let workspace_snapshots = observations
-        .iter()
-        .map(|observation| WorkspaceSnapshot {
-            workspace_path: observation.workspace_path.clone(),
-            lifecycle: None,
-            materialization: Some(observation.materialization.clone()),
-            freshness: None,
-        })
-        .collect::<Vec<_>>();
     let environment_name = request
         .target
         .as_ref()
         .map(|target| target.environment.as_str())
         .unwrap_or("unknown");
     let environment_materialization = derive_environment_materialization(&observations);
+    let lifecycle_state =
+        try_load_lifecycle_state(repo_context, environment_name, &mut diagnostics);
+    let workspace_snapshots = observations
+        .iter()
+        .map(|observation| WorkspaceSnapshot {
+            workspace_path: observation.workspace_path.clone(),
+            lifecycle: build_workspace_lifecycle_json(
+                &observation.workspace_path,
+                lifecycle_state.as_ref(),
+            ),
+            materialization: Some(observation.materialization.clone()),
+            freshness: None,
+        })
+        .collect::<Vec<_>>();
+    let result_kind = if workspace_error_count > 0 {
+        OperationResultKind::Degraded
+    } else {
+        OperationResultKind::Succeeded
+    };
 
     Ok(build_response_with_environment(
         request,
-        if workspace_error_count > 0 {
-            OperationResultKind::Degraded
-        } else {
-            OperationResultKind::Succeeded
-        },
+        result_kind.clone(),
         format_status_summary(
             environment_name,
             &observations,
             &environment_materialization,
         ),
         Some(EnvironmentSnapshot {
-            lifecycle: None,
-            conditions: Vec::new(),
+            lifecycle: build_environment_lifecycle_json(lifecycle_state.as_ref()),
+            conditions: build_environment_conditions(
+                result_kind,
+                Some(environment_materialization.as_str()),
+                lifecycle_state.as_ref(),
+            ),
             materialization: Some(environment_materialization),
             freshness: None,
         }),
@@ -1076,6 +1094,13 @@ fn execute_converge_operation(
         .environment_kind
         .expect("converge operation should have an environment kind");
     let mut diagnostics = repo_context_diagnostics(repo_context);
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+    let mut lifecycle_run_context = None;
+    let mut lifecycle_results = Vec::new();
 
     emit_progress(
         reporter,
@@ -1217,6 +1242,16 @@ fn execute_converge_operation(
             });
         }
 
+        lifecycle_results.extend(execute_activation_hooks_for_workspace(
+            request,
+            repo_context,
+            workspace_config,
+            workspace_path,
+            &outputs,
+            &mut lifecycle_run_context,
+            &mut diagnostics,
+        )?);
+
         emit_progress(
             reporter,
             EngineProgressEvent::WorkspacePhase {
@@ -1273,16 +1308,37 @@ fn execute_converge_operation(
         })
         .collect::<Vec<_>>();
 
-    let environment_name = request
-        .target
-        .as_ref()
-        .map(|target| target.environment.as_str())
-        .unwrap_or("unknown");
+    let result_kind =
+        lifecycle_results
+            .iter()
+            .fold(OperationResultKind::Succeeded, |kind, item| {
+                match (kind.clone(), item.state.as_str(), item.failure_policy) {
+                    (_, "failed", LifecycleFailurePolicy::Failed) => OperationResultKind::Failed,
+                    (OperationResultKind::Succeeded, "degraded", _) => {
+                        OperationResultKind::Degraded
+                    }
+                    (
+                        OperationResultKind::Succeeded,
+                        "failed",
+                        LifecycleFailurePolicy::Degraded,
+                    ) => OperationResultKind::Degraded,
+                    _ => kind,
+                }
+            });
+    let summary = if lifecycle_results.is_empty() {
+        format_converge_summary(environment_name, &graph_context.topological_order)
+    } else {
+        format!(
+            "{}\n\nactivation settled: {} item(s)",
+            format_converge_summary(environment_name, &graph_context.topological_order),
+            lifecycle_results.len()
+        )
+    };
 
     Ok(build_response(
         request,
-        OperationResultKind::Succeeded,
-        format_converge_summary(environment_name, &graph_context.topological_order),
+        result_kind,
+        summary,
         workspace_snapshots,
         BTreeMap::new(),
         diagnostics,
@@ -2564,6 +2620,27 @@ fn parse_wait_condition(value: &str) -> Option<WaitCondition> {
 }
 
 fn wait_condition_met(condition: WaitCondition, status_response: &EngineResponse) -> bool {
+    let condition_name = match condition {
+        WaitCondition::InfraReady => "infra_ready",
+        WaitCondition::ActivationSettled => "activation_settled",
+        WaitCondition::VerificationSettled => "verification_settled",
+        WaitCondition::Usable => "usable",
+        WaitCondition::Acceptable => "acceptable",
+        WaitCondition::TeardownSettled => "teardown_settled",
+    };
+    if let Some(condition_value) = status_response
+        .environment
+        .as_ref()
+        .and_then(|environment| {
+            environment.conditions.iter().find(|condition| {
+                condition.get("name").and_then(Value::as_str) == Some(condition_name)
+            })
+        })
+        .and_then(|condition| condition.get("met").and_then(Value::as_bool))
+    {
+        return condition_value;
+    }
+
     let materialization = status_response
         .environment
         .as_ref()
@@ -3312,6 +3389,683 @@ fn maybe_publish_hosted_output_module(
     .map_err(|error| local_first_error(request, "hosted_output_module_publish_failed", error))?;
 
     Ok(Some(published.version))
+}
+
+#[derive(Debug, Clone)]
+struct LifecycleDispatchContext {
+    principal: StoredPrincipalCredential,
+    canonical_repo_namespace: String,
+    run_id: String,
+}
+
+fn lifecycle_hooks_for_environment<'a>(
+    workspace: &'a yaffle_config::Workspace,
+    environment_name: &str,
+    phase: &str,
+) -> Vec<&'a LifecycleHook> {
+    let hooks = match phase {
+        "activation" => &workspace.activation,
+        "verification" => &workspace.verification,
+        _ => return Vec::new(),
+    };
+
+    hooks
+        .iter()
+        .filter(|hook| environment_name_matches_patterns(environment_name, &hook.environments))
+        .collect()
+}
+
+fn ensure_lifecycle_dispatch_context(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    environment_name: &str,
+    run_context: &mut Option<LifecycleDispatchContext>,
+) -> Result<LifecycleDispatchContext, EngineError> {
+    if let Some(existing) = run_context.clone() {
+        return Ok(existing);
+    }
+
+    if !local_first_feature_token_configured() {
+        return Err(request_error(
+            request,
+            "lifecycle_backend_unavailable",
+            "Lifecycle activation requires the local-first backend. Set `YAFFLE_LOCAL_FIRST_FEATURE_TOKEN` and a reachable `YAFFLE_MODULE_API_HOST` before running lifecycle items.",
+        ));
+    }
+
+    let canonical_repo_namespace = repo_context.current_namespace.as_ref().ok_or_else(|| {
+        request_error(
+            request,
+            "repo_namespace_unresolved",
+            "Could not infer repo namespace for lifecycle orchestration. Configure a canonical git remote before running activation or verification items.",
+        )
+    })?;
+    let principal = ensure_anonymous_principal()
+        .map_err(|error| local_first_error(request, "lifecycle_principal_failed", error))?;
+    let local_repo_fingerprint = compute_local_repo_fingerprint(&repo_context.repo_root)
+        .map_err(|error| local_first_error(request, "repo_fingerprint_failed", error))?;
+    let run = create_lifecycle_run(
+        &principal,
+        &LifecycleRunRequest {
+            canonical_repo_namespace,
+            local_repo_fingerprint: &local_repo_fingerprint,
+            environment_name,
+            execution_mode: "local",
+        },
+    )
+    .map_err(|error| local_first_error(request, "lifecycle_run_create_failed", error))?;
+
+    let created = LifecycleDispatchContext {
+        principal,
+        canonical_repo_namespace: canonical_repo_namespace.clone(),
+        run_id: run.id,
+    };
+    *run_context = Some(created.clone());
+    Ok(created)
+}
+
+fn execute_activation_hooks_for_workspace(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    workspace: &yaffle_config::Workspace,
+    workspace_path: &str,
+    outputs: &BTreeMap<String, TerraformOutput>,
+    run_context: &mut Option<LifecycleDispatchContext>,
+    diagnostics: &mut Vec<DiagnosticMessage>,
+) -> Result<Vec<LifecycleItemResult>, EngineError> {
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+    let hooks = lifecycle_hooks_for_environment(workspace, environment_name, "activation");
+    if hooks.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let context =
+        ensure_lifecycle_dispatch_context(request, repo_context, environment_name, run_context)?;
+    let outputs_json = terraform_outputs_json(request, outputs)?;
+    let mut results = Vec::new();
+
+    for hook in hooks {
+        let item = create_lifecycle_item(
+            &context.principal,
+            &LifecycleItemRequest {
+                run_id: &context.run_id,
+                workspace_path,
+                key: &hook.key,
+                phase: "activation",
+                failure_policy: lifecycle_failure_policy_name(hook.failure),
+                scopes: &hook.scopes,
+                destination_url: &hook.request.url,
+                destination_class: classify_destination_url(&hook.request.url),
+                dispatch_mode: "local",
+                summary: Some("Waiting for activation webhook completion"),
+                metadata: &serde_json::Map::new(),
+                callback_ttl_minutes: 60,
+            },
+        )
+        .map_err(|error| local_first_error(request, "lifecycle_item_create_failed", error))?;
+
+        let dispatch_result = dispatch_lifecycle_webhook(
+            request,
+            &context,
+            workspace_path,
+            environment_name,
+            hook,
+            &item,
+            &outputs_json,
+        );
+
+        if let Err(error) = dispatch_result {
+            let _ = report_lifecycle_failure(&item.on_completion_url, error.error.message.clone());
+            return Err(error);
+        }
+
+        let final_item = wait_for_lifecycle_item_settlement(
+            &context.principal,
+            &item.id,
+            hook.timeout.as_deref(),
+        )
+        .map_err(|error| local_first_error(request, "lifecycle_item_wait_failed", error))?;
+
+        diagnostics.push(DiagnosticMessage {
+            level: match final_item.state.as_str() {
+                "succeeded" => DiagnosticLevel::Info,
+                "degraded" => DiagnosticLevel::Warning,
+                _ => DiagnosticLevel::Error,
+            },
+            code: Some("activation_item_settled".to_string()),
+            message: format!(
+                "Activation item '{}' settled with state '{}'.",
+                final_item.key, final_item.state
+            ),
+            workspace_path: Some(workspace_path.to_string()),
+            item_key: Some(final_item.key.clone()),
+            details: Some(BTreeMap::from([
+                ("phase".to_string(), json!(final_item.phase)),
+                ("state".to_string(), json!(final_item.state)),
+                ("summary".to_string(), json!(final_item.summary)),
+                ("reason".to_string(), json!(final_item.reason)),
+            ])),
+        });
+
+        results.push(LifecycleItemResult {
+            state: final_item.state,
+            failure_policy: hook.failure,
+        });
+    }
+
+    Ok(results)
+}
+
+#[derive(Debug, Clone)]
+struct LifecycleItemResult {
+    state: String,
+    failure_policy: LifecycleFailurePolicy,
+}
+
+#[derive(Default)]
+struct LifecyclePhaseVector {
+    pending: u64,
+    running: u64,
+    succeeded: u64,
+    degraded: u64,
+    blocked: u64,
+    failed: u64,
+}
+
+fn dispatch_lifecycle_webhook(
+    request: &EngineRequest,
+    context: &LifecycleDispatchContext,
+    workspace_path: &str,
+    environment_name: &str,
+    hook: &LifecycleHook,
+    item: &crate::local_first::LifecycleItemHandle,
+    outputs_json: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), EngineError> {
+    let client = Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| request_error(request, "webhook_dispatch_failed", error.to_string()))?;
+    let payload = serde_json::json!({
+        "repo_namespace": context.canonical_repo_namespace,
+        "environment": environment_name,
+        "workspace_path": workspace_path,
+        "item_key": hook.key,
+        "phase": "activation",
+        "outputs": outputs_json,
+        "on_completion": item.on_completion_url,
+    });
+    let body = serde_json::to_vec(&payload).map_err(|error| {
+        request_error(
+            request,
+            "webhook_dispatch_failed",
+            format!("Failed to serialize activation webhook payload: {error}"),
+        )
+    })?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if let Some(auth) = &hook.request.auth {
+        let secret = env::var(&auth.secret_ref).map_err(|_| {
+            request_error(
+                request,
+                "webhook_secret_missing",
+                format!(
+                    "Lifecycle item '{}' requires secret '{}', but it was not available in this execution context.",
+                    hook.key, auth.secret_ref
+                ),
+            )
+        })?;
+        apply_lifecycle_auth_headers(&mut headers, auth.scheme, &secret, &body)?;
+    }
+
+    let response = client
+        .post(&hook.request.url)
+        .headers(headers)
+        .body(body)
+        .send()
+        .map_err(|error| {
+            request_error(
+                request,
+                "webhook_dispatch_failed",
+                format!(
+                    "Failed to dispatch activation webhook '{}': {error}",
+                    hook.key
+                ),
+            )
+        })?;
+
+    if !response.status().is_success() {
+        return Err(request_error(
+            request,
+            "webhook_dispatch_failed",
+            format!(
+                "Activation webhook '{}' returned {}.",
+                hook.key,
+                response.status()
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+fn apply_lifecycle_auth_headers(
+    headers: &mut HeaderMap,
+    scheme: LifecycleWebhookAuthScheme,
+    secret: &str,
+    body: &[u8],
+) -> Result<(), EngineError> {
+    match scheme {
+        LifecycleWebhookAuthScheme::Bearer => {
+            let value = HeaderValue::from_str(&format!("Bearer {secret}")).map_err(|error| {
+                request_error_without_context("webhook_header_invalid", error.to_string())
+            })?;
+            headers.insert(AUTHORIZATION, value);
+        }
+        LifecycleWebhookAuthScheme::HmacSha256 => {
+            type HmacSha256 = Hmac<Sha256>;
+            let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).map_err(|error| {
+                request_error_without_context("webhook_header_invalid", error.to_string())
+            })?;
+            mac.update(body);
+            let signature = format!("sha256={}", hex_encode(&mac.finalize().into_bytes()));
+            headers.insert(
+                "X-Yaffle-Signature",
+                HeaderValue::from_str(&signature).map_err(|error| {
+                    request_error_without_context("webhook_header_invalid", error.to_string())
+                })?,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn classify_destination_url(url: &str) -> &'static str {
+    match reqwest::Url::parse(url)
+        .ok()
+        .and_then(|parsed| parsed.host_str().map(|host| host.to_string()))
+    {
+        Some(host) if is_private_destination_host(&host) => "private_local",
+        _ => "public",
+    }
+}
+
+fn is_private_destination_host(host: &str) -> bool {
+    host == "localhost"
+        || host == "127.0.0.1"
+        || host == "::1"
+        || host.ends_with(".local")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("172.16.")
+}
+
+fn wait_for_lifecycle_item_settlement(
+    principal: &StoredPrincipalCredential,
+    item_id: &str,
+    timeout_hint: Option<&str>,
+) -> Result<crate::local_first::LifecycleItemSnapshot, LocalFirstError> {
+    let timeout = timeout_hint
+        .map(parse_duration_hint)
+        .transpose()
+        .map_err(|error| LocalFirstError::Config(error.error.message))?
+        .unwrap_or_else(|| Duration::from_secs(300));
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let item = get_lifecycle_item(principal, item_id)?;
+        match item.state.as_str() {
+            "pending" | "running" => {
+                if Instant::now() >= deadline {
+                    return Err(LocalFirstError::Api(format!(
+                        "activation item '{}' timed out waiting for completion",
+                        item.key
+                    )));
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+            _ => return Ok(item),
+        }
+    }
+}
+
+fn parse_duration_hint(value: &str) -> Result<Duration, EngineError> {
+    let trimmed = value.trim();
+    let (number, unit) = trimmed
+        .chars()
+        .partition::<String, _>(|character| character.is_ascii_digit());
+    let amount = number.parse::<u64>().map_err(|_| {
+        request_error_without_context(
+            "duration_invalid",
+            format!(
+                "Invalid duration '{}': expected digits followed by s, m, or h",
+                value
+            ),
+        )
+    })?;
+
+    match unit.as_str() {
+        "s" => Ok(Duration::from_secs(amount)),
+        "m" => Ok(Duration::from_secs(amount * 60)),
+        "h" => Ok(Duration::from_secs(amount * 60 * 60)),
+        _ => Err(request_error_without_context(
+            "duration_invalid",
+            format!("Invalid duration '{}': expected suffix s, m, or h", value),
+        )),
+    }
+}
+
+fn report_lifecycle_failure(callback_url: &str, reason: String) -> Result<(), LocalFirstError> {
+    Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?
+        .post(callback_url)
+        .json(&serde_json::json!({
+            "status": "failed",
+            "reason": reason,
+        }))
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+    Ok(())
+}
+
+fn try_load_lifecycle_state(
+    repo_context: &RepoContext,
+    environment_name: &str,
+    diagnostics: &mut Vec<DiagnosticMessage>,
+) -> Option<crate::local_first::LifecycleStateSnapshot> {
+    if !local_first_feature_token_configured() {
+        return None;
+    }
+    let Some(canonical_repo_namespace) = repo_context.current_namespace.as_deref() else {
+        return None;
+    };
+
+    let principal = match ensure_anonymous_principal() {
+        Ok(principal) => principal,
+        Err(error) => {
+            diagnostics.push(DiagnosticMessage {
+                level: DiagnosticLevel::Warning,
+                code: Some("lifecycle_state_unavailable".to_string()),
+                message: error.friendly_message(),
+                workspace_path: None,
+                item_key: None,
+                details: None,
+            });
+            return None;
+        }
+    };
+    let local_repo_fingerprint = match compute_local_repo_fingerprint(&repo_context.repo_root) {
+        Ok(fingerprint) => fingerprint,
+        Err(error) => {
+            diagnostics.push(DiagnosticMessage {
+                level: DiagnosticLevel::Warning,
+                code: Some("lifecycle_state_unavailable".to_string()),
+                message: error.friendly_message(),
+                workspace_path: None,
+                item_key: None,
+                details: None,
+            });
+            return None;
+        }
+    };
+
+    match get_lifecycle_state(
+        &principal,
+        canonical_repo_namespace,
+        &local_repo_fingerprint,
+        environment_name,
+    ) {
+        Ok(state) => state,
+        Err(error) => {
+            diagnostics.push(DiagnosticMessage {
+                level: DiagnosticLevel::Warning,
+                code: Some("lifecycle_state_unavailable".to_string()),
+                message: error.friendly_message(),
+                workspace_path: None,
+                item_key: None,
+                details: None,
+            });
+            None
+        }
+    }
+}
+
+fn build_workspace_lifecycle_json(
+    workspace_path: &str,
+    lifecycle_state: Option<&crate::local_first::LifecycleStateSnapshot>,
+) -> Option<Value> {
+    let lifecycle_state = lifecycle_state?;
+    let items = lifecycle_state
+        .items
+        .iter()
+        .filter(|item| item.workspace_path == workspace_path)
+        .cloned()
+        .collect::<Vec<_>>();
+    if items.is_empty() {
+        return None;
+    }
+
+    let activation = phase_vector_json(&items, "activation");
+    let verification = phase_vector_json(&items, "verification");
+    Some(json!({
+        "workspace_path": workspace_path,
+        "items": items,
+        "vector": {
+            "activation": activation,
+            "verification": verification,
+        }
+    }))
+}
+
+fn build_environment_lifecycle_json(
+    lifecycle_state: Option<&crate::local_first::LifecycleStateSnapshot>,
+) -> Option<Value> {
+    let lifecycle_state = lifecycle_state?;
+    Some(json!({
+        "run": lifecycle_state.run,
+        "items": lifecycle_state.items,
+        "vector": {
+            "activation": phase_vector_json(&lifecycle_state.items, "activation"),
+            "verification": phase_vector_json(&lifecycle_state.items, "verification"),
+        }
+    }))
+}
+
+fn build_environment_conditions(
+    result_kind: OperationResultKind,
+    materialization: Option<&str>,
+    lifecycle_state: Option<&crate::local_first::LifecycleStateSnapshot>,
+) -> Vec<Value> {
+    let activation_items = lifecycle_state
+        .map(|state| {
+            state
+                .items
+                .iter()
+                .filter(|item| item.phase == "activation")
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let verification_items = lifecycle_state
+        .map(|state| {
+            state
+                .items
+                .iter()
+                .filter(|item| item.phase == "verification")
+                .cloned()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let infra_ready = materialization == Some("present")
+        && matches!(
+            result_kind,
+            OperationResultKind::Succeeded | OperationResultKind::Degraded
+        );
+    let activation_settled = lifecycle_settled(&activation_items);
+    let verification_settled = lifecycle_settled(&verification_items);
+    let usable = infra_ready && scoped_condition_met(&activation_items, "usable", true);
+    let acceptable = infra_ready
+        && scoped_condition_met(&activation_items, "acceptable", false)
+        && scoped_condition_met(&verification_items, "acceptable", false);
+    let teardown_settled = materialization == Some("absent");
+
+    vec![
+        condition_json(
+            "infra_ready",
+            infra_ready,
+            materialization_reason(materialization),
+        ),
+        condition_json(
+            "activation_settled",
+            activation_settled,
+            if activation_settled {
+                None
+            } else {
+                Some("activation items are still pending or running")
+            },
+        ),
+        condition_json(
+            "verification_settled",
+            verification_settled,
+            if verification_settled {
+                None
+            } else {
+                Some("verification items are still pending or running")
+            },
+        ),
+        condition_json(
+            "usable",
+            usable,
+            if usable {
+                None
+            } else {
+                Some("activation items are still blocking environment usability")
+            },
+        ),
+        condition_json(
+            "acceptable",
+            acceptable,
+            if acceptable {
+                None
+            } else {
+                Some("activation or verification items have not reached an acceptable state")
+            },
+        ),
+        condition_json(
+            "teardown_settled",
+            teardown_settled,
+            if teardown_settled {
+                None
+            } else {
+                Some("environment still has materialized resources")
+            },
+        ),
+    ]
+}
+
+fn phase_vector_json(items: &[crate::local_first::LifecycleItemSnapshot], phase: &str) -> Value {
+    let mut vector = LifecyclePhaseVector::default();
+    for item in items.iter().filter(|item| item.phase == phase) {
+        increment_phase_vector(&mut vector, &item.state);
+    }
+    json!({
+        "pending": vector.pending,
+        "running": vector.running,
+        "succeeded": vector.succeeded,
+        "degraded": vector.degraded,
+        "blocked": vector.blocked,
+        "failed": vector.failed,
+    })
+}
+
+fn increment_phase_vector(vector: &mut LifecyclePhaseVector, state: &str) {
+    match state {
+        "pending" => vector.pending += 1,
+        "running" => vector.running += 1,
+        "succeeded" => vector.succeeded += 1,
+        "degraded" => vector.degraded += 1,
+        "blocked" => vector.blocked += 1,
+        "failed" => vector.failed += 1,
+        _ => {}
+    }
+}
+
+fn lifecycle_settled(items: &[crate::local_first::LifecycleItemSnapshot]) -> bool {
+    !items
+        .iter()
+        .any(|item| matches!(item.state.as_str(), "pending" | "running"))
+}
+
+fn scoped_condition_met(
+    items: &[crate::local_first::LifecycleItemSnapshot],
+    scope: &str,
+    allow_degraded: bool,
+) -> bool {
+    !items.iter().any(|item| {
+        let in_scope = item.scopes.iter().any(|value| value == scope);
+        in_scope
+            && (matches!(
+                item.state.as_str(),
+                "pending" | "running" | "blocked" | "failed"
+            ) || (!allow_degraded && item.state == "degraded"))
+    })
+}
+
+fn condition_json(name: &str, met: bool, reason: Option<&str>) -> Value {
+    json!({
+        "name": name,
+        "met": met,
+        "summary": if met { "succeeded" } else { "blocked" },
+        "reason": reason,
+    })
+}
+
+fn materialization_reason(materialization: Option<&str>) -> Option<&'static str> {
+    match materialization {
+        Some("present") => None,
+        Some("absent") => Some("environment has not been materialized"),
+        Some("partially_present") => Some("environment is only partially materialized"),
+        Some("materializing") => Some("environment is still materializing"),
+        Some("dematerializing") => Some("environment is being torn down"),
+        Some("residual") => Some("environment has residual resources"),
+        _ => Some("environment materialization is unknown"),
+    }
+}
+
+fn lifecycle_failure_policy_name(policy: LifecycleFailurePolicy) -> &'static str {
+    match policy {
+        LifecycleFailurePolicy::Failed => "failed",
+        LifecycleFailurePolicy::Degraded => "degraded",
+    }
+}
+
+fn request_error_without_context(
+    code: impl Into<String>,
+    message: impl Into<String>,
+) -> EngineError {
+    EngineError {
+        contract_version: CONTRACT_VERSION,
+        operation: None,
+        target: None,
+        selection: Some(WorkspaceSelection::default()),
+        error: yaffle_contracts::ErrorPayload {
+            code: code.into(),
+            message: message.into(),
+            details: None,
+        },
+    }
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn terraform_outputs_json(
@@ -4782,6 +5536,8 @@ module "relative" {
                     ]),
                     variables: BTreeMap::new(),
                     outputs: BTreeMap::new(),
+                    activation: Vec::new(),
+                    verification: Vec::new(),
                 }],
                 cloud: yaffle_config::CloudConfig::default(),
             },
@@ -4862,6 +5618,8 @@ module "shared" {
             environments: yaffle_config::EnvironmentSelector::Named(vec!["main".to_string()]),
             variables: BTreeMap::new(),
             outputs: BTreeMap::new(),
+            activation: Vec::new(),
+            verification: Vec::new(),
         };
         let repo_context = RepoContext {
             repo_root: repo.path().to_path_buf(),

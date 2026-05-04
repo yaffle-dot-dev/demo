@@ -95,6 +95,93 @@ pub struct CloudCliLoginResult {
     pub converted_from_anonymous: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleRunHandle {
+    pub id: String,
+    #[serde(alias = "repoBindingId")]
+    pub repo_binding_id: String,
+    #[serde(alias = "environmentName")]
+    pub environment_name: String,
+    #[serde(alias = "executionMode")]
+    pub execution_mode: String,
+    pub status: String,
+    #[serde(alias = "startedAt")]
+    pub started_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleItemHandle {
+    pub id: String,
+    pub state: String,
+    #[serde(alias = "onCompletionUrl")]
+    pub on_completion_url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LifecycleItemSnapshot {
+    pub id: String,
+    #[serde(alias = "workspacePath")]
+    pub workspace_path: String,
+    pub key: String,
+    pub phase: String,
+    pub state: String,
+    #[serde(alias = "failurePolicy")]
+    pub failure_policy: Option<String>,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+    pub summary: Option<String>,
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub metadata: serde_json::Map<String, serde_json::Value>,
+    #[serde(alias = "startedAt")]
+    pub started_at: Option<String>,
+    #[serde(alias = "finishedAt")]
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LifecycleStateSnapshot {
+    pub run: Option<LifecycleRunSummary>,
+    #[serde(default)]
+    pub items: Vec<LifecycleItemSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LifecycleRunSummary {
+    pub id: String,
+    pub status: String,
+    #[serde(alias = "executionMode")]
+    pub execution_mode: String,
+    #[serde(alias = "startedAt")]
+    pub started_at: String,
+    #[serde(alias = "finishedAt")]
+    pub finished_at: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LifecycleRunRequest<'a> {
+    pub canonical_repo_namespace: &'a str,
+    pub local_repo_fingerprint: &'a str,
+    pub environment_name: &'a str,
+    pub execution_mode: &'a str,
+}
+
+#[derive(Debug, Clone)]
+pub struct LifecycleItemRequest<'a> {
+    pub run_id: &'a str,
+    pub workspace_path: &'a str,
+    pub key: &'a str,
+    pub phase: &'a str,
+    pub failure_policy: &'a str,
+    pub scopes: &'a [String],
+    pub destination_url: &'a str,
+    pub destination_class: &'a str,
+    pub dispatch_mode: &'a str,
+    pub summary: Option<&'a str>,
+    pub metadata: &'a serde_json::Map<String, serde_json::Value>,
+    pub callback_ttl_minutes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExecutionCredentialRequest<'a> {
     pub canonical_repo_namespace: &'a str,
@@ -165,6 +252,26 @@ struct ExecutionCredentialResponseEnvelope {
 #[derive(Debug, Deserialize)]
 struct HostedOutputModulePublishResponseEnvelope {
     data: HostedOutputModulePublishResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct LifecycleRunResponseEnvelope {
+    data: LifecycleRunHandle,
+}
+
+#[derive(Debug, Deserialize)]
+struct LifecycleItemResponseEnvelope {
+    data: LifecycleItemHandle,
+}
+
+#[derive(Debug, Deserialize)]
+struct LifecycleItemSnapshotResponseEnvelope {
+    data: LifecycleItemSnapshot,
+}
+
+#[derive(Debug, Deserialize)]
+struct LifecycleStateResponseEnvelope {
+    data: Option<LifecycleStateSnapshot>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -260,6 +367,122 @@ pub fn publish_hosted_output_module(
 
     response
         .json::<HostedOutputModulePublishResponseEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
+}
+
+pub fn create_lifecycle_run(
+    principal: &StoredPrincipalCredential,
+    request: &LifecycleRunRequest<'_>,
+) -> Result<LifecycleRunHandle, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .post(runtime.endpoint_url("/api/lifecycle/runs"))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .json(&serde_json::json!({
+            "canonicalRepoNamespace": request.canonical_repo_namespace,
+            "localRepoFingerprint": request.local_repo_fingerprint,
+            "environmentName": request.environment_name,
+            "executionMode": request.execution_mode,
+        }))
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<LifecycleRunResponseEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
+}
+
+pub fn create_lifecycle_item(
+    principal: &StoredPrincipalCredential,
+    request: &LifecycleItemRequest<'_>,
+) -> Result<LifecycleItemHandle, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .post(runtime.endpoint_url("/api/lifecycle/items"))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .json(&serde_json::json!({
+            "runId": request.run_id,
+            "workspacePath": request.workspace_path,
+            "key": request.key,
+            "phase": request.phase,
+            "kind": "webhook",
+            "failurePolicy": request.failure_policy,
+            "scopes": request.scopes,
+            "destinationUrl": request.destination_url,
+            "destinationClass": request.destination_class,
+            "dispatchMode": request.dispatch_mode,
+            "summary": request.summary,
+            "metadata": request.metadata,
+            "callbackTtlMinutes": request.callback_ttl_minutes,
+        }))
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<LifecycleItemResponseEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
+}
+
+pub fn get_lifecycle_item(
+    principal: &StoredPrincipalCredential,
+    item_id: &str,
+) -> Result<LifecycleItemSnapshot, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .get(runtime.endpoint_url(&format!("/api/lifecycle/items/{item_id}")))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<LifecycleItemSnapshotResponseEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
+}
+
+pub fn get_lifecycle_state(
+    principal: &StoredPrincipalCredential,
+    canonical_repo_namespace: &str,
+    local_repo_fingerprint: &str,
+    environment_name: &str,
+) -> Result<Option<LifecycleStateSnapshot>, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .get(runtime.endpoint_url("/api/lifecycle/state"))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .query(&[
+            ("canonicalRepoNamespace", canonical_repo_namespace),
+            ("localRepoFingerprint", local_repo_fingerprint),
+            ("environmentName", environment_name),
+        ])
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<LifecycleStateResponseEnvelope>()
         .map(|value| value.data)
         .map_err(|error| LocalFirstError::Http(error.to_string()))
 }

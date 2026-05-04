@@ -8,6 +8,7 @@ homepage.workspace = true
 
 [dependencies]
 hcl.workspace = true
+hmac = "0.12.1"
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

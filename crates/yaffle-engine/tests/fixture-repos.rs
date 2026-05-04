@@ -1,8 +1,16 @@
 mod support;
 
 use std::env;
+use std::fs;
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 use std::sync::{LazyLock, Mutex};
+use std::thread;
+use std::time::Duration;
 
+use reqwest::blocking::Client;
 use serde_json::json;
 use yaffle_contracts::{EngineOperation, OperationResultKind, WorkspaceSelection};
 use yaffle_engine::{execute, EngineRequest, EnvironmentTarget};
@@ -273,17 +281,19 @@ fn outputs_without_workspace_selection_group_results_by_workspace() {
 fn converge_remote_state_chain_fixture_persists_outputs_for_downstream_workspace() {
     let repo = copy_fixture_repo("outputs-remote-state-chain");
 
-    let converge = execute(
-        &EngineRequest {
-            operation: EngineOperation::Converge,
-            target: Some(EnvironmentTarget {
-                environment: "main".to_string(),
-            }),
-            selection: WorkspaceSelection::default(),
-            wait_for: None,
-        },
-        repo.path(),
-    )
+    let converge = with_local_first_env_disabled(|| {
+        execute(
+            &EngineRequest {
+                operation: EngineOperation::Converge,
+                target: Some(EnvironmentTarget {
+                    environment: "main".to_string(),
+                }),
+                selection: WorkspaceSelection::default(),
+                wait_for: None,
+            },
+            repo.path(),
+        )
+    })
     .expect("converge should succeed for remote-state fixture");
 
     assert_eq!(converge.result.kind, OperationResultKind::Succeeded);
@@ -415,17 +425,19 @@ fn status_degrades_when_one_workspace_cannot_initialize() {
 fn converge_environment_vars_fixture_supports_transient_environment_values() {
     let repo = copy_fixture_repo("converge-environment-vars");
 
-    let converge = execute(
-        &EngineRequest {
-            operation: EngineOperation::Converge,
-            target: Some(EnvironmentTarget {
-                environment: "pr-42".to_string(),
-            }),
-            selection: WorkspaceSelection::default(),
-            wait_for: None,
-        },
-        repo.path(),
-    )
+    let converge = with_local_first_env_disabled(|| {
+        execute(
+            &EngineRequest {
+                operation: EngineOperation::Converge,
+                target: Some(EnvironmentTarget {
+                    environment: "pr-42".to_string(),
+                }),
+                selection: WorkspaceSelection::default(),
+                wait_for: None,
+            },
+            repo.path(),
+        )
+    })
     .expect("transient converge should succeed");
 
     assert_eq!(converge.result.kind, OperationResultKind::Succeeded);
@@ -461,17 +473,19 @@ fn converge_environment_vars_fixture_supports_transient_environment_values() {
 fn status_after_transient_converge_reports_present_materialization() {
     let repo = copy_fixture_repo("converge-environment-vars");
 
-    execute(
-        &EngineRequest {
-            operation: EngineOperation::Converge,
-            target: Some(EnvironmentTarget {
-                environment: "pr-42".to_string(),
-            }),
-            selection: WorkspaceSelection::default(),
-            wait_for: None,
-        },
-        repo.path(),
-    )
+    with_local_first_env_disabled(|| {
+        execute(
+            &EngineRequest {
+                operation: EngineOperation::Converge,
+                target: Some(EnvironmentTarget {
+                    environment: "pr-42".to_string(),
+                }),
+                selection: WorkspaceSelection::default(),
+                wait_for: None,
+            },
+            repo.path(),
+        )
+    })
     .expect("transient converge should succeed");
 
     let response = execute(
@@ -504,17 +518,19 @@ fn status_after_transient_converge_reports_present_materialization() {
 fn wait_succeeds_for_acceptable_after_transient_converge() {
     let repo = copy_fixture_repo("converge-environment-vars");
 
-    execute(
-        &EngineRequest {
-            operation: EngineOperation::Converge,
-            target: Some(EnvironmentTarget {
-                environment: "pr-42".to_string(),
-            }),
-            selection: WorkspaceSelection::default(),
-            wait_for: None,
-        },
-        repo.path(),
-    )
+    with_local_first_env_disabled(|| {
+        execute(
+            &EngineRequest {
+                operation: EngineOperation::Converge,
+                target: Some(EnvironmentTarget {
+                    environment: "pr-42".to_string(),
+                }),
+                selection: WorkspaceSelection::default(),
+                wait_for: None,
+            },
+            repo.path(),
+        )
+    })
     .expect("transient converge should succeed");
 
     let response = execute(
@@ -571,17 +587,19 @@ fn wait_times_out_when_condition_is_not_met() {
 fn destroy_after_converge_clears_materialization() {
     let repo = copy_fixture_repo("converge-environment-vars");
 
-    execute(
-        &EngineRequest {
-            operation: EngineOperation::Converge,
-            target: Some(EnvironmentTarget {
-                environment: "pr-42".to_string(),
-            }),
-            selection: WorkspaceSelection::default(),
-            wait_for: None,
-        },
-        repo.path(),
-    )
+    with_local_first_env_disabled(|| {
+        execute(
+            &EngineRequest {
+                operation: EngineOperation::Converge,
+                target: Some(EnvironmentTarget {
+                    environment: "pr-42".to_string(),
+                }),
+                selection: WorkspaceSelection::default(),
+                wait_for: None,
+            },
+            repo.path(),
+        )
+    })
     .expect("transient converge should succeed");
 
     let destroy = execute(
@@ -620,4 +638,390 @@ fn destroy_after_converge_clears_materialization() {
             .and_then(|environment| environment.materialization.as_deref()),
         Some("absent")
     );
+}
+
+#[test]
+fn converge_activation_webhook_fixture_dispatches_and_settles_activation() {
+    let _guard = WAIT_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let repo = copy_fixture_repo("converge-activation-webhook");
+    write_fixture_git_remote(repo.path());
+
+    let backend_listener = TcpListener::bind("127.0.0.1:0").expect("backend listener should bind");
+    let backend_addr = backend_listener
+        .local_addr()
+        .expect("backend listener should have address");
+    let hook_listener = TcpListener::bind("127.0.0.1:0").expect("hook listener should bind");
+    let hook_addr = hook_listener
+        .local_addr()
+        .expect("hook listener should have address");
+
+    let config_path = repo.path().join("yaffle.toml");
+    let config = fs::read_to_string(&config_path).expect("fixture config should read");
+    fs::write(
+        &config_path,
+        config.replace(
+            "http://127.0.0.1:9999/hooks/preview-ready",
+            &format!("http://{}/hooks/preview-ready", hook_addr),
+        ),
+    )
+    .expect("fixture config should rewrite hook url");
+
+    let lifecycle_state = Arc::new(StdMutex::new(FakeLifecycleState::default()));
+    let backend_stop = Arc::new(AtomicBool::new(false));
+    let hook_stop = Arc::new(AtomicBool::new(false));
+    let backend_thread = spawn_fake_lifecycle_backend(
+        backend_listener,
+        backend_addr,
+        lifecycle_state.clone(),
+        backend_stop.clone(),
+    );
+    let hook_thread = spawn_activation_receiver(hook_listener, hook_stop.clone());
+
+    let previous_feature_token = env::var_os("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN");
+    let previous_module_api_host = env::var_os("YAFFLE_MODULE_API_HOST");
+    env::set_var("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN", "test-feature-token");
+    env::set_var("YAFFLE_MODULE_API_HOST", format!("http://{backend_addr}"));
+
+    let converge = execute(
+        &EngineRequest {
+            operation: EngineOperation::Converge,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("converge should succeed with activation webhook");
+
+    restore_env_var("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN", previous_feature_token);
+    restore_env_var("YAFFLE_MODULE_API_HOST", previous_module_api_host);
+    backend_stop.store(true, Ordering::SeqCst);
+    hook_stop.store(true, Ordering::SeqCst);
+    wake_listener(backend_addr);
+    wake_listener(hook_addr);
+    backend_thread.join().expect("backend thread should finish");
+    hook_thread.join().expect("hook thread should finish");
+
+    assert_eq!(converge.result.kind, OperationResultKind::Succeeded);
+    assert!(converge
+        .result
+        .summary
+        .contains("activation settled: 1 item(s)"));
+
+    let status = execute(
+        &EngineRequest {
+            operation: EngineOperation::Status,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        },
+        repo.path(),
+    )
+    .expect("status should load lifecycle state");
+
+    let conditions = status
+        .environment
+        .as_ref()
+        .expect("status should include environment")
+        .conditions
+        .iter()
+        .filter_map(|value| {
+            Some((
+                value.get("name")?.as_str()?.to_string(),
+                value.get("met")?.as_bool()?,
+            ))
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(conditions.get("activation_settled"), Some(&true));
+    assert_eq!(conditions.get("usable"), Some(&true));
+    assert_eq!(conditions.get("acceptable"), Some(&true));
+}
+
+#[derive(Default)]
+struct FakeLifecycleState {
+    item_state: String,
+    item_summary: Option<String>,
+}
+
+fn spawn_fake_lifecycle_backend(
+    listener: TcpListener,
+    backend_addr: std::net::SocketAddr,
+    lifecycle_state: Arc<StdMutex<FakeLifecycleState>>,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        listener
+            .set_nonblocking(true)
+            .expect("backend listener should be nonblocking");
+        while !stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_http_request(&mut stream);
+                    if request.starts_with("POST /api/sessions/anonymous HTTP/1.1") {
+                        write_http_json(
+                            &mut stream,
+                            201,
+                            json!({
+                                "data": {
+                                    "principalType": "anonymous_session",
+                                    "principalId": "principal-test",
+                                    "sessionId": "session-test",
+                                    "token": "principal-token-test",
+                                    "issuedAt": "2026-05-04T00:00:00Z",
+                                    "expiresAt": "2030-05-04T00:00:00Z"
+                                }
+                            }),
+                        );
+                    } else if request.starts_with("PUT /api/output-modules HTTP/1.1") {
+                        write_http_json(
+                            &mut stream,
+                            201,
+                            json!({
+                                "data": {
+                                    "id": "module-1",
+                                    "repoBindingId": "binding-1",
+                                    "workspacePath": "infra/single",
+                                    "environmentName": "main",
+                                    "versionSerial": 1,
+                                    "version": "1.0.1",
+                                    "createdAt": "2026-05-04T00:00:00Z"
+                                }
+                            }),
+                        );
+                    } else if request.starts_with("POST /api/lifecycle/runs HTTP/1.1") {
+                        write_http_json(
+                            &mut stream,
+                            201,
+                            json!({
+                                "data": {
+                                    "id": "run-1",
+                                    "repoBindingId": "binding-1",
+                                    "environmentName": "main",
+                                    "executionMode": "local",
+                                    "status": "running",
+                                    "startedAt": "2026-05-04T00:00:00Z"
+                                }
+                            }),
+                        );
+                    } else if request.starts_with("POST /api/lifecycle/items HTTP/1.1") {
+                        write_http_json(
+                            &mut stream,
+                            201,
+                            json!({
+                                "data": {
+                                    "id": "item-1",
+                                    "state": "pending",
+                                    "onCompletionUrl": format!("http://{backend_addr}/api/lifecycle/completions/token-1")
+                                }
+                            }),
+                        );
+                    } else if request
+                        .starts_with("POST /api/lifecycle/completions/token-1 HTTP/1.1")
+                    {
+                        let body = extract_http_body(&request);
+                        let payload: serde_json::Value =
+                            serde_json::from_str(&body).expect("callback payload should parse");
+                        let mut state = lifecycle_state.lock().expect("state lock should work");
+                        state.item_state =
+                            payload["status"].as_str().unwrap_or("failed").to_string();
+                        state.item_summary = payload["summary"].as_str().map(ToOwned::to_owned);
+                        write_http_json(
+                            &mut stream,
+                            200,
+                            json!({ "data": { "id": "item-1", "state": state.item_state } }),
+                        );
+                    } else if request.starts_with("GET /api/lifecycle/items/item-1 HTTP/1.1") {
+                        let state = lifecycle_state.lock().expect("state lock should work");
+                        write_http_json(
+                            &mut stream,
+                            200,
+                            json!({
+                                "data": {
+                                    "id": "item-1",
+                                    "workspacePath": "infra/single",
+                                    "key": "preview-ready",
+                                    "phase": "activation",
+                                    "state": state.item_state,
+                                    "failurePolicy": "failed",
+                                    "scopes": ["usable", "acceptable"],
+                                    "summary": state.item_summary,
+                                    "reason": null,
+                                    "metadata": {},
+                                    "startedAt": "2026-05-04T00:00:00Z",
+                                    "finishedAt": if state.item_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
+                                }
+                            }),
+                        );
+                    } else if request.contains("GET /api/lifecycle/state?") {
+                        let state = lifecycle_state.lock().expect("state lock should work");
+                        write_http_json(
+                            &mut stream,
+                            200,
+                            json!({
+                                "data": {
+                                    "run": {
+                                        "id": "run-1",
+                                        "status": if state.item_state == "succeeded" { "succeeded" } else { "running" },
+                                        "executionMode": "local",
+                                        "startedAt": "2026-05-04T00:00:00Z",
+                                        "finishedAt": if state.item_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
+                                    },
+                                    "items": [{
+                                        "id": "item-1",
+                                        "workspacePath": "infra/single",
+                                        "key": "preview-ready",
+                                        "phase": "activation",
+                                        "state": state.item_state,
+                                        "failurePolicy": "failed",
+                                        "scopes": ["usable", "acceptable"],
+                                        "summary": state.item_summary,
+                                        "reason": null,
+                                        "metadata": {},
+                                        "startedAt": "2026-05-04T00:00:00Z",
+                                        "finishedAt": if state.item_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
+                                    }]
+                                }
+                            }),
+                        );
+                    } else {
+                        write_http_json(
+                            &mut stream,
+                            404,
+                            json!({ "error": { "code": "NOT_FOUND", "message": "not found" } }),
+                        );
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("backend accept failed: {error}"),
+            }
+        }
+    })
+}
+
+fn spawn_activation_receiver(
+    listener: TcpListener,
+    stop: Arc<AtomicBool>,
+) -> thread::JoinHandle<()> {
+    thread::spawn(move || {
+        listener
+            .set_nonblocking(true)
+            .expect("hook listener should be nonblocking");
+        let client = Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .expect("client should build");
+
+        while !stop.load(Ordering::SeqCst) {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    let request = read_http_request(&mut stream);
+                    if request.starts_with("POST /hooks/preview-ready HTTP/1.1") {
+                        let body = extract_http_body(&request);
+                        let payload: serde_json::Value =
+                            serde_json::from_str(&body).expect("webhook payload should parse");
+                        assert_eq!(payload["workspace_path"], json!("infra/single"));
+                        assert_eq!(
+                            payload["outputs"]["service_name"]["value"],
+                            json!("single-service")
+                        );
+                        let callback = payload["on_completion"]
+                            .as_str()
+                            .expect("callback url should exist");
+                        client
+                            .post(callback)
+                            .json(&json!({
+                                "status": "succeeded",
+                                "summary": "preview-ready completed"
+                            }))
+                            .send()
+                            .expect("callback should succeed");
+                        write_http_json(&mut stream, 202, json!({ "ok": true }));
+                    } else {
+                        write_http_json(&mut stream, 404, json!({ "error": "not found" }));
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(20));
+                }
+                Err(error) => panic!("hook accept failed: {error}"),
+            }
+        }
+    })
+}
+
+fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+    let mut buffer = [0_u8; 16_384];
+    let bytes_read = stream.read(&mut buffer).expect("request should read");
+    String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
+}
+
+fn extract_http_body(request: &str) -> String {
+    request
+        .split("\r\n\r\n")
+        .nth(1)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn write_http_json(stream: &mut std::net::TcpStream, status: u16, body: serde_json::Value) {
+    let status_text = match status {
+        200 => "OK",
+        201 => "Created",
+        202 => "Accepted",
+        404 => "Not Found",
+        _ => "OK",
+    };
+    let body_text = body.to_string();
+    let response = format!(
+        "HTTP/1.1 {status} {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body_text.len(),
+        body_text,
+    );
+    stream
+        .write_all(response.as_bytes())
+        .expect("response should write");
+}
+
+fn write_fixture_git_remote(repo_root: &std::path::Path) {
+    let git_dir = repo_root.join(".git");
+    fs::create_dir_all(&git_dir).expect("git dir should exist");
+    fs::write(
+        git_dir.join("config"),
+        "[remote \"origin\"]\n  url = https://github.com/test-org/fixture.git\n",
+    )
+    .expect("git config should write");
+}
+
+fn restore_env_var(name: &str, previous: Option<std::ffi::OsString>) {
+    if let Some(previous) = previous {
+        env::set_var(name, previous);
+    } else {
+        env::remove_var(name);
+    }
+}
+
+fn wake_listener(address: std::net::SocketAddr) {
+    let _ = std::net::TcpStream::connect(address);
+}
+
+fn with_local_first_env_disabled<T>(callback: impl FnOnce() -> T) -> T {
+    let _guard = WAIT_ENV_LOCK
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let previous_feature_token = env::var_os("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN");
+    let previous_module_api_host = env::var_os("YAFFLE_MODULE_API_HOST");
+    env::remove_var("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN");
+    env::remove_var("YAFFLE_MODULE_API_HOST");
+    let result = callback();
+    restore_env_var("YAFFLE_LOCAL_FIRST_FEATURE_TOKEN", previous_feature_token);
+    restore_env_var("YAFFLE_MODULE_API_HOST", previous_module_api_host);
+    result
 }

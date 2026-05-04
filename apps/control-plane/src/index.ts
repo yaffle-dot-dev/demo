@@ -24,6 +24,7 @@ import { billingRoute } from "./routes/billing.ts"
 import { stripeWebhooksRoute } from "./routes/stripe-webhooks.ts"
 import { localFirstRoute } from "./routes/local-first.ts"
 import { cloudCliRoute } from "./routes/cloud-cli.ts"
+import { lifecycleRoute } from "./routes/lifecycle.ts"
 import { auth } from "./lib/better-auth.ts"
 import {
   getLocalFirstGcRuntimeInfo,
@@ -280,6 +281,7 @@ app.route("/api/orgs", billingRoute) // Billing checkout & portal
 app.route("/api/users", authApiRoute) // Custom user endpoints (e.g., /api/users/me)
 app.route("/api/cloud", cloudCliRoute) // Account-backed CLI login and guest conversion
 app.route("/api", localFirstRoute) // Anonymous sessions, execution tokens, hosted output modules
+app.route("/api/lifecycle", lifecycleRoute) // Activation/verification lifecycle orchestration
 app.route("/api/runner", runnerRoute) // Runner worker API (claim, heartbeat, complete)
 app.route("/api/scanner", scannerRoute) // Scanner worker API (claim, heartbeat, complete)
 app.route("/api/internal/provider-discovery", providerDiscoveryRoute)

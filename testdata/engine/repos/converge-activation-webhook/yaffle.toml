@@ -1,0 +1,20 @@
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra/single"
+environments = ["main"]
+
+  [[workspaces.activation]]
+  key = "preview-ready"
+  environments = ["main"]
+  kind = "webhook"
+  timeout = "10s"
+  failure = "failed"
+  scopes = ["usable", "acceptable"]
+
+    [workspaces.activation.request]
+    url = "http://127.0.0.1:9999/hooks/preview-ready"
+    method = "POST"

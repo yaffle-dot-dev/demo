@@ -754,6 +754,89 @@ export const cloudCliAuthorizationCodes = pgTable(
   (t) => [index("cloud_cli_authorization_codes_expires_at_idx").on(t.expiresAt)],
 )
 
+export const lifecycleRuns = pgTable(
+  "lifecycle_runs",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    principalId: uuid("principal_id")
+      .references(() => principals.id, { onDelete: "cascade" })
+      .notNull(),
+    repoBindingId: uuid("repo_binding_id")
+      .references(() => principalRepoBindings.id, { onDelete: "cascade" })
+      .notNull(),
+    environmentName: text("environment_name").notNull(),
+    executionMode: text("execution_mode").notNull(), // 'local' | 'cloud'
+    status: text("status").default("running").notNull(), // 'running' | 'succeeded' | 'degraded' | 'failed'
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("lifecycle_runs_repo_env_idx").on(t.repoBindingId, t.environmentName, t.createdAt),
+    index("lifecycle_runs_principal_idx").on(t.principalId, t.createdAt),
+  ],
+)
+
+export const lifecycleItems = pgTable(
+  "lifecycle_items",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    runId: uuid("run_id")
+      .references(() => lifecycleRuns.id, { onDelete: "cascade" })
+      .notNull(),
+    workspacePath: text("workspace_path").notNull(),
+    key: text("key").notNull(),
+    phase: text("phase").notNull(), // 'activation' | 'verification'
+    kind: text("kind").notNull(), // 'webhook'
+    state: text("state").default("pending").notNull(), // 'pending' | 'running' | 'succeeded' | 'degraded' | 'blocked' | 'failed'
+    failurePolicy: text("failure_policy").notNull(), // 'failed' | 'degraded'
+    scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`),
+    destinationUrl: text("destination_url").notNull(),
+    destinationClass: text("destination_class").notNull(), // 'public' | 'private_local'
+    dispatchMode: text("dispatch_mode").notNull(), // 'local' | 'cloud'
+    summary: text("summary"),
+    reason: text("reason"),
+    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("lifecycle_items_run_workspace_key_unique").on(t.runId, t.workspacePath, t.key),
+    index("lifecycle_items_run_idx").on(t.runId, t.phase, t.workspacePath),
+  ],
+)
+
+export const lifecycleEvents = pgTable(
+  "lifecycle_events",
+  {
+    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    itemId: uuid("item_id")
+      .references(() => lifecycleItems.id, { onDelete: "cascade" })
+      .notNull(),
+    eventType: text("event_type").notNull(),
+    payload: jsonb("payload").notNull().default(sql`'{}'::jsonb`),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("lifecycle_events_item_idx").on(t.itemId, t.createdAt)],
+)
+
+export const lifecycleCompletionTokens = pgTable(
+  "lifecycle_completion_tokens",
+  {
+    tokenHash: text("token_hash").primaryKey(),
+    itemId: uuid("item_id")
+      .references(() => lifecycleItems.id, { onDelete: "cascade" })
+      .notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("lifecycle_completion_tokens_expires_idx").on(t.expiresAt)],
+)
+
 // =============================================================================
 // Distributed Leases
 // =============================================================================

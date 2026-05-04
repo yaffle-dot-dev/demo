@@ -23,6 +23,8 @@ pub struct Workspace {
     pub environments: EnvironmentSelector,
     pub variables: BTreeMap<String, VariableValue>,
     pub outputs: BTreeMap<String, WorkspaceOutputPolicy>,
+    pub activation: Vec<LifecycleHook>,
+    pub verification: Vec<LifecycleHook>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,6 +52,47 @@ pub struct WorkspaceOutputPolicy {
 pub enum OutputVisibility {
     Internal,
     Public,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleHook {
+    pub key: String,
+    pub environments: Vec<String>,
+    pub kind: LifecycleHookKind,
+    pub timeout: Option<String>,
+    pub failure: LifecycleFailurePolicy,
+    pub scopes: Vec<String>,
+    pub request: LifecycleWebhookRequest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleHookKind {
+    Webhook,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleFailurePolicy {
+    Failed,
+    Degraded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleWebhookRequest {
+    pub url: String,
+    pub method: String,
+    pub auth: Option<LifecycleWebhookAuth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleWebhookAuth {
+    pub scheme: LifecycleWebhookAuthScheme,
+    pub secret_ref: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleWebhookAuthScheme {
+    Bearer,
+    HmacSha256,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -111,6 +154,12 @@ pub fn parse_yaffle_toml(input: &str) -> Result<YaffleConfig, ConfigError> {
     normalize_and_validate(raw)
 }
 
+pub fn environment_name_matches_patterns(environment: &str, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| wildcard_match(pattern, environment))
+}
+
 fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
     let mut errors = Vec::new();
 
@@ -169,12 +218,26 @@ fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
         }
 
         let outputs = normalize_output_policies(&workspace.path, workspace.outputs, &mut errors);
+        let activation = normalize_lifecycle_hooks(
+            &workspace.path,
+            "activation",
+            workspace.activation,
+            &mut errors,
+        );
+        let verification = normalize_lifecycle_hooks(
+            &workspace.path,
+            "verification",
+            workspace.verification,
+            &mut errors,
+        );
 
         workspaces.push(Workspace {
             path: workspace.path,
             environments,
             variables: workspace.variables.unwrap_or_default(),
             outputs,
+            activation,
+            verification,
         });
     }
 
@@ -257,6 +320,192 @@ fn normalize_output_policies(
     }
 
     policies
+}
+
+fn normalize_lifecycle_hooks(
+    workspace_path: &str,
+    phase: &str,
+    raw: Option<Vec<RawLifecycleHook>>,
+    errors: &mut Vec<String>,
+) -> Vec<LifecycleHook> {
+    let mut hooks = Vec::new();
+    let mut seen_keys = BTreeSet::new();
+
+    for hook in raw.unwrap_or_default() {
+        if hook.key.trim().is_empty() {
+            errors.push(format!(
+                "workspaces.{workspace_path}.{phase}: lifecycle hook key must not be empty",
+            ));
+            continue;
+        }
+        if !seen_keys.insert(hook.key.clone()) {
+            errors.push(format!(
+                "workspaces.{workspace_path}.{phase}: duplicate lifecycle hook key '{}'",
+                hook.key,
+            ));
+            continue;
+        }
+
+        let kind = match hook.kind.as_str() {
+            "webhook" => LifecycleHookKind::Webhook,
+            other => {
+                errors.push(format!(
+                    "workspaces.{workspace_path}.{phase}.{}: invalid kind '{other}'",
+                    hook.key,
+                ));
+                continue;
+            }
+        };
+
+        let environments = hook.environments.unwrap_or_else(|| vec!["*".to_string()]);
+        if environments.is_empty() || environments.iter().any(|value| value.trim().is_empty()) {
+            errors.push(format!(
+                "workspaces.{workspace_path}.{phase}.{}: environments must contain at least one non-empty pattern",
+                hook.key,
+            ));
+            continue;
+        }
+
+        let failure = match hook
+            .failure
+            .unwrap_or_else(|| "failed".to_string())
+            .as_str()
+        {
+            "failed" => LifecycleFailurePolicy::Failed,
+            "degraded" => LifecycleFailurePolicy::Degraded,
+            other => {
+                errors.push(format!(
+                    "workspaces.{workspace_path}.{phase}.{}: invalid failure policy '{other}'",
+                    hook.key,
+                ));
+                continue;
+            }
+        };
+
+        let scopes = hook.scopes.unwrap_or_else(|| match phase {
+            "activation" => vec!["usable".to_string(), "acceptable".to_string()],
+            "verification" => vec!["acceptable".to_string()],
+            _ => Vec::new(),
+        });
+        if scopes.is_empty() {
+            errors.push(format!(
+                "workspaces.{workspace_path}.{phase}.{}: scopes must not be empty",
+                hook.key,
+            ));
+            continue;
+        }
+
+        let request = match hook.request {
+            Some(request) => request,
+            None => {
+                errors.push(format!(
+                    "workspaces.{workspace_path}.{phase}.{}: request is required",
+                    hook.key,
+                ));
+                continue;
+            }
+        };
+        if request.url.trim().is_empty() {
+            errors.push(format!(
+                "workspaces.{workspace_path}.{phase}.{}: request.url must not be empty",
+                hook.key,
+            ));
+            continue;
+        }
+        let method = request.method.unwrap_or_else(|| "POST".to_string());
+        if method != "POST" {
+            errors.push(format!(
+                "workspaces.{workspace_path}.{phase}.{}: only POST lifecycle webhooks are currently supported",
+                hook.key,
+            ));
+            continue;
+        }
+
+        let auth = match request.auth {
+            Some(auth) => {
+                let scheme = match auth.scheme.as_str() {
+                    "bearer" => LifecycleWebhookAuthScheme::Bearer,
+                    "hmac_sha256" => LifecycleWebhookAuthScheme::HmacSha256,
+                    other => {
+                        errors.push(format!(
+                            "workspaces.{workspace_path}.{phase}.{}: invalid auth scheme '{other}'",
+                            hook.key,
+                        ));
+                        continue;
+                    }
+                };
+                if auth.secret_ref.trim().is_empty() {
+                    errors.push(format!(
+                        "workspaces.{workspace_path}.{phase}.{}: auth.secret_ref must not be empty",
+                        hook.key,
+                    ));
+                    continue;
+                }
+                Some(LifecycleWebhookAuth {
+                    scheme,
+                    secret_ref: auth.secret_ref,
+                })
+            }
+            None => None,
+        };
+
+        hooks.push(LifecycleHook {
+            key: hook.key,
+            environments,
+            kind,
+            timeout: hook.timeout,
+            failure,
+            scopes,
+            request: LifecycleWebhookRequest {
+                url: request.url,
+                method,
+                auth,
+            },
+        });
+    }
+
+    hooks
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+
+    let parts = pattern.split('*').collect::<Vec<_>>();
+    if parts.len() == 1 {
+        return pattern == value;
+    }
+
+    let mut remainder = value;
+    let starts_with_wildcard = pattern.starts_with('*');
+    let ends_with_wildcard = pattern.ends_with('*');
+
+    for (index, part) in parts.iter().enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+
+        if index == 0 && !starts_with_wildcard {
+            if !remainder.starts_with(part) {
+                return false;
+            }
+            remainder = &remainder[part.len()..];
+            continue;
+        }
+
+        if index == parts.len() - 1 && !ends_with_wildcard {
+            return remainder.ends_with(part);
+        }
+
+        if let Some(position) = remainder.find(part) {
+            remainder = &remainder[position + part.len()..];
+        } else {
+            return false;
+        }
+    }
+
+    true
 }
 
 fn normalize_triggers(
@@ -361,6 +610,8 @@ struct RawWorkspace {
     environments: RawEnvironmentSelector,
     variables: Option<BTreeMap<String, VariableValue>>,
     outputs: Option<BTreeMap<String, RawWorkspaceOutputPolicy>>,
+    activation: Option<Vec<RawLifecycleHook>>,
+    verification: Option<Vec<RawLifecycleHook>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -374,6 +625,30 @@ enum RawEnvironmentSelector {
 struct RawWorkspaceOutputPolicy {
     visibility: String,
     consumers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLifecycleHook {
+    key: String,
+    environments: Option<Vec<String>>,
+    kind: String,
+    timeout: Option<String>,
+    failure: Option<String>,
+    scopes: Option<Vec<String>>,
+    request: Option<RawLifecycleWebhookRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLifecycleWebhookRequest {
+    url: String,
+    method: Option<String>,
+    auth: Option<RawLifecycleWebhookAuth>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLifecycleWebhookAuth {
+    scheme: String,
+    secret_ref: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -551,5 +826,78 @@ environment = "main"
         assert!(error
             .to_string()
             .contains("top-level triggers are no longer supported"));
+    }
+
+    #[test]
+    fn parses_workspace_lifecycle_hooks() {
+        let input = r#"
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "apps/web/infra"
+environments = ["main"]
+
+  [[workspaces.activation]]
+  key = "preview-ready"
+  environments = ["pr-*", "main"]
+  kind = "webhook"
+  timeout = "10m"
+  failure = "degraded"
+  scopes = ["usable", "acceptable"]
+
+    [workspaces.activation.request]
+    url = "http://localhost:8787/hooks/preview-ready"
+    method = "POST"
+
+    [workspaces.activation.request.auth]
+    scheme = "hmac_sha256"
+    secret_ref = "PREVIEW_READY_SECRET"
+
+  [[workspaces.verification]]
+  key = "smoke"
+  kind = "webhook"
+
+    [workspaces.verification.request]
+    url = "https://ci.example.com/hooks/smoke"
+"#;
+
+        let config = parse_yaffle_toml(input).expect("config should parse");
+        let workspace = &config.workspaces[0];
+        assert_eq!(workspace.activation.len(), 1);
+        assert_eq!(workspace.verification.len(), 1);
+        assert_eq!(workspace.activation[0].environments, vec!["pr-*", "main"]);
+        assert_eq!(
+            workspace.activation[0].failure,
+            LifecycleFailurePolicy::Degraded
+        );
+        assert_eq!(workspace.verification[0].scopes, vec!["acceptable"]);
+        assert_eq!(
+            workspace.activation[0]
+                .request
+                .auth
+                .as_ref()
+                .unwrap()
+                .scheme,
+            LifecycleWebhookAuthScheme::HmacSha256
+        );
+    }
+
+    #[test]
+    fn environment_name_patterns_support_wildcards() {
+        assert!(environment_name_matches_patterns(
+            "pr-42",
+            &["pr-*".to_string()]
+        ));
+        assert!(environment_name_matches_patterns(
+            "main",
+            &["main".to_string()]
+        ));
+        assert!(!environment_name_matches_patterns(
+            "dev",
+            &["main".to_string()]
+        ));
     }
 }
