@@ -18,6 +18,15 @@ export interface ConvergeEnvironmentOptions {
   requestedDeployables?: string[]
 }
 
+export type DeployableLifecyclePhase = "activation" | "verification"
+
+export interface RunDeployableLifecyclePhaseOptions {
+  deployable: DiscoveredDeployable
+  target: CiTarget
+  phase: DeployableLifecyclePhase
+  dryRun?: boolean
+}
+
 function deriveTier(target: CiTarget): string {
   return target.environment.kind === "named" && target.environment.name === "main"
     ? "production"
@@ -245,6 +254,26 @@ async function convergeDeployable(
     await buildDeployables([deployable], target, dryRun)
     await deployDeployables([deployable], target, dryRun)
     await verifyDeployables([deployable], target, dryRun)
+  })
+}
+
+export async function runDeployableLifecyclePhase(
+  options: RunDeployableLifecyclePhaseOptions,
+): Promise<void> {
+  const dryRun = options.dryRun ?? false
+  const workspaces = getSelectedWorkspaces([options.deployable])
+
+  await withTargetEnvironment(options.target, dryRun, async () => {
+    await waitForWorkspaces(workspaces, options.target)
+
+    if (options.phase === "activation") {
+      await prepareDeployables([options.deployable], options.target, dryRun)
+      await buildDeployables([options.deployable], options.target, dryRun)
+      await deployDeployables([options.deployable], options.target, dryRun)
+      return
+    }
+
+    await verifyDeployables([options.deployable], options.target, dryRun)
   })
 }
 

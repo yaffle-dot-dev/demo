@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util"
 
 import { completeCli, renderCompletionScript } from "./completion"
-import { convergeEnvironment } from "./env/converge"
+import { convergeEnvironment, runDeployableLifecyclePhase } from "./env/converge"
 import { discoverDeployables } from "./deployables/discovery"
 import { planDeployables } from "./deployables/planner"
 import { listNamedEnvironments } from "./environments"
@@ -306,6 +306,45 @@ async function handleEnvironmentConverge(args: string[]): Promise<void> {
   }
 }
 
+async function handleEnvironmentLifecycle(args: string[]): Promise<void> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      target: { type: "string", default: ".ci/target.json" },
+      phase: { type: "string" },
+      deployable: { type: "string" },
+      "dry-run": { type: "boolean", default: false },
+    },
+  })
+
+  if (
+    (values.phase !== "activation" && values.phase !== "verification")
+    || !values.deployable
+  ) {
+    throw new Error(
+      "Usage: ci env lifecycle --target <path> --phase <activation|verification> --deployable <name> [--dry-run]",
+    )
+  }
+
+  const target = await readTarget(values.target)
+  const deployable = (await discoverDeployables()).find((candidate) => candidate.name === values.deployable)
+  if (!deployable) {
+    throw new Error(`Unknown deployable '${values.deployable}'`)
+  }
+  if (!deployable.supports.environmentKinds.includes(target.environment.kind)) {
+    throw new Error(
+      `Deployable '${deployable.name}' does not support ${target.environment.kind} environments`,
+    )
+  }
+
+  await runDeployableLifecyclePhase({
+    deployable,
+    target,
+    phase: values.phase,
+    dryRun: values["dry-run"],
+  })
+}
+
 async function handleCompletion(args: string[]): Promise<void> {
   const shell = args[0]
   if (shell !== "bash" && shell !== "zsh" && shell !== "fish") {
@@ -371,9 +410,13 @@ async function main(): Promise<void> {
       break
     }
     case "env": {
-      const subcommand = requireSubcommand(action, "ci env <converge>")
+      const subcommand = requireSubcommand(action, "ci env <converge|lifecycle>")
       if (subcommand === "converge") {
         await handleEnvironmentConverge(rest)
+        return
+      }
+      if (subcommand === "lifecycle") {
+        await handleEnvironmentLifecycle(rest)
         return
       }
       break
@@ -398,6 +441,7 @@ async function main(): Promise<void> {
     + "  ci secrets check ...\n"
     + "  ci environments list ...\n"
     + "  ci env converge ...\n"
+    + "  ci env lifecycle ...\n"
     + "  ci completion <bash|zsh|fish>"
   )
 }

@@ -29,6 +29,17 @@ export async function findConnectionById(connectionId: string): Promise<Connecti
   })
 }
 
+export async function findConnectionsByName(orgId: string, name: string): Promise<Connection[]> {
+  return withDbSpan("select", "connections", async () => {
+    return db
+      .select()
+      .from(connections)
+      .where(eq(connections.orgId, orgId))
+      .orderBy(asc(connections.name), asc(connections.createdAt))
+      .then((rows) => rows.filter((row) => row.name === name))
+  })
+}
+
 export async function createConnection(values: NewConnection): Promise<Connection> {
   return withDbSpan("insert", "connections", async () => {
     const rows = await db.insert(connections).values(values).returning()

@@ -120,6 +120,58 @@ export interface EnvironmentWorkspace {
   planSummary: string | null
 }
 
+export interface EnvironmentPolicySummary {
+  minimumPrincipalTier: string
+  lifecycleDispatch: string
+  allowedDestinationClasses: string[]
+}
+
+export interface LifecycleEventSummary {
+  id: string
+  eventType: string
+  payload: Record<string, unknown>
+  createdAt: string
+}
+
+export interface LifecycleItemSummary {
+  id: string
+  runId: string
+  workspacePath: string
+  key: string
+  phase: "activation" | "verification" | string
+  state: "pending" | "running" | "succeeded" | "degraded" | "blocked" | "failed" | string
+  failurePolicy: string
+  scopes: string[]
+  summary: string | null
+  reason: string | null
+  metadata: Record<string, unknown>
+  startedAt: string | null
+  finishedAt: string | null
+  events: LifecycleEventSummary[]
+}
+
+export interface LifecycleRunSummary {
+  id: string
+  status: string
+  executionMode: string
+  startedAt: string
+  finishedAt: string | null
+}
+
+export interface LifecyclePhaseVector {
+  pending: number
+  running: number
+  succeeded: number
+  degraded: number
+  blocked: number
+  failed: number
+}
+
+export interface EnvironmentLifecycleSummary {
+  run: LifecycleRunSummary
+  items: LifecycleItemSummary[]
+}
+
 export interface EnvironmentGroup {
   repo: string
   ref: string
@@ -233,6 +285,8 @@ export interface EnvironmentPreviewGroup {
   prNumber: number | null
   authorGithubId: number | null
   authorLogin: string | null
+  environmentPolicy?: EnvironmentPolicySummary | null
+  environmentLifecycle?: EnvironmentLifecycleSummary | null
   workspaces: WorkspaceWithRuns[]
   runGroups: RunGroup[]
 }

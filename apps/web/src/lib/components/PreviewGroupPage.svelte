@@ -3,7 +3,15 @@
   import { goto } from "$app/navigation"
   import { base } from "$app/paths"
   import { untrack } from "svelte"
-  import type { WorkspaceWithRuns, WorkspacePreview, Run, RunGroup, ResourceSpan } from "$lib/api"
+  import type {
+    EnvironmentLifecycleSummary,
+    LifecycleItemSummary,
+    Run,
+    RunGroup,
+    ResourceSpan,
+    WorkspacePreview,
+    WorkspaceWithRuns,
+  } from "$lib/api"
   import { cancelRun, rerunPreview } from "$lib/api"
   import { githubTreeUrl, githubCommitUrl } from "$lib/github"
   import { useRunLogStream } from "$lib/run-log-stream.svelte"
@@ -29,6 +37,11 @@
   import RunGroupStatusBadge from "./RunGroupStatusBadge.svelte"
   import RefBadge from "./RefBadge.svelte"
   import ConnectionBlockedBadge from "./ConnectionBlockedBadge.svelte"
+  import type { EnvironmentPolicySummary } from "$lib/api"
+  import {
+    buildPreviewDag,
+    type PreviewLifecycleDagNode,
+  } from "$lib/lifecycle-dag"
 
   interface Props {
     type: "pr" | "env"
@@ -38,6 +51,8 @@
     ref: string
     headSha: string
     authorLogin?: string | null
+    environmentPolicy?: EnvironmentPolicySummary | null
+    environmentLifecycle?: EnvironmentLifecycleSummary | null
     workspaces: WorkspaceWithRuns[]
     runGroups: RunGroup[]
     githubUrl: string
@@ -75,6 +90,8 @@
   const ref = $derived(props.ref)
   const headSha = $derived(props.headSha)
   const authorLogin = $derived(props.authorLogin ?? null)
+  const environmentPolicy = $derived(props.environmentPolicy ?? null)
+  const environmentLifecycle = $derived(props.environmentLifecycle ?? null)
   const workspaces = $derived(props.workspaces)
   const runGroups = $derived(props.runGroups ?? [])
   const githubUrl = $derived(props.githubUrl)
@@ -239,6 +256,10 @@
   // Are we viewing the latest run group or a historical one?
   const isViewingLatest = $derived(isLatestRunGroup)
 
+  const activeEnvironmentLifecycle = $derived(
+    isLatestRunGroup ? environmentLifecycle : null,
+  )
+
   function getDisplayStatusForWorkspace(workspace: WorkspaceWithRuns): string {
     return getWorkspaceDisplayStatus({
       workspace,
@@ -257,6 +278,25 @@
 
     return statuses
   })
+
+  const dagNodeStatuses = $derived.by((): Record<string, string> => {
+    const statuses: Record<string, string> = { ...workspaceDisplayStatuses }
+
+    for (const item of activeEnvironmentLifecycle?.items ?? []) {
+      statuses[`${item.workspacePath}::${item.phase}::${item.key}`] = item.state
+    }
+
+    return statuses
+  })
+
+  const previewDag = $derived.by(() => buildPreviewDag({
+    workspaces: filteredWorkspaces,
+    dependencyGraph: displayDependencyGraph,
+    lifecycle: activeEnvironmentLifecycle,
+  }))
+
+  const dagNodes = $derived(previewDag.nodes)
+  const dagDependencyGraph = $derived(previewDag.dependencyGraph)
 
   // Helper: check if a workspace has an actively running run group status.
   function isWorkspaceActivelyRunning(ws: WorkspaceWithRuns): boolean {
@@ -327,7 +367,7 @@
   // Selected workspace: follows running workspace in follow mode, or respects URL
   let selectedPath = $derived.by(() => {
     const wsParam = $page.url.searchParams.get("ws")
-    const wsFromUrl = filteredWorkspaces.find((w) => w.preview.workspacePath === wsParam)
+    const nodeFromUrl = dagNodes.find((node) => node.id === wsParam)
 
     // In follow mode with a running workspace, follow it
     if (followMode && runningWorkspace) {
@@ -343,10 +383,10 @@
     }
 
     // Not in follow mode or no valid workspace: use URL param or first workspace
-    if (wsParam && wsFromUrl) {
+    if (wsParam && nodeFromUrl) {
       return wsParam
     }
-    return filteredWorkspaces[0]?.preview.workspacePath ?? ""
+    return dagNodes[0]?.id ?? ""
   })
 
   // Track the last followed workspace when in follow mode
@@ -373,7 +413,7 @@
   })
 
   // Handle workspace selection - disables follow mode
-  function handleWorkspaceSelect(path: string) {
+  function handleNodeSelect(path: string) {
     // Disable follow mode when user manually selects
     followMode = false
     pendingWorkspaceSelectionPath = path
@@ -389,9 +429,126 @@
   }
 
   // Current workspace data (from filtered workspaces)
-  const selectedWorkspace = $derived(
-    filteredWorkspaces.find((w) => w.preview.workspacePath === selectedPath)
+  const selectedDagNode = $derived(
+    dagNodes.find((node) => node.id === selectedPath) ?? null,
   )
+
+  const selectedWorkspace = $derived(
+    filteredWorkspaces.find((w) => w.preview.workspacePath === selectedDagNode?.workspacePath)
+  )
+
+  const selectedLifecycleNode = $derived(
+    selectedDagNode?.kind === "lifecycle"
+      ? selectedDagNode as PreviewLifecycleDagNode
+      : null,
+  )
+
+  const selectedLifecycleItem = $derived(selectedLifecycleNode?.item ?? null)
+
+  function humanizeLifecycleKey(key: string): string {
+    return key
+      .replace(/^preview[-_]/, "")
+      .replace(/^activation[-_]/, "")
+      .replace(/^verification[-_]/, "")
+      .split(/[-_]+/)
+      .filter(Boolean)
+      .map((part) => part[0]?.toUpperCase() + part.slice(1))
+      .join(" ") || key
+  }
+
+  function lifecyclePhaseLabel(phase: string): string {
+    if (phase === "activation") return "Activation Gate"
+    if (phase === "verification") return "Verification Gate"
+    return "Lifecycle"
+  }
+
+  function lifecycleStatusLabel(state: string): string {
+    switch (state) {
+      case "pending": return "queued"
+      case "running": return "in flight"
+      case "succeeded": return "passed"
+      case "degraded": return "warning"
+      case "blocked": return "policy blocked"
+      case "failed": return "failed"
+      default: return state
+    }
+  }
+
+  function lifecycleStatusClass(state: string): string {
+    switch (state) {
+      case "succeeded": return "text-status-ready bg-status-ready/10"
+      case "degraded": return "text-status-planning bg-status-planning/10"
+      case "blocked": return "text-status-system-error bg-status-system-error/10"
+      case "failed": return "text-status-failed bg-status-failed/10"
+      case "running": return "text-status-applying bg-status-applying/10"
+      default: return "text-text-dim bg-surface-overlay"
+    }
+  }
+
+  function lifecycleEventLabel(eventType: string): string {
+    switch (eventType) {
+      case "created": return "Gate armed"
+      case "dispatched": return "Sent outward"
+      case "dispatch_failed": return "Dispatch failed"
+      case "blocked": return "Policy blocked"
+      case "callback": return "External result"
+      default: return eventType
+    }
+  }
+
+  function lifecycleEventSummary(event: { eventType: string; payload: Record<string, unknown> }): string {
+    if (event.eventType === "callback") {
+      const status = typeof event.payload.status === "string"
+        ? lifecycleStatusLabel(event.payload.status)
+        : "updated"
+      const summary = typeof event.payload.summary === "string" ? event.payload.summary : null
+      return summary ? `${status}: ${summary}` : status
+    }
+
+    if (event.eventType === "blocked") {
+      return typeof event.payload.reason === "string"
+        ? event.payload.reason
+        : "blocked by governance"
+    }
+
+    if (event.eventType === "dispatched") {
+      return "Yaffle handed the gate to the external system"
+    }
+
+    if (event.eventType === "dispatch_failed") {
+      return typeof event.payload.reason === "string"
+        ? event.payload.reason
+        : "the external handoff failed"
+    }
+
+    if (event.eventType === "created") {
+      return "Yaffle is ready to receive the external ready signal"
+    }
+
+    return Object.keys(event.payload).length > 0
+      ? JSON.stringify(event.payload)
+      : "event recorded"
+  }
+
+  function lifecycleNarrative(item: LifecycleItemSummary): string {
+    if (item.phase === "verification") {
+      return `This gate sits after ${item.workspacePath} and proves the preview is acceptable before you trust it.`
+    }
+
+    return `This gate sits after ${item.workspacePath} and turns finished infra into a preview people can actually use.`
+  }
+
+  function lifecycleScopeNarrative(item: LifecycleItemSummary): string {
+    if (item.scopes.length === 0) {
+      return item.phase === "verification"
+        ? "Confirms the preview through an external check."
+        : "Waits for an external ready signal."
+    }
+
+    return item.phase === "verification"
+      ? `Confirms ${item.scopes.join(" + ")}.`
+      : `Unlocks ${item.scopes.join(" + ")}.`
+  }
 
   const selectedWorkspaceConnectionBlockReason = $derived(
     selectedWorkspace ? getWorkspaceConnectionBlockReason(selectedWorkspace) : null,
@@ -688,7 +845,7 @@
   })
 
   $effect(() => {
-    if (!onTrackRunViewEvent || !viewedRunGroup || !selectedWorkspace) {
+    if (!onTrackRunViewEvent || !viewedRunGroup || !selectedWorkspace || !selectedDagNode) {
       return
     }
 
@@ -707,7 +864,7 @@
     }
 
     if (
-      pendingWorkspaceSelectionPath === workspacePath
+      pendingWorkspaceSelectionPath === selectedDagNode.id
       && workspaceSelectionStartedAtMs != null
     ) {
       onTrackRunViewEvent({
@@ -1199,6 +1356,11 @@ terraform {
             <RefBadge label={String(identifier)} href={githubTreeUrl({ org, repo }, refName(ref))} />
           {/if}
           <RunGroupStatusBadge statuses={workspaceStatusList} />
+          {#if environmentPolicy}
+            <span class="text-xs text-yaffle-300 px-1.5 py-0.5 bg-yaffle-500/10 border border-yaffle-500/20 rounded">
+              governed env
+            </span>
+          {/if}
           {#if missingConnectionBlockedWorkspaces.length > 0}
             <ConnectionBlockedBadge
               {org}
@@ -1284,10 +1446,26 @@ terraform {
         </div>
       </div>
     {:else}
+    {#if environmentPolicy}
+      <div class="mx-4 mt-4 rounded-lg border border-yaffle-500/20 bg-yaffle-500/8 px-4 py-3">
+        <div class="text-sm font-medium text-yaffle-200">Protected environment policy</div>
+        <div class="mt-1 text-xs text-text-dim">
+          Minimum principal tier: <span class="text-text">{environmentPolicy.minimumPrincipalTier}</span>
+          <span class="mx-2 text-text-dim">•</span>
+          Lifecycle dispatch: <span class="text-text">{environmentPolicy.lifecycleDispatch}</span>
+          <span class="mx-2 text-text-dim">•</span>
+          Allowed lifecycle destinations:
+          <span class="text-text">{environmentPolicy.allowedDestinationClasses.join(", ")}</span>
+        </div>
+      </div>
+    {/if}
     <!-- DAG Visualization (replaces sidebar) -->
     <div class="flex-shrink-0 border-b border-border bg-surface">
       <div class="px-4 py-1 flex items-center justify-between">
-        <span class="text-xs text-text-dim font-medium uppercase tracking-wider">Workspaces</span>
+        <div class="flex items-center gap-3">
+          <span class="text-xs text-text-dim font-medium uppercase tracking-wider">Delivery path</span>
+          <span class="text-[10px] text-text-dim">infra → activation → verification</span>
+        </div>
         {#if hasAnyInProgress && !followMode}
           <button
             onclick={enableFollowMode}
@@ -1303,16 +1481,16 @@ terraform {
         {/if}
       </div>
       <DagVisualization
-        workspaces={filteredWorkspaces}
-        dependencyGraph={displayDependencyGraph}
-        workspaceStatuses={workspaceDisplayStatuses}
+        nodes={dagNodes}
+        dependencyGraph={dagDependencyGraph}
+        nodeStatuses={dagNodeStatuses}
         {selectedPath}
-        onSelect={handleWorkspaceSelect}
+        onSelect={handleNodeSelect}
       />
     </div>
 
     <!-- Content area -->
-    <main class="flex-1 flex flex-col min-w-0 overflow-hidden">
+    <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
       {#if selectedWorkspace}
         <!-- Workspace header: derive status from the viewed run group -->
         {@const displayStatus = selectedWorkspaceDisplayStatus ?? selectedWorkspace.preview.status}
@@ -1425,6 +1603,48 @@ terraform {
       </div>
         </div>
 
+        {#if selectedLifecycleNode && selectedLifecycleItem}
+          <div class="mx-6 mt-4 rounded-xl border border-yaffle-500/20 bg-yaffle-500/8 overflow-hidden">
+            <div class="px-4 py-3 border-b border-yaffle-500/15 flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="text-xs text-yaffle-300 px-1.5 py-0.5 bg-yaffle-500/10 rounded whitespace-nowrap">
+                  {lifecyclePhaseLabel(selectedLifecycleItem.phase)}
+                </span>
+                <span class="font-mono text-sm text-text truncate">{humanizeLifecycleKey(selectedLifecycleItem.key)}</span>
+                <span class="text-xs px-1.5 py-0.5 rounded whitespace-nowrap {lifecycleStatusClass(selectedLifecycleItem.state)}">
+                  {lifecycleStatusLabel(selectedLifecycleItem.state)}
+                </span>
+              </div>
+              <div class="text-[11px] text-text-dim whitespace-nowrap">
+                {selectedLifecycleItem.events.length} events
+              </div>
+            </div>
+            <div class="px-4 py-3 border-b border-border/70">
+              <div class="text-sm text-text">{lifecycleNarrative(selectedLifecycleItem)}</div>
+              <div class="mt-2 text-xs text-text-dim">
+                {selectedLifecycleItem.summary ?? selectedLifecycleItem.reason ?? lifecycleScopeNarrative(selectedLifecycleItem)}
+              </div>
+            </div>
+            {#if selectedLifecycleItem.events.length > 0}
+              <div class="divide-y divide-border/70">
+                {#each selectedLifecycleItem.events as event (event.id)}
+                  <div class="px-4 py-3 flex items-start justify-between gap-4">
+                    <div>
+                      <div class="text-sm text-text">{lifecycleEventLabel(event.eventType)}</div>
+                      <div class="mt-1 text-xs text-text-dim">{lifecycleEventSummary(event)}</div>
+                    </div>
+                    <div class="text-[11px] text-text-dim whitespace-nowrap">{formatRelativeTime(event.createdAt)}</div>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <div class="px-4 py-6 text-sm text-text-dim">
+                No external results have landed yet.
+              </div>
+            {/if}
+          </div>
+        {/if}
+
         {#if isQueuedWorkspace}
           <div class="flex flex-col items-center justify-center h-48 text-center">
             <svg class="w-10 h-10 text-text-dim/50 mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -1516,12 +1736,6 @@ terraform {
               </div>
             </div>
           {/if}
-        {:else}
-          <div class="flex-1 flex items-center justify-center">
-            <div class="text-text-dim text-sm text-center py-8">
-              No data available yet.
-            </div>
-          </div>
         {/if}
       {:else}
         <div class="flex-1 flex flex-col items-center justify-center text-text-dim gap-2">
@@ -1557,11 +1771,11 @@ terraform {
             <p class="text-sm">No runs yet</p>
             <p class="text-xs text-text-dim/75">Runs will appear here when triggered by a push or PR event.</p>
           {:else}
-            <p>Select a workspace to view details.</p>
+            <p>Select a workspace or gate to inspect the delivery path.</p>
           {/if}
         </div>
       {/if}
-    </main>
+    </div>
     {/if}
   </div>
 </div>

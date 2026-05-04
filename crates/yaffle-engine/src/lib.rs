@@ -4,7 +4,7 @@ use std::fs;
 use std::io;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -30,10 +30,10 @@ use yaffle_tofu::{inspect_tofu_resolution, TofuResolutionRequest, TofuSourceKind
 
 use crate::local_first::{
     compute_local_repo_fingerprint, create_lifecycle_item, create_lifecycle_run,
-    ensure_anonymous_principal, get_lifecycle_item, get_lifecycle_state, mint_execution_credential,
-    publish_hosted_output_module, ExecutionCredential, ExecutionCredentialKind,
-    ExecutionCredentialRequest, HostedOutputModulePublishRequest, LifecycleItemRequest,
-    LifecycleRunRequest, LocalFirstError,
+    dispatch_lifecycle_via_control_plane, ensure_anonymous_principal, get_lifecycle_item,
+    get_lifecycle_state, mint_execution_credential, publish_hosted_output_module,
+    ExecutionCredential, ExecutionCredentialKind, ExecutionCredentialRequest,
+    HostedOutputModulePublishRequest, LifecycleItemRequest, LifecycleRunRequest, LocalFirstError,
 };
 
 const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
@@ -47,7 +47,8 @@ pub use crate::local_first::{
 };
 use yaffle_config::{
     environment_name_matches_patterns, parse_yaffle_toml, validate_environment_name,
-    LifecycleFailurePolicy, LifecycleHook, LifecycleWebhookAuthScheme, YaffleConfig,
+    LifecycleFailurePolicy, LifecycleGitHubRepositoryDispatch, LifecycleHook,
+    LifecycleHookDispatch, LifecycleWebhookAuthScheme, YaffleConfig,
 };
 pub use yaffle_contracts::{EngineError, EnvironmentTarget, WorkspaceSelection, CONTRACT_VERSION};
 
@@ -1894,6 +1895,32 @@ fn effective_yaffle_module_host() -> String {
     module_api_host_override().unwrap_or_else(|| CANONICAL_YAFFLE_MODULE_HOST.to_string())
 }
 
+fn rewrite_canonical_yaffle_host_url(url: &str) -> String {
+    let Some(override_host) = module_api_host_override() else {
+        return url.to_string();
+    };
+
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    if parsed.host_str() != Some(CANONICAL_YAFFLE_MODULE_HOST) {
+        return url.to_string();
+    }
+
+    let (host, port) = override_host
+        .split_once(':')
+        .map(|(host, port)| (host, port.parse::<u16>().ok()))
+        .unwrap_or((override_host.as_str(), None));
+    if parsed.set_host(Some(host)).is_err() {
+        return url.to_string();
+    }
+    if parsed.set_port(port).is_err() {
+        return url.to_string();
+    }
+
+    parsed.to_string()
+}
+
 fn strip_url_scheme(value: &str) -> &str {
     value
         .strip_prefix("https://")
@@ -3581,6 +3608,9 @@ fn execute_lifecycle_hooks_for_workspace(
     let mut results = Vec::new();
 
     for hook in hooks {
+        let destination_url = lifecycle_destination_url(hook, &context.canonical_repo_namespace)?;
+        let destination_class =
+            lifecycle_destination_class(hook, &context.canonical_repo_namespace)?;
         let item = create_lifecycle_item(
             &context.principal,
             &LifecycleItemRequest {
@@ -3590,8 +3620,8 @@ fn execute_lifecycle_hooks_for_workspace(
                 phase,
                 failure_policy: lifecycle_failure_policy_name(hook.failure),
                 scopes: &hook.scopes,
-                destination_url: &hook.request.url,
-                destination_class: classify_destination_url(&hook.request.url),
+                destination_url: &destination_url,
+                destination_class: &destination_class,
                 dispatch_mode: "local",
                 summary: Some(match phase {
                     "activation" => "Waiting for activation webhook completion",
@@ -3631,6 +3661,7 @@ fn execute_lifecycle_hooks_for_workspace(
         let dispatch_result = dispatch_lifecycle_webhook(
             request,
             &context,
+            &repo_context.repo_root,
             workspace_path,
             environment_name,
             phase,
@@ -3705,6 +3736,7 @@ struct LifecyclePhaseVector {
 fn dispatch_lifecycle_webhook(
     request: &EngineRequest,
     context: &LifecycleDispatchContext,
+    repo_root: &Path,
     workspace_path: &str,
     environment_name: &str,
     phase: &str,
@@ -3712,45 +3744,40 @@ fn dispatch_lifecycle_webhook(
     item: &crate::local_first::LifecycleItemHandle,
     outputs_json: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<(), EngineError> {
+    let payload = lifecycle_dispatch_payload(
+        context,
+        repo_root,
+        workspace_path,
+        environment_name,
+        phase,
+        &hook.key,
+        outputs_json,
+        item.on_completion_url.clone(),
+    );
+    if lifecycle_dispatch_requires_control_plane(hook) {
+        let dispatch_body = lifecycle_control_plane_dispatch_body(
+            hook,
+            payload,
+            &context.run_id,
+            &item.id,
+            environment_name,
+            workspace_path,
+            phase,
+        )?;
+        dispatch_lifecycle_via_control_plane(&context.principal, &dispatch_body)
+            .map_err(|error| local_first_error(request, "webhook_dispatch_failed", error))?;
+        return Ok(());
+    }
+
     let client = Client::builder()
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(|error| request_error(request, "webhook_dispatch_failed", error.to_string()))?;
-    let payload = serde_json::json!({
-        "repo_namespace": context.canonical_repo_namespace,
-        "environment": environment_name,
-        "workspace_path": workspace_path,
-        "item_key": hook.key,
-        "phase": phase,
-        "outputs": outputs_json,
-        "on_completion": item.on_completion_url,
-    });
-    let body = serde_json::to_vec(&payload).map_err(|error| {
-        request_error(
-            request,
-            "webhook_dispatch_failed",
-            format!("Failed to serialize lifecycle webhook payload: {error}"),
-        )
-    })?;
-
-    let mut headers = HeaderMap::new();
-    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-    if let Some(auth) = &hook.request.auth {
-        let secret = env::var(&auth.secret_ref).map_err(|_| {
-            request_error(
-                request,
-                "webhook_secret_missing",
-                format!(
-                    "Lifecycle item '{}' requires secret '{}', but it was not available in this execution context.",
-                    hook.key, auth.secret_ref
-                ),
-            )
-        })?;
-        apply_lifecycle_auth_headers(&mut headers, auth.scheme, &secret, &body)?;
-    }
+    let (dispatch_url, body, headers) =
+        prepare_local_lifecycle_dispatch_request(request, hook, &payload)?;
 
     let response = client
-        .post(&hook.request.url)
+        .post(dispatch_url)
         .headers(headers)
         .body(body)
         .send()
@@ -3778,6 +3805,205 @@ fn dispatch_lifecycle_webhook(
     }
 
     Ok(())
+}
+
+fn prepare_local_lifecycle_dispatch_request(
+    request: &EngineRequest,
+    hook: &LifecycleHook,
+    payload: &Value,
+) -> Result<(String, Vec<u8>, HeaderMap), EngineError> {
+    let LifecycleHookDispatch::Generic(webhook) = &hook.dispatch else {
+        return Err(request_error(
+            request,
+            "lifecycle_dispatch_invalid",
+            format!(
+                "Lifecycle hook '{}' requires control-plane-backed dispatch.",
+                hook.key
+            ),
+        ));
+    };
+
+    let body = serde_json::to_vec(payload).map_err(|error| {
+        request_error(
+            request,
+            "webhook_dispatch_failed",
+            format!("Failed to serialize lifecycle webhook payload: {error}"),
+        )
+    })?;
+
+    let mut headers = HeaderMap::new();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    if let Some(auth) = &webhook.auth {
+        let secret_ref = auth.secret_ref.as_ref().ok_or_else(|| {
+            request_error(
+                request,
+                "webhook_secret_missing",
+                format!(
+                    "Lifecycle item '{}' requires a local secret_ref auth source, but none was configured.",
+                    hook.key
+                ),
+            )
+        })?;
+        let secret = env::var(secret_ref).map_err(|_| {
+            request_error(
+                request,
+                "webhook_secret_missing",
+                format!(
+                    "Lifecycle item '{}' requires secret '{}', but it was not available in this execution context.",
+                    hook.key, secret_ref
+                ),
+            )
+        })?;
+        apply_lifecycle_auth_headers(&mut headers, auth.scheme, &secret, &body)?;
+    }
+
+    Ok((
+        rewrite_canonical_yaffle_host_url(&webhook.url),
+        body,
+        headers,
+    ))
+}
+
+fn lifecycle_dispatch_requires_control_plane(hook: &LifecycleHook) -> bool {
+    match &hook.dispatch {
+        LifecycleHookDispatch::GitHubRepositoryDispatch(_) => true,
+        LifecycleHookDispatch::Generic(request) => request
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.connection.as_ref())
+            .is_some(),
+    }
+}
+
+fn lifecycle_control_plane_dispatch_body(
+    hook: &LifecycleHook,
+    payload: Value,
+    run_id: &str,
+    item_id: &str,
+    environment_name: &str,
+    workspace_path: &str,
+    phase: &str,
+) -> Result<Value, EngineError> {
+    let dispatch = match &hook.dispatch {
+        LifecycleHookDispatch::Generic(request) => {
+            let auth = request.auth.as_ref().map(|auth| {
+                json!({
+                    "scheme": lifecycle_auth_scheme_name(auth.scheme),
+                    "connection": auth.connection,
+                })
+            });
+            json!({
+                "kind": "generic",
+                "request": {
+                    "url": request.url,
+                    "method": request.method,
+                    "auth": auth,
+                },
+            })
+        }
+        LifecycleHookDispatch::GitHubRepositoryDispatch(github) => json!({
+            "kind": "github_repository_dispatch",
+            "github": {
+                "owner": github.owner,
+                "repo": github.repo,
+                "eventType": github.event_type,
+                "apiUrl": github.api_url,
+            },
+        }),
+    };
+
+    Ok(json!({
+        "runId": run_id,
+        "itemId": item_id,
+        "environmentName": environment_name,
+        "workspacePath": workspace_path,
+        "phase": phase,
+        "dispatch": dispatch,
+        "payload": payload,
+    }))
+}
+
+fn lifecycle_dispatch_payload(
+    context: &LifecycleDispatchContext,
+    repo_root: &Path,
+    workspace_path: &str,
+    environment_name: &str,
+    phase: &str,
+    hook_key: &str,
+    outputs_json: &serde_json::Map<String, serde_json::Value>,
+    on_completion_url: Option<String>,
+) -> Value {
+    let mut payload = serde_json::Map::from_iter([
+        (
+            "repo_namespace".to_string(),
+            json!(context.canonical_repo_namespace),
+        ),
+        ("environment".to_string(), json!(environment_name)),
+        ("workspace_path".to_string(), json!(workspace_path)),
+        ("item_key".to_string(), json!(hook_key)),
+        ("phase".to_string(), json!(phase)),
+        ("outputs".to_string(), Value::Object(outputs_json.clone())),
+        ("on_completion".to_string(), json!(on_completion_url)),
+    ]);
+
+    if let Some(git_sha) = current_git_sha(repo_root) {
+        payload.insert("git_sha".to_string(), json!(git_sha));
+    }
+    if let Some(git_branch) = current_git_branch(repo_root) {
+        payload.insert("git_branch".to_string(), json!(git_branch));
+    }
+
+    Value::Object(payload)
+}
+
+fn lifecycle_destination_url(
+    hook: &LifecycleHook,
+    canonical_repo_namespace: &str,
+) -> Result<String, EngineError> {
+    match &hook.dispatch {
+        LifecycleHookDispatch::Generic(request) => Ok(request.url.clone()),
+        LifecycleHookDispatch::GitHubRepositoryDispatch(github) => {
+            github_repository_dispatch_url(github, Some(canonical_repo_namespace))
+        }
+    }
+}
+
+fn lifecycle_destination_class(
+    hook: &LifecycleHook,
+    canonical_repo_namespace: &str,
+) -> Result<String, EngineError> {
+    Ok(
+        classify_destination_url(&lifecycle_destination_url(hook, canonical_repo_namespace)?)
+            .to_string(),
+    )
+}
+
+fn github_repository_dispatch_url(
+    github: &LifecycleGitHubRepositoryDispatch,
+    canonical_repo_namespace: Option<&str>,
+) -> Result<String, EngineError> {
+    let (owner, repo) = match (&github.owner, &github.repo) {
+        (Some(owner), Some(repo)) => (owner.clone(), repo.clone()),
+        (None, None) => owner_repo_from_namespace(canonical_repo_namespace.ok_or_else(|| {
+            request_error_without_context(
+                "repo_namespace_unresolved",
+                "GitHub repository_dispatch hooks require a canonical repo namespace or explicit github.owner/github.repo settings.",
+            )
+        })?)?,
+        _ => {
+            return Err(request_error_without_context(
+                "lifecycle_dispatch_invalid",
+                "GitHub repository_dispatch hooks must set both github.owner and github.repo together.",
+            ))
+        }
+    };
+    let api_base = github
+        .api_url
+        .as_deref()
+        .unwrap_or("https://api.github.com")
+        .trim_end_matches('/');
+
+    Ok(format!("{api_base}/repos/{owner}/{repo}/dispatches"))
 }
 
 fn apply_lifecycle_auth_headers(
@@ -3810,6 +4036,13 @@ fn apply_lifecycle_auth_headers(
     }
 
     Ok(())
+}
+
+fn lifecycle_auth_scheme_name(scheme: LifecycleWebhookAuthScheme) -> &'static str {
+    match scheme {
+        LifecycleWebhookAuthScheme::Bearer => "bearer",
+        LifecycleWebhookAuthScheme::HmacSha256 => "hmac_sha256",
+    }
 }
 
 fn classify_destination_url(url: &str) -> &'static str {
@@ -4997,6 +5230,62 @@ fn namespace_from_owner_repo_path(path: &str) -> Option<String> {
     Some(format!("{owner}--{repo}"))
 }
 
+fn owner_repo_from_namespace(namespace: &str) -> Result<(String, String), EngineError> {
+    let Some((owner, repo)) = namespace.split_once("--") else {
+        return Err(request_error_without_context(
+            "repo_namespace_unresolved",
+            format!(
+                "Could not derive owner/repo from canonical namespace '{}'.",
+                namespace
+            ),
+        ));
+    };
+    if owner.trim().is_empty() || repo.trim().is_empty() {
+        return Err(request_error_without_context(
+            "repo_namespace_unresolved",
+            format!(
+                "Canonical namespace '{}' must include both owner and repo.",
+                namespace
+            ),
+        ));
+    }
+
+    Ok((owner.to_string(), repo.to_string()))
+}
+
+fn current_git_sha(repo_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("rev-parse")
+        .arg("HEAD")
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let sha = String::from_utf8(output.stdout).ok()?;
+    let trimmed = sha.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+fn current_git_branch(repo_root: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .arg("rev-parse")
+        .arg("--abbrev-ref")
+        .arg("HEAD")
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let branch = String::from_utf8(output.stdout).ok()?;
+    let trimmed = branch.trim();
+    (!trimmed.is_empty() && trimmed != "HEAD").then(|| trimmed.to_string())
+}
+
 fn graph_error(request: &EngineRequest, error: GraphError) -> EngineError {
     match error {
         GraphError::UnknownWorkspace { workspace } => request_error_with_details(
@@ -5800,6 +6089,94 @@ module "shared" {
             execution.auth.required_hosts,
             vec!["yaffle.local:6969".to_string()]
         );
+    }
+
+    #[test]
+    fn applies_module_api_host_override_to_lifecycle_webhook_urls() {
+        let _guard = crate::local_first::LOCAL_FIRST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let previous_module_api_host = env::var_os(MODULE_API_HOST_OVERRIDE_ENV_VAR);
+        env::set_var(MODULE_API_HOST_OVERRIDE_ENV_VAR, "yaffle.local:6969");
+
+        let rewritten = rewrite_canonical_yaffle_host_url(
+            "https://yaffle.dev/api/lifecycle/hooks/preview-ready",
+        );
+
+        if let Some(previous_module_api_host) = previous_module_api_host {
+            env::set_var(MODULE_API_HOST_OVERRIDE_ENV_VAR, previous_module_api_host);
+        } else {
+            env::remove_var(MODULE_API_HOST_OVERRIDE_ENV_VAR);
+        }
+
+        assert_eq!(
+            rewritten,
+            "https://yaffle.local:6969/api/lifecycle/hooks/preview-ready"
+        );
+    }
+
+    #[test]
+    fn derives_github_repository_dispatch_url_from_namespace() {
+        let github = LifecycleGitHubRepositoryDispatch {
+            owner: None,
+            repo: None,
+            event_type: "yaffle.activation".to_string(),
+            api_url: None,
+        };
+
+        let url = github_repository_dispatch_url(&github, Some("yaffle-dot-dev--yaffle"))
+            .expect("dispatch url should be derived");
+
+        assert_eq!(
+            url,
+            "https://api.github.com/repos/yaffle-dot-dev/yaffle/dispatches"
+        );
+    }
+
+    #[test]
+    fn builds_control_plane_dispatch_body_for_github_repository_dispatch() {
+        let hook = LifecycleHook {
+            key: "control-plane".to_string(),
+            environments: vec!["main".to_string()],
+            kind: yaffle_config::LifecycleHookKind::GitHubRepositoryDispatch,
+            timeout: Some("30m".to_string()),
+            failure: LifecycleFailurePolicy::Failed,
+            scopes: vec!["usable".to_string()],
+            dispatch: LifecycleHookDispatch::GitHubRepositoryDispatch(
+                LifecycleGitHubRepositoryDispatch {
+                    owner: Some("yaffle-dot-dev".to_string()),
+                    repo: Some("yaffle".to_string()),
+                    event_type: "yaffle.activation".to_string(),
+                    api_url: None,
+                },
+            ),
+        };
+
+        let payload = json!({
+            "repo_namespace": "yaffle-dot-dev--yaffle",
+            "environment": "main",
+            "workspace_path": "apps/control-plane/infra",
+            "item_key": "control-plane",
+            "phase": "activation",
+            "outputs": {},
+            "on_completion": "https://yaffle.dev/api/lifecycle/completions/token-1",
+        });
+
+        let body = lifecycle_control_plane_dispatch_body(
+            &hook,
+            payload,
+            "run-1",
+            "item-1",
+            "main",
+            "apps/control-plane/infra",
+            "activation",
+        )
+        .expect("dispatch body should build");
+
+        assert_eq!(body["dispatch"]["kind"], "github_repository_dispatch");
+        assert_eq!(body["dispatch"]["github"]["eventType"], "yaffle.activation");
+        assert_eq!(body["payload"]["item_key"], "control-plane");
+        assert_eq!(body["itemId"], "item-1");
     }
 
     #[test]

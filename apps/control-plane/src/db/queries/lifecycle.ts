@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 
-import { and, desc, eq } from "drizzle-orm"
+import { and, desc, eq, inArray } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
@@ -9,6 +9,7 @@ import {
   lifecycleEvents,
   lifecycleItems,
   lifecycleRuns,
+  principalRepoBindings,
 } from "../schema.ts"
 
 export type LifecycleRun = typeof lifecycleRuns.$inferSelect
@@ -78,6 +79,20 @@ export async function createLifecycleEvent(
   return withDbSpan("insert", "lifecycle_events", async () => {
     const rows = await db.insert(lifecycleEvents).values(values).returning()
     return rows[0]
+  })
+}
+
+export async function listLifecycleEventsForItems(itemIds: string[]): Promise<LifecycleEvent[]> {
+  if (itemIds.length === 0) {
+    return []
+  }
+
+  return withDbSpan("select", "lifecycle_events", async () => {
+    return db
+      .select()
+      .from(lifecycleEvents)
+      .where(inArray(lifecycleEvents.itemId, itemIds))
+      .orderBy(lifecycleEvents.createdAt)
   })
 }
 
@@ -171,6 +186,34 @@ export async function getLatestLifecycleState(values: {
     if (!run) {
       return undefined
     }
+    const items = await listLifecycleItemsForRun(run.id)
+    return { run, items }
+  })
+}
+
+export async function getLatestLifecycleStateForRepoEnvironment(values: {
+  canonicalRepoNamespace: string
+  environmentName: string
+}): Promise<{ run: LifecycleRun; items: LifecycleItem[] } | undefined> {
+  return withDbSpan("select", "lifecycle_runs", async () => {
+    const rows = await db
+      .select({ run: lifecycleRuns })
+      .from(lifecycleRuns)
+      .innerJoin(principalRepoBindings, eq(principalRepoBindings.id, lifecycleRuns.repoBindingId))
+      .where(
+        and(
+          eq(principalRepoBindings.canonicalRepoNamespace, values.canonicalRepoNamespace),
+          eq(lifecycleRuns.environmentName, values.environmentName),
+        ),
+      )
+      .orderBy(desc(lifecycleRuns.createdAt))
+      .limit(1)
+
+    const run = rows[0]?.run
+    if (!run) {
+      return undefined
+    }
+
     const items = await listLifecycleItemsForRun(run.id)
     return { run, items }
   })

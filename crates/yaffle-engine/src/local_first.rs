@@ -118,6 +118,17 @@ pub struct LifecycleItemHandle {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct LifecycleEventSnapshot {
+    pub id: String,
+    #[serde(alias = "eventType")]
+    pub event_type: String,
+    #[serde(default)]
+    pub payload: serde_json::Map<String, serde_json::Value>,
+    #[serde(alias = "createdAt")]
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct LifecycleItemSnapshot {
     pub id: String,
     #[serde(alias = "workspacePath")]
@@ -137,6 +148,8 @@ pub struct LifecycleItemSnapshot {
     pub started_at: Option<String>,
     #[serde(alias = "finishedAt")]
     pub finished_at: Option<String>,
+    #[serde(default)]
+    pub events: Vec<LifecycleEventSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -503,6 +516,26 @@ pub fn get_lifecycle_item(
         .json::<LifecycleItemSnapshotResponseEnvelope>()
         .map(|value| value.data)
         .map_err(|error| LocalFirstError::Http(error.to_string()))
+}
+
+pub fn dispatch_lifecycle_via_control_plane(
+    principal: &StoredPrincipalCredential,
+    body: &serde_json::Value,
+) -> Result<(), LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .post(runtime.endpoint_url("/api/lifecycle/dispatch"))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .json(body)
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    Ok(())
 }
 
 pub fn get_lifecycle_state(

@@ -20,6 +20,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
 use ratatui::Terminal;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use yaffle_contracts::{
@@ -47,6 +48,7 @@ const YAFFLE_TEXT_MUTED: Color = Color::Rgb(181, 181, 168);
 const YAFFLE_GREEN: Color = Color::Rgb(139, 196, 49);
 const YAFFLE_GREEN_SOFT: Color = Color::Rgb(109, 163, 35);
 const YAFFLE_CREAM: Color = Color::Rgb(252, 224, 71);
+const YAFFLE_AMBER: Color = Color::Rgb(221, 176, 76);
 const YAFFLE_RED: Color = Color::Rgb(250, 45, 45);
 
 type CliResult = Result<(), CliFailure>;
@@ -709,6 +711,7 @@ enum DetailTab {
 struct LocalEnvironmentDetailState {
     environment_name: String,
     graph: ResolvedWorkspaceGraph,
+    dag_nodes: Vec<EnvironmentDagNode>,
     levels: Vec<Vec<String>>,
     selected_level: usize,
     selected_row: usize,
@@ -726,6 +729,28 @@ struct LocalEnvironmentDetailState {
     outputs_rx: Option<mpsc::Receiver<Result<EngineResponse, EngineError>>>,
     active_run: Option<ActiveConvergeRun>,
     follow_running_workspace: bool,
+}
+
+#[derive(Debug, Clone)]
+struct EnvironmentDagNode {
+    id: String,
+    workspace_path: String,
+    label: String,
+    dependencies: Vec<String>,
+    kind: EnvironmentDagNodeKind,
+}
+
+#[derive(Debug, Clone)]
+enum EnvironmentDagNodeKind {
+    Workspace,
+    LifecycleItem {
+        phase: String,
+        key: String,
+        scopes: Vec<String>,
+        failure_policy: yaffle_config::LifecycleFailurePolicy,
+        timeout: Option<String>,
+        destination_url: String,
+    },
 }
 
 #[derive(Debug)]
@@ -1013,11 +1038,21 @@ impl LocalEnvironmentDetailState {
         }
     }
 
-    fn selected_workspace(&self) -> Option<&str> {
+    fn selected_node_id(&self) -> Option<&str> {
         self.levels
             .get(self.selected_level)
             .and_then(|level| level.get(self.selected_row))
             .map(|value| value.as_str())
+    }
+
+    fn selected_node(&self) -> Option<&EnvironmentDagNode> {
+        let selected = self.selected_node_id()?;
+        self.dag_nodes.iter().find(|node| node.id == selected)
+    }
+
+    fn selected_workspace_path(&self) -> Option<&str> {
+        self.selected_node()
+            .map(|node| node.workspace_path.as_str())
     }
 
     fn select_workspace_by_path(&mut self, workspace_path: &str) {
@@ -1028,7 +1063,7 @@ impl LocalEnvironmentDetailState {
                 .find_map(|(level_index, level)| {
                     level
                         .iter()
-                        .position(|path| path == workspace_path)
+                        .position(|node_id| node_id == workspace_path)
                         .map(|row_index| (level_index, row_index))
                 })
         {
@@ -1082,7 +1117,7 @@ impl LocalEnvironmentDetailState {
                 {
                     return;
                 }
-                if let Some(workspace) = self.selected_workspace().map(ToOwned::to_owned) {
+                if let Some(workspace) = self.selected_workspace_path().map(ToOwned::to_owned) {
                     if !self.selected_workspaces.insert(workspace.clone()) {
                         self.selected_workspaces.remove(&workspace);
                     }
@@ -1168,7 +1203,7 @@ impl LocalEnvironmentDetailState {
     }
 
     fn selected_workspace_log_lines(&self) -> &[WorkspaceLogLine] {
-        let Some(selected) = self.selected_workspace() else {
+        let Some(selected) = self.selected_workspace_path() else {
             return &[];
         };
         self.active_run
@@ -1176,6 +1211,88 @@ impl LocalEnvironmentDetailState {
             .and_then(|run| run.progress.workspace_logs.get(selected))
             .map(Vec::as_slice)
             .unwrap_or(&[])
+    }
+
+    fn active_run_error(&self) -> Option<&EngineError> {
+        self.active_run
+            .as_ref()
+            .and_then(|run| run.last_error.as_ref())
+    }
+
+    fn selected_workspace_lifecycle_block_reasons(&self) -> Vec<String> {
+        let Some(selected) = self.selected_workspace_path() else {
+            return Vec::new();
+        };
+        let Some(status) = self.status_response.as_ref() else {
+            return Vec::new();
+        };
+        let Some(lifecycle) = status
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_path == selected)
+            .and_then(|workspace| workspace.lifecycle.as_ref())
+        else {
+            return Vec::new();
+        };
+
+        lifecycle
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|item| item.get("state").and_then(Value::as_str) == Some("blocked"))
+            .map(|item| {
+                let key = item.get("key").and_then(Value::as_str).unwrap_or("unknown");
+                let phase = item
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .unwrap_or("lifecycle");
+                let reason = item
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("blocked by lifecycle governance");
+                format!("{} '{}' blocked: {}", title_case(phase), key, reason)
+            })
+            .collect()
+    }
+
+    fn selected_node_title(&self) -> String {
+        match self.selected_node().map(|node| &node.kind) {
+            Some(EnvironmentDagNodeKind::Workspace) => {
+                self.selected_workspace_path().unwrap_or("none").to_string()
+            }
+            Some(EnvironmentDagNodeKind::LifecycleItem { phase, key, .. }) => {
+                format!(
+                    "{} · {}",
+                    lifecycle_phase_label(phase),
+                    humanize_lifecycle_key(key)
+                )
+            }
+            None => "none".to_string(),
+        }
+    }
+
+    fn selected_lifecycle_item(&self) -> Option<&Value> {
+        let node = self.selected_node()?;
+        let EnvironmentDagNodeKind::LifecycleItem { phase, key, .. } = &node.kind else {
+            return None;
+        };
+        let status = self.status_response.as_ref()?;
+        let lifecycle = status
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_path == node.workspace_path)
+            .and_then(|workspace| workspace.lifecycle.as_ref())?;
+
+        lifecycle
+            .get("items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("phase").and_then(Value::as_str) == Some(phase.as_str())
+                        && item.get("key").and_then(Value::as_str) == Some(key.as_str())
+                })
+            })
     }
 
     fn reload_selected_tab(&mut self, repo_root: &Path) -> Result<(), CliFailure> {
@@ -1423,8 +1540,12 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
         ])
         .split(frame.area());
 
-    let selected = detail.selected_workspace().unwrap_or("none");
+    let selected = detail.selected_node_title();
     let running_summary = detail.running_summary();
+    let governance_warning = detail.active_run_error().and_then(|error| {
+        (error.error.code == "environment_governance_blocked")
+            .then_some(error.error.message.as_str())
+    });
     let header = Paragraph::new(vec![
         Line::from(vec![
             Span::styled(
@@ -1433,7 +1554,7 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
                     .fg(YAFFLE_GREEN)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!("   selected workspace: {selected}")),
+            Span::raw(format!("   selected node: {selected}")),
         ]),
         Line::from(summarize_selected_workspaces(detail)),
         Line::from(match running_summary {
@@ -1449,6 +1570,11 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
             Some((progress, false)) => format!("Mode: review • last run: {}", progress.summary),
             None => "Mode: review".to_string(),
         }),
+        Line::from(
+            governance_warning
+                .map(|reason| format!("Governance: blocked • {reason}"))
+                .unwrap_or_else(|| "Governance: no environment admission block".to_string()),
+        ),
     ])
     .block(
         Block::default()
@@ -1462,7 +1588,7 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
     let dag = Paragraph::new(render_environment_dag(detail))
         .block(
             Block::default()
-                .title(" DAG ")
+                .title(" Delivery Path ")
                 .borders(Borders::ALL)
                 .border_style(panel_border_style(detail.focus == ShellFocus::Graph))
                 .style(Style::default().bg(YAFFLE_SURFACE).fg(YAFFLE_TEXT)),
@@ -1517,27 +1643,84 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
 }
 
 fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<Line<'static>> {
-    let selected = detail.selected_workspace().unwrap_or("none");
+    let selected = detail.selected_node_title();
     match detail.tab {
         DetailTab::Plan => {
             let selection = summarize_selected_workspaces(detail);
-            vec![
-                Line::from(format!("Selected workspace: {selected}")),
+            let mut lines = vec![
+                Line::from(format!("Selected node: {selected}")),
                 Line::from(""),
                 Line::from(selection),
                 Line::from(
                     "Press `c` to run converge. If nothing is selected, Yaffle converges the full environment.",
                 ),
-                Line::from("Use space in the DAG view to include or exclude a workspace."),
-            ]
+                Line::from(
+                    "Use space in the DAG view to include or exclude a workspace. Gates ride along with their workspace.",
+                ),
+            ];
+            if let Some(node) = detail.selected_node() {
+                if let EnvironmentDagNodeKind::LifecycleItem {
+                    phase,
+                    key,
+                    scopes,
+                    failure_policy,
+                    timeout,
+                    destination_url,
+                } = &node.kind
+                {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(format!(
+                        "{} '{}'.",
+                        lifecycle_phase_label(phase),
+                        humanize_lifecycle_key(key)
+                    )));
+                    lines.push(Line::from(lifecycle_gate_purpose(
+                        phase,
+                        &node.workspace_path,
+                    )));
+                    lines.push(Line::from(format!(
+                        "{}",
+                        lifecycle_scope_copy(phase, scopes)
+                    )));
+                    lines.push(Line::from(format!(
+                        "Failure mode: {}",
+                        lifecycle_failure_policy_label(*failure_policy)
+                    )));
+                    if let Some(timeout) = timeout {
+                        lines.push(Line::from(format!("Timeout budget: {timeout}")));
+                    }
+                    lines.push(Line::from(format!("External handoff: {destination_url}")));
+                }
+            }
+            if let Some(error) = detail.active_run_error() {
+                if error.error.code == "environment_governance_blocked" {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(
+                        "Environment admission is blocked before infra starts.",
+                    ));
+                    lines.push(Line::from(error.error.message.clone()));
+                }
+            }
+            lines
         }
         DetailTab::Apply => {
             let mut lines = vec![
-                Line::from(format!("Selected workspace: {selected}")),
+                Line::from(format!("Selected node: {selected}")),
                 Line::from(""),
             ];
+            if let Some(error) = detail.active_run_error() {
+                if error.error.code == "environment_governance_blocked" {
+                    lines.push(Line::from("Environment run: blocked before infra"));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(error.error.message.clone()));
+                    return lines;
+                }
+            }
             if let Some((progress, running)) = detail.running_summary() {
-                let workspace_run_state = detail.active_run_status_for_workspace(selected);
+                let workspace_run_state =
+                    detail.selected_workspace_path().and_then(|workspace_path| {
+                        detail.active_run_status_for_workspace(workspace_path)
+                    });
                 lines.push(Line::from(format!(
                     "Environment run: {}",
                     if running { "running" } else { "finished" }
@@ -1576,24 +1759,85 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
             }
             match (&detail.status_response, &detail.status_error) {
                 (Some(status), _) => {
-                    let snapshot = status
-                        .workspaces
-                        .iter()
-                        .find(|workspace| workspace.workspace_path == selected);
-                    lines.push(Line::from(format!(
-                        "Materialization: {}",
-                        snapshot
-                            .and_then(|workspace| workspace.materialization.clone())
-                            .unwrap_or_else(|| "unknown".to_string())
-                    )));
-                    lines.push(Line::from(format!(
-                        "Freshness: {}",
-                        snapshot
-                            .and_then(|workspace| workspace.freshness.clone())
-                            .unwrap_or_else(|| "unknown".to_string())
-                    )));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(status.result.summary.clone()));
+                    if let Some(lifecycle_item) = detail.selected_lifecycle_item() {
+                        let summary = lifecycle_item.get("summary").and_then(Value::as_str);
+                        let reason = lifecycle_item.get("reason").and_then(Value::as_str);
+                        let state = lifecycle_item
+                            .get("state")
+                            .and_then(Value::as_str)
+                            .unwrap_or("unknown");
+                        lines.push(Line::from(format!(
+                            "Gate state: {}",
+                            lifecycle_state_copy(
+                                detail
+                                    .selected_node()
+                                    .and_then(|node| match &node.kind {
+                                        EnvironmentDagNodeKind::LifecycleItem { phase, .. } => {
+                                            Some(phase.as_str())
+                                        }
+                                        _ => None,
+                                    })
+                                    .unwrap_or("lifecycle"),
+                                state,
+                                summary,
+                            )
+                        )));
+                        if let Some(reason) = reason {
+                            lines.push(Line::from(format!("Operator note: {reason}")));
+                        }
+                        lines.push(Line::from(""));
+                        lines.push(Line::from("External handoff timeline:"));
+                        let mut rendered_event = false;
+                        if let Some(events) = lifecycle_item.get("events").and_then(Value::as_array)
+                        {
+                            for event in events {
+                                rendered_event = true;
+                                let event_type = event
+                                    .get("eventType")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("event");
+                                let summary = format_lifecycle_event_summary(event);
+                                lines.push(Line::from(format!(
+                                    "{}: {}",
+                                    title_case_lifecycle_event(event_type),
+                                    summary
+                                )));
+                            }
+                        }
+                        if !rendered_event {
+                            lines.push(Line::from("No lifecycle events recorded yet."));
+                        }
+                    } else {
+                        let snapshot =
+                            detail.selected_workspace_path().and_then(|workspace_path| {
+                                status
+                                    .workspaces
+                                    .iter()
+                                    .find(|workspace| workspace.workspace_path == workspace_path)
+                            });
+                        lines.push(Line::from(format!(
+                            "Materialization: {}",
+                            snapshot
+                                .and_then(|workspace| workspace.materialization.clone())
+                                .unwrap_or_else(|| "unknown".to_string())
+                        )));
+                        lines.push(Line::from(format!(
+                            "Freshness: {}",
+                            snapshot
+                                .and_then(|workspace| workspace.freshness.clone())
+                                .unwrap_or_else(|| "unknown".to_string())
+                        )));
+                        lines.push(Line::from(""));
+                        lines.push(Line::from(status.result.summary.clone()));
+                        let blocked_reasons = detail.selected_workspace_lifecycle_block_reasons();
+                        if !blocked_reasons.is_empty() {
+                            lines.push(Line::from(""));
+                            lines.push(Line::from("Lifecycle governance:"));
+                            for reason in blocked_reasons {
+                                lines.push(Line::from(reason));
+                            }
+                        }
+                    }
                 }
                 (None, _) if detail.status_loading => {
                     lines.push(Line::from("Loading status information..."));
@@ -1615,12 +1859,13 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
             lines
         }
         DetailTab::Outputs => {
+            let selected_workspace_path = detail.selected_workspace_path().unwrap_or("none");
             let mut lines = vec![
-                Line::from(format!("Selected workspace: {selected}")),
+                Line::from(format!("Selected workspace: {selected_workspace_path}")),
                 Line::from(""),
             ];
             if let Some(run) = detail.active_run.as_ref() {
-                if let Some(outputs) = run.progress.workspace_outputs.get(selected) {
+                if let Some(outputs) = run.progress.workspace_outputs.get(selected_workspace_path) {
                     lines.push(Line::from(if run.running {
                         "Outputs captured so far during this converge:"
                     } else {
@@ -1653,7 +1898,7 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                 (Some(outputs_response), _) => {
                     let outputs = outputs_response
                         .workspace_outputs
-                        .get(selected)
+                        .get(selected_workspace_path)
                         .cloned()
                         .unwrap_or_default();
                     if outputs.is_empty() {
@@ -1727,12 +1972,168 @@ fn summarize_selected_workspaces(detail: &LocalEnvironmentDetailState) -> String
 
 fn ordered_selected_workspaces(detail: &LocalEnvironmentDetailState) -> Vec<String> {
     detail
-        .levels
-        .iter()
-        .flat_map(|level| level.iter())
+        .graph
+        .topological_order()
+        .unwrap_or_else(|_| detail.graph.workspace_paths())
+        .into_iter()
         .filter(|workspace| detail.selected_workspaces.contains(workspace.as_str()))
-        .cloned()
         .collect()
+}
+
+fn title_case(value: &str) -> &'static str {
+    match value {
+        "activation" => "Activation",
+        "verification" => "Verification",
+        _ => "Lifecycle",
+    }
+}
+
+fn lifecycle_phase_label(phase: &str) -> &'static str {
+    match phase {
+        "activation" => "Activation gate",
+        "verification" => "Verification gate",
+        _ => "Lifecycle gate",
+    }
+}
+
+fn humanize_lifecycle_key(key: &str) -> String {
+    let cleaned = key
+        .trim()
+        .trim_start_matches("preview-")
+        .trim_start_matches("activation-")
+        .trim_start_matches("verification-");
+    let source = if cleaned.is_empty() { key } else { cleaned };
+    let words = source
+        .split(['-', '_'])
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    format!(
+                        "{}{}",
+                        first.to_ascii_uppercase(),
+                        chars.as_str().to_ascii_lowercase()
+                    )
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    if words.is_empty() {
+        key.to_string()
+    } else {
+        words.join(" ")
+    }
+}
+
+fn lifecycle_gate_purpose(phase: &str, workspace_path: &str) -> String {
+    match phase {
+        "verification" => format!(
+            "This gate runs after '{}' and proves the preview is acceptable before you trust it.",
+            workspace_path
+        ),
+        _ => format!(
+            "This gate runs after '{}' and turns finished infra into a preview people can use.",
+            workspace_path
+        ),
+    }
+}
+
+fn lifecycle_scope_copy(phase: &str, scopes: &[String]) -> String {
+    if scopes.is_empty() {
+        return match phase {
+            "verification" => "Confirms the preview through an external check.".to_string(),
+            _ => "Waits for an external ready signal.".to_string(),
+        };
+    }
+
+    match phase {
+        "verification" => format!("Confirms {}.", scopes.join(" + ")),
+        _ => format!("Unlocks {}.", scopes.join(" + ")),
+    }
+}
+
+fn lifecycle_state_copy(phase: &str, state: &str, summary: Option<&str>) -> String {
+    if let Some(summary) = summary.filter(|summary| !summary.trim().is_empty()) {
+        return summary.to_string();
+    }
+
+    match (phase, state) {
+        ("activation", "succeeded") => "Preview is live.".to_string(),
+        ("verification", "succeeded") => "Checks passed.".to_string(),
+        (_, "running") => "External signal is in flight.".to_string(),
+        (_, "pending") => "Waiting for external signal.".to_string(),
+        (_, "blocked") => "Policy blocked this gate.".to_string(),
+        (_, "degraded") => "Gate settled with warnings.".to_string(),
+        (_, "failed") => "Gate failed.".to_string(),
+        _ => format!("State: {state}"),
+    }
+}
+
+fn title_case_lifecycle_event(value: &str) -> &'static str {
+    match value {
+        "created" => "Gate armed",
+        "dispatched" => "Sent outward",
+        "dispatch_failed" => "Dispatch failed",
+        "blocked" => "Policy blocked",
+        "callback" => "External result",
+        _ => "Event",
+    }
+}
+
+fn lifecycle_failure_policy_label(policy: yaffle_config::LifecycleFailurePolicy) -> &'static str {
+    match policy {
+        yaffle_config::LifecycleFailurePolicy::Failed => "failed",
+        yaffle_config::LifecycleFailurePolicy::Degraded => "degraded",
+    }
+}
+
+fn format_lifecycle_event_summary(event: &Value) -> String {
+    let Some(event_type) = event.get("eventType").and_then(Value::as_str) else {
+        return "event recorded".to_string();
+    };
+    let payload = event.get("payload").and_then(Value::as_object);
+
+    match event_type {
+        "callback" => {
+            let status = payload
+                .and_then(|payload| payload.get("status"))
+                .and_then(Value::as_str)
+                .map(|status| match status {
+                    "succeeded" => "passed",
+                    "running" => "in flight",
+                    "pending" => "queued",
+                    "degraded" => "warning",
+                    "blocked" => "policy blocked",
+                    "failed" => "failed",
+                    _ => status,
+                })
+                .unwrap_or("updated");
+            let summary = payload
+                .and_then(|payload| payload.get("summary"))
+                .and_then(Value::as_str);
+            summary
+                .map(|summary| format!("{status}: {summary}"))
+                .unwrap_or_else(|| status.to_string())
+        }
+        "blocked" => payload
+            .and_then(|payload| payload.get("reason"))
+            .and_then(Value::as_str)
+            .unwrap_or("blocked by governance")
+            .to_string(),
+        "dispatched" => "Yaffle handed the gate to the external system".to_string(),
+        "dispatch_failed" => payload
+            .and_then(|payload| payload.get("reason"))
+            .and_then(Value::as_str)
+            .unwrap_or("the external handoff failed")
+            .to_string(),
+        "created" => "Yaffle is waiting for the external ready signal".to_string(),
+        _ => payload
+            .and_then(|payload| serde_json::to_string(payload).ok())
+            .unwrap_or_else(|| "event recorded".to_string()),
+    }
 }
 
 fn render_detail_tab_chip(label: &str, selected: bool) -> Span<'static> {
@@ -1771,15 +2172,18 @@ fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line<'sta
     let mut positions = BTreeMap::new();
     for (level_index, level) in detail.levels.iter().enumerate() {
         let x = level_index * (box_width + column_gap) + 2;
-        for (row_index, workspace) in level.iter().enumerate() {
+        for (row_index, node_id) in level.iter().enumerate() {
             let y = row_index * (row_height + row_gap) + 1;
-            positions.insert(workspace.clone(), (x, y));
-            draw_workspace_box(
+            positions.insert(node_id.clone(), (x, y));
+            let Some(node) = detail.dag_nodes.iter().find(|node| node.id == *node_id) else {
+                continue;
+            };
+            draw_environment_dag_node(
                 &mut canvas,
                 x,
                 y,
                 box_width,
-                workspace,
+                node,
                 detail,
                 level_index,
                 row_index,
@@ -1787,11 +2191,11 @@ fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line<'sta
         }
     }
 
-    for workspace in &detail.graph.workspaces {
-        let Some((target_x, target_y)) = positions.get(&workspace.path).copied() else {
+    for node in &detail.dag_nodes {
+        let Some((target_x, target_y)) = positions.get(&node.id).copied() else {
             continue;
         };
-        for dependency in &workspace.dependencies {
+        for dependency in &node.dependencies {
             let Some((source_x, source_y)) = positions.get(dependency).copied() else {
                 continue;
             };
@@ -1848,21 +2252,32 @@ fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line<'sta
         .collect()
 }
 
-fn draw_workspace_box(
+fn draw_environment_dag_node(
     canvas: &mut [Vec<DagCell>],
     x: usize,
     y: usize,
     width: usize,
-    workspace: &str,
+    node: &EnvironmentDagNode,
     detail: &LocalEnvironmentDetailState,
     level_index: usize,
     row_index: usize,
 ) {
     let selected_cursor = detail.selected_level == level_index && detail.selected_row == row_index;
-    let selected_for_converge = detail.selected_workspaces.contains(workspace);
+    let selected_for_converge = detail.selected_workspaces.contains(&node.workspace_path);
+    let lifecycle_color = match &node.kind {
+        EnvironmentDagNodeKind::LifecycleItem { phase, .. } if phase == "verification" => {
+            YAFFLE_AMBER
+        }
+        EnvironmentDagNodeKind::LifecycleItem { .. } => YAFFLE_GREEN_SOFT,
+        EnvironmentDagNodeKind::Workspace => YAFFLE_BORDER_ACCENT,
+    };
     let border_style = if selected_cursor {
         Style::default()
             .fg(YAFFLE_CREAM)
+            .add_modifier(Modifier::BOLD)
+    } else if matches!(node.kind, EnvironmentDagNodeKind::LifecycleItem { .. }) {
+        Style::default()
+            .fg(lifecycle_color)
             .add_modifier(Modifier::BOLD)
     } else if selected_for_converge {
         Style::default()
@@ -1875,31 +2290,12 @@ fn draw_workspace_box(
         Style::default()
             .fg(YAFFLE_CREAM)
             .add_modifier(Modifier::BOLD)
+    } else if matches!(node.kind, EnvironmentDagNodeKind::LifecycleItem { .. }) {
+        Style::default().fg(lifecycle_color)
     } else {
         Style::default().fg(YAFFLE_TEXT)
     };
-    let status_char =
-        if let Some((run_state, phase)) = detail.active_run_status_for_workspace(workspace) {
-            match (run_state, phase) {
-                (WorkspaceRunState::Running, _) => '▶',
-                (WorkspaceRunState::Succeeded, _) => '●',
-                (WorkspaceRunState::Failed, _) => '✕',
-                (WorkspaceRunState::Pending, _) => '○',
-            }
-        } else {
-            let snapshot = detail.status_response.as_ref().and_then(|response| {
-                response
-                    .workspaces
-                    .iter()
-                    .find(|item| item.workspace_path == workspace)
-            });
-            match snapshot.and_then(|item| item.materialization.as_deref()) {
-                Some("present") => '●',
-                Some("partially_present") => '◐',
-                Some("absent") => '○',
-                _ => '·',
-            }
-        };
+    let status_char = dag_node_status_char(detail, node);
 
     write_styled_string(
         canvas,
@@ -1908,10 +2304,26 @@ fn draw_workspace_box(
         &format!("┌{}┐", "─".repeat(width.saturating_sub(2))),
         border_style,
     );
-    let label = truncate_workspace_label(workspace, width.saturating_sub(6));
-    let include = if selected_for_converge { '■' } else { '□' };
+    let label =
+        truncate_workspace_label(&environment_dag_node_label(node), width.saturating_sub(6));
     write_styled_string(canvas, x, y + 1, "│", border_style);
-    write_styled_string(canvas, x + 1, y + 1, &include.to_string(), border_style);
+    let lead_char = match &node.kind {
+        EnvironmentDagNodeKind::Workspace => {
+            if selected_for_converge {
+                '■'
+            } else {
+                '□'
+            }
+        }
+        EnvironmentDagNodeKind::LifecycleItem { phase, .. } => {
+            if phase == "verification" {
+                'V'
+            } else {
+                'R'
+            }
+        }
+    };
+    write_styled_string(canvas, x + 1, y + 1, &lead_char.to_string(), border_style);
     write_styled_string(canvas, x + 2, y + 1, &status_char.to_string(), text_style);
     write_styled_string(canvas, x + 3, y + 1, " ", text_style);
     write_styled_string(
@@ -1929,6 +2341,102 @@ fn draw_workspace_box(
         &format!("└{}┘", "─".repeat(width.saturating_sub(2))),
         border_style,
     );
+}
+
+fn dag_node_status_char(detail: &LocalEnvironmentDetailState, node: &EnvironmentDagNode) -> char {
+    match &node.kind {
+        EnvironmentDagNodeKind::Workspace => {
+            if let Some((run_state, _phase)) =
+                detail.active_run_status_for_workspace(&node.workspace_path)
+            {
+                match run_state {
+                    WorkspaceRunState::Running => '▶',
+                    WorkspaceRunState::Succeeded => '●',
+                    WorkspaceRunState::Failed => '✕',
+                    WorkspaceRunState::Pending => '○',
+                }
+            } else {
+                let snapshot = detail.status_response.as_ref().and_then(|response| {
+                    response
+                        .workspaces
+                        .iter()
+                        .find(|item| item.workspace_path == node.workspace_path)
+                });
+                match snapshot.and_then(|item| item.materialization.as_deref()) {
+                    Some("present") => '●',
+                    Some("partially_present") => '◐',
+                    Some("absent") => '○',
+                    _ => '·',
+                }
+            }
+        }
+        EnvironmentDagNodeKind::LifecycleItem { .. } => {
+            lifecycle_item_snapshot_for_node(detail, node)
+                .and_then(|item| item.get("state").and_then(Value::as_str))
+                .map(lifecycle_state_char)
+                .unwrap_or('○')
+        }
+    }
+}
+
+fn lifecycle_item_snapshot_for_node<'a>(
+    detail: &'a LocalEnvironmentDetailState,
+    node: &EnvironmentDagNode,
+) -> Option<&'a Value> {
+    let EnvironmentDagNodeKind::LifecycleItem { phase, key, .. } = &node.kind else {
+        return None;
+    };
+
+    let status = detail.status_response.as_ref()?;
+    let lifecycle = status
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.workspace_path == node.workspace_path)
+        .and_then(|workspace| workspace.lifecycle.as_ref())?;
+
+    lifecycle
+        .get("items")
+        .and_then(Value::as_array)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.get("phase").and_then(Value::as_str) == Some(phase.as_str())
+                    && item.get("key").and_then(Value::as_str) == Some(key.as_str())
+            })
+        })
+}
+
+fn lifecycle_state_char(state: &str) -> char {
+    match state {
+        "running" => '▶',
+        "succeeded" => '●',
+        "degraded" => '◐',
+        "blocked" => '!',
+        "failed" => '✕',
+        "pending" => '○',
+        _ => '·',
+    }
+}
+
+fn environment_dag_node_label(node: &EnvironmentDagNode) -> String {
+    match &node.kind {
+        EnvironmentDagNodeKind::Workspace => node.label.clone(),
+        EnvironmentDagNodeKind::LifecycleItem { phase, key, .. } => {
+            let label = humanize_lifecycle_key(key);
+            if phase == "verification" {
+                if label.eq_ignore_ascii_case("smoke") {
+                    "smoke check".to_string()
+                } else {
+                    format!("check {label}")
+                }
+            } else {
+                if label.eq_ignore_ascii_case("ready") {
+                    "ready gate".to_string()
+                } else {
+                    format!("ready {label}")
+                }
+            }
+        }
+    }
 }
 
 fn draw_horizontal(canvas: &mut [Vec<DagCell>], start_x: usize, end_x: usize, y: usize) {
@@ -2008,7 +2516,7 @@ fn load_environment_detail(
         Some(environment_name),
         &WorkspaceGraphOptions {
             allowed_hosts: None,
-            current_namespace,
+            current_namespace: current_namespace.clone(),
         },
     )
     .map_err(|error| {
@@ -2024,11 +2532,18 @@ fn load_environment_detail(
         )
     })?;
 
-    let levels = build_graph_levels(&graph);
+    let dag_nodes = build_environment_dag_nodes(
+        config,
+        &graph,
+        environment_name,
+        current_namespace.as_deref(),
+    );
+    let levels = build_graph_levels(&dag_nodes);
 
     Ok(LocalEnvironmentDetailState {
         environment_name: environment_name.to_string(),
         graph,
+        dag_nodes,
         levels,
         selected_level: 0,
         selected_row: 0,
@@ -2155,31 +2670,162 @@ fn count_workspaces_for_environment(
         .count()
 }
 
-fn build_graph_levels(graph: &ResolvedWorkspaceGraph) -> Vec<Vec<String>> {
+fn build_environment_dag_nodes(
+    config: &yaffle_config::YaffleConfig,
+    graph: &ResolvedWorkspaceGraph,
+    environment_name: &str,
+    canonical_repo_namespace: Option<&str>,
+) -> Vec<EnvironmentDagNode> {
     let order = graph
         .topological_order()
         .unwrap_or_else(|_| graph.workspace_paths());
-    let mut stages = BTreeMap::<String, usize>::new();
-    for workspace_path in &order {
+    let mut nodes = Vec::new();
+
+    for workspace_path in order {
         let dependencies = graph
-            .workspace(workspace_path)
+            .workspace(&workspace_path)
             .map(|workspace| workspace.dependencies.clone())
+            .unwrap_or_default();
+        nodes.push(EnvironmentDagNode {
+            id: workspace_path.clone(),
+            workspace_path: workspace_path.clone(),
+            label: workspace_path.clone(),
+            dependencies,
+            kind: EnvironmentDagNodeKind::Workspace,
+        });
+
+        let Some(workspace_config) = config
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.path == workspace_path)
+        else {
+            continue;
+        };
+
+        let activation_hooks = workspace_config
+            .activation
+            .iter()
+            .filter(|hook| {
+                yaffle_config::environment_name_matches_patterns(
+                    environment_name,
+                    &hook.environments,
+                )
+            })
+            .collect::<Vec<_>>();
+        let verification_hooks = workspace_config
+            .verification
+            .iter()
+            .filter(|hook| {
+                yaffle_config::environment_name_matches_patterns(
+                    environment_name,
+                    &hook.environments,
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let activation_ids = activation_hooks
+            .iter()
+            .map(|hook| lifecycle_node_id(&workspace_path, "activation", &hook.key))
+            .collect::<Vec<_>>();
+
+        for hook in activation_hooks {
+            nodes.push(EnvironmentDagNode {
+                id: lifecycle_node_id(&workspace_path, "activation", &hook.key),
+                workspace_path: workspace_path.clone(),
+                label: hook.key.clone(),
+                dependencies: vec![workspace_path.clone()],
+                kind: EnvironmentDagNodeKind::LifecycleItem {
+                    phase: "activation".to_string(),
+                    key: hook.key.clone(),
+                    scopes: hook.scopes.clone(),
+                    failure_policy: hook.failure,
+                    timeout: hook.timeout.clone(),
+                    destination_url: lifecycle_hook_destination_label(
+                        hook,
+                        canonical_repo_namespace,
+                    ),
+                },
+            });
+        }
+
+        for hook in verification_hooks {
+            nodes.push(EnvironmentDagNode {
+                id: lifecycle_node_id(&workspace_path, "verification", &hook.key),
+                workspace_path: workspace_path.clone(),
+                label: hook.key.clone(),
+                dependencies: if activation_ids.is_empty() {
+                    vec![workspace_path.clone()]
+                } else {
+                    activation_ids.clone()
+                },
+                kind: EnvironmentDagNodeKind::LifecycleItem {
+                    phase: "verification".to_string(),
+                    key: hook.key.clone(),
+                    scopes: hook.scopes.clone(),
+                    failure_policy: hook.failure,
+                    timeout: hook.timeout.clone(),
+                    destination_url: lifecycle_hook_destination_label(
+                        hook,
+                        canonical_repo_namespace,
+                    ),
+                },
+            });
+        }
+    }
+
+    nodes
+}
+
+fn build_graph_levels(nodes: &[EnvironmentDagNode]) -> Vec<Vec<String>> {
+    let ordered_ids = nodes.iter().map(|node| node.id.clone()).collect::<Vec<_>>();
+    let mut stages = BTreeMap::<String, usize>::new();
+    for node_id in &ordered_ids {
+        let dependencies = nodes
+            .iter()
+            .find(|node| node.id == *node_id)
+            .map(|node| node.dependencies.clone())
             .unwrap_or_default();
         let stage = dependencies
             .iter()
             .map(|dependency| stages.get(dependency).copied().unwrap_or(0) + 1)
             .max()
             .unwrap_or(0);
-        stages.insert(workspace_path.clone(), stage);
+        stages.insert(node_id.clone(), stage);
     }
 
     let max_stage = stages.values().copied().max().unwrap_or(0);
     let mut levels = vec![Vec::new(); max_stage + 1];
-    for workspace_path in order {
-        let stage = stages.get(&workspace_path).copied().unwrap_or(0);
-        levels[stage].push(workspace_path);
+    for node_id in ordered_ids {
+        let stage = stages.get(&node_id).copied().unwrap_or(0);
+        levels[stage].push(node_id);
     }
     levels
+}
+
+fn lifecycle_node_id(workspace_path: &str, phase: &str, key: &str) -> String {
+    format!("{workspace_path}::{phase}::{key}")
+}
+
+fn lifecycle_hook_destination_label(
+    hook: &yaffle_config::LifecycleHook,
+    canonical_repo_namespace: Option<&str>,
+) -> String {
+    match &hook.dispatch {
+        yaffle_config::LifecycleHookDispatch::Generic(request) => request.url.clone(),
+        yaffle_config::LifecycleHookDispatch::GitHubRepositoryDispatch(github) => {
+            let (owner, repo) = match (&github.owner, &github.repo) {
+                (Some(owner), Some(repo)) => (owner.clone(), repo.clone()),
+                _ => canonical_repo_namespace
+                    .and_then(|namespace| namespace.split_once("--"))
+                    .map(|(owner, repo)| (owner.to_string(), repo.to_string()))
+                    .unwrap_or_else(|| ("<repo>".to_string(), "<repo>".to_string())),
+            };
+            format!(
+                "repository_dispatch {owner}/{repo} -> {}",
+                github.event_type
+            )
+        }
+    }
 }
 
 fn infer_repo_namespace(repo_root: &Path) -> Option<String> {

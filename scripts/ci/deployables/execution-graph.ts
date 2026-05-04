@@ -22,7 +22,6 @@ export function computeDeployableDependencies(
   workspaceGraph: DependencyGraph,
 ): DeployableExecutionNode[] {
   const owners = new Map<string, Set<string>>()
-  const deployableByName = new Map(deployables.map((deployable) => [deployable.name, deployable]))
 
   for (const deployable of deployables) {
     for (const workspace of deployable.workspaces) {

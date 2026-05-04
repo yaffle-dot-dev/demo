@@ -1,0 +1,119 @@
+name: Yaffle Lifecycle Dispatch
+
+on:
+  repository_dispatch:
+    types:
+      - yaffle.activation
+      - yaffle.verification
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  lifecycle:
+    name: ${{ github.event.client_payload.yaffle.phase }} · ${{ github.event.client_payload.yaffle.item_key }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    concurrency:
+      group: yaffle-lifecycle-${{ github.event.client_payload.yaffle.environment }}-${{ github.event.client_payload.yaffle.item_key }}-${{ github.event.client_payload.yaffle.phase }}
+      cancel-in-progress: false
+    env:
+      YAFFLE_API_URL: https://yaffle.dev
+      YAFFLE_TOKEN: ${{ secrets.YAFFLE_TOKEN }}
+      PHASE: ${{ github.event.client_payload.yaffle.phase }}
+      ITEM_KEY: ${{ github.event.client_payload.yaffle.item_key }}
+      ENVIRONMENT_NAME: ${{ github.event.client_payload.yaffle.environment }}
+      ON_COMPLETION_URL: ${{ github.event.client_payload.yaffle.on_completion }}
+      TARGET_SHA: ${{ github.event.client_payload.yaffle.git_sha || github.sha }}
+      TARGET_BRANCH: ${{ github.event.client_payload.yaffle.git_branch || '' }}
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ env.TARGET_SHA }}
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.YAFFLE_APP_DEPLOYER_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Create lifecycle target
+        shell: bash
+        run: |
+          mkdir -p .ci
+
+          target_kind="named"
+          target_args=(
+            target create
+            --kind named
+            --environment "$ENVIRONMENT_NAME"
+            --sha "$TARGET_SHA"
+            --out .ci/target.json
+          )
+
+          if [[ "$ENVIRONMENT_NAME" == pr-* ]]; then
+            pr_number="${ENVIRONMENT_NAME#pr-}"
+            target_kind="transient"
+            target_args=(
+              target create
+              --kind transient
+              --environment "$ENVIRONMENT_NAME"
+              --sha "$TARGET_SHA"
+              --pr "$pr_number"
+              --out .ci/target.json
+            )
+          fi
+
+          if [[ -n "$TARGET_BRANCH" ]]; then
+            target_args+=(--branch "$TARGET_BRANCH" --ref "refs/heads/$TARGET_BRANCH")
+          fi
+
+          echo "resolved target kind: $target_kind"
+          bun run scripts/ci/main.ts "${target_args[@]}"
+
+      - name: Run lifecycle phase
+        id: lifecycle
+        shell: bash
+        run: |
+          if bun run scripts/ci/main.ts env lifecycle --target .ci/target.json --phase "$PHASE" --deployable "$ITEM_KEY"; then
+            echo "status=succeeded" >> "$GITHUB_OUTPUT"
+            echo "summary=${PHASE} completed for ${ITEM_KEY}" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "summary=${PHASE} failed for ${ITEM_KEY}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Complete lifecycle item
+        if: always()
+        env:
+          COMPLETION_STATUS: ${{ steps.lifecycle.outputs.status || 'failed' }}
+          COMPLETION_SUMMARY: ${{ steps.lifecycle.outputs.summary || 'lifecycle workflow did not report a result' }}
+        run: |
+          bun -e '
+            const response = await fetch(process.env.ON_COMPLETION_URL, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                status: process.env.COMPLETION_STATUS,
+                summary: process.env.COMPLETION_SUMMARY,
+              }),
+            })
+            if (!response.ok) {
+              throw new Error(`Lifecycle completion callback failed (${response.status})`)
+            }
+          '
+
+      - name: Fail job on lifecycle failure
+        if: ${{ steps.lifecycle.outputs.status == 'failed' }}
+        run: exit 1

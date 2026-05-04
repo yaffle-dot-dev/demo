@@ -286,6 +286,8 @@
     ref={displayData.ref}
     headSha={stream.pinnedHeadSha ?? displayData.headSha}
     authorLogin={displayData.authorLogin}
+    environmentPolicy={displayData.environmentPolicy}
+    environmentLifecycle={displayData.environmentLifecycle}
     workspaces={displayData.workspaces}
     runGroups={displayData.runGroups}
     {githubUrl}

@@ -1,18 +1,19 @@
 <script lang="ts">
-  import type { WorkspaceWithRuns, DependencyGraph, Run } from "$lib/api"
+  import type { DependencyGraph, Run, WorkspaceWithRuns } from "$lib/api"
   import { triggerApply, pauseApply } from "$lib/api"
   import { statusConfig } from "$lib/status"
   import {
     getBlockingUpstreamWorkspacePaths,
     getWorkspaceConnectionBlockReason,
   } from "$lib/workspace-status"
+  import type { PreviewDagNode, PreviewLifecycleDagNode, PreviewWorkspaceDagNode } from "$lib/lifecycle-dag"
   import DagLayout from "./DagLayout.svelte"
   import type { DagPosition } from "./DagLayout.svelte"
 
   interface Props {
-    workspaces: WorkspaceWithRuns[]
+    nodes: PreviewDagNode[]
     dependencyGraph: DependencyGraph | null
-    workspaceStatuses: Record<string, string>
+    nodeStatuses: Record<string, string>
     selectedPath: string
     onSelect: (path: string) => void
   }
@@ -21,13 +22,20 @@
 
 
 
-  const workspacesWithRuns = $derived(props.workspaces)
+  const dagNodes = $derived(props.nodes)
   const dependencyGraph = $derived(props.dependencyGraph)
-  const workspaceStatuses = $derived(props.workspaceStatuses)
+  const nodeStatuses = $derived(props.nodeStatuses)
   const selectedPath = $derived(props.selectedPath)
   const onSelect = $derived(props.onSelect)
 
-  const workspaces = $derived(workspacesWithRuns)
+  const workspaceNodes = $derived(
+    dagNodes.filter((node): node is PreviewWorkspaceDagNode => node.kind === "workspace"),
+  )
+  const workspaces = $derived(
+    workspaceNodes
+      .map((node) => node.workspace)
+      .filter((workspace): workspace is WorkspaceWithRuns => workspace !== null),
+  )
 
   // ============================================================================
   // Countdown timer state for auto-apply
@@ -229,12 +237,12 @@
   // This derived value ensures the $effect below re-runs when workspace status changes.
   const workspacesReadyForAutoTimer = $derived.by((): string[] => {
     const ready: string[] = []
-    for (const ws of workspaces) {
-      const wsPath = ws.preview.workspacePath
-      const planStatus = getEffectiveStatus(ws, "plan")
-      const applyStatus = getEffectiveStatus(ws, "apply")
-      const summary = getPlanSummary(ws)
-      const requiresApproval = ws.preview.requireApproval
+    for (const workspace of workspaces) {
+      const wsPath = workspace.preview.workspacePath
+      const planStatus = getEffectiveStatus(workspace, "plan")
+      const applyStatus = getEffectiveStatus(workspace, "apply")
+      const summary = getPlanSummary(workspace)
+      const requiresApproval = workspace.preview.requireApproval
       
       // Ready for auto-timer: plan succeeded with changes, no apply yet, no approval required
       if (
@@ -294,7 +302,7 @@
 
   // Build workspace lookup by path
   const workspaceByPath = $derived(
-    new Map(workspaces.map((ws) => [ws.preview.workspacePath, ws]))
+    new Map(workspaces.map((workspace) => [workspace.preview.workspacePath, workspace]))
   )
 
   // Get run status for a workspace
@@ -363,6 +371,8 @@
       case "running": return "⟳"
       case "pending": return "○"
       case "waiting": return "◐"
+      case "degraded": return "◐"
+      case "blocked": return "⚠"
       case "failed": return "✗"
       case "system_error": return "⚠"
       case "cancelled": return "✗"
@@ -427,76 +437,174 @@
   }
 
   // Layout constants for cells
-  const NODE_HEIGHT = 78
-  const NODE_PAD_X = 6
+  const NODE_HEIGHT = 92
+  const NODE_PAD_X = 8
 
   // Estimate text width (approximate using character count)
-  function estimateTextWidth(ws: WorkspaceWithRuns): number {
-    // Monospace: ~7px per character at 11px font size
-    return ws.preview.workspacePath.length * 7 + NODE_PAD_X * 2
+  function estimateTextWidth(node: PreviewDagNode): number {
+    const label = node.kind === "workspace"
+      ? node.workspacePath
+      : `${lifecyclePhaseIcon(node.phase)} ${humanizeLifecycleKey(node.key)}`
+    return Math.max(label.length * 7 + NODE_PAD_X * 2, node.kind === "lifecycle" ? 184 : 148)
   }
 
   // Get unique ID for DAG layout
-  function getId(ws: WorkspaceWithRuns): string {
-    return ws.preview.workspacePath
+  function getId(node: PreviewDagNode): string {
+    return node.id
+  }
+
+  function lifecyclePhaseIcon(phase: string): string {
+    return phase === "verification" ? "VERIFY" : "READY"
+  }
+
+  function humanizeLifecycleKey(key: string): string {
+    return key
+      .replace(/^preview[-_]/, "")
+      .replace(/^activation[-_]/, "")
+      .replace(/^verification[-_]/, "")
+      .split(/[-_]+/)
+      .filter(Boolean)
+      .map((part) => part[0]?.toUpperCase() + part.slice(1))
+      .join(" ") || key
+  }
+
+  function lifecycleNodeScopeText(node: PreviewLifecycleDagNode): string {
+    if (node.item.scopes.length === 0) {
+      return node.phase === "verification"
+        ? "confirms the preview externally"
+        : "waits for the preview to come alive"
+    }
+
+    if (node.phase === "verification") {
+      return `proves ${node.item.scopes.join(" + ")}`
+    }
+
+    return `unlocks ${node.item.scopes.join(" + ")}`
+  }
+
+  function truncateCopy(value: string, maxLength: number): string {
+    return value.length <= maxLength
+      ? value
+      : `${value.slice(0, Math.max(0, maxLength - 1))}…`
+  }
+
+  function lifecycleStatusClass(state: string): string {
+    switch (state) {
+      case "succeeded": return "text-status-ready"
+      case "degraded": return "text-status-pending"
+      case "blocked": return "text-status-error"
+      case "failed": return "text-status-failed"
+      case "running": return "text-status-applying"
+      default: return "text-text-dim"
+    }
+  }
+
+  function lifecycleStatusText(node: PreviewLifecycleDagNode): string {
+    switch (node.item.state) {
+      case "succeeded":
+        return node.phase === "verification" ? "checks passed" : "preview is live"
+      case "degraded": return "ready with warnings"
+      case "blocked": return "policy blocked"
+      case "failed":
+        return node.phase === "verification" ? "checks failed" : "readiness failed"
+      case "running":
+        return node.phase === "verification" ? "checking preview" : "waiting for signal"
+      default:
+        return node.phase === "verification" ? "queued to verify" : "queued to open"
+    }
   }
 </script>
 
-{#snippet node({ item: workspace, position, width, height }: { item: WorkspaceWithRuns; position: DagPosition; width: number; height: number })}
-  {@const wsPath = workspace.preview.workspacePath}
-  {@const isSelected = wsPath === selectedPath}
-  {@const planStatus = getEffectiveStatus(workspace, "plan")}
-  {@const applyStatus = getEffectiveStatus(workspace, "apply")}
-  {@const displayStatus = workspaceStatuses[wsPath] ?? workspace.preview.status}
-  {@const planSummary = getPlanSummary(workspace)}
-  {@const isBlocked = hasFailedUpstream(wsPath)}
-  {@const connectionBlockedLabel = getConnectionBlockedLabel(workspace)}
-  {@const upstreamBlockedLabel = getUpstreamBlockedLabel(wsPath)}
-  {@const readyForApply = isReadyForApply(workspace)}
-  {@const requiresApproval = getRequiresApproval(workspace)}
-  {@const isQueued = workspace.runs.length === 0 && (displayStatus === "queued" || displayStatus === "pending")}
-  {@const isSubmitting = applyingWorkspaces.has(wsPath)}
-  {@const btnWidth = 72}
-  {@const btnHeight = 18}
-  {@const btnRadius = 4}
-  {@const ringRadius = 6}
-  {@const circumference = 2 * Math.PI * ringRadius}
-
+{#snippet node({ item, position, width, height }: { item: PreviewDagNode; position: DagPosition; width: number; height: number })}
+  {@const isSelected = item.id === selectedPath}
   <g
     class="node-group cursor-pointer"
     role="button"
     tabindex="0"
-    onclick={() => onSelect(wsPath)}
-    onkeydown={(e) => e.key === "Enter" && onSelect(wsPath)}
+    onclick={() => onSelect(item.id)}
+    onkeydown={(e) => e.key === "Enter" && onSelect(item.id)}
   >
-    <!-- Node background -->
-    <rect
-      {width}
-      {height}
-      rx="6"
-      class="node-bg transition-all"
-      class:selected={isSelected}
-      class:blocked={isBlocked}
-      class:queued={isQueued}
-      class:has-changes={hasChanges(planSummary)}
-    />
+    {#if item.kind === "workspace" && item.workspace}
+      {@const workspace = item.workspace}
+      {@const wsPath = workspace.preview.workspacePath}
+      {@const planStatus = getEffectiveStatus(workspace, "plan")}
+      {@const applyStatus = getEffectiveStatus(workspace, "apply")}
+      {@const displayStatus = nodeStatuses[wsPath] ?? workspace.preview.status}
+      {@const planSummary = getPlanSummary(workspace)}
+      {@const isBlocked = hasFailedUpstream(wsPath)}
+      {@const connectionBlockedLabel = getConnectionBlockedLabel(workspace)}
+      {@const upstreamBlockedLabel = getUpstreamBlockedLabel(wsPath)}
+      {@const readyForApply = isReadyForApply(workspace)}
+      {@const requiresApproval = getRequiresApproval(workspace)}
+      {@const isQueued = workspace.runs.length === 0 && (displayStatus === "queued" || displayStatus === "pending")}
+      {@const isSubmitting = applyingWorkspaces.has(wsPath)}
+      {@const btnWidth = 72}
+      {@const btnHeight = 18}
+      {@const btnRadius = 4}
+      {@const ringRadius = 6}
+      {@const circumference = 2 * Math.PI * ringRadius}
 
-    <!-- Node label (full path) -->
-    <text
-      x={NODE_PAD_X}
-      y="18"
-      class="node-label"
-    >
-      <title>{wsPath}</title>
-      {wsPath}
-    </text>
+      <rect
+        {width}
+        {height}
+        rx="6"
+        class="node-bg transition-all"
+        class:selected={isSelected}
+        class:blocked={isBlocked}
+        class:queued={isQueued}
+        class:has-changes={hasChanges(planSummary)}
+      />
 
-    <!-- Bottom area: action button (row 1), status below (row 2) -->
-    <g transform="translate({NODE_PAD_X}, 44)">
-      <!-- Row 1: Action buttons (y=0, only when applicable) -->
-      {#if timers.has(wsPath)}
-        {#if isTimerPaused(wsPath)}
-          <g 
+      <text x={NODE_PAD_X} y="18" class="node-label">
+        <title>{wsPath}</title>
+        {wsPath}
+      </text>
+
+      <g transform="translate({NODE_PAD_X}, 44)">
+        {#if timers.has(wsPath)}
+          {#if isTimerPaused(wsPath)}
+            <g
+              class="approval-btn"
+              role="button"
+              tabindex="0"
+              onclick={(e) => { e.stopPropagation(); handleApply(wsPath) }}
+              onkeydown={(e) => e.key === "Enter" && handleApply(wsPath)}
+            >
+              <title>Click to approve and start apply</title>
+              <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="approval-btn-bg" />
+              <text x={btnWidth / 2} y="13" text-anchor="middle" class="approval-btn-text">Approve</text>
+            </g>
+          {:else}
+            <g
+              class="timer-btn"
+              role="button"
+              tabindex="0"
+              onclick={(e) => { e.stopPropagation(); handlePause(wsPath) }}
+              onkeydown={(e) => e.key === "Enter" && handlePause(wsPath)}
+            >
+              <title>{getTimerSecondsLeft(wsPath)}s until apply starts. Click to pause.</title>
+              <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="timer-btn-bg" />
+              <g transform="translate(10, 9)">
+                <circle cx="0" cy="0" r={ringRadius} fill="none" stroke="var(--color-border)" stroke-width="1.5" />
+                <circle
+                  cx="0"
+                  cy="0"
+                  r={ringRadius}
+                  fill="none"
+                  stroke="var(--color-yaffle-500)"
+                  stroke-width="1.5"
+                  stroke-dasharray={circumference}
+                  stroke-dashoffset={-circumference * (1 - getTimerProgress(wsPath))}
+                  stroke-linecap="round"
+                  transform="rotate(-90)"
+                  class="timer-progress"
+                />
+              </g>
+              <text x="44" y="13" text-anchor="middle" class="timer-btn-text">Pause</text>
+            </g>
+          {/if}
+        {:else if readyForApply && requiresApproval && !isSubmitting}
+          <g
             class="approval-btn"
             role="button"
             tabindex="0"
@@ -507,100 +615,87 @@
             <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="approval-btn-bg" />
             <text x={btnWidth / 2} y="13" text-anchor="middle" class="approval-btn-text">Approve</text>
           </g>
-        {:else}
-          <g 
-            class="timer-btn"
-            role="button"
-            tabindex="0"
-            onclick={(e) => { e.stopPropagation(); handlePause(wsPath) }}
-            onkeydown={(e) => e.key === "Enter" && handlePause(wsPath)}
-          >
-            <title>{getTimerSecondsLeft(wsPath)}s until apply starts. Click to pause.</title>
-            <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="timer-btn-bg" />
-            <g transform="translate(10, 9)">
-              <circle cx="0" cy="0" r={ringRadius} fill="none" stroke="var(--color-border)" stroke-width="1.5" />
-              <circle 
-                cx="0" cy="0" r={ringRadius}
-                fill="none" 
-                stroke="var(--color-yaffle-500)"
-                stroke-width="1.5"
-                stroke-dasharray={circumference}
-                stroke-dashoffset={-circumference * (1 - getTimerProgress(wsPath))}
-                stroke-linecap="round"
-                transform="rotate(-90)"
-                class="timer-progress"
-              />
-            </g>
-            <text x="44" y="13" text-anchor="middle" class="timer-btn-text">Pause</text>
+        {:else if isSubmitting}
+          <g class="submitting-btn">
+            <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="submitting-btn-bg" />
+            <text x={btnWidth / 2} y="13" text-anchor="middle" class="submitting-btn-text">...</text>
           </g>
         {/if}
-      {:else if readyForApply && requiresApproval && !isSubmitting}
-        <g 
-          class="approval-btn"
-          role="button"
-          tabindex="0"
-          onclick={(e) => { e.stopPropagation(); handleApply(wsPath) }}
-          onkeydown={(e) => e.key === "Enter" && handleApply(wsPath)}
-        >
-          <title>Click to approve and start apply</title>
-          <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="approval-btn-bg" />
-          <text x={btnWidth / 2} y="13" text-anchor="middle" class="approval-btn-text">Approve</text>
-        </g>
-      {:else if isSubmitting}
-        <g class="submitting-btn">
-          <rect x="0" y="0" width={btnWidth} height={btnHeight} rx={btnRadius} class="submitting-btn-bg" />
-          <text x={btnWidth / 2} y="13" text-anchor="middle" class="submitting-btn-text">...</text>
-        </g>
-      {/if}
-      
-      <!-- Row 2: Status (y=28, below button which ends at y=18) -->
-      <!-- Priority: apply status > plan status (apply is more recent/relevant) -->
-      {#if applyStatus === "running"}
-        <text y="28" class="node-status text-status-applying">{statusIcon("running")} Applying...</text>
-      {:else if applyStatus === "success"}
-        <text y="28" class="node-status text-status-ready">{statusIcon("success")} Applied</text>
-      {:else if applyStatus === "failed"}
-        <text y="28" class="node-status text-status-error">{statusIcon("failed")} Apply failed</text>
-      {:else if applyStatus === "cancelled"}
-        <text y="28" class="node-status text-status-failed">{statusIcon("cancelled")} Apply cancelled</text>
-      {:else if applyStatus === "skipped"}
-        <text y="28" class="node-status text-status-ready">{statusIcon("success")} No changes</text>
-      {:else if planStatus === "running"}
-        <text y="28" class="node-status text-status-applying">{statusIcon("running")} Planning...</text>
-      {:else if planStatus === "failed"}
-        <text y="28" class="node-status text-status-failed">{statusIcon("failed")} Plan failed</text>
-      {:else if planStatus === "cancelled"}
-        <text y="28" class="node-status text-status-failed">{statusIcon("cancelled")} Plan cancelled</text>
-      {:else if planStatus === "skipped"}
-        <text y="28" class="node-status text-text-dim">{statusIcon("skipped")} Skipped</text>
-      {:else if planStatus === "pending"}
-        <text y="28" class="node-status text-text-dim">{statusIcon("waiting")} Waiting...</text>
-      {:else if planStatus === "success" && planSummary && hasChanges(planSummary)}
-        <text y="28" class="node-plan-summary">
-          <tspan class="plan-add">+{planSummary.add}</tspan>
-          <tspan dx="4" class="plan-change">~{planSummary.change}</tspan>
-          <tspan dx="4" class="plan-destroy">-{planSummary.destroy}</tspan>
-        </text>
-      {:else if planStatus === "success"}
-        <text y="28" class="node-status text-status-ready">{statusIcon("success")} No changes</text>
-      {:else if connectionBlockedLabel}
-        <text y="28" class="node-status text-status-system-error">⚠ {connectionBlockedLabel}</text>
-      {:else if upstreamBlockedLabel}
-        <text y="28" class="node-status text-text-dim">{statusIcon("waiting")} {upstreamBlockedLabel}</text>
-      {:else if isBlocked}
-        <!-- Upstream failed - this workspace was skipped -->
-        {@const skippedCfg = statusConfig("skipped")}
-        <text y="28" class="node-status {skippedCfg.color}">{skippedCfg.icon} {skippedCfg.label}</text>
-      {:else}
-        {@const fallbackCfg = statusConfig(displayStatus)}
-        <text y="28" class="node-status {fallbackCfg.color}">{fallbackCfg.icon} {fallbackCfg.label}</text>
-      {/if}
-    </g>
+
+        {#if applyStatus === "running"}
+          <text y="28" class="node-status text-status-applying">{statusIcon("running")} Applying...</text>
+        {:else if applyStatus === "success"}
+          <text y="28" class="node-status text-status-ready">{statusIcon("success")} Applied</text>
+        {:else if applyStatus === "failed"}
+          <text y="28" class="node-status text-status-error">{statusIcon("failed")} Apply failed</text>
+        {:else if applyStatus === "cancelled"}
+          <text y="28" class="node-status text-status-failed">{statusIcon("cancelled")} Apply cancelled</text>
+        {:else if applyStatus === "skipped"}
+          <text y="28" class="node-status text-status-ready">{statusIcon("success")} No changes</text>
+        {:else if planStatus === "running"}
+          <text y="28" class="node-status text-status-applying">{statusIcon("running")} Planning...</text>
+        {:else if planStatus === "failed"}
+          <text y="28" class="node-status text-status-failed">{statusIcon("failed")} Plan failed</text>
+        {:else if planStatus === "cancelled"}
+          <text y="28" class="node-status text-status-failed">{statusIcon("cancelled")} Plan cancelled</text>
+        {:else if planStatus === "skipped"}
+          <text y="28" class="node-status text-text-dim">{statusIcon("skipped")} Skipped</text>
+        {:else if planStatus === "pending"}
+          <text y="28" class="node-status text-text-dim">{statusIcon("waiting")} Waiting...</text>
+        {:else if planStatus === "success" && planSummary && hasChanges(planSummary)}
+          <text y="28" class="node-plan-summary">
+            <tspan class="plan-add">+{planSummary.add}</tspan>
+            <tspan dx="4" class="plan-change">~{planSummary.change}</tspan>
+            <tspan dx="4" class="plan-destroy">-{planSummary.destroy}</tspan>
+          </text>
+        {:else if planStatus === "success"}
+          <text y="28" class="node-status text-status-ready">{statusIcon("success")} No changes</text>
+        {:else if connectionBlockedLabel}
+          <text y="28" class="node-status text-status-error">⚠ {connectionBlockedLabel}</text>
+        {:else if upstreamBlockedLabel}
+          <text y="28" class="node-status text-text-dim">{statusIcon("waiting")} {upstreamBlockedLabel}</text>
+        {:else if isBlocked}
+          {@const skippedCfg = statusConfig("skipped")}
+          <text y="28" class="node-status {skippedCfg.color}">{skippedCfg.icon} {skippedCfg.label}</text>
+        {:else}
+          {@const fallbackCfg = statusConfig(displayStatus)}
+          <text y="28" class="node-status {fallbackCfg.color}">{fallbackCfg.icon} {fallbackCfg.label}</text>
+        {/if}
+      </g>
+    {:else if item.kind === "lifecycle"}
+      {@const lifecycleStatus = nodeStatuses[item.id] ?? item.item.state}
+      <rect
+        {width}
+        {height}
+        rx="10"
+        class="node-bg transition-all lifecycle-node"
+        class:selected={isSelected}
+        class:lifecycle-activation={item.phase === "activation"}
+        class:lifecycle-verification={item.phase === "verification"}
+      />
+
+      <text x={NODE_PAD_X} y="16" class="node-phase-label lifecycle-phase-label">
+        {lifecyclePhaseIcon(item.phase)} {item.phase}
+      </text>
+      <text x={NODE_PAD_X} y="38" class="node-label lifecycle-node-label">
+        <title>{item.key}</title>
+        {truncateCopy(humanizeLifecycleKey(item.key), 24)}
+      </text>
+      <text x={NODE_PAD_X} y="58" class="node-status {lifecycleStatusClass(lifecycleStatus)} lifecycle-status-copy">
+        {statusIcon(lifecycleStatus === "running" ? "running" : lifecycleStatus === "succeeded" ? "success" : lifecycleStatus)} {truncateCopy(lifecycleStatusText(item), 24)}
+      </text>
+      <text x={NODE_PAD_X} y="76" class="node-status lifecycle-node-subcopy">
+        {truncateCopy(item.item.reason ?? lifecycleNodeScopeText(item), 28)}
+      </text>
+    {:else}
+      <rect {width} {height} rx="6" class="node-bg transition-all" class:selected={isSelected} />
+      <text x={NODE_PAD_X} y="18" class="node-label">{item.workspacePath}</text>
+    {/if}
   </g>
 {/snippet}
 
 <DagLayout
-  items={workspaces}
+  items={dagNodes}
   {getId}
   {dependencyGraph}
   estimateWidth={estimateTextWidth}
@@ -646,6 +741,21 @@
     stroke: var(--color-status-pending);
     stroke-width: 1.5;
   }
+
+  .node-bg.lifecycle-node {
+    fill: color-mix(in srgb, var(--color-surface-overlay) 78%, var(--color-yaffle-500) 22%);
+    stroke-width: 1.2;
+  }
+
+  .node-bg.lifecycle-node.lifecycle-activation {
+    stroke: color-mix(in srgb, var(--color-status-ready) 50%, var(--color-border));
+    fill: color-mix(in srgb, var(--color-surface-overlay) 82%, var(--color-status-ready) 18%);
+  }
+
+  .node-bg.lifecycle-node.lifecycle-verification {
+    stroke: color-mix(in srgb, var(--color-status-pending) 55%, var(--color-border));
+    fill: color-mix(in srgb, var(--color-surface-overlay) 82%, var(--color-status-pending) 18%);
+  }
   
 
 
@@ -653,6 +763,33 @@
     font-family: var(--font-mono, monospace);
     font-size: 11px;
     fill: var(--color-text);
+  }
+
+  .node-phase-label {
+    font-family: var(--font-mono, monospace);
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .lifecycle-phase-label {
+    fill: var(--color-text-dim);
+    font-weight: 700;
+  }
+
+  .lifecycle-node-label {
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  .lifecycle-status-copy {
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .lifecycle-node-subcopy {
+    fill: var(--color-text-dim);
+    font-size: 9px;
   }
 
   .node-status {

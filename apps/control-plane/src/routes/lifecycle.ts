@@ -1,25 +1,34 @@
-import { randomBytes, timingSafeEqual } from "node:crypto"
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 
 import { Hono, type MiddlewareHandler } from "hono"
 import { z } from "zod"
 
 import {
+  type LifecycleEvent,
+  type LifecycleItem,
+  type LifecycleRun,
   consumeLifecycleCompletionToken,
   createLifecycleEvent,
   createLifecycleItem,
   createLifecycleRun,
-  findLifecycleRunById,
   findLifecycleItemById,
+  findLifecycleRunById,
   getLatestLifecycleState,
   issueLifecycleCompletionToken,
+  listLifecycleEventsForItems,
   updateLifecycleItem,
   updateLifecycleRun,
 } from "../db/queries/lifecycle.ts"
+import { findConnectionsByName } from "../db/queries/connections.ts"
 import { findEnvironmentPolicy } from "../db/queries/environment-policies.ts"
 import { ensurePrincipalRepoBinding, findPrincipalRepoBindingById } from "../db/queries/principals.ts"
 import { findOrgMembership, findOrgById } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
+import { getConnectionSecret } from "../lib/connection-secrets.ts"
+import { getInstallationOctokit } from "../lib/github.ts"
+import { assumeOrgBrokerRole } from "../lib/org-broker-auth.ts"
 import { buildPublicUrl } from "../lib/public-origin.ts"
+import { getConnectionScopeConfig, scopeListAllows } from "../lib/connection-scope.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
 import { enforceRateLimit, readRequestBodyText, RequestBodyTooLargeError } from "../lib/request-protection.ts"
 
@@ -66,6 +75,59 @@ const createItemSchema = z.object({
   metadata: z.record(z.unknown()).optional(),
   callbackTtlMinutes: z.number().int().positive().max(24 * 60).default(60),
 })
+
+const genericLifecycleDispatchSchema = z.object({
+  kind: z.literal("generic"),
+  request: z.object({
+    url: z.string().url(),
+    method: z.literal("POST"),
+    auth: z.object({
+      scheme: z.enum(["bearer", "hmac_sha256"]),
+      connection: z.string().min(1),
+    }).optional(),
+  }),
+})
+
+const githubRepositoryDispatchSchema = z.object({
+  kind: z.literal("github_repository_dispatch"),
+  github: z.object({
+    owner: z.string().min(1).optional(),
+    repo: z.string().min(1).optional(),
+    eventType: z.string().min(1),
+    apiUrl: z.string().url().optional(),
+  }),
+})
+
+const dispatchRequestSchema = z.object({
+  runId: z.string().uuid(),
+  itemId: z.string().uuid(),
+  environmentName: z.string().min(1),
+  workspacePath: z.string().min(1),
+  phase: z.enum(["activation", "verification"]),
+  dispatch: z.discriminatedUnion("kind", [
+    genericLifecycleDispatchSchema,
+    githubRepositoryDispatchSchema,
+  ]),
+  payload: z.object({
+    repo_namespace: z.string().min(1),
+    environment: z.string().min(1),
+    workspace_path: z.string().min(1),
+    item_key: z.string().min(1),
+    phase: z.enum(["activation", "verification"]),
+    outputs: z.record(z.unknown()),
+    on_completion: z.string().url().nullable().optional(),
+    git_sha: z.string().optional(),
+    git_branch: z.string().optional(),
+  }).passthrough(),
+})
+
+type LifecycleDispatchRequest = z.infer<typeof dispatchRequestSchema>
+type GenericLifecycleDispatchRequest = Omit<LifecycleDispatchRequest, "dispatch"> & {
+  dispatch: z.infer<typeof genericLifecycleDispatchSchema>
+}
+type GitHubRepositoryDispatchRequest = Omit<LifecycleDispatchRequest, "dispatch"> & {
+  dispatch: z.infer<typeof githubRepositoryDispatchSchema>
+}
 
 const callbackBodySchema = z.object({
   status: z.enum(["running", "succeeded", "degraded", "failed"]),
@@ -117,6 +179,9 @@ lifecycleRoute.use("/state", principalAuth())
 lifecycleRoute.use("/admission", enforceFeatureToken)
 lifecycleRoute.use("/admission", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/admission", principalAuth())
+lifecycleRoute.use("/dispatch", enforceFeatureToken)
+lifecycleRoute.use("/dispatch", enforceRouteRateLimit(lifecycleCreateRateLimit))
+lifecycleRoute.use("/dispatch", principalAuth())
 
 lifecycleRoute.post("/admission", async (c) => {
   const principal = c.get("principalAuth")
@@ -282,26 +347,85 @@ lifecycleRoute.post("/items", async (c) => {
   }, 201)
 })
 
+lifecycleRoute.post("/dispatch", async (c) => {
+  const principal = c.get("principalAuth")
+  const requestBody = await readJsonBody(c.req.raw)
+  if (requestBody instanceof Response) {
+    return requestBody
+  }
+  const parsed = dispatchRequestSchema.safeParse(requestBody)
+  if (!parsed.success) {
+    return c.json({ error: { code: "INVALID_REQUEST", message: parsed.error.errors[0]?.message ?? "invalid request" } }, 400)
+  }
+
+  const body = parsed.data
+  const run = await findLifecycleRunById(body.runId)
+  if (!run || run.principalId !== principal.principalId) {
+    return c.json({ error: { code: "NOT_FOUND", message: "lifecycle run not found" } }, 404)
+  }
+
+  const item = await findLifecycleItemById(body.itemId)
+  if (!item || item.runId !== run.id) {
+    return c.json({ error: { code: "NOT_FOUND", message: "lifecycle item not found" } }, 404)
+  }
+
+  if (item.workspacePath !== body.workspacePath || item.phase !== body.phase || item.key !== body.payload.item_key) {
+    return c.json({ error: { code: "CONFLICT", message: "lifecycle dispatch payload does not match the stored item" } }, 409)
+  }
+
+  try {
+    await dispatchLifecycleHook(body)
+
+    await updateLifecycleItem(item.id, {
+      state: "running",
+      summary: item.summary ?? `Dispatching ${item.phase} hook`,
+      startedAt: item.startedAt ?? new Date(),
+    })
+    await createLifecycleEvent({
+      itemId: item.id,
+      eventType: "dispatched",
+      payload: {
+        kind: body.dispatch.kind,
+        workspacePath: body.workspacePath,
+        phase: body.phase,
+      },
+    })
+
+    return c.json({ data: { accepted: true } }, 202)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    await updateLifecycleItem(item.id, {
+      state: "failed",
+      summary: `Dispatch failed for ${item.key}`,
+      reason: message,
+      startedAt: item.startedAt ?? new Date(),
+      finishedAt: new Date(),
+    })
+    await createLifecycleEvent({
+      itemId: item.id,
+      eventType: "dispatch_failed",
+      payload: {
+        kind: body.dispatch.kind,
+        workspacePath: body.workspacePath,
+        phase: body.phase,
+        reason: message,
+      },
+    })
+
+    return c.json({ error: { code: "LIFECYCLE_DISPATCH_FAILED", message } }, 502)
+  }
+})
+
 lifecycleRoute.get("/items/:itemId", async (c) => {
   const item = await findLifecycleItemById(c.req.param("itemId"))
   if (!item) {
     return c.json({ error: { code: "NOT_FOUND", message: "lifecycle item not found" } }, 404)
   }
 
+  const events = await listLifecycleEventsForItems([item.id])
+
   return c.json({
-    data: {
-      id: item.id,
-      runId: item.runId,
-      workspacePath: item.workspacePath,
-      key: item.key,
-      phase: item.phase,
-      state: item.state,
-      summary: item.summary,
-      reason: item.reason,
-      metadata: item.metadata,
-      startedAt: item.startedAt?.toISOString() ?? null,
-      finishedAt: item.finishedAt?.toISOString() ?? null,
-    },
+    data: serializeLifecycleItem(item, events),
   })
 })
 
@@ -323,33 +447,10 @@ lifecycleRoute.get("/state", async (c) => {
     repoBindingId: binding.id,
     environmentName,
   })
+  const events = await listLifecycleEventsForItems(state?.items.map((item) => item.id) ?? [])
 
   return c.json({
-    data: state
-      ? {
-          run: {
-            id: state.run.id,
-            status: state.run.status,
-            executionMode: state.run.executionMode,
-            startedAt: state.run.startedAt.toISOString(),
-            finishedAt: state.run.finishedAt?.toISOString() ?? null,
-          },
-          items: state.items.map((item) => ({
-            id: item.id,
-            workspacePath: item.workspacePath,
-            key: item.key,
-            phase: item.phase,
-            state: item.state,
-            failurePolicy: item.failurePolicy,
-            scopes: item.scopes,
-            summary: item.summary,
-            reason: item.reason,
-            metadata: item.metadata,
-            startedAt: item.startedAt?.toISOString() ?? null,
-            finishedAt: item.finishedAt?.toISOString() ?? null,
-          })),
-        }
-      : null,
+    data: state ? serializeLifecycleState(state.run, state.items, events) : null,
   })
 })
 
@@ -547,6 +648,246 @@ async function resolvePrincipalTier(
   }
 
   return "free_local"
+}
+
+async function dispatchLifecycleHook(
+  body: LifecycleDispatchRequest,
+): Promise<void> {
+  switch (body.dispatch.kind) {
+    case "github_repository_dispatch":
+      await dispatchGitHubRepositoryDispatch(body as GitHubRepositoryDispatchRequest)
+      return
+    case "generic":
+      await dispatchGenericLifecycleHook(body as GenericLifecycleDispatchRequest)
+      return
+  }
+}
+
+async function dispatchGitHubRepositoryDispatch(
+  body: GitHubRepositoryDispatchRequest,
+): Promise<void> {
+  const target = resolveGitHubDispatchTarget(body)
+  const fullName = `${target.owner}/${target.repo}`
+  const repoRecord = await findRepoByFullName(fullName)
+  if (!repoRecord?.installationId) {
+    throw new Error(`GitHub App installation is not configured for ${fullName}`)
+  }
+
+  const octokit = await getInstallationOctokit(repoRecord.installationId)
+  await octokit.request("POST /repos/{owner}/{repo}/dispatches", {
+    owner: target.owner,
+    repo: target.repo,
+    event_type: body.dispatch.github.eventType,
+    client_payload: {
+      yaffle: body.payload,
+    },
+  })
+}
+
+async function dispatchGenericLifecycleHook(
+  body: GenericLifecycleDispatchRequest,
+): Promise<void> {
+  const request = body.dispatch.request
+  const payloadBytes = Buffer.from(JSON.stringify(body.payload))
+  const headers = new Headers({
+    "content-type": "application/json",
+  })
+
+  if (request.auth) {
+    const secret = await resolveLifecycleConnectionSecret(
+      body.payload.repo_namespace,
+      body.environmentName,
+      body.workspacePath,
+      request.auth.connection,
+    )
+    applyLifecycleConnectionAuth(headers, request.auth.scheme, secret, payloadBytes)
+  }
+
+  const response = await fetch(request.url, {
+    method: request.method,
+    headers,
+    body: payloadBytes,
+  })
+
+  if (!response.ok) {
+    throw new Error(`Lifecycle webhook returned ${response.status}`)
+  }
+}
+
+async function resolveLifecycleConnectionSecret(
+  canonicalRepoNamespace: string,
+  environmentName: string,
+  workspacePath: string,
+  connectionName: string,
+): Promise<string> {
+  const repoFullName = repo_full_name_from_namespace(canonicalRepoNamespace)
+  if (!repoFullName) {
+    throw new Error(`Could not resolve repository from namespace '${canonicalRepoNamespace}'`)
+  }
+
+  const repo = await findRepoByFullName(repoFullName)
+  if (!repo?.orgId) {
+    throw new Error(`Repository '${repoFullName}' is not linked to a Yaffle organization`)
+  }
+
+  const matches = (await findConnectionsByName(repo.orgId, connectionName)).filter((connection) => {
+    const scope = getConnectionScopeConfig(connection)
+    return scopeListAllows(scope.environmentScope, environmentName)
+      && scopeListAllows(scope.workspaceScope, workspacePath)
+  })
+
+  if (matches.length === 0) {
+    throw new Error(`No connection named '${connectionName}' matches ${environmentName} / ${workspacePath}`)
+  }
+  if (matches.length > 1) {
+    throw new Error(`Multiple connections named '${connectionName}' match ${environmentName} / ${workspacePath}`)
+  }
+
+  const connection = matches[0]
+  if (connection.credentialProviderType !== "envvar" || !connection.secretPath) {
+    throw new Error(`Connection '${connection.name}' must be an envvar-backed connection for lifecycle auth`)
+  }
+
+  const org = await findOrgById(connection.orgId)
+  if (!org?.iamRoleArn) {
+    throw new Error(`Organization for connection '${connection.name}' is missing broker role configuration`)
+  }
+
+  const brokerCredentials = await assumeOrgBrokerRole(connection.orgId, org.iamRoleArn)
+  const secret = await getConnectionSecret(connection.secretPath, {
+    credentials: brokerCredentials,
+  }) as {
+    envVars?: Array<{ key?: string; value?: string }>
+  }
+  const envVars = (secret.envVars ?? []).filter((entry): entry is { key: string; value: string } =>
+    typeof entry.key === "string" && entry.key.length > 0 && typeof entry.value === "string",
+  )
+
+  if (envVars.length !== 1) {
+    throw new Error(`Connection '${connection.name}' must contain exactly one env var secret for lifecycle auth`)
+  }
+
+  return envVars[0].value
+}
+
+function applyLifecycleConnectionAuth(
+  headers: Headers,
+  scheme: "bearer" | "hmac_sha256",
+  secret: string,
+  body: Buffer,
+): void {
+  if (scheme === "bearer") {
+    headers.set("authorization", `Bearer ${secret}`)
+    return
+  }
+
+  const signature = createHmac("sha256", secret).update(body).digest("hex")
+  headers.set("X-Yaffle-Signature", `sha256=${signature}`)
+}
+
+function resolveGitHubDispatchTarget(
+  body: GitHubRepositoryDispatchRequest,
+): { owner: string; repo: string } {
+  const explicitOwner = body.dispatch.github.owner?.trim()
+  const explicitRepo = body.dispatch.github.repo?.trim()
+  if (explicitOwner && explicitRepo) {
+    return {
+      owner: explicitOwner,
+      repo: explicitRepo,
+    }
+  }
+  if (explicitOwner || explicitRepo) {
+    throw new Error("GitHub repository_dispatch hooks must set both owner and repo together")
+  }
+
+  const repoFullName = repo_full_name_from_namespace(body.payload.repo_namespace)
+  if (!repoFullName) {
+    throw new Error(`Could not resolve repository from namespace '${body.payload.repo_namespace}'`)
+  }
+  const [owner, repo] = repoFullName.split("/")
+  if (!owner || !repo) {
+    throw new Error(`Could not resolve repository owner/name from '${repoFullName}'`)
+  }
+
+  return { owner, repo }
+}
+
+function serializeLifecycleState(
+  run: LifecycleRun,
+  items: LifecycleItem[],
+  events: LifecycleEvent[],
+): {
+  run: {
+    id: string
+    status: string
+    executionMode: string
+    startedAt: string
+    finishedAt: string | null
+  }
+  items: ReturnType<typeof serializeLifecycleItem>[]
+} {
+  return {
+    run: {
+      id: run.id,
+      status: run.status,
+      executionMode: run.executionMode,
+      startedAt: run.startedAt.toISOString(),
+      finishedAt: run.finishedAt?.toISOString() ?? null,
+    },
+    items: items.map((item) =>
+      serializeLifecycleItem(
+        item,
+        events.filter((event) => event.itemId === item.id),
+      ),
+    ),
+  }
+}
+
+function serializeLifecycleItem(
+  item: LifecycleItem,
+  events: LifecycleEvent[],
+): {
+  id: string
+  runId: string
+  workspacePath: string
+  key: string
+  phase: string
+  state: string
+  failurePolicy: string
+  scopes: string[]
+  summary: string | null
+  reason: string | null
+  metadata: Record<string, unknown>
+  startedAt: string | null
+  finishedAt: string | null
+  events: Array<{
+    id: string
+    eventType: string
+    payload: Record<string, unknown>
+    createdAt: string
+  }>
+} {
+  return {
+    id: item.id,
+    runId: item.runId,
+    workspacePath: item.workspacePath,
+    key: item.key,
+    phase: item.phase,
+    state: item.state,
+    failurePolicy: item.failurePolicy,
+    scopes: item.scopes,
+    summary: item.summary ?? null,
+    reason: item.reason ?? null,
+    metadata: item.metadata as Record<string, unknown>,
+    startedAt: item.startedAt?.toISOString() ?? null,
+    finishedAt: item.finishedAt?.toISOString() ?? null,
+    events: events.map((event) => ({
+      id: event.id,
+      eventType: event.eventType,
+      payload: event.payload as Record<string, unknown>,
+      createdAt: event.createdAt.toISOString(),
+    })),
+  }
 }
 
 function principalTierRank(tier: PrincipalTier): number {

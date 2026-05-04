@@ -5,6 +5,15 @@ import { z } from "zod"
 import {
   findDeploymentsByEnvironment,
 } from "../db/queries/workspace-deployments.ts"
+import { findEnvironmentPolicy } from "../db/queries/environment-policies.ts"
+import {
+  type LifecycleEvent,
+  type LifecycleItem,
+  type LifecycleRun,
+  getLatestLifecycleStateForRepoEnvironment,
+  listLifecycleEventsForItems,
+} from "../db/queries/lifecycle.ts"
+import { findRepoByName } from "../db/queries/repositories.ts"
 import {
   listRunsForPreview,
   listRunsForDeployments,
@@ -649,8 +658,51 @@ interface EnvironmentSnapshotData {
   prNumber: number | null
   authorGithubId: number | null
   authorLogin: string | null
+  environmentPolicy?: SerializedEnvironmentPolicy | null
+  environmentLifecycle?: SerializedEnvironmentLifecycle | null
   workspaces: Array<WorkspaceWithRunsForResponse>
   runGroups: SerializedRunGroup[]
+}
+
+type SerializedEnvironmentPolicy = {
+  minimumPrincipalTier: string
+  lifecycleDispatch: string
+  allowedDestinationClasses: string[]
+}
+
+type SerializedLifecycleEvent = {
+  id: string
+  eventType: string
+  payload: Record<string, unknown>
+  createdAt: string
+}
+
+type SerializedLifecycleItem = {
+  id: string
+  runId: string
+  workspacePath: string
+  key: string
+  phase: string
+  state: string
+  failurePolicy: string
+  scopes: string[]
+  summary: string | null
+  reason: string | null
+  metadata: Record<string, unknown>
+  startedAt: string | null
+  finishedAt: string | null
+  events: SerializedLifecycleEvent[]
+}
+
+type SerializedEnvironmentLifecycle = {
+  run: {
+    id: string
+    status: string
+    executionMode: string
+    startedAt: string
+    finishedAt: string | null
+  }
+  items: SerializedLifecycleItem[]
 }
 
 type WorkspaceWithRunsForResponse = {
@@ -669,6 +721,29 @@ async function buildEnvironmentSnapshotData(params: {
   detailLevel?: "full" | "dag"
   includeResourceSpans?: boolean
 }): Promise<EnvironmentSnapshotData | null> {
+  const repoRecord = await findRepoByName(params.orgId, params.repo)
+  const canonicalRepoNamespace = repoRecord?.fullName
+    ? canonicalRepoNamespaceFromRepoFullName(repoRecord.fullName)
+    : null
+  const environmentPolicy = repoRecord?.fullName
+    ? await findEnvironmentPolicy({
+        orgId: params.orgId,
+        repoFullName: repoRecord.fullName,
+        environmentName: params.environmentName,
+      })
+    : undefined
+  const lifecycleState = canonicalRepoNamespace
+    ? await getLatestLifecycleStateForRepoEnvironment({
+        canonicalRepoNamespace,
+        environmentName: params.environmentName,
+      })
+    : undefined
+  const lifecycleEvents = lifecycleState
+    ? await listLifecycleEventsForItems(lifecycleState.items.map((item) => item.id))
+    : []
+  const environmentLifecycle = lifecycleState
+    ? serializeEnvironmentLifecycle(lifecycleState.run, lifecycleState.items, lifecycleEvents)
+    : null
   const [allDeployments, allRunGroups] = await Promise.all([
     findDeploymentsByEnvironment(params.orgId, params.repo, params.environmentName),
     listRunGroupsForEnvironment(params.orgId, params.repo, params.environmentName),
@@ -694,6 +769,8 @@ async function buildEnvironmentSnapshotData(params: {
       prNumber: latestRunGroup.prNumber,
       authorGithubId: null,
       authorLogin: null,
+      environmentPolicy: environmentPolicy ? serializeEnvironmentPolicy(environmentPolicy) : null,
+      environmentLifecycle,
       workspaces: [],
       runGroups: serializedRunGroups,
     }
@@ -736,6 +813,8 @@ async function buildEnvironmentSnapshotData(params: {
       prNumber: first.prNumber,
       authorGithubId: first.authorGithubId,
       authorLogin: first.authorLogin,
+      environmentPolicy: environmentPolicy ? serializeEnvironmentPolicy(environmentPolicy) : null,
+      environmentLifecycle,
       workspaces,
       runGroups: serializedRunGroups,
     }
@@ -842,9 +921,64 @@ async function buildEnvironmentSnapshotData(params: {
     prNumber: first.prNumber,
     authorGithubId: first.authorGithubId,
     authorLogin: first.authorLogin,
+    environmentPolicy: environmentPolicy ? serializeEnvironmentPolicy(environmentPolicy) : null,
+    environmentLifecycle,
     workspaces,
     runGroups: serializedRunGroups,
   }
+}
+
+function serializeEnvironmentPolicy(policy: Awaited<ReturnType<typeof findEnvironmentPolicy>> extends infer T ? Exclude<T, undefined> : never): SerializedEnvironmentPolicy {
+  return {
+    minimumPrincipalTier: policy.minimumPrincipalTier,
+    lifecycleDispatch: policy.lifecycleDispatch,
+    allowedDestinationClasses: policy.allowedDestinationClasses,
+  }
+}
+
+function serializeEnvironmentLifecycle(
+  run: LifecycleRun,
+  items: LifecycleItem[],
+  events: LifecycleEvent[],
+): SerializedEnvironmentLifecycle {
+  return {
+    run: {
+      id: run.id,
+      status: run.status,
+      executionMode: run.executionMode,
+      startedAt: run.startedAt.toISOString(),
+      finishedAt: run.finishedAt?.toISOString() ?? null,
+    },
+    items: items.map((item) => serializeLifecycleItem(item, events.filter((event) => event.itemId === item.id))),
+  }
+}
+
+function serializeLifecycleItem(item: LifecycleItem, events: LifecycleEvent[]): SerializedLifecycleItem {
+  return {
+    id: item.id,
+    runId: item.runId,
+    workspacePath: item.workspacePath,
+    key: item.key,
+    phase: item.phase,
+    state: item.state,
+    failurePolicy: item.failurePolicy,
+    scopes: item.scopes,
+    summary: item.summary ?? null,
+    reason: item.reason ?? null,
+    metadata: item.metadata as Record<string, unknown>,
+    startedAt: item.startedAt?.toISOString() ?? null,
+    finishedAt: item.finishedAt?.toISOString() ?? null,
+    events: events.map((event) => ({
+      id: event.id,
+      eventType: event.eventType,
+      payload: event.payload as Record<string, unknown>,
+      createdAt: event.createdAt.toISOString(),
+    })),
+  }
+}
+
+function canonicalRepoNamespaceFromRepoFullName(repoFullName: string): string {
+  return repoFullName.replace("/", "--")
 }
 
 /**

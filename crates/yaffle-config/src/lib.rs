@@ -62,18 +62,26 @@ pub struct LifecycleHook {
     pub timeout: Option<String>,
     pub failure: LifecycleFailurePolicy,
     pub scopes: Vec<String>,
-    pub request: LifecycleWebhookRequest,
+    pub dispatch: LifecycleHookDispatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleHookKind {
-    Webhook,
+    Generic,
+    GenericHmac,
+    GitHubRepositoryDispatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleFailurePolicy {
     Failed,
     Degraded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LifecycleHookDispatch {
+    Generic(LifecycleWebhookRequest),
+    GitHubRepositoryDispatch(LifecycleGitHubRepositoryDispatch),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,9 +92,18 @@ pub struct LifecycleWebhookRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LifecycleGitHubRepositoryDispatch {
+    pub owner: Option<String>,
+    pub repo: Option<String>,
+    pub event_type: String,
+    pub api_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LifecycleWebhookAuth {
     pub scheme: LifecycleWebhookAuthScheme,
-    pub secret_ref: String,
+    pub secret_ref: Option<String>,
+    pub connection: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,7 +364,9 @@ fn normalize_lifecycle_hooks(
         }
 
         let kind = match hook.kind.as_str() {
-            "webhook" => LifecycleHookKind::Webhook,
+            "webhook" | "generic" => LifecycleHookKind::Generic,
+            "generic_hmac" => LifecycleHookKind::GenericHmac,
+            "github_repository_dispatch" => LifecycleHookKind::GitHubRepositoryDispatch,
             other => {
                 errors.push(format!(
                     "workspaces.{workspace_path}.{phase}.{}: invalid kind '{other}'",
@@ -395,58 +414,208 @@ fn normalize_lifecycle_hooks(
             continue;
         }
 
-        let request = match hook.request {
-            Some(request) => request,
-            None => {
-                errors.push(format!(
-                    "workspaces.{workspace_path}.{phase}.{}: request is required",
-                    hook.key,
-                ));
-                continue;
-            }
-        };
-        if request.url.trim().is_empty() {
-            errors.push(format!(
-                "workspaces.{workspace_path}.{phase}.{}: request.url must not be empty",
-                hook.key,
-            ));
-            continue;
-        }
-        let method = request.method.unwrap_or_else(|| "POST".to_string());
-        if method != "POST" {
-            errors.push(format!(
-                "workspaces.{workspace_path}.{phase}.{}: only POST lifecycle webhooks are currently supported",
-                hook.key,
-            ));
-            continue;
-        }
+        let dispatch = match kind {
+            LifecycleHookKind::Generic | LifecycleHookKind::GenericHmac => {
+                if hook.github.is_some() {
+                    errors.push(format!(
+                        "workspaces.{workspace_path}.{phase}.{}: github dispatch settings are only valid for kind 'github_repository_dispatch'",
+                        hook.key,
+                    ));
+                    continue;
+                }
 
-        let auth = match request.auth {
-            Some(auth) => {
-                let scheme = match auth.scheme.as_str() {
-                    "bearer" => LifecycleWebhookAuthScheme::Bearer,
-                    "hmac_sha256" => LifecycleWebhookAuthScheme::HmacSha256,
-                    other => {
+                let request = match hook.request {
+                    Some(request) => request,
+                    None => {
                         errors.push(format!(
-                            "workspaces.{workspace_path}.{phase}.{}: invalid auth scheme '{other}'",
+                            "workspaces.{workspace_path}.{phase}.{}: request is required",
                             hook.key,
                         ));
                         continue;
                     }
                 };
-                if auth.secret_ref.trim().is_empty() {
+                if request.url.trim().is_empty() {
                     errors.push(format!(
-                        "workspaces.{workspace_path}.{phase}.{}: auth.secret_ref must not be empty",
+                        "workspaces.{workspace_path}.{phase}.{}: request.url must not be empty",
                         hook.key,
                     ));
                     continue;
                 }
-                Some(LifecycleWebhookAuth {
-                    scheme,
-                    secret_ref: auth.secret_ref,
+                let method = request.method.unwrap_or_else(|| "POST".to_string());
+                if method != "POST" {
+                    errors.push(format!(
+                        "workspaces.{workspace_path}.{phase}.{}: only POST lifecycle webhooks are currently supported",
+                        hook.key,
+                    ));
+                    continue;
+                }
+
+                let auth = match request.auth {
+                    Some(auth) => {
+                        if auth
+                            .secret_ref
+                            .as_deref()
+                            .is_some_and(|value| value.trim().is_empty())
+                        {
+                            errors.push(format!(
+                                "workspaces.{workspace_path}.{phase}.{}: auth.secret_ref must not be empty",
+                                hook.key,
+                            ));
+                            continue;
+                        }
+                        if auth
+                            .connection
+                            .as_deref()
+                            .is_some_and(|value| value.trim().is_empty())
+                        {
+                            errors.push(format!(
+                                "workspaces.{workspace_path}.{phase}.{}: auth.connection must not be empty",
+                                hook.key,
+                            ));
+                            continue;
+                        }
+                        let secret_ref = auth.secret_ref.filter(|value| !value.trim().is_empty());
+                        let connection = auth.connection.filter(|value| !value.trim().is_empty());
+                        if secret_ref.is_some() == connection.is_some() {
+                            errors.push(format!(
+                                "workspaces.{workspace_path}.{phase}.{}: auth must set exactly one of secret_ref or connection",
+                                hook.key,
+                            ));
+                            continue;
+                        }
+
+                        let scheme_name = auth.scheme.unwrap_or_else(|| match kind {
+                            LifecycleHookKind::Generic => "bearer".to_string(),
+                            LifecycleHookKind::GenericHmac => "hmac_sha256".to_string(),
+                            LifecycleHookKind::GitHubRepositoryDispatch => unreachable!(),
+                        });
+                        let scheme = match scheme_name.as_str() {
+                            "bearer" => LifecycleWebhookAuthScheme::Bearer,
+                            "hmac_sha256" => LifecycleWebhookAuthScheme::HmacSha256,
+                            other => {
+                                errors.push(format!(
+                                    "workspaces.{workspace_path}.{phase}.{}: invalid auth scheme '{other}'",
+                                    hook.key,
+                                ));
+                                continue;
+                            }
+                        };
+
+                        match (kind, scheme) {
+                            (
+                                LifecycleHookKind::Generic,
+                                LifecycleWebhookAuthScheme::HmacSha256,
+                            ) => {
+                                errors.push(format!(
+                                    "workspaces.{workspace_path}.{phase}.{}: use kind 'generic_hmac' for HMAC-signed lifecycle hooks",
+                                    hook.key,
+                                ));
+                                continue;
+                            }
+                            (
+                                LifecycleHookKind::GenericHmac,
+                                LifecycleWebhookAuthScheme::Bearer,
+                            ) => {
+                                errors.push(format!(
+                                    "workspaces.{workspace_path}.{phase}.{}: kind 'generic_hmac' requires hmac_sha256 auth",
+                                    hook.key,
+                                ));
+                                continue;
+                            }
+                            _ => {}
+                        }
+
+                        Some(LifecycleWebhookAuth {
+                            scheme,
+                            secret_ref,
+                            connection,
+                        })
+                    }
+                    None => {
+                        if kind == LifecycleHookKind::GenericHmac {
+                            errors.push(format!(
+                                "workspaces.{workspace_path}.{phase}.{}: kind 'generic_hmac' requires request.auth with secret_ref or connection",
+                                hook.key,
+                            ));
+                            continue;
+                        }
+                        None
+                    }
+                };
+
+                LifecycleHookDispatch::Generic(LifecycleWebhookRequest {
+                    url: request.url,
+                    method,
+                    auth,
                 })
             }
-            None => None,
+            LifecycleHookKind::GitHubRepositoryDispatch => {
+                if hook.request.is_some() {
+                    errors.push(format!(
+                        "workspaces.{workspace_path}.{phase}.{}: request is not used for kind 'github_repository_dispatch'",
+                        hook.key,
+                    ));
+                    continue;
+                }
+
+                let github = match hook.github {
+                    Some(github) => github,
+                    None => {
+                        errors.push(format!(
+                            "workspaces.{workspace_path}.{phase}.{}: github settings are required for kind 'github_repository_dispatch'",
+                            hook.key,
+                        ));
+                        continue;
+                    }
+                };
+                if github.event_type.trim().is_empty() {
+                    errors.push(format!(
+                        "workspaces.{workspace_path}.{phase}.{}: github.event_type must not be empty",
+                        hook.key,
+                    ));
+                    continue;
+                }
+                if github
+                    .owner
+                    .as_deref()
+                    .is_some_and(|value| value.trim().is_empty())
+                {
+                    errors.push(format!(
+                        "workspaces.{workspace_path}.{phase}.{}: github.owner must not be empty when provided",
+                        hook.key,
+                    ));
+                    continue;
+                }
+                if github
+                    .repo
+                    .as_deref()
+                    .is_some_and(|value| value.trim().is_empty())
+                {
+                    errors.push(format!(
+                        "workspaces.{workspace_path}.{phase}.{}: github.repo must not be empty when provided",
+                        hook.key,
+                    ));
+                    continue;
+                }
+                if github
+                    .api_url
+                    .as_deref()
+                    .is_some_and(|value| value.trim().is_empty())
+                {
+                    errors.push(format!(
+                        "workspaces.{workspace_path}.{phase}.{}: github.api_url must not be empty when provided",
+                        hook.key,
+                    ));
+                    continue;
+                }
+
+                LifecycleHookDispatch::GitHubRepositoryDispatch(LifecycleGitHubRepositoryDispatch {
+                    owner: github.owner,
+                    repo: github.repo,
+                    event_type: github.event_type,
+                    api_url: github.api_url,
+                })
+            }
         };
 
         hooks.push(LifecycleHook {
@@ -456,11 +625,7 @@ fn normalize_lifecycle_hooks(
             timeout: hook.timeout,
             failure,
             scopes,
-            request: LifecycleWebhookRequest {
-                url: request.url,
-                method,
-                auth,
-            },
+            dispatch,
         });
     }
 
@@ -636,6 +801,7 @@ struct RawLifecycleHook {
     failure: Option<String>,
     scopes: Option<Vec<String>>,
     request: Option<RawLifecycleWebhookRequest>,
+    github: Option<RawLifecycleGitHubRepositoryDispatch>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -647,8 +813,17 @@ struct RawLifecycleWebhookRequest {
 
 #[derive(Debug, Deserialize)]
 struct RawLifecycleWebhookAuth {
-    scheme: String,
-    secret_ref: String,
+    scheme: Option<String>,
+    secret_ref: Option<String>,
+    connection: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawLifecycleGitHubRepositoryDispatch {
+    owner: Option<String>,
+    repo: Option<String>,
+    event_type: String,
+    api_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -843,7 +1018,7 @@ environments = ["main"]
   [[workspaces.activation]]
   key = "preview-ready"
   environments = ["pr-*", "main"]
-  kind = "webhook"
+  kind = "generic_hmac"
   timeout = "10m"
   failure = "degraded"
   scopes = ["usable", "acceptable"]
@@ -869,20 +1044,104 @@ environments = ["main"]
         assert_eq!(workspace.activation.len(), 1);
         assert_eq!(workspace.verification.len(), 1);
         assert_eq!(workspace.activation[0].environments, vec!["pr-*", "main"]);
+        assert_eq!(workspace.activation[0].kind, LifecycleHookKind::GenericHmac);
         assert_eq!(
             workspace.activation[0].failure,
             LifecycleFailurePolicy::Degraded
         );
         assert_eq!(workspace.verification[0].scopes, vec!["acceptable"]);
-        assert_eq!(
-            workspace.activation[0]
-                .request
-                .auth
-                .as_ref()
-                .unwrap()
-                .scheme,
-            LifecycleWebhookAuthScheme::HmacSha256
-        );
+        match &workspace.activation[0].dispatch {
+            LifecycleHookDispatch::Generic(request) => {
+                assert_eq!(
+                    request.auth.as_ref().unwrap().scheme,
+                    LifecycleWebhookAuthScheme::HmacSha256
+                );
+                assert_eq!(
+                    request.auth.as_ref().unwrap().secret_ref.as_deref(),
+                    Some("PREVIEW_READY_SECRET")
+                );
+                assert_eq!(request.auth.as_ref().unwrap().connection, None);
+            }
+            LifecycleHookDispatch::GitHubRepositoryDispatch(_) => {
+                panic!("expected generic lifecycle dispatch")
+            }
+        }
+    }
+
+    #[test]
+    fn parses_github_repository_dispatch_lifecycle_hooks() {
+        let input = r#"
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "apps/control-plane/infra"
+environments = ["main"]
+
+  [[workspaces.activation]]
+  key = "control-plane"
+  kind = "github_repository_dispatch"
+
+    [workspaces.activation.github]
+    event_type = "yaffle.activation"
+"#;
+
+        let config = parse_yaffle_toml(input).expect("config should parse");
+        let workspace = &config.workspaces[0];
+        let hook = &workspace.activation[0];
+
+        assert_eq!(hook.kind, LifecycleHookKind::GitHubRepositoryDispatch);
+        match &hook.dispatch {
+            LifecycleHookDispatch::GitHubRepositoryDispatch(github) => {
+                assert_eq!(github.event_type, "yaffle.activation");
+                assert_eq!(github.owner, None);
+                assert_eq!(github.repo, None);
+            }
+            LifecycleHookDispatch::Generic(_) => {
+                panic!("expected github repository dispatch")
+            }
+        }
+    }
+
+    #[test]
+    fn parses_connection_backed_lifecycle_auth() {
+        let input = r#"
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "apps/web/infra"
+environments = ["main"]
+
+  [[workspaces.activation]]
+  key = "buildkite"
+  kind = "generic"
+
+    [workspaces.activation.request]
+    url = "https://hooks.example.com/buildkite"
+
+      [workspaces.activation.request.auth]
+      connection = "buildkite-prod-webhook"
+"#;
+
+        let config = parse_yaffle_toml(input).expect("config should parse");
+        let hook = &config.workspaces[0].activation[0];
+
+        match &hook.dispatch {
+            LifecycleHookDispatch::Generic(request) => {
+                let auth = request.auth.as_ref().expect("auth should exist");
+                assert_eq!(auth.scheme, LifecycleWebhookAuthScheme::Bearer);
+                assert_eq!(auth.secret_ref, None);
+                assert_eq!(auth.connection.as_deref(), Some("buildkite-prod-webhook"));
+            }
+            LifecycleHookDispatch::GitHubRepositoryDispatch(_) => {
+                panic!("expected generic lifecycle dispatch")
+            }
+        }
     }
 
     #[test]
