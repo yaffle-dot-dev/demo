@@ -18,3 +18,15 @@ environments = ["main"]
     [workspaces.activation.request]
     url = "http://127.0.0.1:9999/hooks/preview-ready"
     method = "POST"
+
+  [[workspaces.verification]]
+  key = "preview-smoke"
+  environments = ["main"]
+  kind = "webhook"
+  timeout = "10s"
+  failure = "failed"
+  scopes = ["acceptable"]
+
+    [workspaces.verification.request]
+    url = "http://127.0.0.1:9999/hooks/preview-smoke"
+    method = "POST"

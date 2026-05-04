@@ -1242,7 +1242,7 @@ fn execute_converge_operation(
             });
         }
 
-        lifecycle_results.extend(execute_activation_hooks_for_workspace(
+        lifecycle_results.extend(execute_lifecycle_hooks_for_workspace(
             request,
             repo_context,
             workspace_config,
@@ -1250,6 +1250,17 @@ fn execute_converge_operation(
             &outputs,
             &mut lifecycle_run_context,
             &mut diagnostics,
+            "activation",
+        )?);
+        lifecycle_results.extend(execute_lifecycle_hooks_for_workspace(
+            request,
+            repo_context,
+            workspace_config,
+            workspace_path,
+            &outputs,
+            &mut lifecycle_run_context,
+            &mut diagnostics,
+            "verification",
         )?);
 
         emit_progress(
@@ -1329,7 +1340,7 @@ fn execute_converge_operation(
         format_converge_summary(environment_name, &graph_context.topological_order)
     } else {
         format!(
-            "{}\n\nactivation settled: {} item(s)",
+            "{}\n\nlifecycle settled: {} item(s)",
             format_converge_summary(environment_name, &graph_context.topological_order),
             lifecycle_results.len()
         )
@@ -3464,7 +3475,7 @@ fn ensure_lifecycle_dispatch_context(
     Ok(created)
 }
 
-fn execute_activation_hooks_for_workspace(
+fn execute_lifecycle_hooks_for_workspace(
     request: &EngineRequest,
     repo_context: &RepoContext,
     workspace: &yaffle_config::Workspace,
@@ -3472,13 +3483,14 @@ fn execute_activation_hooks_for_workspace(
     outputs: &BTreeMap<String, TerraformOutput>,
     run_context: &mut Option<LifecycleDispatchContext>,
     diagnostics: &mut Vec<DiagnosticMessage>,
+    phase: &str,
 ) -> Result<Vec<LifecycleItemResult>, EngineError> {
     let environment_name = request
         .target
         .as_ref()
         .map(|target| target.environment.as_str())
         .unwrap_or("unknown");
-    let hooks = lifecycle_hooks_for_environment(workspace, environment_name, "activation");
+    let hooks = lifecycle_hooks_for_environment(workspace, environment_name, phase);
     if hooks.is_empty() {
         return Ok(Vec::new());
     }
@@ -3495,13 +3507,17 @@ fn execute_activation_hooks_for_workspace(
                 run_id: &context.run_id,
                 workspace_path,
                 key: &hook.key,
-                phase: "activation",
+                phase,
                 failure_policy: lifecycle_failure_policy_name(hook.failure),
                 scopes: &hook.scopes,
                 destination_url: &hook.request.url,
                 destination_class: classify_destination_url(&hook.request.url),
                 dispatch_mode: "local",
-                summary: Some("Waiting for activation webhook completion"),
+                summary: Some(match phase {
+                    "activation" => "Waiting for activation webhook completion",
+                    "verification" => "Waiting for verification webhook completion",
+                    _ => "Waiting for lifecycle webhook completion",
+                }),
                 metadata: &serde_json::Map::new(),
                 callback_ttl_minutes: 60,
             },
@@ -3513,6 +3529,7 @@ fn execute_activation_hooks_for_workspace(
             &context,
             workspace_path,
             environment_name,
+            phase,
             hook,
             &item,
             &outputs_json,
@@ -3538,8 +3555,10 @@ fn execute_activation_hooks_for_workspace(
             },
             code: Some("activation_item_settled".to_string()),
             message: format!(
-                "Activation item '{}' settled with state '{}'.",
-                final_item.key, final_item.state
+                "{} item '{}' settled with state '{}'.",
+                title_case_phase(phase),
+                final_item.key,
+                final_item.state
             ),
             workspace_path: Some(workspace_path.to_string()),
             item_key: Some(final_item.key.clone()),
@@ -3581,6 +3600,7 @@ fn dispatch_lifecycle_webhook(
     context: &LifecycleDispatchContext,
     workspace_path: &str,
     environment_name: &str,
+    phase: &str,
     hook: &LifecycleHook,
     item: &crate::local_first::LifecycleItemHandle,
     outputs_json: &serde_json::Map<String, serde_json::Value>,
@@ -3594,7 +3614,7 @@ fn dispatch_lifecycle_webhook(
         "environment": environment_name,
         "workspace_path": workspace_path,
         "item_key": hook.key,
-        "phase": "activation",
+        "phase": phase,
         "outputs": outputs_json,
         "on_completion": item.on_completion_url,
     });
@@ -3602,7 +3622,7 @@ fn dispatch_lifecycle_webhook(
         request_error(
             request,
             "webhook_dispatch_failed",
-            format!("Failed to serialize activation webhook payload: {error}"),
+            format!("Failed to serialize lifecycle webhook payload: {error}"),
         )
     })?;
 
@@ -3632,7 +3652,7 @@ fn dispatch_lifecycle_webhook(
                 request,
                 "webhook_dispatch_failed",
                 format!(
-                    "Failed to dispatch activation webhook '{}': {error}",
+                    "Failed to dispatch lifecycle webhook '{}': {error}",
                     hook.key
                 ),
             )
@@ -3643,7 +3663,7 @@ fn dispatch_lifecycle_webhook(
             request,
             "webhook_dispatch_failed",
             format!(
-                "Activation webhook '{}' returned {}.",
+                "Lifecycle webhook '{}' returned {}.",
                 hook.key,
                 response.status()
             ),
@@ -4044,6 +4064,14 @@ fn lifecycle_failure_policy_name(policy: LifecycleFailurePolicy) -> &'static str
     match policy {
         LifecycleFailurePolicy::Failed => "failed",
         LifecycleFailurePolicy::Degraded => "degraded",
+    }
+}
+
+fn title_case_phase(phase: &str) -> &'static str {
+    match phase {
+        "activation" => "Activation",
+        "verification" => "Verification",
+        _ => "Lifecycle",
     }
 }
 

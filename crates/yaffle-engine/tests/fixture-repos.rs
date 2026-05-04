@@ -661,10 +661,15 @@ fn converge_activation_webhook_fixture_dispatches_and_settles_activation() {
     let config = fs::read_to_string(&config_path).expect("fixture config should read");
     fs::write(
         &config_path,
-        config.replace(
-            "http://127.0.0.1:9999/hooks/preview-ready",
-            &format!("http://{}/hooks/preview-ready", hook_addr),
-        ),
+        config
+            .replace(
+                "http://127.0.0.1:9999/hooks/preview-ready",
+                &format!("http://{}/hooks/preview-ready", hook_addr),
+            )
+            .replace(
+                "http://127.0.0.1:9999/hooks/preview-smoke",
+                &format!("http://{}/hooks/preview-smoke", hook_addr),
+            ),
     )
     .expect("fixture config should rewrite hook url");
 
@@ -710,7 +715,7 @@ fn converge_activation_webhook_fixture_dispatches_and_settles_activation() {
     assert!(converge
         .result
         .summary
-        .contains("activation settled: 1 item(s)"));
+        .contains("lifecycle settled: 2 item(s)"));
 
     let status = execute(
         &EngineRequest {
@@ -739,14 +744,29 @@ fn converge_activation_webhook_fixture_dispatches_and_settles_activation() {
         })
         .collect::<std::collections::BTreeMap<_, _>>();
     assert_eq!(conditions.get("activation_settled"), Some(&true));
+    assert_eq!(conditions.get("verification_settled"), Some(&true));
     assert_eq!(conditions.get("usable"), Some(&true));
     assert_eq!(conditions.get("acceptable"), Some(&true));
 }
 
-#[derive(Default)]
 struct FakeLifecycleState {
-    item_state: String,
-    item_summary: Option<String>,
+    activation_state: String,
+    activation_summary: Option<String>,
+    verification_state: String,
+    verification_summary: Option<String>,
+    created_item_count: usize,
+}
+
+impl Default for FakeLifecycleState {
+    fn default() -> Self {
+        Self {
+            activation_state: "pending".to_string(),
+            activation_summary: None,
+            verification_state: "pending".to_string(),
+            verification_summary: None,
+            created_item_count: 0,
+        }
+    }
 }
 
 fn spawn_fake_lifecycle_backend(
@@ -810,51 +830,89 @@ fn spawn_fake_lifecycle_backend(
                             }),
                         );
                     } else if request.starts_with("POST /api/lifecycle/items HTTP/1.1") {
+                        let mut state = lifecycle_state.lock().expect("state lock should work");
+                        state.created_item_count += 1;
+                        let (item_id, token, key, phase, scopes) = if state.created_item_count == 1
+                        {
+                            state.activation_state = "pending".to_string();
+                            (
+                                "item-1",
+                                "token-1",
+                                "preview-ready",
+                                "activation",
+                                json!(["usable", "acceptable"]),
+                            )
+                        } else {
+                            state.verification_state = "pending".to_string();
+                            (
+                                "item-2",
+                                "token-2",
+                                "preview-smoke",
+                                "verification",
+                                json!(["acceptable"]),
+                            )
+                        };
                         write_http_json(
                             &mut stream,
                             201,
                             json!({
                                 "data": {
-                                    "id": "item-1",
+                                    "id": item_id,
                                     "state": "pending",
-                                    "onCompletionUrl": format!("http://{backend_addr}/api/lifecycle/completions/token-1")
+                                    "onCompletionUrl": format!("http://{backend_addr}/api/lifecycle/completions/{token}"),
+                                    "_key": key,
+                                    "_phase": phase,
+                                    "_scopes": scopes
                                 }
                             }),
                         );
                     } else if request
                         .starts_with("POST /api/lifecycle/completions/token-1 HTTP/1.1")
+                        || request.starts_with("POST /api/lifecycle/completions/token-2 HTTP/1.1")
                     {
                         let body = extract_http_body(&request);
                         let payload: serde_json::Value =
                             serde_json::from_str(&body).expect("callback payload should parse");
                         let mut state = lifecycle_state.lock().expect("state lock should work");
-                        state.item_state =
-                            payload["status"].as_str().unwrap_or("failed").to_string();
-                        state.item_summary = payload["summary"].as_str().map(ToOwned::to_owned);
+                        let is_activation = request.contains("token-1");
+                        if is_activation {
+                            state.activation_state =
+                                payload["status"].as_str().unwrap_or("failed").to_string();
+                            state.activation_summary =
+                                payload["summary"].as_str().map(ToOwned::to_owned);
+                        } else {
+                            state.verification_state =
+                                payload["status"].as_str().unwrap_or("failed").to_string();
+                            state.verification_summary =
+                                payload["summary"].as_str().map(ToOwned::to_owned);
+                        }
                         write_http_json(
                             &mut stream,
                             200,
-                            json!({ "data": { "id": "item-1", "state": state.item_state } }),
+                            json!({ "data": { "id": if is_activation { "item-1" } else { "item-2" }, "state": if is_activation { state.activation_state.clone() } else { state.verification_state.clone() } } }),
                         );
-                    } else if request.starts_with("GET /api/lifecycle/items/item-1 HTTP/1.1") {
+                    } else if request.starts_with("GET /api/lifecycle/items/item-1 HTTP/1.1")
+                        || request.starts_with("GET /api/lifecycle/items/item-2 HTTP/1.1")
+                    {
                         let state = lifecycle_state.lock().expect("state lock should work");
+                        let is_activation = request.contains("item-1");
                         write_http_json(
                             &mut stream,
                             200,
                             json!({
                                 "data": {
-                                    "id": "item-1",
+                                    "id": if is_activation { "item-1" } else { "item-2" },
                                     "workspacePath": "infra/single",
-                                    "key": "preview-ready",
-                                    "phase": "activation",
-                                    "state": state.item_state,
+                                    "key": if is_activation { "preview-ready" } else { "preview-smoke" },
+                                    "phase": if is_activation { "activation" } else { "verification" },
+                                    "state": if is_activation { state.activation_state.as_str() } else { state.verification_state.as_str() },
                                     "failurePolicy": "failed",
-                                    "scopes": ["usable", "acceptable"],
-                                    "summary": state.item_summary,
+                                    "scopes": if is_activation { json!(["usable", "acceptable"]) } else { json!(["acceptable"]) },
+                                    "summary": if is_activation { json!(state.activation_summary) } else { json!(state.verification_summary) },
                                     "reason": null,
                                     "metadata": {},
                                     "startedAt": "2026-05-04T00:00:00Z",
-                                    "finishedAt": if state.item_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
+                                    "finishedAt": if (if is_activation { state.activation_state.as_str() } else { state.verification_state.as_str() }) == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
                                 }
                             }),
                         );
@@ -867,25 +925,41 @@ fn spawn_fake_lifecycle_backend(
                                 "data": {
                                     "run": {
                                         "id": "run-1",
-                                        "status": if state.item_state == "succeeded" { "succeeded" } else { "running" },
+                                        "status": if state.activation_state == "succeeded" && state.verification_state == "succeeded" { "succeeded" } else { "running" },
                                         "executionMode": "local",
                                         "startedAt": "2026-05-04T00:00:00Z",
-                                        "finishedAt": if state.item_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
+                                        "finishedAt": if state.activation_state == "succeeded" && state.verification_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
                                     },
-                                    "items": [{
+                                    "items": [
+                                      {
                                         "id": "item-1",
                                         "workspacePath": "infra/single",
                                         "key": "preview-ready",
                                         "phase": "activation",
-                                        "state": state.item_state,
+                                        "state": state.activation_state,
                                         "failurePolicy": "failed",
                                         "scopes": ["usable", "acceptable"],
-                                        "summary": state.item_summary,
+                                        "summary": state.activation_summary,
                                         "reason": null,
                                         "metadata": {},
                                         "startedAt": "2026-05-04T00:00:00Z",
-                                        "finishedAt": if state.item_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
-                                    }]
+                                        "finishedAt": if state.activation_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
+                                      },
+                                      {
+                                        "id": "item-2",
+                                        "workspacePath": "infra/single",
+                                        "key": "preview-smoke",
+                                        "phase": "verification",
+                                        "state": state.verification_state,
+                                        "failurePolicy": "failed",
+                                        "scopes": ["acceptable"],
+                                        "summary": state.verification_summary,
+                                        "reason": null,
+                                        "metadata": {},
+                                        "startedAt": "2026-05-04T00:00:00Z",
+                                        "finishedAt": if state.verification_state == "succeeded" { Some("2026-05-04T00:00:01Z") } else { None }
+                                      }
+                                    ]
                                 }
                             }),
                         );
@@ -943,6 +1017,23 @@ fn spawn_activation_receiver(
                             }))
                             .send()
                             .expect("callback should succeed");
+                        write_http_json(&mut stream, 202, json!({ "ok": true }));
+                    } else if request.starts_with("POST /hooks/preview-smoke HTTP/1.1") {
+                        let body = extract_http_body(&request);
+                        let payload: serde_json::Value =
+                            serde_json::from_str(&body).expect("verification payload should parse");
+                        assert_eq!(payload["phase"], json!("verification"));
+                        let callback = payload["on_completion"]
+                            .as_str()
+                            .expect("verification callback url should exist");
+                        client
+                            .post(callback)
+                            .json(&json!({
+                                "status": "succeeded",
+                                "summary": "preview-smoke completed"
+                            }))
+                            .send()
+                            .expect("verification callback should succeed");
                         write_http_json(&mut stream, 202, json!({ "ok": true }));
                     } else {
                         write_http_json(&mut stream, 404, json!({ "error": "not found" }));
