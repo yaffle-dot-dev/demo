@@ -1,5 +1,33 @@
 locals {
   deployer_principal_arns = distinct(var.deployer_principal_arns)
+  app_deployer_role_arn   = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-app-deployer"
+  app_deployer_assume_role_statements = [
+    {
+      Effect = "Allow"
+      Principal = {
+        AWS = concat(local.deployer_principal_arns, [local.app_deployer_role_arn])
+      }
+      Action = "sts:AssumeRole"
+    },
+    {
+      Effect = "Allow"
+      Principal = {
+        Federated = aws_iam_openid_connect_provider.github_actions.arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = [
+            "repo:yaffle-dot-dev/yaffle:ref:refs/heads/main",
+            "repo:yaffle-dot-dev/yaffle:pull_request",
+          ]
+        }
+      }
+    },
+  ]
 }
 
 resource "aws_iam_role" "site_deployer" {
@@ -91,16 +119,8 @@ resource "aws_iam_role" "app_deployer" {
   description = "Human deployer role for the app stack"
 
   assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Principal = {
-          AWS = local.deployer_principal_arns
-        }
-        Action = "sts:AssumeRole"
-      }
-    ]
+    Version   = "2012-10-17"
+    Statement = local.app_deployer_assume_role_statements
   })
 
   tags = {
@@ -121,7 +141,32 @@ resource "aws_iam_role_policy" "app_deployer" {
         Effect = "Allow"
         Action = "sts:AssumeRole"
         Resource = [
+          local.app_deployer_role_arn,
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-deploy-web-*",
+        ]
+      },
+      {
+        Sid    = "ECRAuth"
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRPush"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+        ]
+        Resource = [
+          "arn:aws:ecr:*:${data.aws_caller_identity.current.account_id}:repository/yaffle-*",
         ]
       },
       {
@@ -155,6 +200,20 @@ resource "aws_iam_role_policy" "app_deployer" {
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-web-ecs-exec-*",
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-runner-task-*",
           "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/yaffle-runner-exec-*",
+        ]
+      },
+      {
+        Sid    = "ReadRuntimeSecrets"
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+        ]
+        Resource = [
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/shared/cloudflare/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/shared/github-actions/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/*/provider-discovery-agent/*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/*/database-url*",
+          "arn:aws:secretsmanager:*:${data.aws_caller_identity.current.account_id}:secret:yaffle/*/database-migration-url*",
         ]
       },
       {

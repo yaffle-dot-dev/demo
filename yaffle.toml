@@ -9,16 +9,20 @@ version = 1
 name = "main"
 
 # =============================================================================
-# Triggers
+# Cloud
 # =============================================================================
+# Cloud-only automation like forge and webhook triggers lives here. Local CLI
+# orchestration does not require this section.
+
+[cloud]
 
 # Deploy to main environment when main branch is pushed
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "main"
 
 # Create transient environments for all pull requests
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 # =============================================================================
@@ -54,11 +58,44 @@ environments = ["*"]
 variables.private_beta_invites_required = true
 variables.private_beta_operator_identifiers = "dev@launi.me"
 
+  [[workspaces.activation]]
+  key = "control-plane"
+  environments = ["main"]
+  kind = "github_repository_dispatch"
+  timeout = "30m"
+  failure = "failed"
+  scopes = ["usable"]
+
+    [workspaces.activation.github]
+    event_type = "yaffle.activation"
+
+  [[workspaces.verification]]
+  key = "control-plane"
+  environments = ["main"]
+  kind = "github_repository_dispatch"
+  timeout = "10m"
+  failure = "failed"
+  scopes = ["acceptable"]
+
+    [workspaces.verification.github]
+    event_type = "yaffle.verification"
+
 [[workspaces]]
 path = "apps/runner/infra"
 environments = ["*"]
 variables.runner_cpu    = 512
 variables.runner_memory = 1024
+
+  [[workspaces.activation]]
+  key = "runner"
+  environments = ["main"]
+  kind = "github_repository_dispatch"
+  timeout = "20m"
+  failure = "failed"
+  scopes = ["usable"]
+
+    [workspaces.activation.github]
+    event_type = "yaffle.activation"
 # ---------------------------------------------------------------------------
 # App S3 Buckets (owned by individual apps)
 # ---------------------------------------------------------------------------
@@ -77,13 +114,68 @@ environments = ["*"]
 path = "apps/web/infra"
 environments = ["*"]
 
+  [[workspaces.activation]]
+  key = "web"
+  environments = ["main"]
+  kind = "github_repository_dispatch"
+  timeout = "30m"
+  failure = "failed"
+  scopes = ["usable"]
+
+    [workspaces.activation.github]
+    event_type = "yaffle.activation"
+
+  [[workspaces.verification]]
+  key = "web"
+  environments = ["main"]
+  kind = "github_repository_dispatch"
+  timeout = "10m"
+  failure = "failed"
+  scopes = ["acceptable"]
+
+    [workspaces.verification.github]
+    event_type = "yaffle.verification"
+
 [[workspaces]]
 path = "apps/provider-discovery-agent/infra"
 environments = ["*"]
 
+  [[workspaces.activation]]
+  key = "provider-discovery-agent"
+  environments = ["main"]
+  kind = "github_repository_dispatch"
+  timeout = "20m"
+  failure = "failed"
+  scopes = ["usable"]
+
+    [workspaces.activation.github]
+    event_type = "yaffle.activation"
+
+  [[workspaces.verification]]
+  key = "provider-discovery-agent"
+  environments = ["main"]
+  kind = "github_repository_dispatch"
+  timeout = "10m"
+  failure = "failed"
+  scopes = ["acceptable"]
+
+    [workspaces.verification.github]
+    event_type = "yaffle.verification"
+
 [[workspaces]]
 path = "apps/traffic-controller/infra"
 environments = ["main"]
+
+  [[workspaces.activation]]
+  key = "traffic-controller"
+  environments = ["main"]
+  kind = "github_repository_dispatch"
+  timeout = "20m"
+  failure = "failed"
+  scopes = ["usable"]
+
+    [workspaces.activation.github]
+    event_type = "yaffle.activation"
 
 # ---------------------------------------------------------------------------
 # Unified Frontend (CloudFront + routing)
