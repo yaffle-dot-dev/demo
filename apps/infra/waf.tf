@@ -250,8 +250,59 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   }
 
   rule {
+    name     = "allow-local-first-lifecycle-posts"
+    priority = 9
+
+    action {
+      allow {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            search_string         = "/api/lifecycle/"
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+
+        statement {
+          byte_match_statement {
+            search_string         = "POST"
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              method {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "allowLocalFirstLifecyclePosts"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
     name     = "aws-managed-ip-reputation"
-    priority = 10
+    priority = 12
 
     override_action {
       none {}
