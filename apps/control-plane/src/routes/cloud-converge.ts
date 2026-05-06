@@ -4,7 +4,11 @@ import { z } from "zod"
 
 import type { PullRequestContext, PushContext, WebhookContext } from "@yaffle/shared"
 
-import { createRunGroup } from "../db/queries/run-groups.ts"
+import { createRunGroup, findRunGroupById } from "../db/queries/run-groups.ts"
+import { listRunsForDeployments } from "../db/queries/tf-runs.ts"
+import { findDeploymentsByRunGroup } from "../db/queries/workspace-deployments.ts"
+import { ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
+import { getLifecycleStateForRunGroup, listLifecycleEventsForItems } from "../db/queries/lifecycle.ts"
 import { findOrgById, findOrgMembership } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { parseYaffleToml, type YaffleTomlConfig } from "../lib/config-toml.ts"
@@ -42,11 +46,15 @@ const LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR = "YAFFLE_LOCAL_FIRST_FEATURE_TOKEN"
 
 const manualConvergeSchema = z.object({
   repoFullName: z.string().min(1),
+  canonicalRepoNamespace: z.string().min(1),
+  localRepoFingerprint: z.string().min(1),
   environmentName: z.string().min(1),
   ref: z.string().min(1),
   headSha: z.string().min(1),
   workspacePaths: z.array(z.string().min(1)).min(1),
 })
+
+const uuidParam = z.string().uuid()
 
 export function createCloudConvergeRoute(deps: {
   loadConfig?: ConfigLoader
@@ -80,6 +88,18 @@ export function createCloudConvergeRoute(deps: {
     }
 
     const values = parsed.data
+    const expectedNamespace = values.repoFullName.replace("/", "--")
+    if (expectedNamespace !== values.canonicalRepoNamespace) {
+      return c.json(
+        {
+          error: {
+            code: "REPO_NAMESPACE_MISMATCH",
+            message: `canonical repo namespace '${values.canonicalRepoNamespace}' does not match '${values.repoFullName}'`,
+          },
+        },
+        400,
+      )
+    }
     const repo = await findRepoByFullName(values.repoFullName)
     if (!repo?.orgId) {
       return c.json({ error: { code: "REPO_NOT_FOUND", message: `repository not found: ${values.repoFullName}` } }, 404)
@@ -109,6 +129,12 @@ export function createCloudConvergeRoute(deps: {
         403,
       )
     }
+
+    const repoBinding = await ensurePrincipalRepoBinding({
+      principalId: principal.principalId,
+      canonicalRepoNamespace: values.canonicalRepoNamespace,
+      localRepoFingerprint: values.localRepoFingerprint,
+    })
 
     const ctx = buildManualWebhookContext({
       repoFullName: values.repoFullName,
@@ -157,6 +183,7 @@ export function createCloudConvergeRoute(deps: {
 
     const runGroup = await createRunGroup({
       orgId: org.id,
+      repoBindingId: repoBinding.id,
       repo: repo.name,
       environmentKind: ctx.kind === "pull_request" ? "transient" : "named",
       environmentName: values.environmentName,
@@ -202,6 +229,119 @@ export function createCloudConvergeRoute(deps: {
       },
       202,
     )
+  })
+
+  route.get("/converge/:runGroupId", async (c) => {
+    const principal = c.get("principalAuth")
+    if (principal.type !== "account" || !principal.userId) {
+      return c.json(
+        { error: { code: "PAID_CLOUD_REQUIRED", message: "remote converge requires a paid cloud account session" } },
+        403,
+      )
+    }
+
+    const parsedRunGroupId = uuidParam.safeParse(c.req.param("runGroupId"))
+    if (!parsedRunGroupId.success) {
+      return c.json(
+        { error: { code: "BAD_REQUEST", message: "runGroupId must be a valid UUID" } },
+        400,
+      )
+    }
+
+    const runGroup = await findRunGroupById(parsedRunGroupId.data)
+    if (!runGroup) {
+      return c.json({ error: { code: "NOT_FOUND", message: "run group not found" } }, 404)
+    }
+
+    const org = await findOrgById(runGroup.orgId)
+    if (!org) {
+      return c.json({ error: { code: "ORG_NOT_FOUND", message: "organization not found" } }, 404)
+    }
+
+    const membership = await findOrgMembership(org.id, principal.userId)
+    if (!membership || !hasMinRole(membership.role, "viewer")) {
+      return c.json(
+        { error: { code: "FORBIDDEN", message: "run group access denied" } },
+        403,
+      )
+    }
+
+    const deployments = await findDeploymentsByRunGroup(runGroup.id)
+    const latestRuns = await listRunsForDeployments(deployments.map((deployment) => deployment.id))
+    const lifecycleState = await getLifecycleStateForRunGroup(runGroup.id)
+    const lifecycleEvents = await listLifecycleEventsForItems(lifecycleState?.items.map((item) => item.id) ?? [])
+
+    const runGroupStatus = deriveCloudConvergeRunGroupStatus(runGroup.status, lifecycleState?.run.status)
+
+    return c.json({
+      data: {
+        runGroup: {
+          id: runGroup.id,
+          status: runGroupStatus,
+          repo: runGroup.repo,
+          environmentKind: runGroup.environmentKind,
+          environmentName: runGroup.environmentName,
+          ref: runGroup.ref,
+          headSha: runGroup.headSha,
+          trigger: runGroup.trigger,
+          createdAt: runGroup.createdAt.toISOString(),
+          startedAt: runGroup.startedAt?.toISOString() ?? null,
+          completedAt: runGroup.completedAt?.toISOString() ?? null,
+        },
+        lifecycle: lifecycleState
+          ? {
+              run: {
+                id: lifecycleState.run.id,
+                status: lifecycleState.run.status,
+                executionMode: lifecycleState.run.executionMode,
+                startedAt: lifecycleState.run.startedAt.toISOString(),
+                finishedAt: lifecycleState.run.finishedAt?.toISOString() ?? null,
+              },
+              items: lifecycleState.items.map((item) => ({
+                id: item.id,
+                workspacePath: item.workspacePath,
+                key: item.key,
+                phase: item.phase,
+                state: item.state,
+                failurePolicy: item.failurePolicy,
+                scopes: item.scopes,
+                summary: item.summary,
+                reason: item.reason,
+                startedAt: item.startedAt?.toISOString() ?? null,
+                finishedAt: item.finishedAt?.toISOString() ?? null,
+                events: lifecycleEvents
+                  .filter((event) => event.itemId === item.id)
+                  .map((event) => ({
+                    id: event.id,
+                    eventType: event.eventType,
+                    payload: event.payload,
+                    createdAt: event.createdAt.toISOString(),
+                  })),
+              })),
+            }
+          : null,
+        deployments: deployments.map((deployment) => {
+          const latestRun = latestRuns.get(deployment.id)?.[0] ?? null
+          return {
+            id: deployment.id,
+            workspacePath: deployment.workspacePath,
+            status: deployment.status,
+            latestRun: latestRun
+              ? {
+                  id: latestRun.id,
+                  runType: latestRun.runType,
+                  status: latestRun.status,
+                  planSummary: latestRun.planSummary,
+                  errorMessage: latestRun.errorMessage,
+                  createdAt: latestRun.createdAt.toISOString(),
+                  startedAt: latestRun.startedAt?.toISOString() ?? null,
+                  completedAt: latestRun.completedAt?.toISOString() ?? null,
+                }
+              : null,
+          }
+        }),
+      },
+    })
   })
 
   return route
@@ -321,6 +461,33 @@ function stripBranchRef(ref: string): string {
 
 function stripGitRef(ref: string): string {
   return ref.replace(/^refs\/(heads|tags)\//, "")
+}
+
+function deriveCloudConvergeRunGroupStatus(
+  runGroupStatus: string,
+  lifecycleStatus: string | undefined,
+): string {
+  if (!lifecycleStatus) {
+    return runGroupStatus
+  }
+
+  if (runGroupStatus === "failed") {
+    return "failed"
+  }
+
+  if (lifecycleStatus === "running") {
+    return "running"
+  }
+
+  if (lifecycleStatus === "failed") {
+    return "failed"
+  }
+
+  if (lifecycleStatus === "degraded") {
+    return "partial"
+  }
+
+  return runGroupStatus
 }
 
 async function loadConfigFromGithub(ctx: WebhookContext): Promise<YaffleTomlConfig> {

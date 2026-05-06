@@ -212,6 +212,7 @@ describe("cloudCliRoute", () => {
     await publishHostedOutputModule({
       principalId: anonymousPrincipal.id,
       repoBindingId: binding.id,
+      canonicalRepoNamespace: "test-org--fixture",
       environmentName: "main",
       workspacePath: "infra/shared",
       stateFingerprint: "state-md5-1",

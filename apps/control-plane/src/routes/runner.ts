@@ -72,6 +72,8 @@ import {
   notifyDownstreams,
 } from "../lib/deployment-side-effects.ts"
 import { resolveExecutionCredentialsForDeployment } from "../lib/execution-credentials.ts"
+import { publishHostedOutputModuleForRunGroupBinding } from "../lib/hosted-output-modules.ts"
+import { executeHostedLifecycleForDeployment } from "../lib/hosted-lifecycle.ts"
 import { getConfiguredSchedulerConcurrencyLimits } from "../lib/scheduler.ts"
 import { isWarmRunnerWorkspaceExcluded } from "../lib/warm-runner.ts"
 
@@ -970,8 +972,47 @@ runnerJobRoute.post("/complete", async (c) => {
           await notifyDownstreams(deployment.id, "apply")
         }
       } else if (jobType === "apply") {
-        await updateDeploymentStatus(deployment.id, "ready")
-        await notifyDownstreams(deployment.id, "apply")
+        try {
+          await publishHostedOutputModuleForRunGroupBinding({
+            runGroupId: deployment.runGroupId,
+            environmentName: deployment.environmentName,
+            workspacePath: deployment.workspacePath,
+            outputs: (result?.outputs && typeof result.outputs === "object")
+              ? result.outputs as Record<string, unknown>
+              : null,
+          })
+          await executeHostedLifecycleForDeployment({
+            deployment: {
+              id: deployment.id,
+              orgId: deployment.orgId,
+              repo: deployment.repo,
+              runGroupId: deployment.runGroupId ?? null,
+              environmentName: deployment.environmentName,
+              prNumber: deployment.prNumber ?? null,
+              workspacePath: deployment.workspacePath,
+              ref: deployment.ref,
+              headSha: deployment.headSha,
+              installationId: deployment.installationId ?? null,
+            },
+            outputs: (result?.outputs && typeof result.outputs === "object")
+              ? result.outputs as Record<string, unknown>
+              : {},
+          })
+
+          await updateDeploymentStatus(deployment.id, "ready")
+          await notifyDownstreams(deployment.id, "apply")
+        } catch (error) {
+          logger.error("runner.complete.hosted_output_publish_failed", {
+            "job.id": jobId,
+            "run.id": runId,
+            deploymentId: deployment.id,
+            runGroupId: deployment.runGroupId ?? undefined,
+            workspacePath: deployment.workspacePath,
+            error: error instanceof Error ? error.message : String(error),
+          })
+          await updateDeploymentStatus(deployment.id, "system_error")
+          await cascadeFailure(deployment.id)
+        }
       } else if (jobType === "destroy") {
         await updateDeploymentStatus(deployment.id, "destroyed")
         await notifyDestroyComplete(deployment.id)

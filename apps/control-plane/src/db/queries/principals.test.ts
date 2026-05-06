@@ -80,6 +80,7 @@ describe("principal local-first lifecycle queries", () => {
     const published = await publishHostedOutputModule({
       principalId: expiredPrincipal.id,
       repoBindingId: binding.id,
+      canonicalRepoNamespace: "test-org--fixture",
       environmentName: "main",
       workspacePath: "infra/shared",
       stateFingerprint: "state-md5-v1",

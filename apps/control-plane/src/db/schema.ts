@@ -231,6 +231,8 @@ export const runGroups = pgTable("run_groups", {
   orgId: uuid("org_id")
     .references(() => organizations.id, { onDelete: "cascade" })
     .notNull(),
+  repoBindingId: uuid("repo_binding_id")
+    .references(() => principalRepoBindings.id, { onDelete: "set null" }),
   repo: text("repo").notNull(),
   // Environment identification (new canonical discriminator)
   environmentKind: text("environment_kind").notNull(), // 'named' | 'transient'
@@ -692,11 +694,10 @@ export const hostedOutputModules = pgTable(
   {
     id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
     principalId: uuid("principal_id")
-      .references(() => principals.id, { onDelete: "cascade" })
-      .notNull(),
+      .references(() => principals.id, { onDelete: "cascade" }),
     repoBindingId: uuid("repo_binding_id")
-      .references(() => principalRepoBindings.id, { onDelete: "cascade" })
-      .notNull(),
+      .references(() => principalRepoBindings.id, { onDelete: "cascade" }),
+    canonicalRepoNamespace: text("canonical_repo_namespace").notNull(),
     environmentName: text("environment_name").notNull(),
     workspacePath: text("workspace_path").notNull(),
     versionSerial: integer("version_serial").notNull(),
@@ -706,13 +707,13 @@ export const hostedOutputModules = pgTable(
   },
   (t) => [
     unique("hosted_output_modules_scope_version_unique").on(
-      t.repoBindingId,
+      t.canonicalRepoNamespace,
       t.environmentName,
       t.workspacePath,
       t.versionSerial,
     ),
     index("hosted_output_modules_scope_idx").on(
-      t.repoBindingId,
+      t.canonicalRepoNamespace,
       t.environmentName,
       t.workspacePath,
     ),
@@ -761,6 +762,8 @@ export const lifecycleRuns = pgTable(
     principalId: uuid("principal_id")
       .references(() => principals.id, { onDelete: "cascade" })
       .notNull(),
+    runGroupId: uuid("run_group_id")
+      .references(() => runGroups.id, { onDelete: "set null" }),
     repoBindingId: uuid("repo_binding_id")
       .references(() => principalRepoBindings.id, { onDelete: "cascade" })
       .notNull(),
@@ -775,6 +778,7 @@ export const lifecycleRuns = pgTable(
   (t) => [
     index("lifecycle_runs_repo_env_idx").on(t.repoBindingId, t.environmentName, t.createdAt),
     index("lifecycle_runs_principal_idx").on(t.principalId, t.createdAt),
+    index("lifecycle_runs_run_group_idx").on(t.runGroupId),
   ],
 )
 

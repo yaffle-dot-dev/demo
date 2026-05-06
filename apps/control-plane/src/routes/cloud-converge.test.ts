@@ -6,7 +6,7 @@ import { ensureAccountPrincipal } from "../db/queries/principals.ts"
 import { updateOrg } from "../db/queries/organizations.ts"
 import { parseYaffleToml } from "../lib/config-toml.ts"
 import { generateAccountPrincipalToken } from "../lib/principal-tokens.ts"
-import { repositories } from "../db/schema.ts"
+import { repositories, runGroups, tfRuns, workspaceDeployments } from "../db/schema.ts"
 import { addMembership, cleanupTestData, createTestOrg, createTestUser } from "../test-utils/auth.ts"
 
 import { createCloudConvergeRoute } from "./cloud-converge.ts"
@@ -90,6 +90,8 @@ environments = ["main"]
       },
       body: JSON.stringify({
         repoFullName: "test-org/fixture",
+        canonicalRepoNamespace: "test-org--fixture",
+        localRepoFingerprint: "repo-fingerprint-1",
         environmentName: "main",
         ref: "refs/heads/main",
         headSha: "abc123def456",
@@ -114,6 +116,7 @@ environments = ["main"]
     expect(runGroup?.trigger).toBe("manual")
     expect(runGroup?.environmentName).toBe("main")
     expect(runGroup?.ref).toBe("refs/heads/main")
+    expect(runGroup?.repoBindingId).toBeTruthy()
     expect(seen.scan?.runGroupId).toBe(body.data.runGroupId)
   })
 
@@ -153,6 +156,8 @@ environments = ["main"]
       },
       body: JSON.stringify({
         repoFullName: "test-org/fixture",
+        canonicalRepoNamespace: "test-org--fixture",
+        localRepoFingerprint: "repo-fingerprint-1",
         environmentName: "main",
         ref: "refs/heads/main",
         headSha: "abc123def456",
@@ -214,6 +219,8 @@ environments = ["main"]
       },
       body: JSON.stringify({
         repoFullName: "test-org/fixture",
+        canonicalRepoNamespace: "test-org--fixture",
+        localRepoFingerprint: "repo-fingerprint-1",
         environmentName: "main",
         ref: "refs/heads/main",
         headSha: "abc123def456",
@@ -224,5 +231,86 @@ environments = ["main"]
     expect(response.status).toBe(400)
     const body = await response.json() as { error: { code: string } }
     expect(body.error.code).toBe("INVALID_SELECTION")
+  })
+
+  test("returns hosted converge run-group status for authorized viewers", async () => {
+    const user = await createTestUser({ id: "remote-converge-status-user" })
+    const org = await createTestOrg({ slug: "remote-converge-status-org" })
+    await addMembership(org.id, user.id, "viewer")
+
+    const [runGroup] = await db.insert(runGroups).values({
+      orgId: org.id,
+      repo: "fixture",
+      environmentKind: "named",
+      environmentName: "main",
+      ref: "refs/heads/main",
+      headSha: "abc123def456",
+      trigger: "manual",
+      status: "running",
+      startedAt: new Date(),
+    }).returning()
+
+    const [deployment] = await db.insert(workspaceDeployments).values({
+      orgId: org.id,
+      repo: "fixture",
+      environmentKind: "named",
+      environmentName: "main",
+      workspacePath: "apps/control-plane/infra",
+      ref: "refs/heads/main",
+      headSha: "abc123def456",
+      installationId: 67890,
+      runGroupId: runGroup.id,
+      stateKey: "production/main/terraform.tfstate",
+      mode: "preview",
+      requireApproval: false,
+      approvers: [],
+      status: "planning",
+      statusChangedAt: new Date(),
+      completedUpstreams: [],
+    }).returning()
+
+    await db.insert(tfRuns).values({
+      deploymentId: deployment.id,
+      runGroupId: runGroup.id,
+      runType: "plan",
+      status: "running",
+      planSummary: "+1, ~0, -0",
+      startedAt: new Date(),
+    })
+
+    const principal = await ensureAccountPrincipal({ userId: user.id })
+    const token = await generateAccountPrincipalToken({
+      principalId: principal.id,
+      userId: user.id,
+    })
+
+    const app = new Hono()
+    app.route("/api/cloud", createCloudConvergeRoute())
+
+    const response = await app.fetch(new Request(`http://localhost/api/cloud/converge/${runGroup.id}`, {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "feature-token": TEST_FEATURE_TOKEN,
+      },
+    }))
+
+    expect(response.status).toBe(200)
+    const body = await response.json() as {
+      data: {
+        runGroup: { id: string; status: string }
+        deployments: Array<{
+          workspacePath: string
+          status: string
+          latestRun: null | { runType: string; status: string; planSummary: string | null }
+        }>
+      }
+    }
+    expect(body.data.runGroup.id).toBe(runGroup.id)
+    expect(body.data.runGroup.status).toBe("running")
+    expect(body.data.deployments).toHaveLength(1)
+    expect(body.data.deployments[0]?.workspacePath).toBe("apps/control-plane/infra")
+    expect(body.data.deployments[0]?.latestRun?.runType).toBe("plan")
+    expect(body.data.deployments[0]?.latestRun?.status).toBe("running")
   })
 })

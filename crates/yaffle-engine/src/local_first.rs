@@ -95,6 +95,91 @@ pub struct CloudCliLoginResult {
     pub converted_from_anonymous: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct CloudRemoteConvergeRequest {
+    pub repo_full_name: String,
+    pub canonical_repo_namespace: String,
+    pub local_repo_fingerprint: String,
+    pub environment_name: String,
+    pub git_ref: String,
+    pub head_sha: String,
+    pub workspace_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudRemoteConvergeHandle {
+    #[serde(alias = "runGroupId")]
+    pub run_group_id: String,
+    #[serde(alias = "scanJobId")]
+    pub scan_job_id: String,
+    #[serde(alias = "environmentName")]
+    pub environment_name: String,
+    #[serde(alias = "workspacePaths")]
+    pub workspace_paths: Vec<String>,
+    #[serde(alias = "ref")]
+    pub git_ref: String,
+    #[serde(alias = "headSha")]
+    pub head_sha: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudRemoteRunGroupSummary {
+    pub id: String,
+    pub status: String,
+    pub repo: String,
+    #[serde(alias = "environmentKind")]
+    pub environment_kind: String,
+    #[serde(alias = "environmentName")]
+    pub environment_name: String,
+    #[serde(alias = "ref")]
+    pub git_ref: String,
+    #[serde(alias = "headSha")]
+    pub head_sha: String,
+    pub trigger: String,
+    #[serde(alias = "createdAt")]
+    pub created_at: String,
+    #[serde(alias = "startedAt")]
+    pub started_at: Option<String>,
+    #[serde(alias = "completedAt")]
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudRemoteLatestRunSummary {
+    pub id: String,
+    #[serde(alias = "runType")]
+    pub run_type: String,
+    pub status: String,
+    #[serde(alias = "planSummary")]
+    pub plan_summary: Option<String>,
+    #[serde(alias = "errorMessage")]
+    pub error_message: Option<String>,
+    #[serde(alias = "createdAt")]
+    pub created_at: String,
+    #[serde(alias = "startedAt")]
+    pub started_at: Option<String>,
+    #[serde(alias = "completedAt")]
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudRemoteDeploymentStatus {
+    pub id: String,
+    #[serde(alias = "workspacePath")]
+    pub workspace_path: String,
+    pub status: String,
+    #[serde(alias = "latestRun")]
+    pub latest_run: Option<CloudRemoteLatestRunSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudRemoteConvergeStatus {
+    #[serde(alias = "runGroup")]
+    pub run_group: CloudRemoteRunGroupSummary,
+    pub deployments: Vec<CloudRemoteDeploymentStatus>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LifecycleRunHandle {
     pub id: String,
@@ -269,6 +354,16 @@ struct AnonymousSessionResponseEnvelope {
 #[derive(Debug, Deserialize)]
 struct CloudCliLoginResponseEnvelope {
     data: CloudCliLoginResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudRemoteConvergeHandleEnvelope {
+    data: CloudRemoteConvergeHandle,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudRemoteConvergeStatusEnvelope {
+    data: CloudRemoteConvergeStatus,
 }
 
 #[derive(Debug, Deserialize)]
@@ -711,6 +806,59 @@ pub fn exchange_cloud_cli_login_code(
         .map_err(|error| LocalFirstError::Http(error.to_string()))?;
     persist_principal(&login.principal)?;
     Ok(login)
+}
+
+pub fn start_cloud_remote_converge(
+    principal: &StoredPrincipalCredential,
+    request: &CloudRemoteConvergeRequest,
+) -> Result<CloudRemoteConvergeHandle, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .post(runtime.endpoint_url("/api/cloud/converge"))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .json(&serde_json::json!({
+            "repoFullName": request.repo_full_name,
+            "canonicalRepoNamespace": request.canonical_repo_namespace,
+            "localRepoFingerprint": request.local_repo_fingerprint,
+            "environmentName": request.environment_name,
+            "ref": request.git_ref,
+            "headSha": request.head_sha,
+            "workspacePaths": request.workspace_paths,
+        }))
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<CloudRemoteConvergeHandleEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
+}
+
+pub fn get_cloud_remote_converge_status(
+    principal: &StoredPrincipalCredential,
+    run_group_id: &str,
+) -> Result<CloudRemoteConvergeStatus, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .get(runtime.endpoint_url(&format!("/api/cloud/converge/{run_group_id}")))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<CloudRemoteConvergeStatusEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
 }
 
 fn load_stored_principal() -> Result<Option<StoredPrincipalCredential>, LocalFirstError> {

@@ -26,6 +26,7 @@ import { findOrgMembership, findOrgById } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { getConnectionSecret } from "../lib/connection-secrets.ts"
 import { getInstallationOctokit } from "../lib/github.ts"
+import { dispatchHostedLifecycleVerificationIfReady } from "../lib/hosted-lifecycle.ts"
 import { assumeOrgBrokerRole } from "../lib/org-broker-auth.ts"
 import { buildPublicUrl } from "../lib/public-origin.ts"
 import { getConnectionScopeConfig, scopeListAllows } from "../lib/connection-scope.ts"
@@ -492,6 +493,11 @@ lifecycleRoute.post("/completions/:token", async (c) => {
   })
 
   if (item && ["succeeded", "degraded", "failed"].includes(item.state)) {
+    await dispatchHostedLifecycleVerificationIfReady({
+      runId: consumed.run.id,
+      workspacePath: consumed.item.workspacePath,
+    })
+
     const state = await getLatestLifecycleState({
       repoBindingId: consumed.run.repoBindingId,
       environmentName: consumed.run.environmentName,

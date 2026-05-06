@@ -50,6 +50,18 @@ export async function findLifecycleRunById(runId: string): Promise<LifecycleRun 
   })
 }
 
+export async function findLifecycleRunByRunGroupId(runGroupId: string): Promise<LifecycleRun | undefined> {
+  return withDbSpan("select", "lifecycle_runs", async () => {
+    const rows = await db
+      .select()
+      .from(lifecycleRuns)
+      .where(eq(lifecycleRuns.runGroupId, runGroupId))
+      .orderBy(desc(lifecycleRuns.createdAt))
+      .limit(1)
+    return rows[0]
+  })
+}
+
 export async function createLifecycleItem(
   values: typeof lifecycleItems.$inferInsert,
 ): Promise<LifecycleItem> {
@@ -210,6 +222,21 @@ export async function getLatestLifecycleStateForRepoEnvironment(values: {
       .limit(1)
 
     const run = rows[0]?.run
+    if (!run) {
+      return undefined
+    }
+
+    const items = await listLifecycleItemsForRun(run.id)
+    return { run, items }
+  })
+}
+
+export async function getLifecycleStateForRunGroup(runGroupId: string): Promise<{
+  run: LifecycleRun
+  items: LifecycleItem[]
+} | undefined> {
+  return withDbSpan("select", "lifecycle_runs", async () => {
+    const run = await findLifecycleRunByRunGroupId(runGroupId)
     if (!run) {
       return undefined
     }

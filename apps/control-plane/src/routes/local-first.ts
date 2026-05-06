@@ -213,6 +213,7 @@ localFirstRoute.put("/output-modules", async (c) => {
   const published = await publishHostedOutputModule({
     principalId: principal.principalId,
     repoBindingId: binding.id,
+    canonicalRepoNamespace: body.canonicalRepoNamespace,
     environmentName: body.environmentName,
     workspacePath: body.workspacePath,
     stateFingerprint: body.stateFingerprint,

@@ -28,10 +28,13 @@ use yaffle_contracts::{
     WorkspaceSelection, CONTRACT_VERSION,
 };
 use yaffle_engine::{
-    build_cloud_cli_authorize_url, clear_local_cloud_auth, exchange_cloud_cli_login_code, execute,
-    execute_with_progress, load_local_cloud_auth_status, local_first_feature_token_configured,
-    prepare_tf_login_exports, CloudCliLoginResult, ConvergeWorkspacePhase, EngineProgressEvent,
-    EngineRequest, LocalCloudAuthStatus, StoredPrincipalType, TofuLogStream,
+    build_cloud_cli_authorize_url, clear_local_cloud_auth, compute_local_repo_fingerprint,
+    exchange_cloud_cli_login_code, execute, execute_with_progress,
+    get_cloud_remote_converge_status, load_local_cloud_auth_status,
+    local_first_feature_token_configured, prepare_tf_login_exports, start_cloud_remote_converge,
+    CloudCliLoginResult, CloudRemoteConvergeHandle, CloudRemoteConvergeRequest,
+    CloudRemoteConvergeStatus, ConvergeWorkspacePhase, EngineProgressEvent, EngineRequest,
+    LocalCloudAuthStatus, StoredPrincipalCredential, StoredPrincipalType, TofuLogStream,
 };
 use yaffle_graph::{
     environment_kind_for_name, resolve_workspace_graph, EnvironmentKind, ResolvedWorkspaceGraph,
@@ -132,6 +135,9 @@ struct ConvergeCommand {
     /// Render plain output instead of the interactive converge TUI
     #[arg(long)]
     plain: bool,
+    /// Run the converge through Yaffle's hosted paid-cloud execution path
+    #[arg(long)]
+    remote: bool,
 }
 
 #[derive(Debug, Args)]
@@ -282,6 +288,10 @@ fn run_converge(command: ConvergeCommand) -> CliResult {
         wait_for: None,
     };
 
+    if command.remote {
+        return run_remote_converge(command.json, command.plain, request);
+    }
+
     if command.json || command.plain || !should_use_converge_tui() {
         return run_engine_request(command.json, request);
     }
@@ -289,8 +299,495 @@ fn run_converge(command: ConvergeCommand) -> CliResult {
     run_shell_with_startup(Some(request))
 }
 
+fn run_remote_converge(json: bool, _plain: bool, request: EngineRequest) -> CliResult {
+    let working_dir = current_working_directory(json, &request)?;
+    let principal = load_account_cloud_principal(json, &request)?;
+    let remote_request = build_remote_converge_request(&working_dir, &request)?;
+    let handle = start_cloud_remote_converge(&principal, &remote_request).map_err(|error| {
+        command_error(
+            json,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "remote_converge_start_failed",
+            error.friendly_message(),
+        )
+    })?;
+
+    let status = follow_remote_converge(json, &request, &principal, &handle)?;
+
+    if json {
+        let rendered = serde_json::to_string_pretty(&status).map_err(|error| {
+            command_error(
+                json,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "json_render_failed",
+                format!("Failed to render hosted converge result as JSON: {error}"),
+            )
+        })?;
+        println!("{rendered}");
+        return Ok(());
+    }
+
+    if remote_status_failed(&status) {
+        return Err(command_error(
+            json,
+            Some(request.operation),
+            request.target,
+            Some(request.selection),
+            "remote_converge_failed",
+            remote_failure_message(&status),
+        ));
+    }
+
+    println!(
+        "Hosted converge completed successfully for {} (run group {}).",
+        status.run_group.environment_name, status.run_group.id
+    );
+    Ok(())
+}
+
 fn should_use_converge_tui() -> bool {
     io::stdout().is_terminal() && io::stderr().is_terminal()
+}
+
+fn load_account_cloud_principal(
+    json: bool,
+    request: &EngineRequest,
+) -> Result<StoredPrincipalCredential, CliFailure> {
+    let status = load_local_cloud_auth_status().map_err(|error| {
+        command_error(
+            json,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "cloud_auth_unavailable",
+            format!("Failed to read Yaffle Cloud auth state: {error}"),
+        )
+    })?;
+
+    if status.expired {
+        return Err(command_error(
+            json,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "cloud_auth_expired",
+            "Your Yaffle Cloud account session has expired. Run `yaffle cloud login` again before using `--remote`.",
+        ));
+    }
+
+    let Some(principal) = status.stored_principal else {
+        return Err(command_error(
+            json,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "cloud_auth_required",
+            "Remote converge requires a Yaffle Cloud account session. Run `yaffle cloud login` first.",
+        ));
+    };
+
+    if principal.principal_type != StoredPrincipalType::Account {
+        return Err(command_error(
+            json,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "paid_cloud_required",
+            "Remote converge requires an account-backed paid-cloud session. Run `yaffle cloud login` first.",
+        ));
+    }
+
+    if !local_first_feature_token_configured() {
+        return Err(command_error(
+            json,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "feature_token_required",
+            "Remote converge requires `YAFFLE_LOCAL_FIRST_FEATURE_TOKEN` so the CLI can talk to Yaffle Cloud's CLI APIs.",
+        ));
+    }
+
+    Ok(principal)
+}
+
+fn build_remote_converge_request(
+    working_dir: &Path,
+    request: &EngineRequest,
+) -> Result<CloudRemoteConvergeRequest, CliFailure> {
+    ensure_clean_git_worktree(working_dir, request)?;
+    let repo_full_name = infer_repo_full_name(working_dir, request)?;
+    let git_ref = current_git_full_ref(working_dir, request)?;
+    let head_sha = current_git_head_sha(working_dir, request)?;
+    ensure_remote_head_matches_local(working_dir, request, &head_sha)?;
+    let workspace_paths = request.selection.workspaces.clone();
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.clone())
+        .expect("remote converge requires a target environment");
+    let local_repo_fingerprint = compute_local_repo_fingerprint(working_dir).map_err(|error| {
+        command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "repo_fingerprint_failed",
+            format!("Failed to compute the local repo fingerprint for remote converge: {error}"),
+        )
+    })?;
+    let canonical_repo_namespace = repo_full_name.replace('/', "--");
+
+    Ok(CloudRemoteConvergeRequest {
+        repo_full_name,
+        canonical_repo_namespace,
+        local_repo_fingerprint,
+        environment_name,
+        git_ref,
+        head_sha,
+        workspace_paths,
+    })
+}
+
+fn follow_remote_converge(
+    json: bool,
+    request: &EngineRequest,
+    principal: &StoredPrincipalCredential,
+    handle: &CloudRemoteConvergeHandle,
+) -> Result<CloudRemoteConvergeStatus, CliFailure> {
+    if !json {
+        println!(
+            "Hosted converge queued for {} (run group {}).",
+            handle.environment_name, handle.run_group_id
+        );
+        println!("Selected workspaces: {}", handle.workspace_paths.join(", "));
+    }
+
+    let mut last_snapshot: Option<CloudRemoteConvergeStatus> = None;
+
+    loop {
+        let snapshot =
+            get_cloud_remote_converge_status(principal, &handle.run_group_id).map_err(|error| {
+                command_error(
+                    json,
+                    Some(request.operation.clone()),
+                    request.target.clone(),
+                    Some(request.selection.clone()),
+                    "remote_converge_follow_failed",
+                    error.friendly_message(),
+                )
+            })?;
+
+        if !json {
+            maybe_print_remote_snapshot(last_snapshot.as_ref(), &snapshot);
+        }
+
+        if remote_status_terminal(&snapshot.run_group.status) {
+            return Ok(snapshot);
+        }
+
+        last_snapshot = Some(snapshot);
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn maybe_print_remote_snapshot(
+    previous: Option<&CloudRemoteConvergeStatus>,
+    current: &CloudRemoteConvergeStatus,
+) {
+    if previous.map(remote_snapshot_signature).as_deref()
+        == Some(remote_snapshot_signature(current).as_str())
+    {
+        return;
+    }
+
+    println!(
+        "[hosted] run group {} -> {}",
+        current.run_group.id, current.run_group.status
+    );
+    for deployment in &current.deployments {
+        let run_label = deployment
+            .latest_run
+            .as_ref()
+            .map(|run| format!("{} {}", run.run_type, run.status));
+        match run_label {
+            Some(run_label) => println!(
+                "  - {}: {} ({})",
+                deployment.workspace_path, deployment.status, run_label
+            ),
+            None => println!("  - {}: {}", deployment.workspace_path, deployment.status),
+        }
+    }
+}
+
+fn remote_snapshot_signature(snapshot: &CloudRemoteConvergeStatus) -> String {
+    let mut value = format!("{}:{}", snapshot.run_group.id, snapshot.run_group.status);
+    for deployment in &snapshot.deployments {
+        value.push_str(&format!(
+            "|{}:{}:{}:{}",
+            deployment.workspace_path,
+            deployment.status,
+            deployment
+                .latest_run
+                .as_ref()
+                .map(|run| run.run_type.as_str())
+                .unwrap_or("-"),
+            deployment
+                .latest_run
+                .as_ref()
+                .map(|run| run.status.as_str())
+                .unwrap_or("-"),
+        ));
+    }
+    value
+}
+
+fn remote_status_terminal(status: &str) -> bool {
+    matches!(status, "success" | "failed" | "partial")
+}
+
+fn remote_status_failed(status: &CloudRemoteConvergeStatus) -> bool {
+    matches!(status.run_group.status.as_str(), "failed" | "partial")
+}
+
+fn remote_failure_message(status: &CloudRemoteConvergeStatus) -> String {
+    let failing = status.deployments.iter().find(|deployment| {
+        deployment.status == "failed"
+            || deployment
+                .latest_run
+                .as_ref()
+                .is_some_and(|run| run.status == "failed")
+    });
+
+    if let Some(deployment) = failing {
+        if let Some(run) = &deployment.latest_run {
+            if let Some(error) = &run.error_message {
+                return format!(
+                    "Hosted converge failed in {} during {}: {}",
+                    deployment.workspace_path, run.run_type, error
+                );
+            }
+        }
+        return format!("Hosted converge failed in {}.", deployment.workspace_path);
+    }
+
+    format!(
+        "Hosted converge finished with status '{}'.",
+        status.run_group.status
+    )
+}
+
+fn ensure_clean_git_worktree(
+    working_dir: &Path,
+    request: &EngineRequest,
+) -> Result<(), CliFailure> {
+    let output = Command::new("git")
+        .arg("status")
+        .arg("--porcelain")
+        .current_dir(working_dir)
+        .output()
+        .map_err(|error| {
+            command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "git_status_failed",
+                format!("Failed to inspect git working tree state: {error}"),
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "git_status_failed",
+            "Failed to inspect git working tree state for remote converge.",
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.trim().is_empty() {
+        return Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "dirty_worktree_not_supported",
+            "Remote converge currently requires a clean working tree and a committed remote ref.",
+        ));
+    }
+
+    Ok(())
+}
+
+fn infer_repo_full_name(working_dir: &Path, request: &EngineRequest) -> Result<String, CliFailure> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(working_dir)
+        .output()
+        .map_err(|error| {
+            command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "repo_remote_unavailable",
+                format!("Failed to resolve git remote origin: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "repo_remote_unavailable",
+            "Could not resolve git remote origin for remote converge.",
+        ));
+    }
+
+    let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let github_prefix = remote.split("github.com").nth(1).ok_or_else(|| {
+        command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "repo_identity_unavailable",
+            "Remote converge currently requires a GitHub origin remote.",
+        )
+    })?;
+    let trimmed = github_prefix
+        .trim_start_matches(':')
+        .trim_start_matches('/');
+    let trimmed = trimmed.trim_end_matches(".git");
+    let mut parts = trimmed.split('/');
+    let owner = parts.next().unwrap_or("");
+    let repo = parts.next().unwrap_or("");
+    if owner.is_empty() || repo.is_empty() {
+        return Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "repo_identity_unavailable",
+            "Could not infer owner/repo from git remote origin.",
+        ));
+    }
+
+    Ok(format!("{owner}/{repo}"))
+}
+
+fn current_git_full_ref(working_dir: &Path, request: &EngineRequest) -> Result<String, CliFailure> {
+    let output = Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .current_dir(working_dir)
+        .output()
+        .map_err(|error| {
+            command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "git_ref_unavailable",
+                format!("Failed to resolve git ref for remote converge: {error}"),
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "detached_head_not_supported",
+            "Remote converge currently requires a named git branch ref, not a detached HEAD.",
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn current_git_head_sha(working_dir: &Path, request: &EngineRequest) -> Result<String, CliFailure> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(working_dir)
+        .output()
+        .map_err(|error| {
+            command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "git_sha_unavailable",
+                format!("Failed to resolve git HEAD SHA for remote converge: {error}"),
+            )
+        })?;
+    if !output.status.success() {
+        return Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "git_sha_unavailable",
+            "Failed to resolve git HEAD SHA for remote converge.",
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn ensure_remote_head_matches_local(
+    working_dir: &Path,
+    request: &EngineRequest,
+    local_head_sha: &str,
+) -> Result<(), CliFailure> {
+    let output = Command::new("git")
+        .args(["rev-parse", "@{upstream}"])
+        .current_dir(working_dir)
+        .output()
+        .map_err(|error| {
+            command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "upstream_ref_unavailable",
+                format!("Failed to resolve the upstream ref for remote converge: {error}"),
+            )
+        })?;
+
+    if !output.status.success() {
+        return Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "upstream_ref_unavailable",
+            "Remote converge currently requires the current branch to track an upstream remote branch.",
+        ));
+    }
+
+    let upstream_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if upstream_sha != local_head_sha {
+        return Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "unpushed_commits_not_supported",
+            "Remote converge currently requires local HEAD to match the tracked upstream branch. Push or fast-forward before using `--remote`.",
+        ));
+    }
+
+    Ok(())
 }
 
 fn run_shell() -> CliResult {

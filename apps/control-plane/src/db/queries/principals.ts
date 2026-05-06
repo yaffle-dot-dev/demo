@@ -1,6 +1,4 @@
 import { and, asc, desc, eq, inArray, lte, max, or } from "drizzle-orm"
-import { uuidv7 } from "uuidv7"
-
 import { db } from "../../lib/db.ts"
 import {
   anonymousSessions,
@@ -326,11 +324,7 @@ export async function migrateAnonymousPrincipalToAccount(values: {
           .select()
           .from(hostedOutputModules)
           .where(eq(hostedOutputModules.repoBindingId, anonymousBinding.id))
-          .orderBy(
-            asc(hostedOutputModules.environmentName),
-            asc(hostedOutputModules.workspacePath),
-            asc(hostedOutputModules.versionSerial),
-          )
+          .orderBy(asc(hostedOutputModules.environmentName), asc(hostedOutputModules.workspacePath))
 
         if (!accountBinding) {
           await tx
@@ -349,43 +343,14 @@ export async function migrateAnonymousPrincipalToAccount(values: {
 
         mergedBindingCount += 1
 
-        const existingModules = await tx
-          .select()
-          .from(hostedOutputModules)
-          .where(eq(hostedOutputModules.repoBindingId, accountBinding.id))
-
-        const nextVersionByScope = new Map<string, number>()
-        for (const existingModule of existingModules) {
-          const scopeKey = `${existingModule.environmentName}\u0000${existingModule.workspacePath}`
-          const current = nextVersionByScope.get(scopeKey) ?? 0
-          nextVersionByScope.set(
-            scopeKey,
-            Math.max(current, existingModule.versionSerial),
-          )
-        }
-
-        for (const anonymousModule of anonymousModules) {
-          const scopeKey = `${anonymousModule.environmentName}\u0000${anonymousModule.workspacePath}`
-          const nextVersion = (nextVersionByScope.get(scopeKey) ?? 0) + 1
-          nextVersionByScope.set(scopeKey, nextVersion)
-
-          await tx.insert(hostedOutputModules).values({
-            id: uuidv7(),
+        await tx
+          .update(hostedOutputModules)
+          .set({
             principalId: accountPrincipal.id,
             repoBindingId: accountBinding.id,
-            environmentName: anonymousModule.environmentName,
-            workspacePath: anonymousModule.workspacePath,
-            versionSerial: nextVersion,
-            stateFingerprint: anonymousModule.stateFingerprint,
-            outputs: anonymousModule.outputs,
-            createdAt: anonymousModule.createdAt,
           })
-          movedModuleCount += 1
-        }
-
-        await tx
-          .delete(hostedOutputModules)
           .where(eq(hostedOutputModules.repoBindingId, anonymousBinding.id))
+        movedModuleCount += anonymousModules.length
         await tx
           .delete(principalRepoBindings)
           .where(eq(principalRepoBindings.id, anonymousBinding.id))
@@ -414,8 +379,9 @@ export async function migrateAnonymousPrincipalToAccount(values: {
 }
 
 export async function publishHostedOutputModule(values: {
-  principalId: string
-  repoBindingId: string
+  principalId?: string | null
+  repoBindingId?: string | null
+  canonicalRepoNamespace: string
   environmentName: string
   workspacePath: string
   stateFingerprint: string
@@ -427,7 +393,7 @@ export async function publishHostedOutputModule(values: {
       .from(hostedOutputModules)
       .where(
         and(
-          eq(hostedOutputModules.repoBindingId, values.repoBindingId),
+          eq(hostedOutputModules.canonicalRepoNamespace, values.canonicalRepoNamespace),
           eq(hostedOutputModules.environmentName, values.environmentName),
           eq(hostedOutputModules.workspacePath, values.workspacePath),
         ),
@@ -447,7 +413,7 @@ export async function publishHostedOutputModule(values: {
 }
 
 export async function listHostedOutputModuleVersions(values: {
-  repoBindingId: string
+  canonicalRepoNamespace: string
   environmentName: string
   workspacePath: string
 }): Promise<HostedOutputModule[]> {
@@ -457,7 +423,7 @@ export async function listHostedOutputModuleVersions(values: {
       .from(hostedOutputModules)
       .where(
         and(
-          eq(hostedOutputModules.repoBindingId, values.repoBindingId),
+          eq(hostedOutputModules.canonicalRepoNamespace, values.canonicalRepoNamespace),
           eq(hostedOutputModules.environmentName, values.environmentName),
           eq(hostedOutputModules.workspacePath, values.workspacePath),
         ),
@@ -467,7 +433,7 @@ export async function listHostedOutputModuleVersions(values: {
 }
 
 export async function findHostedOutputModuleVersion(values: {
-  repoBindingId: string
+  canonicalRepoNamespace: string
   environmentName: string
   workspacePath: string
   versionSerial: number
@@ -478,7 +444,7 @@ export async function findHostedOutputModuleVersion(values: {
       .from(hostedOutputModules)
       .where(
         and(
-          eq(hostedOutputModules.repoBindingId, values.repoBindingId),
+          eq(hostedOutputModules.canonicalRepoNamespace, values.canonicalRepoNamespace),
           eq(hostedOutputModules.environmentName, values.environmentName),
           eq(hostedOutputModules.workspacePath, values.workspacePath),
           eq(hostedOutputModules.versionSerial, values.versionSerial),

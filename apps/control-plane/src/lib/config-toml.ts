@@ -36,6 +36,36 @@ const workspaceOutputPolicySchema = z.object({
   consumers: z.array(z.string().min(1, "consumer selector is required")).optional(),
 })
 
+const lifecycleWebhookAuthSchema = z.object({
+  scheme: z.enum(["bearer", "hmac_sha256"]).optional(),
+  secret_ref: z.string().min(1).optional(),
+  connection: z.string().min(1).optional(),
+})
+
+const lifecycleWebhookRequestSchema = z.object({
+  url: z.string().url(),
+  method: z.string().optional(),
+  auth: lifecycleWebhookAuthSchema.optional(),
+})
+
+const lifecycleGitHubDispatchSchema = z.object({
+  owner: z.string().min(1).optional(),
+  repo: z.string().min(1).optional(),
+  event_type: z.string().min(1),
+  api_url: z.string().url().optional(),
+})
+
+const lifecycleHookSchema = z.object({
+  key: z.string().min(1, "lifecycle key is required"),
+  environments: z.array(z.string().min(1)).optional().default([]),
+  kind: z.enum(["webhook", "generic", "generic_hmac", "github_repository_dispatch"]),
+  timeout: z.string().min(1).optional(),
+  failure: z.enum(["failed", "degraded"]).optional().default("failed"),
+  scopes: z.array(z.string().min(1)).optional().default([]),
+  request: lifecycleWebhookRequestSchema.optional(),
+  github: lifecycleGitHubDispatchSchema.optional(),
+})
+
 const workspaceSchema = z.object({
   path: z.string().min(1, "workspace path is required"),
   environments: z.union([
@@ -45,6 +75,8 @@ const workspaceSchema = z.object({
   ]),
   variables: z.record(z.string(), variableValueSchema).optional(),
   outputs: z.record(z.string().min(1, "output name is required"), workspaceOutputPolicySchema).optional(),
+  activation: z.array(lifecycleHookSchema).optional().default([]),
+  verification: z.array(lifecycleHookSchema).optional().default([]),
 })
 
 const refPatternSchema = z.string().min(1, "ref pattern is required")
@@ -220,6 +252,41 @@ export interface Workspace {
   variables?: Record<string, VariableValue>
   /** Output policy for cross-repo module access within a Yaffle org. */
   outputs?: Record<string, WorkspaceOutputPolicy>
+  activation?: LifecycleHook[]
+  verification?: LifecycleHook[]
+}
+
+export type LifecycleHookKind = "generic" | "generic_hmac" | "github_repository_dispatch"
+export type LifecycleFailurePolicy = "failed" | "degraded"
+
+export interface LifecycleWebhookAuth {
+  scheme: "bearer" | "hmac_sha256"
+  secret_ref?: string
+  connection?: string
+}
+
+export interface LifecycleWebhookRequest {
+  url: string
+  method: string
+  auth?: LifecycleWebhookAuth
+}
+
+export interface LifecycleGitHubDispatch {
+  owner?: string
+  repo?: string
+  event_type: string
+  api_url?: string
+}
+
+export interface LifecycleHook {
+  key: string
+  environments: string[]
+  kind: LifecycleHookKind
+  timeout?: string
+  failure: LifecycleFailurePolicy
+  scopes: string[]
+  request?: LifecycleWebhookRequest
+  github?: LifecycleGitHubDispatch
 }
 
 export type OutputVisibility = z.infer<typeof outputVisibilitySchema>
@@ -312,6 +379,8 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
     environments: normalizeEnvironments(ws.environments),
     variables: ws.variables,
     outputs: ws.outputs,
+    activation: ws.activation.map(normalizeLifecycleHook),
+    verification: ws.verification.map(normalizeLifecycleHook),
   }))
 
   const triggerRoot = raw.cloud?.triggers
@@ -363,6 +432,38 @@ function normalizeEnvironments(envs: string | string[] | "*"): string[] | "*" {
   }
   // Single string shorthand
   return [envs]
+}
+
+function normalizeLifecycleHook(hook: z.infer<typeof lifecycleHookSchema>): LifecycleHook {
+  return {
+    key: hook.key,
+    environments: hook.environments,
+    kind: hook.kind === "webhook" ? "generic" : hook.kind,
+    timeout: hook.timeout,
+    failure: hook.failure,
+    scopes: hook.scopes,
+    request: hook.request
+      ? {
+          url: hook.request.url,
+          method: hook.request.method ?? "POST",
+          auth: hook.request.auth
+            ? {
+                scheme: hook.request.auth.scheme ?? (hook.kind === "generic_hmac" ? "hmac_sha256" : "bearer"),
+                secret_ref: hook.request.auth.secret_ref,
+                connection: hook.request.auth.connection,
+              }
+            : undefined,
+        }
+      : undefined,
+    github: hook.github
+      ? {
+          owner: hook.github.owner,
+          repo: hook.github.repo,
+          event_type: hook.github.event_type,
+          api_url: hook.github.api_url,
+        }
+      : undefined,
+  }
 }
 
 function rejectUnsupportedWorkspaceExportSyntax(parsed: unknown): void {
@@ -445,6 +546,51 @@ function validateSemantics(config: YaffleTomlConfig): void {
           errors.push(
             `Workspace "${ws.path}" has invalid consumer selector "${selector}" for output "${outputName}". Expected format: <org-slug>:<repo-slug>:<workspace-pattern>`,
           )
+        }
+      }
+    }
+
+    for (const [phase, hooks] of [["activation", ws.activation ?? []], ["verification", ws.verification ?? []]] as const) {
+      for (const hook of hooks) {
+        if (hook.environments.length === 0) {
+          errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" must declare at least one environment pattern`)
+        }
+        if (hook.scopes.length === 0) {
+          errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" must declare at least one scope`)
+        }
+        if (hook.kind === "generic" || hook.kind === "generic_hmac") {
+          if (!hook.request) {
+            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" requires request settings`)
+          } else if (hook.request.method !== "POST") {
+            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" only supports POST requests`)
+          }
+
+          if (hook.kind === "generic_hmac") {
+            const auth = hook.request?.auth
+            if (!auth) {
+              errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" requires auth for generic_hmac dispatch`)
+            } else if (auth.scheme !== "hmac_sha256") {
+              errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" must use hmac_sha256 auth for generic_hmac dispatch`)
+            }
+          }
+
+          const auth = hook.request?.auth
+          if (auth) {
+            const hasSecretRef = Boolean(auth.secret_ref)
+            const hasConnection = Boolean(auth.connection)
+            if (hasSecretRef === hasConnection) {
+              errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" auth must set exactly one of secret_ref or connection`)
+            }
+          }
+        }
+
+        if (hook.kind === "github_repository_dispatch") {
+          if (!hook.github) {
+            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" requires github settings`)
+          }
+          if (hook.request) {
+            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" does not use request settings for github_repository_dispatch`)
+          }
         }
       }
     }
@@ -603,6 +749,10 @@ export function matchWorkspacePattern(pattern: string, workspacePath: string): b
   const regexPattern = globToRegexPattern(pattern, { asteriskMatchesSlash: true })
   const regex = new RegExp(`^${regexPattern}$`)
   return regex.test(workspacePath)
+}
+
+export function matchEnvironmentPattern(pattern: string, environmentName: string): boolean {
+  return matchBranchPattern(pattern, environmentName)
 }
 
 /**

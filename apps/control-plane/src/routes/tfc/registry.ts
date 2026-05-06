@@ -422,7 +422,7 @@ registryRoute.get(
 
       const workspacePath = moduleNameToWorkspacePath(moduleName)
       const versions = await listHostedOutputModuleVersions({
-        repoBindingId: auth.repoBindingId,
+        canonicalRepoNamespace: auth.repoNamespace,
         environmentName: auth.environmentName,
         workspacePath,
       })
@@ -621,7 +621,7 @@ registryRoute.get(
 
       const workspacePath = moduleNameToWorkspacePath(moduleName)
       const hostedModule = await findHostedOutputModuleVersion({
-        repoBindingId: auth.repoBindingId,
+        canonicalRepoNamespace: auth.repoNamespace,
         environmentName: auth.environmentName,
         workspacePath,
         versionSerial,

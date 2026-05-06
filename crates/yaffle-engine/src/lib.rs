@@ -30,11 +30,11 @@ use yaffle_graph::{
 use yaffle_tofu::{inspect_tofu_resolution, TofuResolutionRequest, TofuSourceKind};
 
 use crate::local_first::{
-    compute_local_repo_fingerprint, create_lifecycle_item, create_lifecycle_run,
-    dispatch_lifecycle_via_control_plane, ensure_anonymous_principal, get_lifecycle_item,
-    get_lifecycle_state, mint_execution_credential, publish_hosted_output_module,
-    ExecutionCredential, ExecutionCredentialKind, ExecutionCredentialRequest,
-    HostedOutputModulePublishRequest, LifecycleItemRequest, LifecycleRunRequest, LocalFirstError,
+    create_lifecycle_item, create_lifecycle_run, dispatch_lifecycle_via_control_plane,
+    ensure_anonymous_principal, get_lifecycle_item, get_lifecycle_state, mint_execution_credential,
+    publish_hosted_output_module, ExecutionCredential, ExecutionCredentialKind,
+    ExecutionCredentialRequest, HostedOutputModulePublishRequest, LifecycleItemRequest,
+    LifecycleRunRequest, LocalFirstError,
 };
 
 const CANONICAL_YAFFLE_MODULE_HOST: &str = "yaffle.dev";
@@ -42,9 +42,12 @@ const MODULE_API_HOST_OVERRIDE_ENV_VAR: &str = "YAFFLE_MODULE_API_HOST";
 
 pub use crate::local_first::{
     build_cloud_cli_authorize_url, check_lifecycle_admission, clear_local_cloud_auth,
-    exchange_cloud_cli_login_code, load_local_cloud_auth_status, local_auth_store_path,
-    local_first_feature_token_configured, CloudCliLoginResult, LifecycleAdmissionRequest,
-    LocalCloudAuthStatus, StoredPrincipalCredential, StoredPrincipalType,
+    compute_local_repo_fingerprint, exchange_cloud_cli_login_code,
+    get_cloud_remote_converge_status, load_local_cloud_auth_status, local_auth_store_path,
+    local_first_feature_token_configured, start_cloud_remote_converge, CloudCliLoginResult,
+    CloudRemoteConvergeHandle, CloudRemoteConvergeRequest, CloudRemoteConvergeStatus,
+    LifecycleAdmissionRequest, LocalCloudAuthStatus, StoredPrincipalCredential,
+    StoredPrincipalType,
 };
 use yaffle_config::{
     environment_name_matches_patterns, parse_yaffle_toml, validate_environment_name,
