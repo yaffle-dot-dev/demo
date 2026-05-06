@@ -5,6 +5,7 @@ use std::io;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -104,6 +105,16 @@ where
     }
 }
 
+struct ChannelProgressReporter {
+    tx: mpsc::Sender<ConvergeWorkerMessage>,
+}
+
+impl EngineProgressReporter for ChannelProgressReporter {
+    fn emit(&mut self, event: EngineProgressEvent) {
+        let _ = self.tx.send(ConvergeWorkerMessage::Progress(event));
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineRequest {
     pub operation: EngineOperation,
@@ -126,9 +137,9 @@ struct GraphContext {
     topological_order: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PreparedExecutionRepo {
-    _temp_dir: tempfile::TempDir,
+    _temp_dir: Arc<tempfile::TempDir>,
     repo_root: PathBuf,
     tf_data_dir: PathBuf,
 }
@@ -137,6 +148,19 @@ struct PreparedExecutionRepo {
 struct PreparedWorkspaceExecution {
     uses_local_backend: bool,
     auth: PreparedWorkspaceAuth,
+}
+
+#[derive(Debug)]
+struct WorkspaceConvergeOutcome {
+    workspace_path: String,
+    outputs: BTreeMap<String, TerraformOutput>,
+    diagnostics: Vec<DiagnosticMessage>,
+}
+
+#[derive(Debug)]
+enum ConvergeWorkerMessage {
+    Progress(EngineProgressEvent),
+    Finished(Result<WorkspaceConvergeOutcome, EngineError>),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -1124,161 +1148,114 @@ fn execute_converge_operation(
         },
     );
 
-    for workspace_path in &graph_context.topological_order {
-        emit_progress(
-            reporter,
-            EngineProgressEvent::WorkspacePhase {
-                workspace_path: workspace_path.clone(),
-                phase: ConvergeWorkspacePhase::PreparingAuth,
-            },
-        );
-        let workspace_config = repo_context
-            .config
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.path == *workspace_path)
-            .expect("converge workspace should exist in config");
+    let workspace_configs = repo_context
+        .config
+        .workspaces
+        .iter()
+        .cloned()
+        .map(|workspace| (workspace.path.clone(), workspace))
+        .collect::<BTreeMap<_, _>>();
 
-        let workspace_execution = configure_workspace_execution(
-            request,
-            repo_context,
-            &prepared_repo,
-            workspace_config,
-            environment_kind,
-        )?;
+    for level in workspace_execution_levels(request, repo_context, &graph_context)? {
+        let (tx, rx) = mpsc::channel::<ConvergeWorkerMessage>();
+        let mut remaining = level.len();
 
-        append_auth_diagnostics(&mut diagnostics, workspace_path, &workspace_execution.auth);
+        for workspace_path in &level {
+            let tx = tx.clone();
+            let request = request.clone();
+            let repo_context = repo_context.clone();
+            let prepared_repo = prepared_repo.clone();
+            let tofu_resolution = tofu_resolution.clone();
+            let workspace = workspace_configs
+                .get(workspace_path)
+                .cloned()
+                .expect("converge workspace should exist in config");
 
-        emit_progress(
-            reporter,
-            EngineProgressEvent::WorkspacePhase {
-                workspace_path: workspace_path.clone(),
-                phase: ConvergeWorkspacePhase::InitializingTofu,
-            },
-        );
-        run_tofu_command(
-            request,
-            &tofu_resolution,
-            &prepared_repo,
-            &workspace_execution,
-            workspace_path,
-            &["init", "-input=false", "-no-color"],
-            "tofu_init_failed",
-        )?;
-        emit_progress(
-            reporter,
-            EngineProgressEvent::WorkspacePhase {
-                workspace_path: workspace_path.clone(),
-                phase: ConvergeWorkspacePhase::ApplyingTofu,
-            },
-        );
-        run_tofu_command_with_progress(
-            request,
-            &tofu_resolution,
-            &prepared_repo,
-            &workspace_execution,
-            workspace_path,
-            &["apply", "-auto-approve", "-input=false", "-no-color"],
-            "tofu_apply_failed",
-            reporter,
-        )?;
+            thread::spawn(move || {
+                let progress_tx = tx.clone();
+                let result = execute_single_workspace_converge(
+                    &request,
+                    &repo_context,
+                    &prepared_repo,
+                    &tofu_resolution,
+                    workspace,
+                    environment_kind,
+                    Some(progress_tx),
+                );
+                let _ = tx.send(ConvergeWorkerMessage::Finished(result));
+            });
+        }
+        drop(tx);
 
-        if workspace_execution.uses_local_backend {
+        let mut level_outcomes = Vec::new();
+        let mut level_errors = Vec::new();
+        while remaining > 0 {
+            match rx.recv() {
+                Ok(ConvergeWorkerMessage::Progress(event)) => emit_progress(reporter, event),
+                Ok(ConvergeWorkerMessage::Finished(result)) => {
+                    remaining -= 1;
+                    match result {
+                        Ok(outcome) => level_outcomes.push(outcome),
+                        Err(error) => level_errors.push(error),
+                    }
+                }
+                Err(_) => {
+                    return Err(request_error(
+                        request,
+                        "converge_worker_disconnected",
+                        "Workspace converge worker disconnected unexpectedly.",
+                    ))
+                }
+            }
+        }
+
+        let outcome_by_path = level_outcomes
+            .into_iter()
+            .map(|outcome| (outcome.workspace_path.clone(), outcome))
+            .collect::<BTreeMap<_, _>>();
+
+        for workspace_path in &level {
+            let Some(outcome) = outcome_by_path.get(workspace_path) else {
+                continue;
+            };
+            diagnostics.extend(outcome.diagnostics.clone());
+
+            let workspace_config = workspace_configs
+                .get(workspace_path)
+                .expect("converge workspace should exist in config");
+            lifecycle_results.extend(execute_lifecycle_hooks_for_workspace(
+                request,
+                repo_context,
+                workspace_config,
+                workspace_path,
+                &outcome.outputs,
+                &mut lifecycle_run_context,
+                &mut diagnostics,
+                "activation",
+            )?);
+            lifecycle_results.extend(execute_lifecycle_hooks_for_workspace(
+                request,
+                repo_context,
+                workspace_config,
+                workspace_path,
+                &outcome.outputs,
+                &mut lifecycle_run_context,
+                &mut diagnostics,
+                "verification",
+            )?);
+
             emit_progress(
                 reporter,
                 EngineProgressEvent::WorkspacePhase {
-                    workspace_path: workspace_path.clone(),
-                    phase: ConvergeWorkspacePhase::RecordingState,
+                    workspace_path: workspace_path.to_string(),
+                    phase: ConvergeWorkspacePhase::Completed,
                 },
             );
-            persist_local_backend_state(request, repo_context, &prepared_repo, workspace_path)?;
         }
 
-        emit_progress(
-            reporter,
-            EngineProgressEvent::WorkspacePhase {
-                workspace_path: workspace_path.clone(),
-                phase: ConvergeWorkspacePhase::CollectingOutputs,
-            },
-        );
-        let output = run_tofu_command(
-            request,
-            &tofu_resolution,
-            &prepared_repo,
-            &workspace_execution,
-            workspace_path,
-            &["output", "-json", "-no-color"],
-            "tofu_output_failed",
-        )?;
-        let outputs = parse_terraform_outputs(request, workspace_path, &output.stdout)?;
-        emit_progress(
-            reporter,
-            EngineProgressEvent::WorkspaceOutputs {
-                workspace_path: workspace_path.clone(),
-                outputs: outputs.clone(),
-            },
-        );
-
-        emit_progress(
-            reporter,
-            EngineProgressEvent::WorkspacePhase {
-                workspace_path: workspace_path.clone(),
-                phase: ConvergeWorkspacePhase::PublishingOutputs,
-            },
-        );
-        if let Some(published_version) =
-            maybe_publish_hosted_output_module(request, repo_context, workspace_path, &outputs)?
-        {
-            diagnostics.push(DiagnosticMessage {
-                level: DiagnosticLevel::Info,
-                code: Some("hosted_output_module_published".to_string()),
-                message: format!(
-                    "Published hosted output module '{}' for environment '{}' as version '{}'.",
-                    workspace_path,
-                    request
-                        .target
-                        .as_ref()
-                        .map(|target| target.environment.as_str())
-                        .unwrap_or("unknown"),
-                    published_version
-                ),
-                workspace_path: Some(workspace_path.clone()),
-                item_key: None,
-                details: Some(BTreeMap::from([(
-                    "version".to_string(),
-                    json!(published_version),
-                )])),
-            });
+        if let Some(error) = level_errors.into_iter().next() {
+            return Err(error);
         }
-
-        lifecycle_results.extend(execute_lifecycle_hooks_for_workspace(
-            request,
-            repo_context,
-            workspace_config,
-            workspace_path,
-            &outputs,
-            &mut lifecycle_run_context,
-            &mut diagnostics,
-            "activation",
-        )?);
-        lifecycle_results.extend(execute_lifecycle_hooks_for_workspace(
-            request,
-            repo_context,
-            workspace_config,
-            workspace_path,
-            &outputs,
-            &mut lifecycle_run_context,
-            &mut diagnostics,
-            "verification",
-        )?);
-
-        emit_progress(
-            reporter,
-            EngineProgressEvent::WorkspacePhase {
-                workspace_path: workspace_path.clone(),
-                phase: ConvergeWorkspacePhase::Completed,
-            },
-        );
     }
 
     diagnostics.push(DiagnosticMessage {
@@ -1363,6 +1340,277 @@ fn execute_converge_operation(
         BTreeMap::new(),
         diagnostics,
     ))
+}
+
+fn execute_single_workspace_converge(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    prepared_repo: &PreparedExecutionRepo,
+    tofu_resolution: &yaffle_tofu::TofuResolution,
+    workspace: yaffle_config::Workspace,
+    environment_kind: EnvironmentKind,
+    progress_tx: Option<mpsc::Sender<ConvergeWorkerMessage>>,
+) -> Result<WorkspaceConvergeOutcome, EngineError> {
+    let workspace_path = workspace.path.clone();
+    emit_progress_via_channel(
+        &progress_tx,
+        EngineProgressEvent::WorkspacePhase {
+            workspace_path: workspace_path.clone(),
+            phase: ConvergeWorkspacePhase::PreparingAuth,
+        },
+    );
+
+    let workspace_execution = configure_workspace_execution(
+        request,
+        repo_context,
+        prepared_repo,
+        &workspace,
+        environment_kind,
+    )?;
+
+    let mut diagnostics = Vec::new();
+    append_auth_diagnostics(&mut diagnostics, &workspace_path, &workspace_execution.auth);
+
+    emit_progress_via_channel(
+        &progress_tx,
+        EngineProgressEvent::WorkspacePhase {
+            workspace_path: workspace_path.clone(),
+            phase: ConvergeWorkspacePhase::InitializingTofu,
+        },
+    );
+    run_tofu_command(
+        request,
+        tofu_resolution,
+        prepared_repo,
+        &workspace_execution,
+        &workspace_path,
+        &["init", "-input=false", "-no-color"],
+        "tofu_init_failed",
+    )?;
+
+    emit_progress_via_channel(
+        &progress_tx,
+        EngineProgressEvent::WorkspacePhase {
+            workspace_path: workspace_path.clone(),
+            phase: ConvergeWorkspacePhase::ApplyingTofu,
+        },
+    );
+    let mut channel_reporter = progress_tx.clone().map(|tx| ChannelProgressReporter { tx });
+    let mut progress_reporter = channel_reporter
+        .as_mut()
+        .map(|reporter| reporter as &mut dyn EngineProgressReporter);
+    run_tofu_command_with_progress(
+        request,
+        tofu_resolution,
+        prepared_repo,
+        &workspace_execution,
+        &workspace_path,
+        &["apply", "-auto-approve", "-input=false", "-no-color"],
+        "tofu_apply_failed",
+        &mut progress_reporter,
+    )?;
+
+    if workspace_execution.uses_local_backend {
+        emit_progress_via_channel(
+            &progress_tx,
+            EngineProgressEvent::WorkspacePhase {
+                workspace_path: workspace_path.clone(),
+                phase: ConvergeWorkspacePhase::RecordingState,
+            },
+        );
+        persist_local_backend_state(request, repo_context, prepared_repo, &workspace_path)?;
+    }
+
+    emit_progress_via_channel(
+        &progress_tx,
+        EngineProgressEvent::WorkspacePhase {
+            workspace_path: workspace_path.clone(),
+            phase: ConvergeWorkspacePhase::CollectingOutputs,
+        },
+    );
+    let output = run_tofu_command(
+        request,
+        tofu_resolution,
+        prepared_repo,
+        &workspace_execution,
+        &workspace_path,
+        &["output", "-json", "-no-color"],
+        "tofu_output_failed",
+    )?;
+    let outputs = parse_terraform_outputs(request, &workspace_path, &output.stdout)?;
+    emit_progress_via_channel(
+        &progress_tx,
+        EngineProgressEvent::WorkspaceOutputs {
+            workspace_path: workspace_path.clone(),
+            outputs: outputs.clone(),
+        },
+    );
+
+    emit_progress_via_channel(
+        &progress_tx,
+        EngineProgressEvent::WorkspacePhase {
+            workspace_path: workspace_path.clone(),
+            phase: ConvergeWorkspacePhase::PublishingOutputs,
+        },
+    );
+    if let Some(published_version) =
+        maybe_publish_hosted_output_module(request, repo_context, &workspace_path, &outputs)?
+    {
+        diagnostics.push(DiagnosticMessage {
+            level: DiagnosticLevel::Info,
+            code: Some("hosted_output_module_published".to_string()),
+            message: format!(
+                "Published hosted output module '{}' for environment '{}' as version '{}'.",
+                workspace_path,
+                request
+                    .target
+                    .as_ref()
+                    .map(|target| target.environment.as_str())
+                    .unwrap_or("unknown"),
+                published_version
+            ),
+            workspace_path: Some(workspace_path.clone()),
+            item_key: None,
+            details: Some(BTreeMap::from([(
+                "version".to_string(),
+                json!(published_version),
+            )])),
+        });
+    }
+
+    Ok(WorkspaceConvergeOutcome {
+        workspace_path,
+        outputs,
+        diagnostics,
+    })
+}
+
+fn workspace_execution_levels(
+    request: &EngineRequest,
+    repo_context: &RepoContext,
+    graph_context: &GraphContext,
+) -> Result<Vec<Vec<String>>, EngineError> {
+    let environment_name = request
+        .target
+        .as_ref()
+        .map(|target| target.environment.as_str())
+        .unwrap_or("unknown");
+    let implicit_dependencies = graph_context
+        .topological_order
+        .iter()
+        .map(|workspace_path| {
+            implicit_local_remote_state_dependencies(
+                request,
+                &repo_context.repo_root,
+                workspace_path,
+                environment_name,
+            )
+            .map(|dependencies| (workspace_path.clone(), dependencies))
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+
+    let mut stages = BTreeMap::<String, usize>::new();
+    for workspace_path in &graph_context.topological_order {
+        let dependencies = graph_context
+            .graph
+            .workspace(workspace_path)
+            .map(|workspace| workspace.dependencies.clone())
+            .unwrap_or_default();
+        let stage = dependencies
+            .iter()
+            .chain(
+                implicit_dependencies
+                    .get(workspace_path)
+                    .into_iter()
+                    .flatten(),
+            )
+            .map(|dependency| stages.get(dependency).copied().unwrap_or(0) + 1)
+            .max()
+            .unwrap_or(0);
+        stages.insert(workspace_path.clone(), stage);
+    }
+
+    let max_stage = stages.values().copied().max().unwrap_or(0);
+    let mut levels = vec![Vec::new(); max_stage + 1];
+    for workspace_path in &graph_context.topological_order {
+        let stage = stages.get(workspace_path).copied().unwrap_or(0);
+        levels[stage].push(workspace_path.clone());
+    }
+    Ok(levels)
+}
+
+fn implicit_local_remote_state_dependencies(
+    request: &EngineRequest,
+    repo_root: &Path,
+    workspace_path: &str,
+    environment_name: &str,
+) -> Result<Vec<String>, EngineError> {
+    let workspace_dir = repo_root.join(workspace_path);
+    let prefix = format!(".yaffle/state/{environment_name}/");
+    let suffix = "/terraform.tfstate";
+    let mut dependencies = BTreeSet::new();
+
+    for entry in fs::read_dir(&workspace_dir).map_err(|error| {
+        request_error(
+            request,
+            "workspace_read_failed",
+            format!(
+                "Failed to inspect workspace '{}' for remote state references: {error}",
+                workspace_path
+            ),
+        )
+    })? {
+        let entry = entry.map_err(|error| {
+            request_error(
+                request,
+                "workspace_read_failed",
+                format!(
+                    "Failed to inspect workspace '{}' for remote state references: {error}",
+                    workspace_path
+                ),
+            )
+        })?;
+        let path = entry.path();
+        let is_tf_file = path.extension().and_then(|ext| ext.to_str()) == Some("tf");
+        if !is_tf_file {
+            continue;
+        }
+
+        let content = fs::read_to_string(&path).map_err(|error| {
+            request_error(
+                request,
+                "workspace_read_failed",
+                format!(
+                    "Failed to read '{}' while scanning for remote state references: {error}",
+                    path.display()
+                ),
+            )
+        })?;
+
+        let mut remaining = content.as_str();
+        while let Some(start) = remaining.find(&prefix) {
+            let after_prefix = &remaining[start + prefix.len()..];
+            let Some(end) = after_prefix.find(suffix) else {
+                break;
+            };
+            let dependency = after_prefix[..end].trim_matches('/');
+            if !dependency.is_empty() && dependency != workspace_path {
+                dependencies.insert(dependency.to_string());
+            }
+            remaining = &after_prefix[end + suffix.len()..];
+        }
+    }
+
+    Ok(dependencies.into_iter().collect())
+}
+
+fn emit_progress_via_channel(
+    progress_tx: &Option<mpsc::Sender<ConvergeWorkerMessage>>,
+    event: EngineProgressEvent,
+) {
+    if let Some(tx) = progress_tx {
+        let _ = tx.send(ConvergeWorkerMessage::Progress(event));
+    }
 }
 
 fn execute_doctor_operation(request: &EngineRequest, working_dir: &Path) -> EngineResponse {
@@ -2773,7 +3021,7 @@ fn prepare_execution_repo(
     })?;
 
     Ok(PreparedExecutionRepo {
-        _temp_dir: temp_dir,
+        _temp_dir: Arc::new(temp_dir),
         repo_root,
         tf_data_dir,
     })
@@ -5832,6 +6080,77 @@ module "shared" {
         assert!(summary.contains("[apps/control-plane/infra]"));
         assert!(summary.contains("╭─╮") || summary.contains("╯│╰") || summary.contains("▶"));
         assert!(!summary.contains("legend"));
+    }
+
+    #[test]
+    fn execution_levels_respect_local_remote_state_references() {
+        let repo = TempDir::new().expect("temp dir should exist");
+
+        fs::create_dir_all(repo.path().join(".git")).expect("git dir should exist");
+        fs::write(
+            repo.path().join(".git/config"),
+            "[remote \"origin\"]\n  url = https://github.com/test-org/fixture.git\n",
+        )
+        .expect("git config should exist");
+
+        fs::write(
+            repo.path().join("yaffle.toml"),
+            r#"version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra/shared"
+environments = ["main"]
+
+[[workspaces]]
+path = "apps/web/infra"
+environments = ["main"]
+"#,
+        )
+        .expect("config should be written");
+
+        write_workspace_file(
+            repo.path(),
+            "infra/shared/main.tf",
+            "output \"domain\" { value = \"example.test\" }\n",
+        );
+        write_workspace_file(
+            repo.path(),
+            "apps/web/infra/main.tf",
+            r#"data "terraform_remote_state" "shared" {
+  backend = "local"
+
+  config = {
+    path = "../../../.yaffle/state/main/infra/shared/terraform.tfstate"
+  }
+}
+"#,
+        );
+
+        let request = EngineRequest {
+            operation: EngineOperation::Converge,
+            target: Some(EnvironmentTarget {
+                environment: "main".to_string(),
+            }),
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        };
+        let repo_context =
+            load_repo_context(repo.path(), &request).expect("repo context should load");
+        let graph_context = load_graph_context(&repo_context, &request).expect("graph should load");
+
+        let levels = workspace_execution_levels(&request, &repo_context, &graph_context)
+            .expect("execution levels should resolve");
+
+        assert_eq!(
+            levels,
+            vec![
+                vec!["infra/shared".to_string()],
+                vec!["apps/web/infra".to_string()],
+            ]
+        );
     }
 
     #[test]

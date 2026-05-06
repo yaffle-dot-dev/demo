@@ -607,10 +607,10 @@ impl ConvergeTuiState {
         self.detail = "Yaffle stopped before the environment finished converging.".to_string();
         self.failure_message = Some(message.to_string());
 
-        if let Some(workspace) = self
+        for workspace in self
             .workspaces
             .iter_mut()
-            .find(|workspace| workspace.state == WorkspaceRunState::Running)
+            .filter(|workspace| workspace.state == WorkspaceRunState::Running)
         {
             workspace.state = WorkspaceRunState::Failed;
         }
@@ -729,6 +729,11 @@ struct LocalEnvironmentDetailState {
     outputs_rx: Option<mpsc::Receiver<Result<EngineResponse, EngineError>>>,
     active_run: Option<ActiveConvergeRun>,
     follow_running_workspace: bool,
+}
+
+struct DetailPanelContent {
+    header_lines: Vec<Line<'static>>,
+    body_lines: Vec<Line<'static>>,
 }
 
 #[derive(Debug, Clone)]
@@ -1073,6 +1078,8 @@ impl LocalEnvironmentDetailState {
     }
 
     fn handle_graph_key(&mut self, key: KeyCode) {
+        let previous_level = self.selected_level;
+        let previous_row = self.selected_row;
         match key {
             KeyCode::Left | KeyCode::Char('h') => {
                 if self.selected_level > 0 {
@@ -1124,6 +1131,10 @@ impl LocalEnvironmentDetailState {
                 }
             }
             _ => {}
+        }
+
+        if previous_level != self.selected_level || previous_row != self.selected_row {
+            self.detail_scroll = 0;
         }
     }
 
@@ -1605,17 +1616,36 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
         Span::raw(" "),
         render_detail_tab_chip("Outputs", detail.tab == DetailTab::Outputs),
     ]);
-    let detail_panel = Paragraph::new(render_environment_detail_panel(detail))
-        .block(
-            Block::default()
-                .title(detail_title)
-                .borders(Borders::ALL)
-                .border_style(panel_border_style(detail.focus == ShellFocus::Detail))
-                .style(Style::default().bg(YAFFLE_SURFACE_RAISED).fg(YAFFLE_TEXT)),
-        )
+    let detail_block = Block::default()
+        .title(detail_title)
+        .borders(Borders::ALL)
+        .border_style(panel_border_style(detail.focus == ShellFocus::Detail))
+        .style(Style::default().bg(YAFFLE_SURFACE_RAISED).fg(YAFFLE_TEXT));
+    let detail_inner = detail_block.inner(areas[2]);
+    frame.render_widget(detail_block, areas[2]);
+
+    let detail_content = render_environment_detail_panel(detail);
+    let header_height = detail_content
+        .header_lines
+        .len()
+        .min(detail_inner.height.saturating_sub(1) as usize) as u16;
+    let detail_areas = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(header_height), Constraint::Min(0)])
+        .split(detail_inner);
+
+    if !detail_content.header_lines.is_empty() && header_height > 0 {
+        let header_panel = Paragraph::new(detail_content.header_lines)
+            .wrap(Wrap { trim: false })
+            .style(Style::default().bg(YAFFLE_SURFACE_RAISED).fg(YAFFLE_TEXT));
+        frame.render_widget(header_panel, detail_areas[0]);
+    }
+
+    let body_panel = Paragraph::new(detail_content.body_lines)
         .wrap(Wrap { trim: false })
-        .scroll((detail.detail_scroll as u16, 0));
-    frame.render_widget(detail_panel, areas[2]);
+        .scroll((detail.detail_scroll as u16, 0))
+        .style(Style::default().bg(YAFFLE_SURFACE_RAISED).fg(YAFFLE_TEXT));
+    frame.render_widget(body_panel, detail_areas[1]);
 
     let footer = Paragraph::new(match detail.focus {
         ShellFocus::Graph => {
@@ -1642,20 +1672,22 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
     frame.render_widget(footer, areas[3]);
 }
 
-fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<Line<'static>> {
+fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> DetailPanelContent {
     let selected = detail.selected_node_title();
     match detail.tab {
         DetailTab::Plan => {
-            let selection = summarize_selected_workspaces(detail);
-            let mut lines = vec![
+            let target_summary = summarize_selected_workspaces(detail);
+            let header_lines = vec![
                 Line::from(format!("Selected node: {selected}")),
                 Line::from(""),
-                Line::from(selection),
+                Line::from(target_summary),
+            ];
+            let mut body_lines = vec![
                 Line::from(
-                    "Press `c` to run converge. If nothing is selected, Yaffle converges the full environment.",
+                    "Press `c` to run converge. If nothing is explicitly selected, Yaffle converges the full environment.",
                 ),
                 Line::from(
-                    "Use space in the DAG view to include or exclude a workspace. Gates ride along with their workspace.",
+                    "Press space on a workspace node to narrow the run. Gates always ride along with their workspace.",
                 ),
             ];
             if let Some(node) = detail.selected_node() {
@@ -1668,52 +1700,67 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                     destination_url,
                 } = &node.kind
                 {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(format!(
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(format!(
                         "{} '{}'.",
                         lifecycle_phase_label(phase),
                         humanize_lifecycle_key(key)
                     )));
-                    lines.push(Line::from(lifecycle_gate_purpose(
+                    body_lines.push(Line::from(lifecycle_gate_purpose(
                         phase,
                         &node.workspace_path,
                     )));
-                    lines.push(Line::from(format!(
+                    body_lines.push(Line::from(format!(
                         "{}",
                         lifecycle_scope_copy(phase, scopes)
                     )));
-                    lines.push(Line::from(format!(
+                    body_lines.push(Line::from(format!(
                         "Failure mode: {}",
                         lifecycle_failure_policy_label(*failure_policy)
                     )));
                     if let Some(timeout) = timeout {
-                        lines.push(Line::from(format!("Timeout budget: {timeout}")));
+                        body_lines.push(Line::from(format!("Timeout budget: {timeout}")));
                     }
-                    lines.push(Line::from(format!("External handoff: {destination_url}")));
+                    body_lines.push(Line::from(format!("External handoff: {destination_url}")));
+                } else if let EnvironmentDagNodeKind::Workspace = &node.kind {
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(format!(
+                        "Focused workspace: '{}'.",
+                        node.workspace_path
+                    )));
+                    if detail.selected_workspaces.is_empty() {
+                        body_lines.push(Line::from(
+                            "Current run target: full environment. Press space here to converge just this workspace and its dependencies.",
+                        ));
+                    }
                 }
             }
             if let Some(error) = detail.active_run_error() {
                 if error.error.code == "environment_governance_blocked" {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(
                         "Environment admission is blocked before infra starts.",
                     ));
-                    lines.push(Line::from(error.error.message.clone()));
+                    body_lines.push(Line::from(error.error.message.clone()));
                 }
             }
-            lines
+            DetailPanelContent {
+                header_lines,
+                body_lines,
+            }
         }
         DetailTab::Apply => {
-            let mut lines = vec![
+            let mut header_lines = vec![
                 Line::from(format!("Selected node: {selected}")),
                 Line::from(""),
             ];
             if let Some(error) = detail.active_run_error() {
                 if error.error.code == "environment_governance_blocked" {
-                    lines.push(Line::from("Environment run: blocked before infra"));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(error.error.message.clone()));
-                    return lines;
+                    header_lines.push(Line::from("Environment run: blocked before infra"));
+                    return DetailPanelContent {
+                        header_lines,
+                        body_lines: vec![Line::from(""), Line::from(error.error.message.clone())],
+                    };
                 }
             }
             if let Some((progress, running)) = detail.running_summary() {
@@ -1721,12 +1768,12 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                     detail.selected_workspace_path().and_then(|workspace_path| {
                         detail.active_run_status_for_workspace(workspace_path)
                     });
-                lines.push(Line::from(format!(
+                header_lines.push(Line::from(format!(
                     "Environment run: {}",
                     if running { "running" } else { "finished" }
                 )));
                 if let Some((workspace_state, workspace_phase)) = workspace_run_state {
-                    lines.push(Line::from(format!(
+                    header_lines.push(Line::from(format!(
                         "Workspace state: {}",
                         match workspace_state {
                             WorkspaceRunState::Pending => "waiting",
@@ -1735,16 +1782,15 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                             WorkspaceRunState::Failed => "failed",
                         }
                     )));
-                    lines.push(Line::from(format!(
+                    header_lines.push(Line::from(format!(
                         "Current phase: {}",
                         workspace_phase.map(phase_label).unwrap_or("not started")
                     )));
                 }
-                lines.push(Line::from(""));
-                lines.push(Line::from(progress.detail.clone()));
+                let mut body_lines = vec![Line::from(progress.detail.clone())];
                 if !detail.selected_workspace_log_lines().is_empty() {
-                    lines.push(Line::from(""));
-                    lines.push(Line::from("Recent activity:"));
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from("Recent activity:"));
                     for log in detail
                         .selected_workspace_log_lines()
                         .iter()
@@ -1752,11 +1798,15 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                         .take(8)
                         .rev()
                     {
-                        lines.push(render_workspace_log_line(log));
+                        body_lines.push(render_workspace_log_line(log));
                     }
                 }
-                return lines;
+                return DetailPanelContent {
+                    header_lines,
+                    body_lines,
+                };
             }
+            let mut body_lines = Vec::new();
             match (&detail.status_response, &detail.status_error) {
                 (Some(status), _) => {
                     if let Some(lifecycle_item) = detail.selected_lifecycle_item() {
@@ -1766,7 +1816,7 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                             .get("state")
                             .and_then(Value::as_str)
                             .unwrap_or("unknown");
-                        lines.push(Line::from(format!(
+                        body_lines.push(Line::from(format!(
                             "Gate state: {}",
                             lifecycle_state_copy(
                                 detail
@@ -1783,10 +1833,10 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                             )
                         )));
                         if let Some(reason) = reason {
-                            lines.push(Line::from(format!("Operator note: {reason}")));
+                            body_lines.push(Line::from(format!("Operator note: {reason}")));
                         }
-                        lines.push(Line::from(""));
-                        lines.push(Line::from("External handoff timeline:"));
+                        body_lines.push(Line::from(""));
+                        body_lines.push(Line::from("External handoff timeline:"));
                         let mut rendered_event = false;
                         if let Some(events) = lifecycle_item.get("events").and_then(Value::as_array)
                         {
@@ -1797,7 +1847,7 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                                     .and_then(Value::as_str)
                                     .unwrap_or("event");
                                 let summary = format_lifecycle_event_summary(event);
-                                lines.push(Line::from(format!(
+                                body_lines.push(Line::from(format!(
                                     "{}: {}",
                                     title_case_lifecycle_event(event_type),
                                     summary
@@ -1805,7 +1855,7 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                             }
                         }
                         if !rendered_event {
-                            lines.push(Line::from("No lifecycle events recorded yet."));
+                            body_lines.push(Line::from("No lifecycle events recorded yet."));
                         }
                     } else {
                         let snapshot =
@@ -1815,65 +1865,69 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                                     .iter()
                                     .find(|workspace| workspace.workspace_path == workspace_path)
                             });
-                        lines.push(Line::from(format!(
+                        body_lines.push(Line::from(format!(
                             "Materialization: {}",
                             snapshot
                                 .and_then(|workspace| workspace.materialization.clone())
                                 .unwrap_or_else(|| "unknown".to_string())
                         )));
-                        lines.push(Line::from(format!(
+                        body_lines.push(Line::from(format!(
                             "Freshness: {}",
                             snapshot
                                 .and_then(|workspace| workspace.freshness.clone())
                                 .unwrap_or_else(|| "unknown".to_string())
                         )));
-                        lines.push(Line::from(""));
-                        lines.push(Line::from(status.result.summary.clone()));
+                        body_lines.push(Line::from(""));
+                        body_lines.push(Line::from(status.result.summary.clone()));
                         let blocked_reasons = detail.selected_workspace_lifecycle_block_reasons();
                         if !blocked_reasons.is_empty() {
-                            lines.push(Line::from(""));
-                            lines.push(Line::from("Lifecycle governance:"));
+                            body_lines.push(Line::from(""));
+                            body_lines.push(Line::from("Lifecycle governance:"));
                             for reason in blocked_reasons {
-                                lines.push(Line::from(reason));
+                                body_lines.push(Line::from(reason));
                             }
                         }
                     }
                 }
                 (None, _) if detail.status_loading => {
-                    lines.push(Line::from("Loading status information..."));
-                    lines.push(Line::from(
+                    body_lines.push(Line::from("Loading status information..."));
+                    body_lines.push(Line::from(
                         "You can keep navigating while Yaffle loads this in the background.",
                     ));
                 }
                 (None, Some(error)) => {
-                    lines.push(Line::from("Status information could not be loaded."));
-                    lines.push(Line::from("Press `r` in the detail panel to retry."));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(error.clone()));
+                    body_lines.push(Line::from("Status information could not be loaded."));
+                    body_lines.push(Line::from("Press `r` in the detail panel to retry."));
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(error.clone()));
                 }
                 (None, None) => {
-                    lines.push(Line::from("Status information loads on demand."));
-                    lines.push(Line::from("Press `r` in the detail panel to load it."));
+                    body_lines.push(Line::from("Status information loads on demand."));
+                    body_lines.push(Line::from("Press `r` in the detail panel to load it."));
                 }
             }
-            lines
+            DetailPanelContent {
+                header_lines,
+                body_lines,
+            }
         }
         DetailTab::Outputs => {
             let selected_workspace_path = detail.selected_workspace_path().unwrap_or("none");
-            let mut lines = vec![
+            let header_lines = vec![
                 Line::from(format!("Selected workspace: {selected_workspace_path}")),
                 Line::from(""),
             ];
+            let mut body_lines = Vec::new();
             if let Some(run) = detail.active_run.as_ref() {
                 if let Some(outputs) = run.progress.workspace_outputs.get(selected_workspace_path) {
-                    lines.push(Line::from(if run.running {
+                    body_lines.push(Line::from(if run.running {
                         "Outputs captured so far during this converge:"
                     } else {
                         "Outputs captured during the last converge:"
                     }));
-                    lines.push(Line::from(""));
+                    body_lines.push(Line::from(""));
                     if outputs.is_empty() {
-                        lines.push(Line::from("No outputs captured for this workspace yet."));
+                        body_lines.push(Line::from("No outputs captured for this workspace yet."));
                     } else {
                         for (name, output) in outputs {
                             let value = if output.sensitive == Some(true) {
@@ -1882,16 +1936,22 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                                 serde_json::to_string(&output.value)
                                     .unwrap_or_else(|_| "<unserializable>".to_string())
                             };
-                            lines.push(Line::from(format!("{name} = {value}")));
+                            body_lines.push(Line::from(format!("{name} = {value}")));
                         }
                     }
-                    return lines;
+                    return DetailPanelContent {
+                        header_lines,
+                        body_lines,
+                    };
                 }
                 if run.running {
-                    lines.push(Line::from(
+                    body_lines.push(Line::from(
                         "Outputs will appear here as workspaces finish and publish them.",
                     ));
-                    return lines;
+                    return DetailPanelContent {
+                        header_lines,
+                        body_lines,
+                    };
                 }
             }
             match (&detail.outputs_response, &detail.outputs_error) {
@@ -1902,7 +1962,7 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                         .cloned()
                         .unwrap_or_default();
                     if outputs.is_empty() {
-                        lines.push(Line::from("No outputs found for this workspace yet."));
+                        body_lines.push(Line::from("No outputs found for this workspace yet."));
                     } else {
                         for (name, output) in outputs {
                             let value = if output.sensitive == Some(true) {
@@ -1911,28 +1971,31 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Vec<
                                 serde_json::to_string(&output.value)
                                     .unwrap_or_else(|_| "<unserializable>".to_string())
                             };
-                            lines.push(Line::from(format!("{name} = {value}")));
+                            body_lines.push(Line::from(format!("{name} = {value}")));
                         }
                     }
                 }
                 (None, _) if detail.outputs_loading => {
-                    lines.push(Line::from("Loading outputs..."));
-                    lines.push(Line::from(
+                    body_lines.push(Line::from("Loading outputs..."));
+                    body_lines.push(Line::from(
                         "You can keep navigating while Yaffle loads this in the background.",
                     ));
                 }
                 (None, Some(error)) => {
-                    lines.push(Line::from("Outputs could not be loaded."));
-                    lines.push(Line::from("Press `r` in the detail panel to retry."));
-                    lines.push(Line::from(""));
-                    lines.push(Line::from(error.clone()));
+                    body_lines.push(Line::from("Outputs could not be loaded."));
+                    body_lines.push(Line::from("Press `r` in the detail panel to retry."));
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(error.clone()));
                 }
                 (None, None) => {
-                    lines.push(Line::from("Outputs load on demand."));
-                    lines.push(Line::from("Press `r` in the detail panel to load them."));
+                    body_lines.push(Line::from("Outputs load on demand."));
+                    body_lines.push(Line::from("Press `r` in the detail panel to load them."));
                 }
             }
-            lines
+            DetailPanelContent {
+                header_lines,
+                body_lines,
+            }
         }
     }
 }
@@ -1951,7 +2014,11 @@ fn summarize_selected_workspaces(detail: &LocalEnvironmentDetailState) -> String
     let selected = ordered_selected_workspaces(detail);
 
     if selected.is_empty() {
-        return "Selected for converge (0): none".to_string();
+        let focused = detail.selected_workspace_path().unwrap_or("none");
+        return format!(
+            "Converge target: full environment • focused workspace: {}",
+            focused
+        );
     }
 
     let preview = selected
@@ -1963,7 +2030,7 @@ fn summarize_selected_workspaces(detail: &LocalEnvironmentDetailState) -> String
     let suffix = if selected.len() > 3 { ", ..." } else { "" };
 
     format!(
-        "Selected for converge ({}): {}{}",
+        "Converge target: selected workspaces ({}) • {}{}",
         selected.len(),
         preview,
         suffix
