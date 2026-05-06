@@ -250,8 +250,59 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   }
 
   rule {
-    name     = "allow-local-first-lifecycle-posts"
+    name     = "allow-local-first-execution-token-posts"
     priority = 9
+
+    action {
+      allow {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            search_string         = "/api/execution-tokens"
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+
+        statement {
+          byte_match_statement {
+            search_string         = "POST"
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              method {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "allowLocalFirstExecutionTokenPosts"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "allow-local-first-lifecycle-posts"
+    priority = 10
 
     action {
       allow {}
@@ -301,8 +352,59 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   }
 
   rule {
+    name     = "allow-local-first-output-module-publish"
+    priority = 11
+
+    action {
+      allow {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            search_string         = "/api/output-modules"
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+
+        statement {
+          byte_match_statement {
+            search_string         = "PUT"
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              method {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "allowLocalFirstOutputModulePublish"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
     name     = "aws-managed-ip-reputation"
-    priority = 12
+    priority = 14
 
     override_action {
       none {}
