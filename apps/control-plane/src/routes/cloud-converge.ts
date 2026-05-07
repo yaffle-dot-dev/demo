@@ -67,7 +67,9 @@ export function createCloudConvergeRoute(deps: {
   const scanDispatcher = deps.scanDispatcher ?? dispatchManualScan
 
   route.use("/converge", enforceFeatureToken)
+  route.use("/converge/*", enforceFeatureToken)
   route.use("/converge", principalAuth())
+  route.use("/converge/*", principalAuth())
 
   route.post("/converge", async (c) => {
     const principal = c.get("principalAuth")
@@ -233,6 +235,9 @@ export function createCloudConvergeRoute(deps: {
 
   route.get("/converge/:runGroupId", async (c) => {
     const principal = c.get("principalAuth")
+    if (!principal) {
+      return c.json({ error: { code: "AUTH_REQUIRED", message: "authentication required" } }, 401)
+    }
     if (principal.type !== "account" || !principal.userId) {
       return c.json(
         { error: { code: "PAID_CLOUD_REQUIRED", message: "remote converge requires a paid cloud account session" } },
