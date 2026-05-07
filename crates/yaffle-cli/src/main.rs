@@ -421,9 +421,8 @@ fn build_remote_converge_request(
 ) -> Result<CloudRemoteConvergeRequest, CliFailure> {
     ensure_clean_git_worktree(working_dir, request)?;
     let repo_full_name = infer_repo_full_name(working_dir, request)?;
-    let git_ref = current_git_full_ref(working_dir, request)?;
     let head_sha = current_git_head_sha(working_dir, request)?;
-    ensure_remote_head_matches_local(working_dir, request, &head_sha)?;
+    let git_ref = resolve_remote_git_ref(working_dir, request, &head_sha)?;
     let workspace_paths = request.selection.workspaces.clone();
     let environment_name = request
         .target
@@ -620,7 +619,7 @@ fn ensure_clean_git_worktree(
             request.target.clone(),
             Some(request.selection.clone()),
             "dirty_worktree_not_supported",
-            "Remote converge currently requires a clean working tree and a committed remote ref.",
+            "Remote converge currently requires a clean working tree.",
         ));
     }
 
@@ -685,36 +684,6 @@ fn infer_repo_full_name(working_dir: &Path, request: &EngineRequest) -> Result<S
     Ok(format!("{owner}/{repo}"))
 }
 
-fn current_git_full_ref(working_dir: &Path, request: &EngineRequest) -> Result<String, CliFailure> {
-    let output = Command::new("git")
-        .args(["symbolic-ref", "-q", "HEAD"])
-        .current_dir(working_dir)
-        .output()
-        .map_err(|error| {
-            command_error(
-                false,
-                Some(request.operation.clone()),
-                request.target.clone(),
-                Some(request.selection.clone()),
-                "git_ref_unavailable",
-                format!("Failed to resolve git ref for remote converge: {error}"),
-            )
-        })?;
-
-    if !output.status.success() {
-        return Err(command_error(
-            false,
-            Some(request.operation.clone()),
-            request.target.clone(),
-            Some(request.selection.clone()),
-            "detached_head_not_supported",
-            "Remote converge currently requires a named git branch ref, not a detached HEAD.",
-        ));
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 fn current_git_head_sha(working_dir: &Path, request: &EngineRequest) -> Result<String, CliFailure> {
     let output = Command::new("git")
         .args(["rev-parse", "HEAD"])
@@ -744,13 +713,110 @@ fn current_git_head_sha(working_dir: &Path, request: &EngineRequest) -> Result<S
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-fn ensure_remote_head_matches_local(
+fn resolve_remote_git_ref(
     working_dir: &Path,
     request: &EngineRequest,
     local_head_sha: &str,
-) -> Result<(), CliFailure> {
+) -> Result<String, CliFailure> {
+    let local_branch_ref = current_git_symbolic_ref(working_dir, request)?;
+    if let Some(upstream_ref) = current_git_upstream_ref(working_dir, request)? {
+        let upstream_sha = resolve_git_ref_sha(working_dir, request, &upstream_ref)?;
+        if upstream_sha != local_head_sha {
+            return Err(command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "unpushed_commits_not_supported",
+                "Remote converge currently requires local HEAD to match the remote ref that will execute in the cloud. Push or fast-forward before using `--remote`.",
+            ));
+        }
+
+        if let Some(mapped) = map_origin_remote_ref_to_head_ref(&upstream_ref) {
+            return Ok(mapped);
+        }
+    }
+
+    let remote_refs = list_origin_remote_refs(working_dir, request)?;
+    if let Some(local_branch_ref) = local_branch_ref.as_deref() {
+        let branch_name = local_branch_ref.trim_start_matches("refs/heads/");
+        let candidate_remote_ref = format!("refs/remotes/origin/{branch_name}");
+        if remote_refs
+            .iter()
+            .any(|(remote_ref, sha)| remote_ref == &candidate_remote_ref && sha == local_head_sha)
+        {
+            return Ok(local_branch_ref.to_string());
+        }
+    }
+
+    let mut matching_remote_refs = remote_refs
+        .into_iter()
+        .filter(|(remote_ref, sha)| {
+            sha == local_head_sha && remote_ref != "refs/remotes/origin/HEAD"
+        })
+        .filter_map(|(remote_ref, _)| map_origin_remote_ref_to_head_ref(&remote_ref))
+        .collect::<Vec<_>>();
+    matching_remote_refs.sort();
+    matching_remote_refs.dedup();
+
+    match matching_remote_refs.as_slice() {
+        [resolved_ref] => Ok(resolved_ref.clone()),
+        [] => Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "remote_ref_unavailable",
+            "Remote converge currently requires HEAD to be pushed to a resolvable origin branch or tag ref.",
+        )),
+        refs => Err(command_error(
+            false,
+            Some(request.operation.clone()),
+            request.target.clone(),
+            Some(request.selection.clone()),
+            "remote_ref_ambiguous",
+            format!(
+                "Remote converge found multiple origin refs for HEAD ({}). Check out a branch or disambiguate the ref before using `--remote`.",
+                refs.join(", ")
+            ),
+        )),
+    }
+}
+
+fn current_git_symbolic_ref(
+    working_dir: &Path,
+    request: &EngineRequest,
+) -> Result<Option<String>, CliFailure> {
     let output = Command::new("git")
-        .args(["rev-parse", "@{upstream}"])
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .current_dir(working_dir)
+        .output()
+        .map_err(|error| {
+            command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "git_ref_unavailable",
+                format!("Failed to resolve git ref metadata for remote converge: {error}"),
+            )
+        })?;
+
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+fn current_git_upstream_ref(
+    working_dir: &Path,
+    request: &EngineRequest,
+) -> Result<Option<String>, CliFailure> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--symbolic-full-name", "@{upstream}"])
         .current_dir(working_dir)
         .output()
         .map_err(|error| {
@@ -760,34 +826,106 @@ fn ensure_remote_head_matches_local(
                 request.target.clone(),
                 Some(request.selection.clone()),
                 "upstream_ref_unavailable",
-                format!("Failed to resolve the upstream ref for remote converge: {error}"),
+                format!("Failed to inspect upstream ref metadata for remote converge: {error}"),
             )
         })?;
 
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
+}
+
+fn resolve_git_ref_sha(
+    working_dir: &Path,
+    request: &EngineRequest,
+    git_ref: &str,
+) -> Result<String, CliFailure> {
+    let output = Command::new("git")
+        .args(["rev-parse", git_ref])
+        .current_dir(working_dir)
+        .output()
+        .map_err(|error| {
+            command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "git_ref_unavailable",
+                format!("Failed to resolve git ref '{git_ref}' for remote converge: {error}"),
+            )
+        })?;
     if !output.status.success() {
         return Err(command_error(
             false,
             Some(request.operation.clone()),
             request.target.clone(),
             Some(request.selection.clone()),
-            "upstream_ref_unavailable",
-            "Remote converge currently requires the current branch to track an upstream remote branch.",
+            "git_ref_unavailable",
+            format!("Failed to resolve git ref '{git_ref}' for remote converge."),
         ));
     }
 
-    let upstream_sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if upstream_sha != local_head_sha {
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn list_origin_remote_refs(
+    working_dir: &Path,
+    request: &EngineRequest,
+) -> Result<Vec<(String, String)>, CliFailure> {
+    let output = Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/remotes/origin",
+        ])
+        .current_dir(working_dir)
+        .output()
+        .map_err(|error| {
+            command_error(
+                false,
+                Some(request.operation.clone()),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "remote_ref_unavailable",
+                format!("Failed to inspect origin refs for remote converge: {error}"),
+            )
+        })?;
+    if !output.status.success() {
         return Err(command_error(
             false,
             Some(request.operation.clone()),
             request.target.clone(),
             Some(request.selection.clone()),
-            "unpushed_commits_not_supported",
-            "Remote converge currently requires local HEAD to match the tracked upstream branch. Push or fast-forward before using `--remote`.",
+            "remote_ref_unavailable",
+            "Failed to inspect origin refs for remote converge.",
         ));
     }
 
-    Ok(())
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(parse_git_remote_ref_line)
+        .collect())
+}
+
+fn parse_git_remote_ref_line(line: &str) -> Option<(String, String)> {
+    let mut parts = line.split_whitespace();
+    let git_ref = parts.next()?.trim();
+    let sha = parts.next()?.trim();
+    if git_ref.is_empty() || sha.is_empty() {
+        return None;
+    }
+    Some((git_ref.to_string(), sha.to_string()))
+}
+
+fn map_origin_remote_ref_to_head_ref(remote_ref: &str) -> Option<String> {
+    remote_ref
+        .strip_prefix("refs/remotes/origin/")
+        .filter(|value| !value.is_empty() && *value != "HEAD")
+        .map(|suffix| format!("refs/heads/{suffix}"))
 }
 
 fn run_shell() -> CliResult {
@@ -4273,5 +4411,36 @@ mod tests {
 
         assert_eq!(state.workspaces[0].state, WorkspaceRunState::Failed);
         assert_eq!(state.failure_message.as_deref(), Some("tofu init failed"));
+    }
+
+    #[test]
+    fn maps_origin_remote_refs_to_head_refs_for_remote_converge() {
+        assert_eq!(
+            map_origin_remote_ref_to_head_ref("refs/remotes/origin/main"),
+            Some("refs/heads/main".to_string())
+        );
+        assert_eq!(
+            map_origin_remote_ref_to_head_ref("refs/remotes/origin/feature/remote"),
+            Some("refs/heads/feature/remote".to_string())
+        );
+        assert_eq!(
+            map_origin_remote_ref_to_head_ref("refs/remotes/origin/HEAD"),
+            None
+        );
+    }
+
+    #[test]
+    fn parses_remote_ref_lines_from_git_for_each_ref_output() {
+        assert_eq!(
+            parse_git_remote_ref_line(
+                "refs/remotes/origin/main abcdef1234567890abcdef1234567890abcdef12"
+            ),
+            Some((
+                "refs/remotes/origin/main".to_string(),
+                "abcdef1234567890abcdef1234567890abcdef12".to_string(),
+            ))
+        );
+        assert_eq!(parse_git_remote_ref_line(""), None);
+        assert_eq!(parse_git_remote_ref_line("refs/remotes/origin/main"), None);
     }
 }
