@@ -17,11 +17,11 @@ if [[ "${1:-}" == "--push" ]]; then
   PUSH_FLAGS="--push"
 fi
 
-echo "==> Building control-plane image with depot..."
-depot build \
-  -f apps/control-plane/Dockerfile \
-  -t yaffle-control-plane:latest \
-  $PUSH_FLAGS \
-  .
+echo "==> Building control-plane image with Nix..."
+if [[ -n "$PUSH_FLAGS" ]]; then
+  YAFFLE_PUSH=true nix run .#build-cp
+else
+  YAFFLE_PUSH=false nix run .#build-cp
+fi
 
 echo "==> Image built successfully!"

@@ -34,13 +34,16 @@ jobs:
           fetch-depth: 0
           ref: ${{ env.TARGET_SHA }}
 
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Install Determinate Nix
+        uses: DeterminateSystems/determinate-nix-action@v3
+
+      - name: Enable FlakeHub cache
+        uses: DeterminateSystems/flakehub-cache-action@v3.19.1
         with:
-          bun-version: latest
+          flakehub-flake-name: yaffle-dot-dev/yaffle
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: nix develop .#ci --command bun install --frozen-lockfile
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -88,13 +91,13 @@ jobs:
           fi
 
           echo "resolved target kind: $target_kind"
-          bun run scripts/ci/main.ts "${target_args[@]}"
+          nix run .#ci -- "${target_args[@]}"
 
       - name: Run lifecycle phase
         id: lifecycle
         shell: bash
         run: |
-          if bun run scripts/ci/main.ts env lifecycle --target .ci/target.json --phase "$PHASE" --deployable "$ITEM_KEY"; then
+          if nix run .#ci -- env lifecycle --target .ci/target.json --phase "$PHASE" --deployable "$ITEM_KEY"; then
             echo "status=succeeded" >> "$GITHUB_OUTPUT"
             echo "summary=${PHASE} completed for ${ITEM_KEY}" >> "$GITHUB_OUTPUT"
           else
@@ -108,7 +111,7 @@ jobs:
           COMPLETION_STATUS: ${{ steps.lifecycle.outputs.status || 'failed' }}
           COMPLETION_SUMMARY: ${{ steps.lifecycle.outputs.summary || 'lifecycle workflow did not report a result' }}
         run: |
-          bun -e '
+          nix develop .#ci --command bun -e '
             const response = await fetch(process.env.ON_COMPLETION_URL, {
               method: "POST",
               headers: { "content-type": "application/json" },

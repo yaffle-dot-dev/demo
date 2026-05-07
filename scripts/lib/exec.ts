@@ -7,6 +7,10 @@ export interface ExecOptions {
   env?: Record<string, string>
   /** If true, don't stream output (capture only) */
   quiet?: boolean
+  /** Capture stdout while allowing normal stderr streaming unless quiet is also set */
+  captureStdout?: boolean
+  /** Capture stderr while allowing normal stdout streaming unless quiet is also set */
+  captureStderr?: boolean
 }
 
 function sanitizeCommand(cmd: string[]): string {
@@ -38,16 +42,19 @@ function sanitizeCommand(cmd: string[]): string {
  * Run a command, stream output, throw on non-zero exit.
  */
 export async function exec(cmd: string[], opts?: ExecOptions): Promise<string> {
+  const captureStdout = opts?.quiet || opts?.captureStdout
+  const captureStderr = opts?.quiet || opts?.captureStderr
+
   const proc = Bun.spawn(cmd, {
     cwd: opts?.cwd,
     env: { ...process.env, ...opts?.env },
-    stdout: opts?.quiet ? "pipe" : "inherit",
-    stderr: opts?.quiet ? "pipe" : "inherit",
+    stdout: captureStdout ? "pipe" : "inherit",
+    stderr: captureStderr ? "pipe" : "inherit",
   })
 
   const result = await proc.exited
-  const stdout = opts?.quiet && proc.stdout ? await new Response(proc.stdout).text() : ""
-  const stderr = opts?.quiet && proc.stderr ? await new Response(proc.stderr).text() : ""
+  const stdout = captureStdout && proc.stdout ? await new Response(proc.stdout).text() : ""
+  const stderr = captureStderr && proc.stderr ? await new Response(proc.stderr).text() : ""
 
   if (result !== 0) {
     const detail = stderr.trim() || stdout.trim()

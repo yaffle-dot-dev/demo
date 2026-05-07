@@ -148,6 +148,9 @@ export async function dispatchHostedLifecycleVerificationIfReady(values: {
   const items = await listLifecycleItemsForRun(values.runId)
   const workspaceItems = items.filter((item) => item.workspacePath === values.workspacePath)
   const activationItems = workspaceItems.filter((item) => item.phase === "activation")
+  if (activationItems.some((item) => item.state === "failed")) {
+    return
+  }
   if (activationItems.some((item) => item.state === "pending" || item.state === "running")) {
     return
   }
