@@ -438,6 +438,60 @@
     panelFocus = panelFocus === "dag" ? "details" : "dag"
   }
 
+  function isTerminalTab(tabId: TabId): boolean {
+    return tabId === "plan" || tabId === "apply"
+  }
+
+  function preferredSpotlightTab(): TabId | null {
+    if (isTerminalTab(activeTab)) {
+      return activeTab
+    }
+
+    if (latestApply && !applyIsStale) {
+      if (latestApply.status === "running" || latestApply.status === "pending") {
+        return "apply"
+      }
+    }
+
+    if (latestPlan?.status === "running") {
+      return "plan"
+    }
+
+    if (latestApply && !applyIsStale) {
+      return "apply"
+    }
+
+    if (latestPlan) {
+      return "plan"
+    }
+
+    return null
+  }
+
+  function enterDetailSpotlight(): void {
+    focusPanel("details")
+
+    const preferredTab = preferredSpotlightTab()
+    if (preferredTab) {
+      activeTab = preferredTab
+    }
+
+    detailSpotlight = true
+  }
+
+  function exitDetailSpotlight(): void {
+    detailSpotlight = false
+  }
+
+  function toggleDetailSpotlight(): void {
+    if (detailSpotlight) {
+      exitDetailSpotlight()
+      return
+    }
+
+    enterDetailSpotlight()
+  }
+
   function isEditableTarget(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) {
       return false
@@ -543,6 +597,12 @@
       return
     }
 
+    if (detailSpotlight && event.key === "Escape") {
+      event.preventDefault()
+      exitDetailSpotlight()
+      return
+    }
+
     if (
       event.defaultPrevented
       || event.metaKey
@@ -559,8 +619,18 @@
       return
     }
 
+    if (event.key.toLowerCase() === "z") {
+      event.preventDefault()
+      toggleDetailSpotlight()
+      return
+    }
+
     if (event.key === "Tab") {
       event.preventDefault()
+      if (detailSpotlight) {
+        focusPanel("details")
+        return
+      }
       togglePanelFocus()
       return
     }
@@ -781,6 +851,7 @@
   let activeTab = $state<TabId>("plan")
   type PanelFocus = "dag" | "details"
   let panelFocus = $state<PanelFocus>("dag")
+  let detailSpotlight = $state(false)
   let showShortcutsOverlay = $state(false)
 
   // Terminal expanded state - collapsed by default, persisted to localStorage
@@ -1524,7 +1595,8 @@ terraform {
           <div class="mt-2 text-lg font-semibold text-text">Env view controls</div>
           <p class="mt-1 text-sm text-text-dim">
             Panel focus changes what <span class="font-mono text-text">h j k l</span> do.
-            <span class="font-mono text-text">Tab</span> flips between the DAG and details.
+            <span class="font-mono text-text">Tab</span> flips between the DAG and details, and
+            <span class="font-mono text-text">z</span> spotlights the detail pane.
           </p>
         </div>
         <button
@@ -1542,9 +1614,6 @@ terraform {
               <div class="text-sm font-medium text-text">DAG focus</div>
               <div class="mt-1 text-xs text-text-dim">Move through columns and rows in the delivery graph.</div>
             </div>
-            <span class:shortcut-pill-active={panelFocus === "dag"} class="shortcut-pill">
-              {panelFocus === "dag" ? "active" : "inactive"}
-            </span>
           </div>
 
           <div class="mt-4 space-y-3 text-sm text-text">
@@ -1573,9 +1642,6 @@ terraform {
               <div class="text-sm font-medium text-text">Detail focus</div>
               <div class="mt-1 text-xs text-text-dim">Move between timeline, plan, apply, and outputs.</div>
             </div>
-            <span class:shortcut-pill-active={panelFocus === "details"} class="shortcut-pill">
-              {panelFocus === "details" ? "active" : "inactive"}
-            </span>
           </div>
 
           <div class="mt-4 space-y-3 text-sm text-text">
@@ -1590,6 +1656,10 @@ terraform {
             <div class="flex items-center justify-between gap-4">
               <span>switch panel focus</span>
               <span class="shortcut-key-group"><span class="shortcut-key">Tab</span></span>
+            </div>
+            <div class="flex items-center justify-between gap-4">
+              <span>toggle detail spotlight</span>
+              <span class="shortcut-key-group"><span class="shortcut-key">z</span></span>
             </div>
             <div class="flex items-center justify-between gap-4">
               <span>toggle this overlay</span>
@@ -1607,7 +1677,8 @@ terraform {
   </div>
 {/if}
 
-<div class="h-full flex flex-col">
+<div class={`flex flex-col overflow-hidden ${detailSpotlight ? "fixed inset-0 z-40 bg-surface" : "h-full"}`}>
+  {#if !detailSpotlight}
   <!-- Header -->
   <header class="flex-shrink-0 border-b border-border px-6 py-4">
     <div class="flex items-start justify-between">
@@ -1697,6 +1768,7 @@ terraform {
       {/if}
     </div>
   </header>
+  {/if}
 
   <!-- Main content -->
   <div class="flex-1 flex flex-col min-h-0">
@@ -1722,7 +1794,7 @@ terraform {
         </div>
       </div>
     {:else}
-    {#if environmentPolicy}
+    {#if !detailSpotlight && environmentPolicy}
       <div class="mx-4 mt-4 rounded-lg border border-yaffle-500/20 bg-yaffle-500/8 px-4 py-3">
         <div class="text-sm font-medium text-yaffle-200">Protected environment policy</div>
         <div class="mt-1 text-xs text-text-dim">
@@ -1735,54 +1807,53 @@ terraform {
         </div>
       </div>
     {/if}
-    <!-- DAG Visualization (replaces sidebar) -->
-    <div
-      class={`flex-shrink-0 border-b bg-surface transition-[border-color,box-shadow] ${
-        panelFocus === "dag"
-          ? "border-yaffle-500/45 ring-1 ring-inset ring-yaffle-500/30"
-          : "border-border"
-      }`}
-      onfocusin={() => focusPanel("dag")}
-    >
-      <div class="px-4 py-1 flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <span class="text-xs text-text-dim font-medium uppercase tracking-wider">Delivery path</span>
-          <span class="text-[10px] text-text-dim">infra → activation → verification</span>
-          <span class:shortcut-pill-active={panelFocus === "dag"} class="shortcut-pill">
-            dag
-          </span>
-        </div>
-        <div class="flex items-center gap-2">
-          <button
-            class="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay hover:bg-yaffle-500/20 text-text-muted hover:text-yaffle-400 transition-colors"
-            onclick={() => showShortcutsOverlay = true}
-            title="Keyboard shortcuts"
-          >
-            ?
-          </button>
-          {#if hasAnyInProgress && !followMode}
+    {#if !detailSpotlight}
+      <!-- DAG Visualization (replaces sidebar) -->
+      <div
+        class={`flex-shrink-0 border-b bg-surface transition-[border-color,box-shadow] ${
+          panelFocus === "dag"
+            ? "border-yaffle-500/45 ring-1 ring-inset ring-yaffle-500/30"
+            : "border-border"
+        }`}
+        onfocusin={() => focusPanel("dag")}
+      >
+        <div class="px-4 py-1 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="text-xs text-text-dim font-medium uppercase tracking-wider">Delivery path</span>
+            <span class="text-[10px] text-text-dim">infra → activation → verification</span>
+          </div>
+          <div class="flex items-center gap-2">
             <button
-              onclick={enableFollowMode}
               class="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay hover:bg-yaffle-500/20 text-text-muted hover:text-yaffle-400 transition-colors"
-              title="Auto-follow running workspace"
+              onclick={() => showShortcutsOverlay = true}
+              title="Keyboard shortcuts"
             >
-              follow
+              ?
             </button>
-          {:else if followMode && hasAnyInProgress}
-            <span class="text-[10px] text-yaffle-400" title="Following running workspace">
-              following
-            </span>
-          {/if}
+            {#if hasAnyInProgress && !followMode}
+              <button
+                onclick={enableFollowMode}
+                class="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay hover:bg-yaffle-500/20 text-text-muted hover:text-yaffle-400 transition-colors"
+                title="Auto-follow running workspace"
+              >
+                follow
+              </button>
+            {:else if followMode && hasAnyInProgress}
+              <span class="text-[10px] text-yaffle-400" title="Following running workspace">
+                following
+              </span>
+            {/if}
+          </div>
         </div>
+        <DagVisualization
+          nodes={dagNodes}
+          dependencyGraph={dagDependencyGraph}
+          nodeStatuses={dagNodeStatuses}
+          {selectedPath}
+          onSelect={selectDagNode}
+        />
       </div>
-      <DagVisualization
-        nodes={dagNodes}
-        dependencyGraph={dagDependencyGraph}
-        nodeStatuses={dagNodeStatuses}
-        {selectedPath}
-        onSelect={selectDagNode}
-      />
-    </div>
+    {/if}
 
     <!-- Content area -->
     <div
@@ -1844,9 +1915,6 @@ terraform {
               {/if}
             </div>
             <div class="flex items-center gap-2">
-              <span class:shortcut-pill-active={panelFocus === "details"} class="shortcut-pill">
-                details
-              </span>
               {#if runningRun}
                 <!-- Cancel button for running runs -->
                 <button
@@ -1984,7 +2052,7 @@ terraform {
               {/each}
             </div>
             <!-- Expand/collapse button (only show for terminal tabs) -->
-            {#if activeTab !== "outputs" && activeTab !== "timeline"}
+            {#if !detailSpotlight && activeTab !== "outputs" && activeTab !== "timeline"}
               <button
                 class="p-1.5 text-text-muted hover:text-text transition-colors rounded hover:bg-surface-overlay"
                 onclick={toggleTerminalExpanded}
@@ -2020,7 +2088,7 @@ terraform {
           {:else if (activeTab === "plan" && latestPlan) || (activeTab === "apply" && latestApply)}
             <!-- Terminal connected directly to tabs bar -->
             {#key `${selectedPath}-${activeTab}-${selectedTerminalRunId ?? "none"}`}
-              <div class="flex flex-col min-h-0">
+              <div class={`flex flex-col min-h-0 ${detailSpotlight ? "flex-1" : ""}`}>
                 {#if runLogStream.error}
                   <div class="px-6 py-2 border-b border-status-failed/20 bg-status-failed/8 text-xs text-status-failed">
                     Live log stream error: {runLogStream.error}
@@ -2028,8 +2096,8 @@ terraform {
                 {/if}
                 <div 
                   bind:this={terminalContainer}
-                  class="transition-all duration-200 ease-in-out"
-                  style="height: {terminalExpanded ? '500px' : '250px'}"
+                  class={`min-h-0 ${detailSpotlight ? "flex-1" : "transition-all duration-200 ease-in-out"}`}
+                  style="height: {detailSpotlight ? '100%' : terminalExpanded ? '500px' : '250px'}"
                 >
                   <Terminal output={terminalOutput} streaming={terminalStreaming} />
                 </div>
@@ -2106,26 +2174,6 @@ terraform {
     font-family: "Berkeley Mono", "SFMono-Regular", ui-monospace, monospace;
     font-size: 0.75rem;
     line-height: 1;
-  }
-
-  .shortcut-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 9999px;
-    border: 1px solid color-mix(in srgb, var(--color-border) 85%, white 15%);
-    padding: 0.15rem 0.5rem;
-    color: var(--color-text-dim);
-    font-size: 0.625rem;
-    font-weight: 600;
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-
-  .shortcut-pill-active {
-    border-color: color-mix(in srgb, var(--color-yaffle-500) 45%, transparent);
-    background: color-mix(in srgb, var(--color-yaffle-500) 16%, transparent);
-    color: var(--color-text);
   }
 
   .config-line {
