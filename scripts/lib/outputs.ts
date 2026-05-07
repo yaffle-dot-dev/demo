@@ -38,12 +38,12 @@ function resolveApiUrl(): string {
 }
 
 async function getOrgRepo(): Promise<{ org: string; repo: string }> {
-  const remote = await $`git remote get-url origin`.quiet().text()
+  const remote = (await $`git remote get-url origin`.quiet().text()).trim()
   const match = remote.match(/github\.com[:/]([^/]+)\/([^/.]+)/)
   if (!match) {
     throw new Error("Could not determine org/repo from git remote")
   }
-  return { org: match[1], repo: match[2] }
+  return { org: match[1].trim(), repo: match[2].trim() }
 }
 
 export interface FetchOutputsOptions {
@@ -144,7 +144,9 @@ async function createClient(apiUrl: string): Promise<YaffleClient> {
   }
 
   if (!token) {
-    throw new Error("Not authenticated. Run 'yaffle cloud login' or set YAFFLE_TOKEN/GITHUB_TOKEN")
+    throw new Error(
+      "Not authenticated. Run 'yaffle cloud login' locally, or set YAFFLE_TOKEN in CI/workflows.",
+    )
   }
 
   return new YaffleClient({

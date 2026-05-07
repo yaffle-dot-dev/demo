@@ -322,19 +322,14 @@ export class YaffleClient {
 
     this.log.info(`Fetching outputs for ${org}/${repo} ${targetLabel} workspace=${workspace}`)
 
-    const preview = await this.findPreview(org, repo, target, workspace)
-
-    if (!preview) {
-      throw new Error(
-        `No preview found for ${org}/${repo} ${targetLabel} workspace=${workspace}`
-      )
-    }
+    const initialDetails = await this.getWorkspaceDetails(org, repo, target, workspace)
+    const preview = initialDetails.preview
 
     this.log.info(`Found preview ${preview.id} with status: ${preview.status}`)
 
     let outputs: Record<string, TerraformOutput> | null = null
     let status: PreviewStatus = preview.status
-    let latestRun: Run | null = null
+    let latestRun: Run | null = this.getLatestRun(initialDetails.runs)
 
     if (wait && preview.status !== "ready") {
       this.log.info(`Waiting for preview to be ready (timeout: ${waitTimeout}s)...`)
@@ -345,12 +340,17 @@ export class YaffleClient {
       } catch {
         const details = await this.getWorkspaceDetails(org, repo, target, workspace)
         latestRun = this.getLatestRun(details.runs)
-        throw this.buildFailedWorkspaceError({
-          targetLabel,
-          workspace,
-          previewStatus: details.preview.status,
-          latestRun,
-        })
+        if (details.preview.status === "ready") {
+          status = details.preview.status
+          outputs = details.outputs
+        } else {
+          throw this.buildFailedWorkspaceError({
+            targetLabel,
+            workspace,
+            previewStatus: details.preview.status,
+            latestRun,
+          })
+        }
       }
     }
 

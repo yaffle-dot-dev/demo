@@ -18,6 +18,7 @@ import {
   issueLifecycleCompletionToken,
   listLifecycleItemsForRun,
   updateLifecycleItem,
+  updateLifecycleRun,
 } from "../db/queries/lifecycle.ts"
 import { findPrincipalById, findPrincipalRepoBindingById } from "../db/queries/principals.ts"
 import { findRepoByFullName, findRepoByName } from "../db/queries/repositories.ts"
@@ -281,7 +282,29 @@ async function dispatchHostedLifecycleItem(itemId: string): Promise<void> {
         reason: message,
       },
     })
+    await reconcileLifecycleRunStatus(run.id)
   }
+}
+
+async function reconcileLifecycleRunStatus(runId: string): Promise<void> {
+  const run = await findLifecycleRunById(runId)
+  if (!run) {
+    return
+  }
+
+  const items = await listLifecycleItemsForRun(runId)
+  const finalStatus = items.some((entry) => entry.state === "failed")
+    ? "failed"
+    : items.some((entry) => entry.state === "degraded")
+      ? "degraded"
+      : items.every((entry) => entry.state === "succeeded")
+        ? "succeeded"
+        : "running"
+
+  await updateLifecycleRun(runId, {
+    status: finalStatus,
+    finishedAt: finalStatus === "running" ? null : new Date(),
+  })
 }
 
 function lifecycleHooksForEnvironment(hooks: LifecycleHook[], environmentName: string): LifecycleHook[] {

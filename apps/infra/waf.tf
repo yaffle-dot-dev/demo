@@ -76,8 +76,61 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   }
 
   rule {
-    name     = "rate-limit-local-first-bootstrap"
+    name     = "allow-authenticated-api-bearer-requests"
     priority = 6
+
+    action {
+      allow {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            search_string         = "/api/"
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+
+        statement {
+          byte_match_statement {
+            search_string         = "Bearer "
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              single_header {
+                name = "authorization"
+              }
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "allowAuthenticatedApiBearerRequests"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "rate-limit-local-first-bootstrap"
+    priority = 7
 
     action {
       block {}
@@ -135,7 +188,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   rule {
     name     = "rate-limit-local-first-execution-token"
-    priority = 7
+    priority = 8
 
     action {
       block {}
@@ -193,7 +246,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   rule {
     name     = "rate-limit-local-first-output-module-publish"
-    priority = 8
+    priority = 9
 
     action {
       block {}
@@ -251,7 +304,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   rule {
     name     = "allow-local-first-execution-token-posts"
-    priority = 9
+    priority = 10
 
     action {
       allow {}
@@ -302,7 +355,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   rule {
     name     = "allow-local-first-lifecycle-posts"
-    priority = 10
+    priority = 11
 
     action {
       allow {}
@@ -353,7 +406,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   rule {
     name     = "allow-local-first-cloud-converge-posts"
-    priority = 11
+    priority = 12
 
     action {
       allow {}
@@ -404,7 +457,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   rule {
     name     = "allow-local-first-cloud-converge-status"
-    priority = 12
+    priority = 13
 
     action {
       allow {}
@@ -455,7 +508,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   rule {
     name     = "allow-local-first-output-module-publish"
-    priority = 13
+    priority = 14
 
     action {
       allow {}

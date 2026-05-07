@@ -48,6 +48,14 @@ jobs:
           role-to-assume: ${{ vars.YAFFLE_APP_DEPLOYER_ROLE_ARN }}
           aws-region: us-east-1
 
+      - name: Validate Yaffle workflow auth
+        shell: bash
+        run: |
+          if [[ -z "$YAFFLE_TOKEN" ]]; then
+            echo "Missing YAFFLE_TOKEN. Set the repository or organization secret used by lifecycle workflows." >&2
+            exit 1
+          fi
+
       - name: Create lifecycle target
         shell: bash
         run: |

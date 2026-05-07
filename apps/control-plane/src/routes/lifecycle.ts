@@ -412,6 +412,10 @@ lifecycleRoute.post("/dispatch", async (c) => {
         reason: message,
       },
     })
+    await updateLifecycleRun(run.id, {
+      status: "failed",
+      finishedAt: new Date(),
+    })
 
     return c.json({ error: { code: "LIFECYCLE_DISPATCH_FAILED", message } }, 502)
   }

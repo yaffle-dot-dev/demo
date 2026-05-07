@@ -279,8 +279,6 @@ export function createCloudConvergeRoute(deps: {
     const lifecycleState = await getLifecycleStateForRunGroup(runGroup.id)
     const lifecycleEvents = await listLifecycleEventsForItems(lifecycleState?.items.map((item) => item.id) ?? [])
 
-    const runGroupStatus = deriveCloudConvergeRunGroupStatus(runGroup.status, lifecycleState?.run.status)
-
     const serializedDeployments = await Promise.all(deployments.map(async (deployment) => {
       const latestRun = latestRuns.get(deployment.id)?.[0] ?? null
       const base = {
@@ -314,6 +312,15 @@ export function createCloudConvergeRoute(deps: {
         },
       }
     }))
+
+    const runGroupStatus = deriveCloudConvergeRunGroupStatus(
+      runGroup.status,
+      serializedDeployments.map((deployment) => ({
+        status: deployment.status,
+        latestRunStatus: deployment.latestRun?.status ?? null,
+      })),
+      lifecycleState?.items.map((item) => item.state) ?? null,
+    )
 
     return c.json({
       data: {
@@ -486,11 +493,29 @@ function stripGitRef(ref: string): string {
 
 function deriveCloudConvergeRunGroupStatus(
   runGroupStatus: string,
-  lifecycleStatus: string | undefined,
+  deployments: Array<{ status: string; latestRunStatus: string | null }>,
+  lifecycleItemStates: string[] | null,
 ): string {
-  if (!lifecycleStatus) {
+  if (
+    deployments.some((deployment) =>
+      ["failed", "system_error"].includes(deployment.status)
+        || ["failed", "system_error", "cancelled"].includes(deployment.latestRunStatus ?? ""),
+    )
+  ) {
+    return "failed"
+  }
+
+  if (!lifecycleItemStates || lifecycleItemStates.length === 0) {
     return runGroupStatus
   }
+
+  const lifecycleStatus = lifecycleItemStates.some((state) => state === "failed")
+    ? "failed"
+    : lifecycleItemStates.some((state) => state === "degraded")
+      ? "degraded"
+      : lifecycleItemStates.every((state) => state === "succeeded")
+        ? "succeeded"
+        : "running"
 
   if (runGroupStatus === "failed") {
     return "failed"
