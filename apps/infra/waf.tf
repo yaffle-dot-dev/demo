@@ -403,8 +403,59 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   }
 
   rule {
-    name     = "allow-local-first-output-module-publish"
+    name     = "allow-local-first-cloud-converge-status"
     priority = 12
+
+    action {
+      allow {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          byte_match_statement {
+            search_string         = "/api/cloud/converge/"
+            positional_constraint = "STARTS_WITH"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+
+        statement {
+          byte_match_statement {
+            search_string         = "GET"
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              method {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "allowLocalFirstCloudConvergeStatus"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "allow-local-first-output-module-publish"
+    priority = 13
 
     action {
       allow {}
@@ -455,7 +506,7 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   rule {
     name     = "aws-managed-ip-reputation"
-    priority = 15
+    priority = 16
 
     override_action {
       none {}

@@ -346,9 +346,6 @@ export function createCloudConvergeRoute(deps: {
 
   return route
 }
-
-export const cloudConvergeRoute = createCloudConvergeRoute()
-
 const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
   const expectedToken = process.env[LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR]?.trim()
   if (!expectedToken) {
@@ -545,3 +542,5 @@ async function dispatchManualScan(input: {
 
   return { scanJobId: scanJob.id }
 }
+
+export const cloudConvergeRoute = createCloudConvergeRoute()
