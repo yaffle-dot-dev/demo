@@ -72,6 +72,7 @@ export interface RunGroup {
   prNumber: number | null
   ref: string
   headSha: string
+  selectedWorkspacePaths?: string[]
   trigger: string
   status: string
   /** Inferred dependency graph for this run group */

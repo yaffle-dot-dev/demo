@@ -241,6 +241,7 @@ export const runGroups = pgTable("run_groups", {
   prNumber: integer("pr_number"), // NULL for named environments, PR number for transient
   ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
   headSha: text("head_sha").notNull(),
+  selectedWorkspacePaths: jsonb("selected_workspace_paths").default(sql`'[]'::jsonb`).notNull(),
   checkRunId: bigint("check_run_id", { mode: "number" }),
   checkCompletedAt: timestamp("check_completed_at", { withTimezone: true }),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
@@ -808,7 +809,7 @@ export const lifecycleItems = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
-    unique("lifecycle_items_run_workspace_key_unique").on(t.runId, t.workspacePath, t.key),
+    unique("lifecycle_items_run_workspace_phase_key_unique").on(t.runId, t.workspacePath, t.phase, t.key),
     index("lifecycle_items_run_idx").on(t.runId, t.phase, t.workspacePath),
   ],
 )

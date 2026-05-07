@@ -190,6 +190,20 @@
       "when": 1778300000000,
       "tag": "0026_lifecycle_run_group",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1778400000000,
+      "tag": "0027_run_group_selected_workspace_paths",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1778500000000,
+      "tag": "0028_lifecycle_item_phase_key",
+      "breakpoints": true
     }
   ]
 }

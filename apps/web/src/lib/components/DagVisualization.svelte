@@ -553,6 +553,7 @@
         class:blocked={isBlocked}
         class:queued={isQueued}
         class:has-changes={hasChanges(planSummary)}
+        class:out-of-scope={displayStatus === "out_of_scope"}
       />
 
       <text x={NODE_PAD_X} y="18" class="node-label">
@@ -740,6 +741,13 @@
   .node-bg.has-changes {
     stroke: var(--color-status-pending);
     stroke-width: 1.5;
+  }
+
+  .node-bg.out-of-scope {
+    fill: color-mix(in srgb, var(--color-surface-overlay) 88%, black 12%);
+    stroke: color-mix(in srgb, var(--color-border) 80%, transparent 20%);
+    stroke-dasharray: 3 2;
+    opacity: 0.7;
   }
 
   .node-bg.lifecycle-node {

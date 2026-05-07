@@ -46,8 +46,8 @@ pub use crate::local_first::{
     get_cloud_remote_converge_status, load_local_cloud_auth_status, local_auth_store_path,
     local_first_feature_token_configured, start_cloud_remote_converge, CloudCliLoginResult,
     CloudRemoteConvergeHandle, CloudRemoteConvergeRequest, CloudRemoteConvergeStatus,
-    LifecycleAdmissionRequest, LocalCloudAuthStatus, StoredPrincipalCredential,
-    StoredPrincipalType,
+    CloudRemoteLatestRunSummary, LifecycleAdmissionRequest, LocalCloudAuthStatus,
+    StoredPrincipalCredential, StoredPrincipalType,
 };
 use yaffle_config::{
     environment_name_matches_patterns, parse_yaffle_toml, validate_environment_name,

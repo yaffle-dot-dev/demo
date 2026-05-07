@@ -1476,6 +1476,7 @@ interface SerializedRunGroup {
   prNumber: number | null
   ref: string
   headSha: string
+  selectedWorkspacePaths: string[]
   trigger: string
   status: string
   dependencyGraph: SerializedDependencyGraph | null
@@ -1494,6 +1495,9 @@ function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
     prNumber: rg.prNumber,
     ref: rg.ref,
     headSha: rg.headSha,
+    selectedWorkspacePaths: Array.isArray(rg.selectedWorkspacePaths)
+      ? rg.selectedWorkspacePaths.filter((value): value is string => typeof value === "string")
+      : [],
     trigger: rg.trigger,
     status: rg.status,
     dependencyGraph: rawGraph

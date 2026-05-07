@@ -33,8 +33,9 @@ use yaffle_engine::{
     get_cloud_remote_converge_status, load_local_cloud_auth_status,
     local_first_feature_token_configured, prepare_tf_login_exports, start_cloud_remote_converge,
     CloudCliLoginResult, CloudRemoteConvergeHandle, CloudRemoteConvergeRequest,
-    CloudRemoteConvergeStatus, ConvergeWorkspacePhase, EngineProgressEvent, EngineRequest,
-    LocalCloudAuthStatus, StoredPrincipalCredential, StoredPrincipalType, TofuLogStream,
+    CloudRemoteConvergeStatus, CloudRemoteLatestRunSummary, ConvergeWorkspacePhase,
+    EngineProgressEvent, EngineRequest, LocalCloudAuthStatus, StoredPrincipalCredential,
+    StoredPrincipalType, TofuLogStream,
 };
 use yaffle_graph::{
     environment_kind_for_name, resolve_workspace_graph, EnvironmentKind, ResolvedWorkspaceGraph,
@@ -464,6 +465,9 @@ fn follow_remote_converge(
             handle.environment_name, handle.run_group_id
         );
         println!("Selected workspaces: {}", handle.workspace_paths.join(", "));
+        if let Some(web_url) = &handle.web_url {
+            println!("View in Yaffle: {web_url}");
+        }
     }
 
     let mut last_snapshot: Option<CloudRemoteConvergeStatus> = None;
@@ -509,10 +513,7 @@ fn maybe_print_remote_snapshot(
         current.run_group.id, current.run_group.status
     );
     for deployment in &current.deployments {
-        let run_label = deployment
-            .latest_run
-            .as_ref()
-            .map(|run| format!("{} {}", run.run_type, run.status));
+        let run_label = deployment.latest_run.as_ref().map(remote_run_label);
         match run_label {
             Some(run_label) => println!(
                 "  - {}: {} ({})",
@@ -521,6 +522,14 @@ fn maybe_print_remote_snapshot(
             None => println!("  - {}: {}", deployment.workspace_path, deployment.status),
         }
     }
+}
+
+fn remote_run_label(run: &CloudRemoteLatestRunSummary) -> String {
+    if run.run_type == "apply" && run.status == "skipped" {
+        return "apply not needed".to_string();
+    }
+
+    format!("{} {}", run.run_type, run.status)
 }
 
 fn remote_snapshot_signature(snapshot: &CloudRemoteConvergeStatus) -> String {
@@ -564,6 +573,15 @@ fn remote_failure_message(status: &CloudRemoteConvergeStatus) -> String {
 
     if let Some(deployment) = failing {
         if let Some(run) = &deployment.latest_run {
+            if let Some(log_output) = &run.log_output {
+                let trimmed = log_output.trim();
+                if !trimmed.is_empty() {
+                    return format!(
+                        "Hosted converge failed in {} during {}:\n{}",
+                        deployment.workspace_path, run.run_type, trimmed
+                    );
+                }
+            }
             if let Some(error) = &run.error_message {
                 return format!(
                     "Hosted converge failed in {} during {}: {}",

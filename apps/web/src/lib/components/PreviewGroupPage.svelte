@@ -121,12 +121,31 @@
 
   const systemError = $derived(viewedRunGroup?.systemError ?? null)
 
+  const manualScopeWorkspacePaths = $derived.by(() =>
+    viewedRunGroup?.trigger === "manual"
+      ? new Set(viewedRunGroup.selectedWorkspacePaths ?? [])
+      : null,
+  )
+
+  const canonicalEnvironmentGraph = $derived.by(() => {
+    const graphs = runGroups
+      .map((runGroup) => runGroup.dependencyGraph)
+      .filter((graph): graph is NonNullable<RunGroup["dependencyGraph"]> => !!graph)
+
+    return graphs.sort((left, right) => right.workspaces.length - left.workspaces.length)[0] ?? null
+  })
+
   const displayDependencyGraph = $derived.by(() => {
-    if (viewedRunGroup?.dependencyGraph) {
+    if (
+      viewedRunGroup?.dependencyGraph
+      && (viewedRunGroup.trigger !== "manual"
+        || !canonicalEnvironmentGraph
+        || viewedRunGroup.dependencyGraph.workspaces.length >= canonicalEnvironmentGraph.workspaces.length)
+    ) {
       return viewedRunGroup.dependencyGraph
     }
 
-    return runGroups.find((runGroup) => runGroup.dependencyGraph)?.dependencyGraph ?? null
+    return canonicalEnvironmentGraph
   })
 
   // Workspaces with runs filtered to the viewed run group
@@ -174,7 +193,9 @@
         preview: {
           id: `pending-${viewedRunGroup.id}-${path}`,
           workspacePath: path,
-          status: "pending",
+          status: manualScopeWorkspacePaths !== null && !manualScopeWorkspacePaths.has(path)
+            ? "out_of_scope"
+            : "pending",
           connectionStatus: "not_required",
           missingProviders: [],
           conflictProviders: [],
@@ -218,11 +239,20 @@
       // Use its actual status from the full workspaces list
       const fullWs = allWsByPath.get(path)
       if (fullWs) {
+        const isOutOfScope = manualScopeWorkspacePaths !== null && !manualScopeWorkspacePaths.has(path)
         return {
           ...fullWs,
+          preview: {
+            ...fullWs.preview,
+            status: isOutOfScope ? "out_of_scope" : fullWs.preview.status,
+          },
           runs: getWorkspaceDisplayRuns({
             workspace: {
               ...fullWs,
+              preview: {
+                ...fullWs.preview,
+                status: isOutOfScope ? "out_of_scope" : fullWs.preview.status,
+              },
               runs: [],
             },
             isViewingLatest: isLatestRunGroup,
@@ -231,10 +261,11 @@
       }
 
       // Otherwise, create a placeholder for workspaces not yet created
+      const isOutOfScope = manualScopeWorkspacePaths !== null && !manualScopeWorkspacePaths.has(path)
       const placeholder: WorkspacePreview = {
         id: `placeholder-${path}`,
         workspacePath: path,
-        status: "pending",
+        status: isOutOfScope ? "out_of_scope" : "pending",
         connectionStatus: "not_required",
         missingProviders: [],
         conflictProviders: [],
@@ -260,6 +291,10 @@
 
   const activeEnvironmentLifecycle = $derived(
     isLatestRunGroup ? environmentLifecycle : null,
+  )
+
+  const isManualScopedRunGroup = $derived(
+    viewedRunGroup?.trigger === "manual" && (viewedRunGroup.selectedWorkspacePaths?.length ?? 0) > 0,
   )
 
   function getDisplayStatusForWorkspace(workspace: WorkspaceWithRuns): string {
@@ -494,6 +529,10 @@
 
   function isEditableTarget(target: EventTarget | null): boolean {
     if (!(target instanceof HTMLElement)) {
+      return false
+    }
+
+    if (target.classList.contains("xterm-helper-textarea")) {
       return false
     }
 
@@ -1821,6 +1860,11 @@ terraform {
           <div class="flex items-center gap-3">
             <span class="text-xs text-text-dim font-medium uppercase tracking-wider">Delivery path</span>
             <span class="text-[10px] text-text-dim">infra → activation → verification</span>
+            {#if isManualScopedRunGroup}
+              <span class="text-[10px] text-text-dim">
+                scope: {viewedRunGroup?.selectedWorkspacePaths?.length ?? 0} / {displayDependencyGraph?.workspaces.length ?? filteredWorkspaces.length} workspaces · dim nodes reuse current env state
+              </span>
+            {/if}
           </div>
           <div class="flex items-center gap-2">
             <button

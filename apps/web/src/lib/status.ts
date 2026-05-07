@@ -23,6 +23,7 @@ export const STATUS_CONFIG: Record<string, { label: string; color: string; icon:
   destroying: { label: "Destroying", color: "text-status-destroying", icon: "..." },
   destroyed: { label: "Destroyed", color: "text-status-destroyed", icon: "✓" },
   skipped: { label: "Skipped", color: "text-text-dim", icon: "-" },
+  out_of_scope: { label: "Current State", color: "text-text-dim", icon: "·" },
   // Run group aggregate states
   in_progress: { label: "In Progress", color: "text-status-applying", icon: "..." },
   success: { label: "Success", color: "text-status-ready", icon: "✓" },

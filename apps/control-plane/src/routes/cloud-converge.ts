@@ -5,7 +5,7 @@ import { z } from "zod"
 import type { PullRequestContext, PushContext, WebhookContext } from "@yaffle/shared"
 
 import { createRunGroup, findRunGroupById } from "../db/queries/run-groups.ts"
-import { listRunsForDeployments } from "../db/queries/tf-runs.ts"
+import { findRunById, listRunsForDeployments } from "../db/queries/tf-runs.ts"
 import { findDeploymentsByRunGroup } from "../db/queries/workspace-deployments.ts"
 import { ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
 import { getLifecycleStateForRunGroup, listLifecycleEventsForItems } from "../db/queries/lifecycle.ts"
@@ -18,6 +18,7 @@ import {
   matchesPullRequestTrigger,
   parsePrEnvironmentName,
 } from "../lib/config-toml.ts"
+import { getEnv } from "../lib/env.ts"
 import { fetchFileContent, getInstallationToken } from "../lib/github.ts"
 import { logger } from "../lib/telemetry.ts"
 import { buildWorkspaceVariablesByPath, type WorkspaceVariablesByPath } from "../lib/workspace-variables.ts"
@@ -192,6 +193,7 @@ export function createCloudConvergeRoute(deps: {
       prNumber: ctx.kind === "pull_request" ? ctx.prNumber : null,
       ref: values.ref,
       headSha: values.headSha,
+      selectedWorkspacePaths: selectedWorkspacePaths,
       trigger: "manual",
       status: "pending",
     })
@@ -226,6 +228,7 @@ export function createCloudConvergeRoute(deps: {
           workspacePaths: selectedWorkspacePaths,
           ref: values.ref,
           headSha: values.headSha,
+          webUrl: buildCloudRunGroupWebUrl(org.slug, repo.name, values.environmentName),
           status: "queued",
         },
       },
@@ -278,6 +281,40 @@ export function createCloudConvergeRoute(deps: {
 
     const runGroupStatus = deriveCloudConvergeRunGroupStatus(runGroup.status, lifecycleState?.run.status)
 
+    const serializedDeployments = await Promise.all(deployments.map(async (deployment) => {
+      const latestRun = latestRuns.get(deployment.id)?.[0] ?? null
+      const base = {
+        id: deployment.id,
+        workspacePath: deployment.workspacePath,
+        status: deployment.status,
+        latestRun: latestRun
+          ? {
+              id: latestRun.id,
+              runType: latestRun.runType,
+              status: latestRun.status,
+              planSummary: latestRun.planSummary,
+              errorMessage: latestRun.errorMessage,
+              logOutput: null as string | null,
+              createdAt: latestRun.createdAt.toISOString(),
+              startedAt: latestRun.startedAt?.toISOString() ?? null,
+              completedAt: latestRun.completedAt?.toISOString() ?? null,
+            }
+          : null,
+      }
+
+      if (!base.latestRun || !["failed", "system_error", "cancelled"].includes(base.latestRun.status)) {
+        return base
+      }
+      const fullRun = await findRunById(base.latestRun.id)
+      return {
+        ...base,
+        latestRun: {
+          ...base.latestRun,
+          logOutput: fullRun?.logOutput ?? null,
+        },
+      }
+    }))
+
     return c.json({
       data: {
         runGroup: {
@@ -288,6 +325,7 @@ export function createCloudConvergeRoute(deps: {
           environmentName: runGroup.environmentName,
           ref: runGroup.ref,
           headSha: runGroup.headSha,
+          selectedWorkspacePaths: (runGroup.selectedWorkspacePaths as string[] | null) ?? [],
           trigger: runGroup.trigger,
           createdAt: runGroup.createdAt.toISOString(),
           startedAt: runGroup.startedAt?.toISOString() ?? null,
@@ -325,26 +363,7 @@ export function createCloudConvergeRoute(deps: {
               })),
             }
           : null,
-        deployments: deployments.map((deployment) => {
-          const latestRun = latestRuns.get(deployment.id)?.[0] ?? null
-          return {
-            id: deployment.id,
-            workspacePath: deployment.workspacePath,
-            status: deployment.status,
-            latestRun: latestRun
-              ? {
-                  id: latestRun.id,
-                  runType: latestRun.runType,
-                  status: latestRun.status,
-                  planSummary: latestRun.planSummary,
-                  errorMessage: latestRun.errorMessage,
-                  createdAt: latestRun.createdAt.toISOString(),
-                  startedAt: latestRun.startedAt?.toISOString() ?? null,
-                  completedAt: latestRun.completedAt?.toISOString() ?? null,
-                }
-              : null,
-          }
-        }),
+        deployments: serializedDeployments,
       },
     })
   })
@@ -490,6 +509,11 @@ function deriveCloudConvergeRunGroupStatus(
   }
 
   return runGroupStatus
+}
+
+function buildCloudRunGroupWebUrl(orgSlug: string, repo: string, environmentName: string): string {
+  const baseUrl = getEnv().publicApiUrl.replace(/\/$/, "")
+  return `${baseUrl}/app/${encodeURIComponent(orgSlug)}/${encodeURIComponent(repo)}/env/${encodeURIComponent(environmentName)}`
 }
 
 async function loadConfigFromGithub(ctx: WebhookContext): Promise<YaffleTomlConfig> {

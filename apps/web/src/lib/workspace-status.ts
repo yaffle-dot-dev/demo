@@ -145,6 +145,9 @@ export function getWorkspaceDisplayStatus(params: {
   isViewingLatest: boolean
 }): string {
   const { workspace, workspaces, dependencyGraph, isViewingLatest } = params
+  if (workspace.preview.status === "out_of_scope") {
+    return "out_of_scope"
+  }
   const plan = workspace.runs.find((run) => run.runType === "plan")
   const apply = workspace.runs.find((run) => run.runType === "apply")
 

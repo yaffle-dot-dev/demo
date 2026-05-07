@@ -964,17 +964,56 @@ runnerJobRoute.post("/complete", async (c) => {
         if (hasChanges) {
           await updateDeploymentStatus(deployment.id, "awaiting_apply")
         } else {
-          await updateDeploymentStatus(deployment.id, "ready")
+          try {
+            const skippedApply = await createTfRun({
+              deploymentId: deployment.id,
+              runGroupId: deployment.runGroupId ?? undefined,
+              runType: "apply",
+              status: "skipped",
+            })
+            events.emitRunUpdate(skippedApply.id, deployment.id)
 
-          const skippedApply = await createTfRun({
-            deploymentId: deployment.id,
-            runGroupId: deployment.runGroupId ?? undefined,
-            runType: "apply",
-            status: "skipped",
-          })
-          events.emitRunUpdate(skippedApply.id, deployment.id)
+            const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
+            const latestOutputs = latestApply?.outputs && typeof latestApply.outputs === "object"
+              ? latestApply.outputs as Record<string, unknown>
+              : null
 
-          await notifyDownstreams(deployment.id, "apply")
+            await publishHostedOutputModuleForRunGroupBinding({
+              runGroupId: deployment.runGroupId,
+              environmentName: deployment.environmentName,
+              workspacePath: deployment.workspacePath,
+              outputs: latestOutputs,
+            })
+            await executeHostedLifecycleForDeployment({
+              deployment: {
+                id: deployment.id,
+                orgId: deployment.orgId,
+                repo: deployment.repo,
+                runGroupId: deployment.runGroupId ?? null,
+                environmentName: deployment.environmentName,
+                prNumber: deployment.prNumber ?? null,
+                workspacePath: deployment.workspacePath,
+                ref: deployment.ref,
+                headSha: deployment.headSha,
+                installationId: deployment.installationId ?? null,
+              },
+              outputs: latestOutputs ?? {},
+            })
+
+            await updateDeploymentStatus(deployment.id, "ready")
+            await notifyDownstreams(deployment.id, "apply")
+          } catch (error) {
+            logger.error("runner.complete.noop_lifecycle_failed", {
+              "job.id": jobId,
+              "run.id": runId,
+              deploymentId: deployment.id,
+              runGroupId: deployment.runGroupId ?? undefined,
+              workspacePath: deployment.workspacePath,
+              error: error instanceof Error ? error.message : String(error),
+            })
+            await updateDeploymentStatus(deployment.id, "system_error")
+            await cascadeFailure(deployment.id)
+          }
         }
       } else if (jobType === "apply") {
         try {

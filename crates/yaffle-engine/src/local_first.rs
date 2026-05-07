@@ -120,6 +120,8 @@ pub struct CloudRemoteConvergeHandle {
     pub git_ref: String,
     #[serde(alias = "headSha")]
     pub head_sha: String,
+    #[serde(alias = "webUrl")]
+    pub web_url: Option<String>,
     pub status: String,
 }
 
@@ -136,6 +138,8 @@ pub struct CloudRemoteRunGroupSummary {
     pub git_ref: String,
     #[serde(alias = "headSha")]
     pub head_sha: String,
+    #[serde(alias = "selectedWorkspacePaths")]
+    pub selected_workspace_paths: Vec<String>,
     pub trigger: String,
     #[serde(alias = "createdAt")]
     pub created_at: String,
@@ -155,6 +159,8 @@ pub struct CloudRemoteLatestRunSummary {
     pub plan_summary: Option<String>,
     #[serde(alias = "errorMessage")]
     pub error_message: Option<String>,
+    #[serde(alias = "logOutput")]
+    pub log_output: Option<String>,
     #[serde(alias = "createdAt")]
     pub created_at: String,
     #[serde(alias = "startedAt")]
