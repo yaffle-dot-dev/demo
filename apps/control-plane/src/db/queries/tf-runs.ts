@@ -236,6 +236,24 @@ export async function appendRunLog(
 }
 
 /**
+ * Replace the stored log output for a run.
+ * Used as a final durable snapshot when a worker completes or fails.
+ */
+export async function replaceRunLog(
+  runId: string,
+  previewId: string,
+  output: string,
+): Promise<void> {
+  return withDbSpan("update", "tf_runs", async () => {
+    await db
+      .update(tfRuns)
+      .set({ logOutput: output })
+      .where(eq(tfRuns.id, runId))
+    events.emitRunUpdate(runId, previewId)
+  })
+}
+
+/**
  * Find the latest run per deployment for a batch of deployment IDs.
  * Optionally filtered by run type. Returns a Map keyed by deploymentId.
  *

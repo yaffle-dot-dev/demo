@@ -43,6 +43,7 @@ import {
   createTfRun,
   appendRunLog,
   getRunLogState,
+  replaceRunLog,
   updateRunStatus,
   findLatestSuccessfulRun,
 } from "../db/queries/tf-runs.ts"
@@ -881,6 +882,7 @@ const completeBodySchema = z.object({
   status: z.enum(["completed", "failed"]),
   result: z.record(z.unknown()).optional(),
   errorMessage: z.string().optional(),
+  logOutput: z.string().optional(),
 })
 
 /**
@@ -901,7 +903,7 @@ runnerJobRoute.post("/complete", async (c) => {
     )
   }
 
-  const { jobId, runId, status, result, errorMessage } = parsed.data
+  const { jobId, runId, status, result, errorMessage, logOutput } = parsed.data
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
@@ -929,6 +931,9 @@ runnerJobRoute.post("/complete", async (c) => {
 
     if (success) {
       const now = new Date()
+      if (typeof logOutput === "string") {
+        await replaceRunLog(runId, deployment.id, logOutput)
+      }
       const planSummary = typeof result?.planSummary === "string" ? result.planSummary : undefined
       const planFileS3Key = typeof result?.planFileS3Key === "string" ? result.planFileS3Key : undefined
       await updateRunStatus(runId, deployment.id, "success", {
@@ -1026,6 +1031,9 @@ runnerJobRoute.post("/complete", async (c) => {
 
     if (success) {
       const failedAt = new Date()
+      if (typeof logOutput === "string") {
+        await replaceRunLog(runId, deployment.id, logOutput)
+      }
       await updateRunStatus(runId, deployment.id, "failed", {
         completedAt: failedAt,
         errorMessage: errorMessage ?? "Unknown error",

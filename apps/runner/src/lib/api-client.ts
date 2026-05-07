@@ -82,6 +82,11 @@ export interface CompleteResponse {
   success: boolean
 }
 
+export interface JobCompletionResult {
+  logOutput?: string
+  [key: string]: unknown
+}
+
 export class RunnerApiClient {
   private readonly config: RunnerConfig
 
@@ -149,7 +154,7 @@ export class RunnerApiClient {
   /**
    * Report job completion with result.
    */
-  async complete(runId: string, result: Record<string, unknown>): Promise<CompleteResponse> {
+  async complete(runId: string, result: JobCompletionResult): Promise<CompleteResponse> {
     const response = await fetch(`${this.config.apiUrl}/api/runner/complete`, {
       method: "POST",
       headers: this.headers,
@@ -173,7 +178,11 @@ export class RunnerApiClient {
   /**
    * Report job failure with error message.
    */
-  async fail(runId: string, errorMessage: string): Promise<CompleteResponse> {
+  async fail(
+    runId: string,
+    errorMessage: string,
+    opts?: { logOutput?: string },
+  ): Promise<CompleteResponse> {
     const response = await fetch(`${this.config.apiUrl}/api/runner/complete`, {
       method: "POST",
       headers: this.headers,
@@ -182,6 +191,7 @@ export class RunnerApiClient {
         runId,
         status: "failed",
         errorMessage,
+        logOutput: opts?.logOutput,
       }),
     })
 

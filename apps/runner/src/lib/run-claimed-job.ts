@@ -35,6 +35,7 @@ export async function runClaimedJob(input: {
   supervisor.start()
 
   let logBuffer = ""
+  let fullLogOutput = ""
   let logFlushTimer: Timer | null = null
   const LOG_FLUSH_INTERVAL = 100
 
@@ -56,6 +57,7 @@ export async function runClaimedJob(input: {
 
   const queueLog = (chunk: string, source: "stdout" | "stderr"): void => {
     const formatted = source === "stderr" ? `[stderr] ${chunk}` : chunk
+    fullLogOutput += formatted
     logBuffer += formatted
 
     if (!logFlushTimer) {
@@ -177,6 +179,7 @@ export async function runClaimedJob(input: {
       }
 
       await apiClient.complete(runId, {
+        logOutput: fullLogOutput,
         output: result.output,
         hasChanges: result.hasChanges,
         planSummary: result.planSummary,
@@ -189,7 +192,9 @@ export async function runClaimedJob(input: {
       return { success: true }
     }
 
-    await apiClient.fail(runId, result.errorMessage ?? "Unknown error")
+    await apiClient.fail(runId, result.errorMessage ?? "Unknown error", {
+      logOutput: fullLogOutput,
+    })
     log("Job failed", { jobId, workerId, error: result.errorMessage })
     return { success: false }
   } catch (err) {
@@ -208,7 +213,9 @@ export async function runClaimedJob(input: {
 
     try {
       if (!cancellationRequested) {
-        await apiClient.fail(runId, errorMessage)
+        await apiClient.fail(runId, errorMessage, {
+          logOutput: fullLogOutput,
+        })
       }
     } catch (reportErr) {
       error("Failed to report error to API", {
