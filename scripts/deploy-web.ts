@@ -1,14 +1,16 @@
+import type { DeployableArtifactResolution } from "./ci/deployables/types"
+
 import { applyAwsSession, assumeRole } from "./lib/aws-auth"
 import { getConfig, imageUri } from "./lib/env"
 import { fetchOutputs } from "./lib/outputs"
 import { describeTaskDefinition, renderImage, registerTaskDefinition, deployService, waitForStability } from "./lib/ecs"
 
-export async function deployWeb() {
+export async function deployWeb(artifact?: DeployableArtifactResolution) {
   const { registry, tier, sha, dryRun } = await getConfig()
   const { cluster, service, appDeployerRoleArn } = await resolveWebDeploymentTarget()
 
   const family = service
-  const image = `${imageUri(registry, "web", tier)}:sha-${sha}`
+  const image = artifact?.artifactRef ?? `${imageUri(registry, "web", tier)}:sha-${sha}`
 
   console.log(`Deploying web: ${image} → ${cluster}/${service}`)
 
@@ -27,7 +29,7 @@ export async function deployWeb() {
   await waitForStability(cluster, service)
 }
 
-async function resolveWebDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
+export async function resolveWebDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
   const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const overrideCluster = process.env.YAFFLE_WEB_CLUSTER?.trim()
     || process.env.YAFFLE_ECS_CLUSTER?.trim()

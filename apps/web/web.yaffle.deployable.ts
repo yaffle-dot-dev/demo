@@ -12,17 +12,23 @@ export default defineDeployable({
     environmentKinds: ["named", "transient"],
   },
   workspaces: ["apps/control-plane/infra", "apps/web/infra"],
+  artifact: {
+    type: "container-image",
+    imageName: "web",
+    containerName: "web",
+    currentSource: "ecs-service",
+  },
   watchedPaths: [
     "apps/web/",
     "packages/shared/",
     "packages/yaffle-client/",
     ...CORE_DEPLOYABLE_TRIGGER_PATHS,
   ],
-  build: async () => {
-    await buildWeb()
+  build: async ({ artifact }) => {
+    await buildWeb(artifact)
   },
-  deploy: async () => {
-    await deployWeb()
+  deploy: async ({ artifact }) => {
+    await deployWeb(artifact)
   },
   verify: async ({ target, dryRun }) => {
     if (dryRun) {

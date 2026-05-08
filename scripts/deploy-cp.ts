@@ -1,15 +1,17 @@
+import type { DeployableArtifactResolution } from "./ci/deployables/types"
+
 import { applyAwsSession, assumeRole } from "./lib/aws-auth"
 import { getConfig, imageUri } from "./lib/env"
 import { fetchOutputs } from "./lib/outputs"
 import { describeTaskDefinition, renderImage, registerTaskDefinition, deployService, waitForStability } from "./lib/ecs"
 
-export async function deployCp() {
+export async function deployCp(artifact?: DeployableArtifactResolution) {
   const { registry, tier, sha, dryRun } = await getConfig()
   const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const { cluster, service, appDeployerRoleArn } = await resolveControlPlaneDeploymentTarget()
   const family = service
 
-  const image = `${imageUri(registry, "control-plane", tier)}:sha-${sha}`
+  const image = artifact?.artifactRef ?? `${imageUri(registry, "control-plane", tier)}:sha-${sha}`
 
   console.log(`Deploying control-plane: ${image} → ${cluster}/${service}`)
 
@@ -95,23 +97,45 @@ async function resolveControlPlaneSecretOverrides(
     }
   }
 
-  const outputs = await fetchOutputs({
+  const controlPlaneOutputs = await fetchOutputs({
+    workspace: "apps/control-plane/infra",
+    environment,
+    wait: false,
+  })
+
+  const providerDiscoveryAgentTokenSecretArn = typeof controlPlaneOutputs.provider_discovery_agent_token_secret_arn === "string"
+    ? controlPlaneOutputs.provider_discovery_agent_token_secret_arn.trim()
+    : undefined
+  const providerDiscoveryCallbackSecretArn = typeof controlPlaneOutputs.provider_discovery_callback_secret_arn === "string"
+    ? controlPlaneOutputs.provider_discovery_callback_secret_arn.trim()
+    : undefined
+
+  if (providerDiscoveryAgentTokenSecretArn && providerDiscoveryCallbackSecretArn) {
+    return {
+      providerDiscoveryAgentTokenSecretArn,
+      providerDiscoveryCallbackSecretArn,
+    }
+  }
+
+  const providerDiscoveryOutputs = await fetchOutputs({
     workspace: "apps/provider-discovery-agent/infra",
     environment,
     wait: false,
   })
 
   return {
-    providerDiscoveryAgentTokenSecretArn: typeof outputs.agent_token_secret_arn === "string"
-      ? outputs.agent_token_secret_arn.trim()
-      : undefined,
-    providerDiscoveryCallbackSecretArn: typeof outputs.callback_secret_secret_arn === "string"
-      ? outputs.callback_secret_secret_arn.trim()
-      : undefined,
+    providerDiscoveryAgentTokenSecretArn: providerDiscoveryAgentTokenSecretArn
+      ?? (typeof providerDiscoveryOutputs.agent_token_secret_arn === "string"
+        ? providerDiscoveryOutputs.agent_token_secret_arn.trim()
+        : undefined),
+    providerDiscoveryCallbackSecretArn: providerDiscoveryCallbackSecretArn
+      ?? (typeof providerDiscoveryOutputs.callback_secret_secret_arn === "string"
+        ? providerDiscoveryOutputs.callback_secret_secret_arn.trim()
+        : undefined),
   }
 }
 
-async function resolveControlPlaneDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
+export async function resolveControlPlaneDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
   const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const overrideCluster = process.env.YAFFLE_CP_CLUSTER?.trim()
     || process.env.YAFFLE_ECS_CLUSTER?.trim()

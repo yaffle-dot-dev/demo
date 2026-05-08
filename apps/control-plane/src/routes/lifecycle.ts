@@ -118,6 +118,7 @@ const dispatchRequestSchema = z.object({
     outputs: z.record(z.unknown()),
     on_completion: z.string().url().nullable().optional(),
     git_sha: z.string().optional(),
+    git_base_sha: z.string().optional(),
     git_branch: z.string().optional(),
   }).passthrough(),
 })

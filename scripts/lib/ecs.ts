@@ -116,6 +116,17 @@ export async function describeTaskDefinition(family: string): Promise<Record<str
   return taskDef
 }
 
+export async function getCurrentTaskDefinitionImage(
+  family: string,
+  containerName: string,
+): Promise<string | null> {
+  const taskDef = await describeTaskDefinition(family)
+  const containers = taskDef.containerDefinitions as Array<Record<string, any>> | undefined
+  const target = containers?.find((container) => container.name === containerName)
+  const image = typeof target?.image === "string" ? target.image.trim() : ""
+  return image || null
+}
+
 /**
  * Update the image for a named container in a task definition.
  * Returns a new object (does not mutate).
@@ -209,4 +220,26 @@ export async function waitForStability(
   })
 
   console.log(`Service ${service} is stable`)
+}
+
+export async function getCurrentServiceImage(
+  cluster: string,
+  service: string,
+  containerName: string,
+): Promise<string | null> {
+  const result = await client().send(
+    new DescribeServicesCommand({
+      cluster,
+      services: [service],
+    }),
+  ).catch((error) => {
+    throw formatAwsError(`Failed to describe ECS service ${service}`, error)
+  })
+
+  const taskDefinitionArn = result.services?.[0]?.taskDefinition
+  if (!taskDefinitionArn) {
+    return null
+  }
+
+  return getCurrentTaskDefinitionImage(taskDefinitionArn, containerName)
 }

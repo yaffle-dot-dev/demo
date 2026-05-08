@@ -18,6 +18,7 @@ export async function buildImageArchive(packageName: string): Promise<string> {
   console.log(`Building ${packageName}...`)
   const output = await exec([
     "nix", "build",
+    "-L",
     "--no-link",
     "--print-out-paths",
     `.#${packageName}`,

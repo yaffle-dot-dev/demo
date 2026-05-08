@@ -2,13 +2,14 @@ import { parallel } from "../../lib/exec"
 import { fetchOutputs } from "../../lib/outputs"
 
 import { discoverDeployables } from "../deployables/discovery"
+import { resolveArtifactPlan } from "../deployables/artifact-resolution"
 import { buildDeployableExecutionGraph, getDeployableExecutionOrder } from "../deployables/execution-graph"
 import { assertSecretChecksPassed, checkDeployableSecrets, withDeployablePhaseSecrets } from "../secrets"
 import { listChangedFiles } from "../git"
 import { planDeployables } from "../deployables/planner"
 import { readTarget } from "../target"
 import type { CiTarget, ConvergeResult } from "../types"
-import type { DiscoveredDeployable } from "../deployables/types"
+import type { DeployableArtifactResolution, DiscoveredDeployable } from "../deployables/types"
 import type { DeployableExecutionResult } from "../types"
 
 export interface ConvergeEnvironmentOptions {
@@ -104,16 +105,21 @@ async function buildDeployables(
   deployables: DiscoveredDeployable[],
   target: CiTarget,
   dryRun: boolean,
+  artifactPlan: Map<string, DeployableArtifactResolution>,
 ): Promise<void> {
   await parallel(deployables.map((deployable) => ({
     name: `build:${deployable.name}`,
     fn: async () => {
+      const artifact = artifactPlan.get(deployable.name)
+      if (artifact) {
+        console.log(`[build:${deployable.name}] strategy=${artifact.strategy} artifact=${artifact.artifactRef}`)
+      }
       await withDeployablePhaseSecrets({
         deployable,
         phase: "build",
         target,
         fn: async () => {
-          await deployable.build({ target, dryRun })
+          await deployable.build({ target, dryRun, artifact })
         },
       })
     },
@@ -166,6 +172,7 @@ async function deployDeployables(
   deployables: DiscoveredDeployable[],
   target: CiTarget,
   dryRun: boolean,
+  artifactPlan: Map<string, DeployableArtifactResolution>,
 ): Promise<void> {
   const ordered = [
     ...deployables.filter((deployable) => deployable.name === "control-plane"),
@@ -175,12 +182,16 @@ async function deployDeployables(
   for (const deployable of ordered) {
     console.log(`[deploy:${deployable.name}] starting`)
     try {
+      const artifact = artifactPlan.get(deployable.name)
       await withDeployablePhaseSecrets({
         deployable,
         phase: "deploy",
         target,
         fn: async () => {
-          await deployable.deploy({ target, dryRun })
+          if (artifact) {
+            console.log(`[deploy:${deployable.name}] strategy=${artifact.strategy} artifact=${artifact.artifactRef}`)
+          }
+          await deployable.deploy({ target, dryRun, artifact })
         },
       })
       console.log(`[deploy:${deployable.name}] done`)
@@ -237,6 +248,7 @@ async function convergeDeployable(
   deployable: DiscoveredDeployable,
   target: CiTarget,
   dryRun: boolean,
+  artifactPlan: Map<string, DeployableArtifactResolution>,
 ): Promise<void> {
   const workspaces = getSelectedWorkspaces([deployable])
 
@@ -251,8 +263,8 @@ async function convergeDeployable(
 
   await withTargetEnvironment(target, dryRun, async () => {
     await prepareDeployables([deployable], target, dryRun)
-    await buildDeployables([deployable], target, dryRun)
-    await deployDeployables([deployable], target, dryRun)
+    await buildDeployables([deployable], target, dryRun, artifactPlan)
+    await deployDeployables([deployable], target, dryRun, artifactPlan)
     await verifyDeployables([deployable], target, dryRun)
   })
 }
@@ -264,12 +276,16 @@ export async function runDeployableLifecyclePhase(
   const workspaces = getSelectedWorkspaces([options.deployable])
 
   await withTargetEnvironment(options.target, dryRun, async () => {
+    const artifactPlan = await resolveArtifactPlan({
+      deployables: [options.deployable],
+      target: options.target,
+    })
     await waitForWorkspaces(workspaces, options.target)
 
     if (options.phase === "activation") {
       await prepareDeployables([options.deployable], options.target, dryRun)
-      await buildDeployables([options.deployable], options.target, dryRun)
-      await deployDeployables([options.deployable], options.target, dryRun)
+      await buildDeployables([options.deployable], options.target, dryRun, artifactPlan)
+      await deployDeployables([options.deployable], options.target, dryRun, artifactPlan)
       return
     }
 
@@ -324,6 +340,9 @@ export async function convergeEnvironment(
   const executionResults: DeployableExecutionResult[] = []
   const statusByName = new Map<string, DeployableExecutionResult["status"]>()
   const dryRun = options.dryRun ?? false
+  const artifactPlan = await withTargetEnvironment(target, dryRun, async () =>
+    resolveArtifactPlan({ deployables, target })
+  )
 
   console.log(`Execution order: ${executionOrder.join(", ")}`)
 
@@ -349,7 +368,7 @@ export async function convergeEnvironment(
     }
 
     try {
-      await convergeDeployable(node.deployable, target, dryRun)
+      await convergeDeployable(node.deployable, target, dryRun, artifactPlan)
       const result: DeployableExecutionResult = {
         name,
         status: "completed",

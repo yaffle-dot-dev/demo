@@ -10,11 +10,17 @@ export default defineDeployable({
     environmentKinds: ["named", "transient"],
   },
   workspaces: ["apps/runner/infra"],
-  watchedPaths: ["apps/runner/", "packages/shared/", ...CORE_DEPLOYABLE_TRIGGER_PATHS],
-  build: async () => {
-    await buildRunner()
+  artifact: {
+    type: "container-image",
+    imageName: "runner",
+    containerName: "runner",
+    currentSource: "ecs-task-definition",
   },
-  deploy: async () => {
-    await deployRunner()
+  watchedPaths: ["apps/runner/", "packages/shared/", ...CORE_DEPLOYABLE_TRIGGER_PATHS],
+  build: async ({ artifact }) => {
+    await buildRunner(artifact)
+  },
+  deploy: async ({ artifact }) => {
+    await deployRunner(artifact)
   },
 })

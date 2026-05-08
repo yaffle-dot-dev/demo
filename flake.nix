@@ -127,24 +127,34 @@
 
               configurePhase = ''
                 runHook preConfigure
+                cd "$NIX_BUILD_TOP/$sourceRoot"
+                echo "=== ${name}: configurePhase start $(date -Iseconds) ==="
                 export BUN_INSTALL="$TMPDIR/.bun"
                 export BUN_TMPDIR="$TMPDIR"
                 mkdir -p "$BUN_INSTALL"
-                bun install ${installArgs}
+                echo "${name}: bun version $(bun --version)"
+                echo "${name}: node version $(node --version)"
+                echo "${name}: running bun install ${installArgs}"
+                bun install --verbose ${installArgs}
+                echo "=== ${name}: configurePhase end $(date -Iseconds) ==="
                 runHook postConfigure
               '';
 
               buildPhase = ''
                 runHook preBuild
                 cd "$NIX_BUILD_TOP/$sourceRoot"
+                echo "=== ${name}: buildPhase start $(date -Iseconds) ==="
                 ${buildCommands}
+                echo "=== ${name}: buildPhase end $(date -Iseconds) ==="
                 runHook postBuild
               '';
 
               installPhase = ''
                 runHook preInstall
                 cd "$NIX_BUILD_TOP/$sourceRoot"
+                echo "=== ${name}: installPhase start $(date -Iseconds) ==="
                 ${installCommands}
+                echo "=== ${name}: installPhase end $(date -Iseconds) ==="
                 runHook postInstall
               '';
             };

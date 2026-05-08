@@ -55,6 +55,30 @@ export interface DeployableSecretDefinition {
 export interface DeployableExecutionContext {
   target: CiTarget
   dryRun: boolean
+  artifact?: DeployableArtifactResolution
+}
+
+export interface DeployableArtifactSourceContainerImage {
+  type: "container-image"
+  imageName: string
+  containerName: string
+  currentSource: "ecs-service" | "ecs-task-definition"
+}
+
+export type DeployableArtifactSource = DeployableArtifactSourceContainerImage
+
+export type DeployableArtifactStrategy =
+  | "use_sha_artifact"
+  | "reuse_previous_artifact"
+  | "build_missing_artifact"
+
+export interface DeployableArtifactResolution {
+  strategy: DeployableArtifactStrategy
+  deployableName: string
+  changed: boolean
+  targetSha: string
+  artifactRef: string
+  reusedFromArtifactRef?: string
 }
 
 export interface DeployableDefinition {
@@ -65,6 +89,7 @@ export interface DeployableDefinition {
   }
   workspaces: string[]
   watchedPaths: string[]
+  artifact?: DeployableArtifactSource
   secrets?: DeployableSecretDefinition[]
   prepare?: (context: DeployableExecutionContext) => Promise<void>
   build: (context: DeployableExecutionContext) => Promise<void>

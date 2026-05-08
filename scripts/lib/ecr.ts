@@ -2,9 +2,51 @@
  * ECR authentication helpers using AWS SDK.
  */
 
-import { ECRClient, GetAuthorizationTokenCommand } from "@aws-sdk/client-ecr"
+import {
+  DescribeImagesCommand,
+  ECRClient,
+  GetAuthorizationTokenCommand,
+  ImageNotFoundException,
+  RepositoryNotFoundException,
+} from "@aws-sdk/client-ecr"
 
 const loginByRegistry = new Map<string, Promise<void>>()
+
+function parseRepositoryFromImageUri(imageUri: string): { registry: string; repository: string; tag: string | null } {
+  const [registryAndRepo, tagPart] = imageUri.split(":", 2)
+  const slashIndex = registryAndRepo.indexOf("/")
+  if (slashIndex === -1) {
+    throw new Error(`Invalid ECR image URI: ${imageUri}`)
+  }
+
+  return {
+    registry: registryAndRepo.slice(0, slashIndex),
+    repository: registryAndRepo.slice(slashIndex + 1),
+    tag: tagPart ?? null,
+  }
+}
+
+export async function imageTagExists(imageUri: string, region: string): Promise<boolean> {
+  const { repository, tag } = parseRepositoryFromImageUri(imageUri)
+  if (!tag) {
+    throw new Error(`Image URI must include a tag: ${imageUri}`)
+  }
+
+  const client = new ECRClient({ region })
+
+  try {
+    const response = await client.send(new DescribeImagesCommand({
+      repositoryName: repository,
+      imageIds: [{ imageTag: tag }],
+    }))
+    return (response.imageDetails?.length ?? 0) > 0
+  } catch (error) {
+    if (error instanceof ImageNotFoundException || error instanceof RepositoryNotFoundException) {
+      return false
+    }
+    throw error
+  }
+}
 
 /**
  * Login to ECR by configuring standard container registry credentials.

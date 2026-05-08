@@ -1,12 +1,14 @@
+import type { DeployableArtifactResolution } from "./ci/deployables/types"
+
 import { applyAwsSession, assumeRole } from "./lib/aws-auth"
 import { getConfig, imageUri } from "./lib/env"
 import { fetchOutputs } from "./lib/outputs"
 import { describeTaskDefinition, renderImage, registerTaskDefinition } from "./lib/ecs"
 
-export async function deployRunner() {
+export async function deployRunner(artifact?: DeployableArtifactResolution) {
   const { registry, tier, sha, dryRun } = await getConfig()
   const { family, appDeployerRoleArn } = await resolveRunnerTaskDefinition()
-  const image = `${imageUri(registry, "runner", tier)}:sha-${sha}`
+  const image = artifact?.artifactRef ?? `${imageUri(registry, "runner", tier)}:sha-${sha}`
 
   console.log(`Deploying runner task def: ${image} → ${family}`)
 
@@ -25,7 +27,7 @@ export async function deployRunner() {
   // and picks up the latest revision on the next RunTask call.
 }
 
-async function resolveRunnerTaskDefinition(): Promise<{ family: string; appDeployerRoleArn: string }> {
+export async function resolveRunnerTaskDefinition(): Promise<{ family: string; appDeployerRoleArn: string }> {
   const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const override = process.env.YAFFLE_RUNNER_TASK_DEFINITION?.trim()
     || process.env.YAFFLE_RUNNER_TASK_DEFINITION_FAMILY?.trim()

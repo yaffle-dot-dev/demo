@@ -14,7 +14,7 @@ jobs:
   lifecycle:
     name: ${{ github.event.client_payload.yaffle.phase }} · ${{ github.event.client_payload.yaffle.item_key }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 6
     concurrency:
       group: yaffle-lifecycle-${{ github.event.client_payload.yaffle.environment }}-${{ github.event.client_payload.yaffle.item_key }}-${{ github.event.client_payload.yaffle.phase }}
       cancel-in-progress: false
@@ -26,7 +26,11 @@ jobs:
       ENVIRONMENT_NAME: ${{ github.event.client_payload.yaffle.environment }}
       ON_COMPLETION_URL: ${{ github.event.client_payload.yaffle.on_completion }}
       TARGET_SHA: ${{ github.event.client_payload.yaffle.git_sha || github.sha }}
+      TARGET_BASE_SHA: ${{ github.event.client_payload.yaffle.git_base_sha || '' }}
       TARGET_BRANCH: ${{ github.event.client_payload.yaffle.git_branch || '' }}
+      NIX_CONFIG: |
+        substituters = https://cache.nixos.org/
+        extra-substituters =
     steps:
       - name: Check out repo
         uses: actions/checkout@v6
@@ -37,13 +41,18 @@ jobs:
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
 
-      - name: Enable FlakeHub cache
-        uses: DeterminateSystems/flakehub-cache-action@v3.19.1
-        with:
-          flakehub-flake-name: yaffle-dot-dev/yaffle
+      - name: Debug Nix substituters
+        shell: bash
+        run: |
+          set -x
+          nix --version
+          echo "effective NIX_CONFIG"
+          printf '%s\n' "$NIX_CONFIG"
+          echo "effective nix config"
+          nix config show | grep -E '^(substituters|extra-substituters|trusted-public-keys|netrc-file|connect-timeout|download-attempts|http-connections|stalled-download-timeout)'
 
       - name: Install dependencies
-        run: nix develop .#ci --command bun install --frozen-lockfile
+        run: nix develop -L .#ci --command bun install --frozen-lockfile
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -90,14 +99,18 @@ jobs:
             target_args+=(--branch "$TARGET_BRANCH" --ref "refs/heads/$TARGET_BRANCH")
           fi
 
+          if [[ -n "$TARGET_BASE_SHA" ]]; then
+            target_args+=(--base-sha "$TARGET_BASE_SHA")
+          fi
+
           echo "resolved target kind: $target_kind"
-          nix run .#ci -- "${target_args[@]}"
+          nix run -L .#ci -- "${target_args[@]}"
 
       - name: Run lifecycle phase
         id: lifecycle
         shell: bash
         run: |
-          if nix run .#ci -- env lifecycle --target .ci/target.json --phase "$PHASE" --deployable "$ITEM_KEY"; then
+          if nix run -L .#ci -- env lifecycle --target .ci/target.json --phase "$PHASE" --deployable "$ITEM_KEY"; then
             echo "status=succeeded" >> "$GITHUB_OUTPUT"
             echo "summary=${PHASE} completed for ${ITEM_KEY}" >> "$GITHUB_OUTPUT"
           else
@@ -111,7 +124,7 @@ jobs:
           COMPLETION_STATUS: ${{ steps.lifecycle.outputs.status || 'failed' }}
           COMPLETION_SUMMARY: ${{ steps.lifecycle.outputs.summary || 'lifecycle workflow did not report a result' }}
         run: |
-          nix develop .#ci --command bun -e '
+          nix develop -L .#ci --command bun -e '
             const response = await fetch(process.env.ON_COMPLETION_URL, {
               method: "POST",
               headers: { "content-type": "application/json" },

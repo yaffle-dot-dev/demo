@@ -13,6 +13,12 @@ export default defineDeployable({
     environmentKinds: ["named", "transient"],
   },
   workspaces: ["apps/control-plane/infra"],
+  artifact: {
+    type: "container-image",
+    imageName: "control-plane",
+    containerName: "control-plane",
+    currentSource: "ecs-service",
+  },
   watchedPaths: ["apps/control-plane/", "packages/shared/", ...CORE_DEPLOYABLE_TRIGGER_PATHS],
   secrets: [
     {
@@ -101,11 +107,11 @@ export default defineDeployable({
 
     await dbMigrate()
   },
-  build: async () => {
-    await buildCp()
+  build: async ({ artifact }) => {
+    await buildCp(artifact)
   },
-  deploy: async () => {
-    await deployCp()
+  deploy: async ({ artifact }) => {
+    await deployCp(artifact)
   },
   verify: async ({ target, dryRun }) => {
     if (dryRun) {

@@ -8,6 +8,7 @@ import {
 } from "./config-toml.ts"
 import { getEnv } from "./env.ts"
 import { fetchFileContent } from "./github.ts"
+import { buildHostedLifecyclePayload } from "./hosted-lifecycle-payload.ts"
 import {
   createLifecycleEvent,
   createLifecycleItem,
@@ -74,6 +75,11 @@ export async function executeHostedLifecycleForDeployment(values: {
   if (!configRaw) {
     return
   }
+  const baseSha = await resolveHostedLifecycleBaseSha({
+    installationId: values.deployment.installationId,
+    repoFullName,
+    prNumber: values.deployment.prNumber,
+  })
   const config = parseYaffleToml(configRaw)
   const workspace = config.workspaces.find((entry: Workspace) => entry.path === values.deployment.workspacePath)
   if (!workspace) {
@@ -110,6 +116,7 @@ export async function executeHostedLifecycleForDeployment(values: {
       canonicalRepoNamespace,
       ref: values.deployment.ref,
       headSha: values.deployment.headSha,
+      baseSha,
       outputs: values.outputs,
     })
     pendingDispatches.push({ itemId: item.id })
@@ -125,6 +132,7 @@ export async function executeHostedLifecycleForDeployment(values: {
       canonicalRepoNamespace,
       ref: values.deployment.ref,
       headSha: values.deployment.headSha,
+      baseSha,
       outputs: values.outputs,
     })
   }
@@ -169,6 +177,7 @@ async function createHostedLifecycleItem(values: {
   canonicalRepoNamespace: string
   ref: string
   headSha: string
+  baseSha?: string
   outputs: Record<string, unknown>
 }) {
   const destination = hostedLifecycleDestination(values.hook, values.canonicalRepoNamespace)
@@ -189,16 +198,17 @@ async function createHostedLifecycleItem(values: {
       : "Waiting for hosted verification dispatch",
     metadata: {
       hostedDispatch: serializeHostedDispatch(values.hook),
-      hostedPayload: {
-        repo_namespace: values.canonicalRepoNamespace,
-        environment: values.environmentName,
-        workspace_path: values.workspacePath,
-        item_key: values.hook.key,
+      hostedPayload: buildHostedLifecyclePayload({
+        canonicalRepoNamespace: values.canonicalRepoNamespace,
+        environmentName: values.environmentName,
+        workspacePath: values.workspacePath,
+        itemKey: values.hook.key,
         phase: values.phase,
         outputs: values.outputs,
-        git_sha: values.headSha,
-        git_branch: stripGitBranch(values.ref),
-      },
+        headSha: values.headSha,
+        branch: stripGitBranch(values.ref),
+        baseSha: values.baseSha,
+      }),
       callbackTtlMinutes: 60,
     },
   })
@@ -414,6 +424,34 @@ async function fetchProducerConfig(
     return null
   }
   return (await fetchFileContent(installationId, owner, repo, "yaffle.toml", headSha)) ?? null
+}
+
+async function resolveHostedLifecycleBaseSha(values: {
+  installationId: number
+  repoFullName: string
+  prNumber: number | null
+}): Promise<string | undefined> {
+  if (!values.prNumber) {
+    return undefined
+  }
+
+  const [owner, repo] = values.repoFullName.split("/")
+  if (!owner || !repo) {
+    return undefined
+  }
+
+  try {
+    const octokit = await getInstallationOctokit(values.installationId)
+    const response = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
+      owner,
+      repo,
+      pull_number: values.prNumber,
+    })
+    const baseSha = response.data.base?.sha?.trim()
+    return baseSha || undefined
+  } catch {
+    return undefined
+  }
 }
 
 function stripGitBranch(ref: string): string | null {

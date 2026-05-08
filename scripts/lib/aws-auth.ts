@@ -33,7 +33,10 @@ export async function assumeRole(
     --role-session-name ${sessionName} \
     --duration-seconds 3600 \
     --region ${AWS_REGION}`
-    .env(sourceEnv ?? {})
+    .env({
+      ...process.env,
+      ...(sourceEnv ?? {}),
+    })
     .quiet()
 
   let output: string
