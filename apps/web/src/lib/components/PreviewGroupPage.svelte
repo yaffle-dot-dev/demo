@@ -666,10 +666,6 @@
 
     if (event.key === "Tab") {
       event.preventDefault()
-      if (detailSpotlight) {
-        focusPanel("details")
-        return
-      }
       togglePanelFocus()
       return
     }
@@ -1717,6 +1713,104 @@ terraform {
 {/if}
 
 <div class={`flex flex-col overflow-hidden ${detailSpotlight ? "fixed inset-0 z-40 bg-surface" : "h-full"}`}>
+  {#if detailSpotlight}
+  <header class="flex-shrink-0 border-b border-border bg-surface-raised/90 backdrop-blur-sm">
+    <div class="px-4 py-2 flex items-center justify-between gap-4">
+      <div class="min-w-0 flex-1">
+        <div class="flex flex-wrap items-center gap-2">
+          <div class="min-w-0 text-[13px] font-semibold text-text">
+            <span class="text-text-muted">{org}/</span>{repo}
+          </div>
+          {#if type === "pr"}
+            <a
+              href={githubUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-xs text-text-dim hover:text-yaffle-400 transition-colors"
+            >
+              PR #{identifier}
+            </a>
+          {:else}
+            <span class="text-xs text-text-dim">{String(identifier)}</span>
+          {/if}
+          <RunGroupStatusBadge statuses={workspaceStatusList} />
+        </div>
+        <div class="mt-0.5 flex flex-wrap items-center gap-2 text-[11px] text-text-dim">
+          <a
+            href={githubTreeUrl({ org, repo }, refName(ref))}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="font-mono hover:text-yaffle-400 transition-colors"
+          >
+            {refName(ref)}
+          </a>
+          <span>@</span>
+          <a
+            href={githubCommitUrl({ org, repo }, viewedRunGroup?.headSha ?? headSha)}
+            target="_blank"
+            rel="noopener noreferrer"
+            class="font-mono hover:text-yaffle-400 transition-colors"
+          >
+            {shortSha(viewedRunGroup?.headSha ?? headSha)}
+          </a>
+          {#if authorLogin}
+            <span>by</span>
+            <a
+              href="https://github.com/{authorLogin}"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="hover:text-yaffle-400 transition-colors"
+            >
+              {authorLogin}
+            </a>
+          {/if}
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2 flex-shrink-0">
+        {#if hasNewerRunGroup && onSwitchToLatest}
+          <button
+            onclick={onSwitchToLatest}
+            class="flex items-center gap-2 rounded border border-status-planning/30 bg-status-planning/15 px-2 py-1 text-[11px] text-status-planning transition-colors hover:bg-status-planning/25"
+          >
+            <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
+              <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            <span>new run</span>
+          </button>
+        {/if}
+        {#if hasAnyInProgress && !followMode}
+          <button
+            class="rounded border border-border px-2 py-1 text-[11px] text-text-dim transition-colors hover:border-yaffle-500/40 hover:text-text"
+            onclick={enableFollowMode}
+            title="Auto-follow running workspace"
+          >
+            follow
+          </button>
+        {:else if followMode && hasAnyInProgress}
+          <span class="text-[11px] text-yaffle-400" title="Following running workspace">
+            following
+          </span>
+        {/if}
+        <button
+          class="rounded border border-border px-2 py-1 text-[11px] text-text-dim transition-colors hover:border-yaffle-500/40 hover:text-text"
+          onclick={() => showShortcutsOverlay = true}
+          title="Keyboard shortcuts"
+        >
+          ?
+        </button>
+        <button
+          class="rounded border border-border px-2 py-1 text-[11px] text-text-dim transition-colors hover:border-yaffle-500/40 hover:text-text"
+          onclick={exitDetailSpotlight}
+          title="Exit spotlight"
+        >
+          z
+        </button>
+      </div>
+    </div>
+  </header>
+  {/if}
   {#if !detailSpotlight}
   <!-- Header -->
   <header class="flex-shrink-0 border-b border-border px-6 py-4">
@@ -1910,154 +2004,288 @@ terraform {
         <!-- Workspace header: derive status from the viewed run group -->
         {@const displayStatus = selectedWorkspaceDisplayStatus ?? selectedWorkspace.preview.status}
         {@const cfg = statusConfig(displayStatus)}
-        <!-- Workspace header bar -->
-        <div class="flex-shrink-0 px-6 py-4 border-b border-border">
-          <div class="flex items-center justify-between">
-            <div>
-              <div class="flex items-center gap-1.5">
-                <h2 class="font-mono text-sm text-text">{selectedWorkspace.preview.workspacePath}</h2>
-                <button
-                  onclick={handleCopyBackend}
-                  class="p-1 text-text-dim hover:text-text rounded transition-colors"
-                  title="Copy backend configuration"
-                >
-                  {#if copiedBackend}
-                    <svg class="w-3.5 h-3.5 text-status-ready" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <path d="M3 8l3 3 7-7" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  {:else}
-                    <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <rect x="5" y="5" width="8" height="10" rx="1"/>
-                      <path d="M3 11V3a1 1 0 0 1 1-1h6"/>
-                    </svg>
-                  {/if}
-                </button>
+        {#if detailSpotlight}
+          <div class="spotlight-summary-shell flex-shrink-0 overflow-hidden border-b border-border/80 bg-surface-raised/40">
+            <div class="grid h-full overflow-hidden grid-cols-[minmax(14rem,1fr)_minmax(0,3fr)]">
+              <div class="min-w-0 border-r border-border/70 bg-surface/25">
+                <div class="flex h-full flex-col justify-between gap-2 overflow-hidden px-4 py-3">
+                  <div class="min-w-0">
+                    <div class="flex items-center gap-1.5 min-w-0">
+                      <h2 class="font-mono text-[11px] text-text truncate">{selectedWorkspace.preview.workspacePath}</h2>
+                      <button
+                        onclick={handleCopyBackend}
+                        class="flex-shrink-0 p-0.5 text-text-dim hover:text-text rounded transition-colors"
+                        title="Copy backend configuration"
+                      >
+                        {#if copiedBackend}
+                          <svg class="w-3 h-3 text-status-ready" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M3 8l3 3 7-7" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        {:else}
+                          <svg class="w-3 h-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <rect x="5" y="5" width="8" height="10" rx="1"/>
+                            <path d="M3 11V3a1 1 0 0 1 1-1h6"/>
+                          </svg>
+                        {/if}
+                      </button>
+                    </div>
+                    <div class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+                      {#if selectedWorkspaceConnectionBlockReason}
+                        <span class="rounded bg-status-system-error/10 px-1 py-0.5 text-status-system-error">
+                          {selectedWorkspaceConnectionBlockLabel}
+                        </span>
+                      {:else if selectedWorkspace.preview.connectionStatus !== "missing" && selectedWorkspace.preview.connectionStatus !== "conflict"}
+                        <span class={cfg.color}>{cfg.icon}</span>
+                      {/if}
+                      {#if selectedWorkspace.preview.requireApproval}
+                        <span class="rounded bg-status-planning/10 px-1 py-0.5 text-status-planning">?</span>
+                      {/if}
+                      {#if selectedWorkspace.preview.matchedConnections.length > 0}
+                        <span
+                          class="truncate text-text-dim"
+                          title={selectedWorkspace.preview.matchedConnections.map((connection: { name: string }) => connection.name).join(", ")}
+                        >
+                          conn {selectedWorkspace.preview.matchedConnections.map((connection: { name: string }) => connection.name).join(", ")}
+                        </span>
+                      {/if}
+                    </div>
+                    {#if selectedWorkspaceConnectionBlockReason}
+                      <div class="mt-1 truncate text-[11px] text-text-dim" title={selectedWorkspaceConnectionBlockReason}>
+                        {selectedWorkspaceConnectionBlockReason}
+                      </div>
+                    {/if}
+                    {#if selectedLifecycleNode && selectedLifecycleItem}
+                      <div
+                        class="mt-1 truncate text-[11px] text-text-dim"
+                        title={selectedLifecycleItem.summary ?? selectedLifecycleItem.reason ?? lifecycleScopeNarrative(selectedLifecycleItem)}
+                      >
+                        {lifecyclePhaseLabel(selectedLifecycleItem.phase)} {humanizeLifecycleKey(selectedLifecycleItem.key)} - {selectedLifecycleItem.summary ?? selectedLifecycleItem.reason ?? lifecycleScopeNarrative(selectedLifecycleItem)}
+                      </div>
+                    {/if}
+                  </div>
+
+                  <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+                    {#if runningRun}
+                      <button
+                        onclick={handleCancel}
+                        disabled={cancellingRunId !== null}
+                        class="flex items-center gap-1 rounded px-2 py-1 text-text-muted transition-colors hover:bg-status-failed/10 hover:text-status-failed disabled:cursor-not-allowed disabled:opacity-50"
+                        title="Cancel running {runningRun.runType}"
+                      >
+                        {#if cancellingRunId === runningRun.id}
+                          <svg class="h-3 w-3 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <circle cx="8" cy="8" r="6" stroke-opacity="0.3"/>
+                            <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/>
+                          </svg>
+                        {:else}
+                          <svg class="h-3 w-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <circle cx="8" cy="8" r="6"/>
+                            <path d="M6 6l4 4M10 6l-4 4" stroke-linecap="round"/>
+                          </svg>
+                        {/if}
+                        <span>{cancellingRunId === runningRun.id ? "cxl" : "cancel"}</span>
+                      </button>
+                    {:else if canRerun}
+                      <button
+                        onclick={handleRerun}
+                        disabled={rerunning}
+                        class="flex items-center gap-1 rounded px-2 py-1 text-text-muted transition-colors hover:bg-status-planning/10 hover:text-status-planning disabled:cursor-not-allowed disabled:opacity-50"
+                        title="Re-run plan and apply"
+                      >
+                        {#if rerunning}
+                          <svg class="h-3 w-3 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <circle cx="8" cy="8" r="6" stroke-opacity="0.3"/>
+                            <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/>
+                          </svg>
+                        {:else}
+                          <svg class="h-3 w-3" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
+                            <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                          </svg>
+                        {/if}
+                        <span>{rerunning ? "..." : "rerun"}</span>
+                      </button>
+                    {/if}
+
+                    {#if cancelError}
+                      <span class="truncate text-status-failed" title={cancelError}>{cancelError}</span>
+                    {/if}
+                    {#if rerunError}
+                      <span class="truncate text-status-failed" title={rerunError}>{rerunError}</span>
+                    {/if}
+                  </div>
+                </div>
               </div>
-        <div class="flex items-center gap-2 mt-1">
-          {#if selectedWorkspaceConnectionBlockReason}
-            <span class="text-xs text-status-system-error px-1.5 py-0.5 bg-status-system-error/10 rounded">
-              {selectedWorkspaceConnectionBlockLabel}
-            </span>
-          {:else if selectedWorkspace.preview.connectionStatus !== "missing" && selectedWorkspace.preview.connectionStatus !== "conflict"}
-            <span class="text-xs {cfg.color}">{cfg.icon} {cfg.label}</span>
-          {/if}
-                {#if selectedWorkspace.preview.requireApproval}
-                  <span class="text-xs text-status-planning px-1.5 py-0.5 bg-status-planning/10 rounded">
-                    requires approval
-                  </span>
+
+              <aside
+                class={`min-h-0 flex flex-col bg-surface/40 transition-[border-color,box-shadow] ${
+                  panelFocus === "dag" ? "ring-1 ring-inset ring-yaffle-500/30" : ""
+                }`}
+                onfocusin={() => focusPanel("dag")}
+              >
+                <div class="flex-1 overflow-auto px-2 py-2 spotlight-mini-dag">
+                  <DagVisualization
+                    nodes={dagNodes}
+                    dependencyGraph={dagDependencyGraph}
+                    nodeStatuses={dagNodeStatuses}
+                    {selectedPath}
+                    onSelect={selectDagNode}
+                    compact={true}
+                  />
+                </div>
+              </aside>
+            </div>
+          </div>
+        {:else}
+          <!-- Workspace header bar -->
+          <div class="flex-shrink-0 px-6 py-4 border-b border-border">
+            <div class="flex items-center justify-between">
+              <div>
+                <div class="flex items-center gap-1.5">
+                  <h2 class="font-mono text-sm text-text">{selectedWorkspace.preview.workspacePath}</h2>
+                  <button
+                    onclick={handleCopyBackend}
+                    class="p-1 text-text-dim hover:text-text rounded transition-colors"
+                    title="Copy backend configuration"
+                  >
+                    {#if copiedBackend}
+                      <svg class="w-3.5 h-3.5 text-status-ready" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M3 8l3 3 7-7" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {:else}
+                      <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="5" y="5" width="8" height="10" rx="1"/>
+                        <path d="M3 11V3a1 1 0 0 1 1-1h6"/>
+                      </svg>
+                    {/if}
+                  </button>
+                </div>
+                <div class="flex items-center gap-2 mt-1">
+                  {#if selectedWorkspaceConnectionBlockReason}
+                    <span class="text-xs text-status-system-error px-1.5 py-0.5 bg-status-system-error/10 rounded">
+                      {selectedWorkspaceConnectionBlockLabel}
+                    </span>
+                  {:else if selectedWorkspace.preview.connectionStatus !== "missing" && selectedWorkspace.preview.connectionStatus !== "conflict"}
+                    <span class="text-xs {cfg.color}">{cfg.icon} {cfg.label}</span>
+                  {/if}
+                  {#if selectedWorkspace.preview.requireApproval}
+                    <span class="text-xs text-status-planning px-1.5 py-0.5 bg-status-planning/10 rounded">
+                      requires approval
+                    </span>
+                  {/if}
+                </div>
+                {#if selectedWorkspaceConnectionBlockReason}
+                  <div class="mt-2 text-xs text-text-dim">
+                    {selectedWorkspaceConnectionBlockReason}
+                  </div>
+                {/if}
+                {#if selectedWorkspace.preview.matchedConnections.length > 0}
+                  <div class="mt-2 text-xs text-text-dim">
+                    Using {selectedWorkspace.preview.matchedConnections.map((connection: { name: string }) => connection.name).join(", ")}
+                  </div>
                 {/if}
               </div>
-              {#if selectedWorkspaceConnectionBlockReason}
-                <div class="mt-2 text-xs text-text-dim">
-                  {selectedWorkspaceConnectionBlockReason}
-                </div>
-              {/if}
-              {#if selectedWorkspace.preview.matchedConnections.length > 0}
-                <div class="mt-2 text-xs text-text-dim">
-                  Using {selectedWorkspace.preview.matchedConnections.map((connection: { name: string }) => connection.name).join(", ")}
-                </div>
-              {/if}
-            </div>
-            <div class="flex items-center gap-2">
-              {#if runningRun}
-                <!-- Cancel button for running runs -->
-                <button
-                  onclick={handleCancel}
-                  disabled={cancellingRunId !== null}
-                  class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs
-                         text-text-muted hover:text-status-failed hover:bg-status-failed/10 
-                         rounded transition-colors
-                         disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Cancel running {runningRun.runType}"
-                >
-                  {#if cancellingRunId === runningRun.id}
-                    <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <circle cx="8" cy="8" r="6" stroke-opacity="0.3"/>
-                      <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/>
-                    </svg>
-                  {:else}
-                    <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <circle cx="8" cy="8" r="6"/>
-                      <path d="M6 6l4 4M10 6l-4 4" stroke-linecap="round"/>
-                    </svg>
-                  {/if}
-                  <span>{cancellingRunId === runningRun.id ? "cancelling" : "cancel"}</span>
-                </button>
-              {:else if canRerun}
-                <!-- Run again button for completed runs -->
-                <button
-                  onclick={handleRerun}
-                  disabled={rerunning}
-                  class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs
-                         text-text-muted hover:text-status-planning hover:bg-status-planning/10 
-                         rounded transition-colors
-                         disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Re-run plan and apply"
-                >
-                  {#if rerunning}
-                    <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <circle cx="8" cy="8" r="6" stroke-opacity="0.3"/>
-                      <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/>
-                    </svg>
-                  {:else}
-                    <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
-                      <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
-                      <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
-                    </svg>
-                  {/if}
-                  <span>{rerunning ? "starting..." : "run again"}</span>
-                </button>
-              {/if}
-              {#if cancelError}
-                <span class="text-xs text-status-failed">{cancelError}</span>
-              {/if}
-              {#if rerunError}
-                <span class="text-xs text-status-failed">{rerunError}</span>
-              {/if}
-        </div>
-      </div>
-        </div>
-
-        {#if selectedLifecycleNode && selectedLifecycleItem}
-          <div class="mx-6 mt-4 rounded-xl border border-yaffle-500/20 bg-yaffle-500/8 overflow-hidden">
-            <div class="px-4 py-3 border-b border-yaffle-500/15 flex items-center justify-between gap-3">
-              <div class="flex items-center gap-2 min-w-0">
-                <span class="text-xs text-yaffle-300 px-1.5 py-0.5 bg-yaffle-500/10 rounded whitespace-nowrap">
-                  {lifecyclePhaseLabel(selectedLifecycleItem.phase)}
-                </span>
-                <span class="font-mono text-sm text-text truncate">{humanizeLifecycleKey(selectedLifecycleItem.key)}</span>
-                <span class="text-xs px-1.5 py-0.5 rounded whitespace-nowrap {lifecycleStatusClass(selectedLifecycleItem.state)}">
-                  {lifecycleStatusLabel(selectedLifecycleItem.state)}
-                </span>
-              </div>
-              <div class="text-[11px] text-text-dim whitespace-nowrap">
-                {selectedLifecycleItem.events.length} events
+              <div class="flex items-center gap-2">
+                {#if runningRun}
+                  <!-- Cancel button for running runs -->
+                  <button
+                    onclick={handleCancel}
+                    disabled={cancellingRunId !== null}
+                    class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs
+                           text-text-muted hover:text-status-failed hover:bg-status-failed/10 
+                           rounded transition-colors
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Cancel running {runningRun.runType}"
+                  >
+                    {#if cancellingRunId === runningRun.id}
+                      <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="8" cy="8" r="6" stroke-opacity="0.3"/>
+                        <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/>
+                      </svg>
+                    {:else}
+                      <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="8" cy="8" r="6"/>
+                        <path d="M6 6l4 4M10 6l-4 4" stroke-linecap="round"/>
+                      </svg>
+                    {/if}
+                    <span>{cancellingRunId === runningRun.id ? "cancelling" : "cancel"}</span>
+                  </button>
+                {:else if canRerun}
+                  <!-- Run again button for completed runs -->
+                  <button
+                    onclick={handleRerun}
+                    disabled={rerunning}
+                    class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs
+                           text-text-muted hover:text-status-planning hover:bg-status-planning/10 
+                           rounded transition-colors
+                           disabled:opacity-50 disabled:cursor-not-allowed"
+                    title="Re-run plan and apply"
+                  >
+                    {#if rerunning}
+                      <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="8" cy="8" r="6" stroke-opacity="0.3"/>
+                        <path d="M8 2a6 6 0 0 1 6 6" stroke-linecap="round"/>
+                      </svg>
+                    {:else}
+                      <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M2 8a6 6 0 0 1 10.2-4.3M14 8a6 6 0 0 1-10.2 4.3" stroke-linecap="round"/>
+                        <path d="M12 1v3.5h-3.5M4 15v-3.5h3.5" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    {/if}
+                    <span>{rerunning ? "starting..." : "run again"}</span>
+                  </button>
+                {/if}
+                {#if cancelError}
+                  <span class="text-xs text-status-failed">{cancelError}</span>
+                {/if}
+                {#if rerunError}
+                  <span class="text-xs text-status-failed">{rerunError}</span>
+                {/if}
               </div>
             </div>
-            <div class="px-4 py-3 border-b border-border/70">
-              <div class="text-sm text-text">{lifecycleNarrative(selectedLifecycleItem)}</div>
-              <div class="mt-2 text-xs text-text-dim">
-                {selectedLifecycleItem.summary ?? selectedLifecycleItem.reason ?? lifecycleScopeNarrative(selectedLifecycleItem)}
-              </div>
-            </div>
-            {#if selectedLifecycleItem.events.length > 0}
-              <div class="divide-y divide-border/70">
-                {#each selectedLifecycleItem.events as event (event.id)}
-                  <div class="px-4 py-3 flex items-start justify-between gap-4">
-                    <div>
-                      <div class="text-sm text-text">{lifecycleEventLabel(event.eventType)}</div>
-                      <div class="mt-1 text-xs text-text-dim">{lifecycleEventSummary(event)}</div>
-                    </div>
-                    <div class="text-[11px] text-text-dim whitespace-nowrap">{formatRelativeTime(event.createdAt)}</div>
-                  </div>
-                {/each}
-              </div>
-            {:else}
-              <div class="px-4 py-6 text-sm text-text-dim">
-                No external results have landed yet.
-              </div>
-            {/if}
           </div>
+
+          {#if selectedLifecycleNode && selectedLifecycleItem}
+            <div class="mx-6 mt-4 rounded-xl border border-yaffle-500/20 bg-yaffle-500/8 overflow-hidden">
+              <div class="px-4 py-3 border-b border-yaffle-500/15 flex items-center justify-between gap-3">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span class="text-xs text-yaffle-300 px-1.5 py-0.5 bg-yaffle-500/10 rounded whitespace-nowrap">
+                    {lifecyclePhaseLabel(selectedLifecycleItem.phase)}
+                  </span>
+                  <span class="font-mono text-sm text-text truncate">{humanizeLifecycleKey(selectedLifecycleItem.key)}</span>
+                  <span class="text-xs px-1.5 py-0.5 rounded whitespace-nowrap {lifecycleStatusClass(selectedLifecycleItem.state)}">
+                    {lifecycleStatusLabel(selectedLifecycleItem.state)}
+                  </span>
+                </div>
+                <div class="text-[11px] text-text-dim whitespace-nowrap">
+                  {selectedLifecycleItem.events.length} events
+                </div>
+              </div>
+              <div class="px-4 py-3 border-b border-border/70">
+                <div class="text-sm text-text">{lifecycleNarrative(selectedLifecycleItem)}</div>
+                <div class="mt-2 text-xs text-text-dim">
+                  {selectedLifecycleItem.summary ?? selectedLifecycleItem.reason ?? lifecycleScopeNarrative(selectedLifecycleItem)}
+                </div>
+              </div>
+              {#if selectedLifecycleItem.events.length > 0}
+                <div class="divide-y divide-border/70">
+                  {#each selectedLifecycleItem.events as event (event.id)}
+                    <div class="px-4 py-3 flex items-start justify-between gap-4">
+                      <div>
+                        <div class="text-sm text-text">{lifecycleEventLabel(event.eventType)}</div>
+                        <div class="mt-1 text-xs text-text-dim">{lifecycleEventSummary(event)}</div>
+                      </div>
+                      <div class="text-[11px] text-text-dim whitespace-nowrap">{formatRelativeTime(event.createdAt)}</div>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <div class="px-4 py-6 text-sm text-text-dim">
+                  No external results have landed yet.
+                </div>
+              {/if}
+            </div>
+          {/if}
         {/if}
 
         {#if isQueuedWorkspace}
@@ -2218,6 +2446,30 @@ terraform {
     font-family: "Berkeley Mono", "SFMono-Regular", ui-monospace, monospace;
     font-size: 0.75rem;
     line-height: 1;
+  }
+
+  .spotlight-summary-shell {
+    height: min(12vh, 7rem);
+    min-height: 5.5rem;
+  }
+
+  .spotlight-mini-dag {
+    background-image:
+      linear-gradient(
+        to right,
+        color-mix(in srgb, var(--color-border) 18%, transparent) 1px,
+        transparent 1px
+      ),
+      linear-gradient(
+        to bottom,
+        color-mix(in srgb, var(--color-border) 18%, transparent) 1px,
+        transparent 1px
+      );
+    background-size: 18px 18px;
+  }
+
+  .spotlight-mini-dag :global(.dag-container) {
+    padding: 0;
   }
 
   .config-line {

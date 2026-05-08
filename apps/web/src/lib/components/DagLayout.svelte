@@ -35,6 +35,7 @@
 </script>
 
 <script lang="ts" generics="T">
+  import { tick } from "svelte"
   import type { Snippet } from "svelte"
 
   import {
@@ -63,6 +64,8 @@
     horizontalFirst?: boolean
     /** Layout algorithm mode */
     layoutMode?: LayoutMode
+    /** Currently selected item ID for auto-scrolling */
+    selectedId?: string | null
     /** Snippet to render each node */
     node: Snippet<[{ item: T; position: DagPosition; width: number; height: number }]>
   }
@@ -78,8 +81,11 @@
     minColumnWidth = 80,
     horizontalFirst = false,
     layoutMode = "cli",
+    selectedId = null,
     node,
   }: Props = $props()
+
+  let dagContainer: HTMLDivElement | null = null
 
   // Top padding inside SVG (smaller than inter-node gap to reduce dead space)
   const svgPadTop = 4
@@ -508,9 +514,78 @@
     const midX = (x1 + x2) / 2
     return `M ${x1} ${y1} C ${midX} ${y1}, ${midX} ${y2}, ${x2} ${y2}`
   }
+
+  function isScrollable(styleValue: string): boolean {
+    return styleValue === "auto" || styleValue === "scroll" || styleValue === "overlay"
+  }
+
+  function scrollSelectedNodeIntoView(nodeId: string): void {
+    if (!dagContainer) {
+      return
+    }
+
+    const selectedNode = dagContainer.querySelector<SVGGElement>(`[data-node-id="${nodeId}"]`)
+    if (!selectedNode) {
+      return
+    }
+
+    const scrollableAncestors: HTMLElement[] = []
+    let currentAncestor = selectedNode.parentElement
+
+    while (currentAncestor) {
+      const computedStyle = getComputedStyle(currentAncestor)
+      const canScrollX = isScrollable(computedStyle.overflowX)
+        && currentAncestor.scrollWidth > currentAncestor.clientWidth + 1
+      const canScrollY = isScrollable(computedStyle.overflowY)
+        && currentAncestor.scrollHeight > currentAncestor.clientHeight + 1
+
+      if (canScrollX || canScrollY) {
+        scrollableAncestors.push(currentAncestor)
+      }
+
+      currentAncestor = currentAncestor.parentElement
+    }
+
+    const horizontalPadding = Math.max(nodeGapX, 36)
+    const verticalPadding = Math.max(nodeGapY * 2, 18)
+
+    for (const ancestor of scrollableAncestors) {
+      const nodeRect = selectedNode.getBoundingClientRect()
+      const ancestorRect = ancestor.getBoundingClientRect()
+
+      if (ancestor.scrollWidth > ancestor.clientWidth + 1) {
+        if (nodeRect.left < ancestorRect.left + horizontalPadding) {
+          ancestor.scrollLeft -= ancestorRect.left + horizontalPadding - nodeRect.left
+        } else if (nodeRect.right > ancestorRect.right - horizontalPadding) {
+          ancestor.scrollLeft += nodeRect.right - (ancestorRect.right - horizontalPadding)
+        }
+      }
+
+      if (ancestor.scrollHeight > ancestor.clientHeight + 1) {
+        if (nodeRect.top < ancestorRect.top + verticalPadding) {
+          ancestor.scrollTop -= ancestorRect.top + verticalPadding - nodeRect.top
+        } else if (nodeRect.bottom > ancestorRect.bottom - verticalPadding) {
+          ancestor.scrollTop += nodeRect.bottom - (ancestorRect.bottom - verticalPadding)
+        }
+      }
+    }
+  }
+
+  $effect(() => {
+    const currentSelectedId = selectedId
+    const selectedPosition = currentSelectedId ? positions.get(currentSelectedId) : null
+
+    if (!currentSelectedId || !selectedPosition || !dagContainer) {
+      return
+    }
+
+    void tick().then(() => {
+      scrollSelectedNodeIntoView(currentSelectedId)
+    })
+  })
 </script>
 
-<div class="dag-container overflow-x-auto">
+<div bind:this={dagContainer} class="dag-container overflow-x-auto">
   {#if columns.length === 0 || items.length === 0}
     <div class="text-text-dim text-xs text-center py-4">No items</div>
   {:else}
@@ -554,7 +629,7 @@
             {@const id = getId(item)}
             {@const pos = positions.get(id)!}
             {@const width = columnWidths[colIdx]}
-            <g transform="translate({pos.x}, {pos.y})">
+            <g data-node-id={id} transform="translate({pos.x}, {pos.y})">
               {@render node({ item, position: pos, width, height: nodeHeight })}
             </g>
           {/each}
