@@ -183,8 +183,10 @@ export async function completeRunGroup(
     }
   }
 
-  // Mark removed workspaces as destroyed (push events only)
-  if (runGroup.environmentKind === "named") {
+  // Mark removed workspaces as destroyed only for push-triggered named-environment runs.
+  // Manual subset selection can intentionally scan/deploy a subset of workspaces and
+  // must not destroy unrelated named-environment deployments.
+  if (runGroup.environmentKind === "named" && runGroup.trigger === "push") {
     await markRemovedWorkspacesDestroyed(
       org.id,
       runGroup.repo,

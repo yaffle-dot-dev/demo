@@ -125,4 +125,99 @@ describe("run-group-orchestrator", () => {
         `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${runGroup.id})`,
     })
   })
+
+  test("does not mark unrelated named-environment workspaces destroyed for manual subset runs", async () => {
+    const org = await createOrg({
+      name: "Test Org",
+      slug: "test-org-manual-subset",
+    })
+
+    await db.insert(previews).values({
+      orgId: org.id,
+      repo: "test-repo",
+      environmentKind: "named",
+      environmentName: "main",
+      workspacePath: "apps/provider-discovery-agent/infra",
+      ref: "refs/heads/main",
+      headSha: "oldsha",
+      status: "ready",
+      stateKey: "production/main/apps/provider-discovery-agent/infra/terraform.tfstate",
+      mode: "terraform",
+    })
+
+    const runGroup = await createRunGroup({
+      orgId: org.id,
+      repo: "test-repo",
+      environmentKind: "named",
+      environmentName: "main",
+      prNumber: null,
+      ref: "refs/heads/main",
+      headSha: "abc123def456",
+      selectedWorkspacePaths: ["apps/control-plane/infra"],
+      trigger: "manual",
+      status: "pending",
+    })
+
+    await completeRunGroup(runGroup.id, {
+      graph: {
+        workspaces: ["apps/control-plane/infra"],
+        edges: [],
+      },
+      executionOrder: ["apps/control-plane/infra"],
+    })
+
+    const deployments = await db.select().from(previews)
+    const providerDiscovery = deployments.find((deployment) =>
+      deployment.workspacePath === "apps/provider-discovery-agent/infra"
+    )
+
+    expect(providerDiscovery?.status).toBe("ready")
+  })
+
+  test("marks removed named-environment workspaces destroyed for push runs", async () => {
+    const org = await createOrg({
+      name: "Test Org",
+      slug: "test-org-push-destroy",
+    })
+
+    await db.insert(previews).values({
+      orgId: org.id,
+      repo: "test-repo",
+      environmentKind: "named",
+      environmentName: "main",
+      workspacePath: "apps/provider-discovery-agent/infra",
+      ref: "refs/heads/main",
+      headSha: "oldsha",
+      status: "ready",
+      stateKey: "production/main/apps/provider-discovery-agent/infra/terraform.tfstate",
+      mode: "terraform",
+    })
+
+    const runGroup = await createRunGroup({
+      orgId: org.id,
+      repo: "test-repo",
+      environmentKind: "named",
+      environmentName: "main",
+      prNumber: null,
+      ref: "refs/heads/main",
+      headSha: "abc123def456",
+      trigger: "push",
+      status: "pending",
+    })
+
+    await completeRunGroup(runGroup.id, {
+      graph: {
+        workspaces: ["apps/control-plane/infra"],
+        edges: [],
+      },
+      executionOrder: ["apps/control-plane/infra"],
+    })
+
+    const deployments = await db.select().from(previews)
+    const providerDiscovery = deployments.find((deployment) =>
+      deployment.workspacePath === "apps/provider-discovery-agent/infra"
+    )
+
+    expect(providerDiscovery?.status).toBe("destroyed")
+  })
 })
