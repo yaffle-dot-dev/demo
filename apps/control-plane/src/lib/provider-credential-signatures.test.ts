@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import { DEFAULT_PROVIDER_CREDENTIAL_SIGNATURES } from "./default-provider-credential-signatures.ts"
 import { inferProviderTypeFromEnvVarKeysWithSignatures } from "./provider-credential-inference.ts"

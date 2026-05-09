@@ -12,7 +12,7 @@ The local-first smoke harness exercises the cross-process path for:
 Run it with:
 
 ```bash
-bun run smoke:local-first
+pnpm run smoke:local-first
 ```
 
 ## Runtime requirements

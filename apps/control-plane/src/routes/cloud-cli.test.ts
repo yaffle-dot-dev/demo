@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "@yaffle/test"
 import { createHash } from "node:crypto"
 
 import { eq } from "drizzle-orm"

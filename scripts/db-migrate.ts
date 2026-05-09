@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises"
 import { resolve } from "node:path"
 
 import { exec } from "./lib/exec"
+import { importMetaDir, isMain } from "./lib/module"
 
 export interface DbMigrateOptions {
   databaseUrl?: string
@@ -29,7 +30,7 @@ export async function dbMigrate(options: DbMigrateOptions = {}) {
   // Check if there are pending migrations first
   console.log("Checking for pending migrations...")
   try {
-    await exec(["bunx", "drizzle-kit", "check"], {
+    await exec(["vp", "exec", "drizzle-kit", "check"], {
       cwd: "apps/control-plane",
       env: { DATABASE_URL: rootDbUrl },
       quiet: true,
@@ -41,7 +42,7 @@ export async function dbMigrate(options: DbMigrateOptions = {}) {
   console.log("Running database migrations...")
   let migrateFailed = false
   try {
-    await exec(["bunx", "drizzle-kit", "migrate"], {
+    await exec(["vp", "exec", "drizzle-kit", "migrate"], {
       cwd: "apps/control-plane",
       env: { DATABASE_URL: rootDbUrl },
     })
@@ -65,7 +66,7 @@ export async function dbMigrate(options: DbMigrateOptions = {}) {
 }
 
 async function getExpectedMigrationCount(): Promise<number> {
-  const journalPath = resolve(import.meta.dir, "../apps/control-plane/drizzle/meta/_journal.json")
+  const journalPath = resolve(importMetaDir(import.meta), "../apps/control-plane/drizzle/meta/_journal.json")
   const raw = await readFile(journalPath, "utf8")
   const journal = JSON.parse(raw) as { entries?: unknown[] }
   return Array.isArray(journal.entries) ? journal.entries.length : 0
@@ -82,7 +83,7 @@ async function getAppliedMigrationCount(databaseUrl: string): Promise<number> {
     'await sql.end()',
   ].join("; ")
 
-  const output = await exec(["bun", "-e", script], {
+  const output = await exec(["node", "--input-type=module", "-e", script], {
     cwd: "apps/control-plane",
     env: { DATABASE_URL: databaseUrl },
     quiet: true,
@@ -96,6 +97,6 @@ async function getAppliedMigrationCount(databaseUrl: string): Promise<number> {
   return parsed
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await dbMigrate()
 }

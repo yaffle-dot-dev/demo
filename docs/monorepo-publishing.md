@@ -128,7 +128,7 @@ Each check fails if the public repo contains accepted changes that are not yet p
 Project validation also runs before push:
 
 - `outputs-action`: `npm ci`, `npm run typecheck`, `npm run build`, and a committed `dist/index.js` freshness check
-- `cli`: `bun install --frozen-lockfile`, `bun run typecheck`, `bun test`, `bun run build`
+- `cli`: `pnpm install --frozen-lockfile`, `pnpm run typecheck`, `pnpm test`, `pnpm run build`
 - `demo`: structural validation for `yaffle.toml` and `infra/`
 
 ## Public contributions

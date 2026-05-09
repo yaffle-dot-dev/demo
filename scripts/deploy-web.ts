@@ -3,7 +3,22 @@ import type { DeployableArtifactResolution } from "./ci/deployables/types"
 import { applyAwsSession, assumeRole } from "./lib/aws-auth"
 import { getConfig, imageUri } from "./lib/env"
 import { fetchOutputs } from "./lib/outputs"
-import { describeTaskDefinition, renderImage, registerTaskDefinition, deployService, waitForStability } from "./lib/ecs"
+import {
+  describeTaskDefinition,
+  renderContainerHealthCheck,
+  renderImage,
+  registerTaskDefinition,
+  deployService,
+  waitForStability,
+} from "./lib/ecs"
+import { isMain } from "./lib/module"
+
+const WEB_HEALTHCHECK_COMMAND = [
+  "CMD",
+  "/bin/node",
+  "-e",
+  "fetch('http://localhost:3000/app/_/health').then(r=>{if(!r.ok)process.exit(1);process.exit(0)}).catch(()=>process.exit(1))",
+]
 
 export async function deployWeb(artifact?: DeployableArtifactResolution) {
   const { registry, tier, sha, dryRun } = await getConfig()
@@ -17,7 +32,11 @@ export async function deployWeb(artifact?: DeployableArtifactResolution) {
   applyAwsSession(await assumeRole(appDeployerRoleArn, "app-deployer"))
 
   const taskDef = await describeTaskDefinition(family)
-  const rendered = renderImage(taskDef, "web", image)
+  const rendered = renderContainerHealthCheck(
+    renderImage(taskDef, "web", image),
+    "web",
+    WEB_HEALTHCHECK_COMMAND,
+  )
 
   if (dryRun) {
     console.log("[dry-run] Would register task definition and deploy service")
@@ -83,6 +102,6 @@ export async function resolveWebDeploymentTarget(): Promise<{ cluster: string; s
   return { cluster, service, appDeployerRoleArn }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await deployWeb()
 }

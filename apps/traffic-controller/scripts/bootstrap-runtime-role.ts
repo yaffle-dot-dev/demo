@@ -1,4 +1,7 @@
+import { spawnSync } from "node:child_process"
 import { resolve } from "node:path"
+import { dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import {
   buildPsqlArgs,
@@ -8,18 +11,17 @@ import {
 } from "../src/db-bootstrap.ts"
 
 function runOrThrow(command: string[], executable: string): void {
-  const result = Bun.spawnSync([executable, ...command], {
-    stdout: "inherit",
-    stderr: "inherit",
+  const result = spawnSync(executable, command, {
+    stdio: "inherit",
   })
 
-  if (result.exitCode !== 0) {
-    throw new Error(`${executable} exited with code ${result.exitCode}`)
+  if ((result.status ?? 1) !== 0) {
+    throw new Error(`${executable} exited with code ${result.status ?? 1}`)
   }
 }
 
 const env = getRuntimeRoleBootstrapEnv()
-const sqlFilePath = resolve(import.meta.dir, "../sql/0001_runtime_role_grants.sql")
+const sqlFilePath = resolve(dirname(fileURLToPath(import.meta.url)), "../sql/0001_runtime_role_grants.sql")
 
 runOrThrow(buildPsqlArgs({
   sqlFilePath,

@@ -7,7 +7,7 @@
     "dev": "astro dev --port 4000",
     "build": "astro build",
     "preview": "astro preview",
-    "astro": "astro"
+    "astro": "vp exec astro"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.2.1",

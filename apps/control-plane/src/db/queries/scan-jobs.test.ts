@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import { isStaleScanJob } from "./scan-job-staleness.ts"
 

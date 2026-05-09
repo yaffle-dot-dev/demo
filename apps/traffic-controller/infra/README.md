@@ -50,7 +50,7 @@ runtime database URL into that secret.
 The migration path intentionally accepts the admin URL too, so this works:
 
 ```bash
-TRAFFIC_CONTROL_ADMIN_DATABASE_URL='postgresql://...' bun run db:migrate
+TRAFFIC_CONTROL_ADMIN_DATABASE_URL='postgresql://...' vp run @yaffle/traffic-controller#db:migrate
 ```
 
 If `TRAFFIC_CONTROL_DATABASE_URL` is unset, `drizzle.config.ts` falls back to
@@ -63,7 +63,7 @@ Run:
 TRAFFIC_CONTROL_ADMIN_DATABASE_URL='postgresql://...' \
 TRAFFIC_CONTROL_RUNTIME_ROLE_PASSWORD='...' \
 TRAFFIC_CONTROL_DATABASE_URL_SECRET_ID='yaffle/main/traffic-controller/database-url' \
-bun run db:bootstrap-runtime-role
+vp run @yaffle/traffic-controller#db:bootstrap-runtime-role
 ```
 
 Optional:

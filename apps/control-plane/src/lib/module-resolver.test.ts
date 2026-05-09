@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import { parsePreviewContext } from "./module-resolver.ts"
 
@@ -6,7 +6,7 @@ import { parsePreviewContext } from "./module-resolver.ts"
  * Unit tests for the module resolver.
  *
  * Run with:
- *   bun test src/lib/module-resolver.test.ts
+ *   pnpm exec vitest run src/lib/module-resolver.test.ts
  */
 
 describe("parsePreviewContext", () => {

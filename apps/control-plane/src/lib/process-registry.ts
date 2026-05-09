@@ -1,16 +1,16 @@
-import type { Subprocess } from "bun"
+import type { ChildProcess } from "node:child_process"
 
 /**
  * Registry for tracking running terraform processes.
  * Allows graceful cancellation of runs by sending SIGINT.
  */
 class ProcessRegistry {
-  private processes = new Map<string, Subprocess>()
+  private processes = new Map<string, ChildProcess>()
 
   /**
    * Register a process for a run.
    */
-  register(runId: string, proc: Subprocess): void {
+  register(runId: string, proc: ChildProcess): void {
     this.processes.set(runId, proc)
   }
 

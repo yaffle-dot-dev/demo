@@ -11,29 +11,33 @@
  *   nix build .#lambda-layer-tailscale
  */
 
-import { mkdir } from "node:fs/promises"
+import { mkdir, rm } from "node:fs/promises"
+
 import { exec } from "./lib/exec"
+import { isMain } from "./lib/module"
 
 export async function buildScanner() {
   await mkdir("dist", { recursive: true })
+  const bundleDir = "dist/scanner-lambda-build"
+  await rm(bundleDir, { recursive: true, force: true })
 
   console.log("Bundling scanner-lambda.ts → dist/scanner-lambda.mjs")
   await exec([
-    "bun", "build",
+    "vp", "pack",
     "apps/runner/src/scanner-lambda.ts",
-    "--outfile", "dist/scanner-lambda.mjs",
-    "--target", "node",
+    "--out-dir", bundleDir,
+    "--target", "node25",
     "--format", "esm",
   ])
 
   console.log("Creating dist/scanner-lambda.zip")
   await exec([
-    "zip", "-j", "dist/scanner-lambda.zip", "dist/scanner-lambda.mjs",
+    "bash", "-lc", "zip -j dist/scanner-lambda.zip dist/scanner-lambda-build/*.mjs",
   ])
 
   console.log("Scanner Lambda zip ready: dist/scanner-lambda.zip")
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await buildScanner()
 }

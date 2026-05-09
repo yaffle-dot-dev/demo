@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "@yaffle/test"
 import { Hono } from "hono"
 import { eq } from "drizzle-orm"
 
@@ -124,7 +124,7 @@ describe("org connections routes", () => {
   })
 
   test("infers provider type from env var credentials", async () => {
-    const originalFetch = globalThis.fetch
+    const originalFetch = globalThis.fetch as typeof globalThis.fetch & { preconnect?: unknown }
     globalThis.fetch = Object.assign(
       async () =>
         new Response(JSON.stringify({ success: true }), {
@@ -157,7 +157,7 @@ describe("org connections routes", () => {
   })
 
   test("rejects invalid cloudflare api token", async () => {
-    const originalFetch = globalThis.fetch
+    const originalFetch = globalThis.fetch as typeof globalThis.fetch & { preconnect?: unknown }
     globalThis.fetch = Object.assign(
       async () =>
         new Response(JSON.stringify({ success: false }), {

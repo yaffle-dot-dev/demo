@@ -1,4 +1,6 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, test } from "@yaffle/test"
+import { access, readFile } from "node:fs/promises"
+import { constants as fsConstants } from "node:fs"
 
 import { defineDeployable } from "./deployables/types"
 import { checkDeployableSecrets, withDeployablePhaseSecrets } from "./secrets"
@@ -106,13 +108,13 @@ test("writes file-delivered secrets and cleans them up", async () => {
       capturedPath = process.env.TEST_SECRET_FILE_PATH || ""
       expect(capturedPath.endsWith(".npmrc")).toBe(true)
 
-      const content = await Bun.file(capturedPath).text()
+      const content = await readFile(capturedPath, "utf8")
       expect(content.includes("_authToken=test-token")).toBe(true)
     },
   })
 
   expect(process.env.TEST_SECRET_FILE_PATH).toBeUndefined()
-  expect(await Bun.file(capturedPath).exists()).toBe(false)
+  await expect(access(capturedPath, fsConstants.F_OK)).rejects.toThrow()
 })
 
 test("reports secret check status for required and optional secrets", async () => {

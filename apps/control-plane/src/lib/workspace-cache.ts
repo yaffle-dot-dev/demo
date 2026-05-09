@@ -10,7 +10,8 @@
  * since the workspace contents are deterministic for a given SHA.
  */
 
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { spawnSync } from "node:child_process"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
@@ -133,14 +134,15 @@ export class WorkspaceCache {
       workDir,
     })
 
-    const tarResult = Bun.spawnSync(
-      ["tar", "-czf", tarballPath, "-C", workDir, "."],
-      { stderr: "pipe", stdout: "pipe" },
+    const tarResult = spawnSync(
+      "tar",
+      ["-czf", tarballPath, "-C", workDir, "."],
+      { stdio: ["ignore", "pipe", "pipe"] },
     )
 
-    if (tarResult.exitCode !== 0) {
+    if ((tarResult.status ?? 1) !== 0) {
       const stderr = tarResult.stderr.toString()
-      throw new Error(`tar failed (exit ${tarResult.exitCode}): ${stderr}`)
+      throw new Error(`tar failed (exit ${tarResult.status ?? 1}): ${stderr}`)
     }
 
     // Upload to S3
@@ -262,20 +264,18 @@ export class WorkspaceCache {
       throw new Error(`Failed to read workspace cache object: ${s3Key}`)
     }
 
-    await Bun.write(tarballPath, bytes)
+    await writeFile(tarballPath, bytes)
 
-    const extract = Bun.spawnSync([
-      "tar",
+    const extract = spawnSync("tar", [
       "-xzf",
       tarballPath,
       "-C",
       outputDir,
     ], {
-      stderr: "pipe",
-      stdout: "pipe",
+      stdio: ["ignore", "pipe", "pipe"],
     })
 
-    if (extract.exitCode !== 0) {
+    if ((extract.status ?? 1) !== 0) {
       await rm(tarballPath, { force: true })
       throw new Error(`Failed to extract workspace cache ${s3Key}: ${extract.stderr.toString()}`)
     }

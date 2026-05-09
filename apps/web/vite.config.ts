@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process"
 import tailwindcss from "@tailwindcss/vite"
 import { sveltekit } from "@sveltejs/kit/vite"
-import { defineConfig } from "vite"
+import { defineConfig } from "vite-plus"
 
 // Get build identifier at build time (works with both jj and git)
 function getBuildId(): string {

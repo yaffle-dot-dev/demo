@@ -133,8 +133,11 @@ resource "aws_ecs_task_definition" "control_plane" {
         }
       }
 
+      # Container liveness uses a direct node command rather than CMD-SHELL
+      # because the runtime image intentionally does not include /bin/sh.
+      # ALB readiness remains on /api/ready in alb.tf.
       healthCheck = {
-        command     = ["CMD-SHELL", "bun -e \"fetch('http://localhost:3000/api/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+        command     = ["CMD", "/bin/node", "-e", "fetch('http://localhost:3000/api/health').then(r=>{if(!r.ok)process.exit(1);process.exit(0)}).catch(()=>process.exit(1))"]
         interval    = 30
         timeout     = 5
         retries     = 3

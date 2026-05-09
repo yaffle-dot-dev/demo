@@ -10,7 +10,7 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "allowImportingTsExtensions": true,
-    "types": ["bun-types"],
+    "types": ["node"],
     "paths": {
       "@yaffle/shared": ["../../packages/shared/src/index.ts"]
     }

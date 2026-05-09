@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach, mock } from "bun:test"
+import { describe, expect, test, beforeEach, afterEach } from "@yaffle/test"
 
 import { SSEConnection } from "./connection"
 import type { ConnectionState } from "./types"

@@ -33,14 +33,14 @@ Optional:
 ## Local dev
 
 ```bash
-bun install
-bun run --filter=@yaffle/provider-discovery-agent dev
+vp install
+vp run @yaffle/provider-discovery-agent#dev
 ```
 
 ## Deploy
 
 ```bash
-bun run --filter=@yaffle/provider-discovery-agent deploy
+vp run @yaffle/provider-discovery-agent#deploy
 nix run .#build-provider-discovery-agent
 nix run .#deploy-provider-discovery-agent -- --env main
 ```

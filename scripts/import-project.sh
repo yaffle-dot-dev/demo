@@ -118,7 +118,7 @@ validate_cli_import() {
   require_file "$project_dir" "LICENSE"
   require_file "$project_dir" ".gitignore"
   require_file "$project_dir" "package.json"
-  require_file "$project_dir" "bun.lock"
+  require_file "$project_dir" "pnpm-lock.yaml"
   require_file "$project_dir" "tsconfig.json"
   require_file "$project_dir" "flake.nix"
   require_file "$project_dir" "flake.lock"
@@ -142,10 +142,10 @@ validate_cli_import() {
   fi
 
   pushd "$project_dir" >/dev/null
-  bun install --frozen-lockfile
-  bun run typecheck
-  bun test
-  bun run build
+  vp install --frozen-lockfile
+  vp run typecheck
+  vp test
+  vp run build
   rm -rf node_modules dist
   popd >/dev/null
 

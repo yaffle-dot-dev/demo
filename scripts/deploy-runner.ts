@@ -4,6 +4,7 @@ import { applyAwsSession, assumeRole } from "./lib/aws-auth"
 import { getConfig, imageUri } from "./lib/env"
 import { fetchOutputs } from "./lib/outputs"
 import { describeTaskDefinition, renderImage, registerTaskDefinition } from "./lib/ecs"
+import { isMain } from "./lib/module"
 
 export async function deployRunner(artifact?: DeployableArtifactResolution) {
   const { registry, tier, sha, dryRun } = await getConfig()
@@ -69,6 +70,6 @@ export async function resolveRunnerTaskDefinition(): Promise<{ family: string; a
   return { family, appDeployerRoleArn }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await deployRunner()
 }

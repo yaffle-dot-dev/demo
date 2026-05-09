@@ -15,7 +15,7 @@ export default defineConfig({
     video: "retain-on-failure",
   },
   webServer: {
-    command: "bunx vite dev --host 127.0.0.1 --port 4173",
+    command: "pnpm exec vite dev --host 127.0.0.1 --port 4173",
     cwd: ".",
     port: 4173,
     reuseExistingServer: !process.env.CI,

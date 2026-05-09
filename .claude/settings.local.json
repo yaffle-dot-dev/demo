@@ -12,9 +12,9 @@
       "Bash(find . -name installat* -o -name *installat*)",
       "Bash(find /Users/alexlauni/Code/yaffle/depot-ci/apps/control-plane -name drizzle* -o -name migrations -o -name migrate*)",
       "Bash(npx tsc:*)",
-      "Bash(bun run:*)",
+      "Bash(pnpm run:*)",
       "Bash(./node_modules/.bin/tsc --noEmit -p apps/control-plane/tsconfig.json)",
-      "Bash(bun x:*)",
+      "Bash(pnpm exec:*)",
       "Bash(ls:*)",
       "WebFetch(domain:depot.dev)",
       "WebFetch(domain:github.com)"

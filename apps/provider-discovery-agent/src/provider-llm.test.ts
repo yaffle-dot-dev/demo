@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import { extractProviderCredentialsWithLlm } from "./provider-llm"
 import type { ProviderResearchMaterial } from "./types"

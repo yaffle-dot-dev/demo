@@ -42,9 +42,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+          node-version: "25"
+          cache: pnpm
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
       - name: Debug OIDC env
         run: |
           echo "ACTIONS_ID_TOKEN_REQUEST_URL: ${ACTIONS_ID_TOKEN_REQUEST_URL:-(not set)}"
@@ -80,7 +83,7 @@ jobs:
           args: '--accept-dns'
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
       - name: Load Yaffle API token from Secrets Manager
         uses: aws-actions/aws-secretsmanager-get-secrets@v2
         with:
@@ -88,11 +91,11 @@ jobs:
             YAFFLE_API_TOKEN, yaffle/shared/github-actions/yaffle-api-token
           parse-json-secrets: false
       - name: Typecheck provider discovery agent
-        run: bun run --filter=@yaffle/provider-discovery-agent typecheck
+        run: pnpm --filter @yaffle/provider-discovery-agent run typecheck
       - name: Run provider discovery agent tests
         env:
           YAFFLE_SKIP_TEST_DB_SETUP: "true"
-        run: bun test apps/provider-discovery-agent/src/provider-research.test.ts apps/provider-discovery-agent/src/provider-llm.test.ts apps/provider-discovery-agent/src/signing.test.ts
+        run: pnpm exec vitest run apps/provider-discovery-agent/src/provider-research.test.ts apps/provider-discovery-agent/src/provider-llm.test.ts apps/provider-discovery-agent/src/signing.test.ts
       - name: Wait for provider discovery infrastructure
         uses: ./actions/outputs-action
         id: infra
@@ -178,13 +181,13 @@ jobs:
               GITHUB_TOKEN: $githubToken
             }' > wrangler.secrets.json
 
-          bunx wrangler secret bulk wrangler.secrets.json --config wrangler.ci.toml
+          pnpm exec wrangler secret bulk wrangler.secrets.json --config wrangler.ci.toml
       - name: Deploy worker
         working-directory: apps/provider-discovery-agent
         env:
           CLOUDFLARE_API_TOKEN: ${{ env.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ env.CLOUDFLARE_ACCOUNT_ID }}
-        run: bunx wrangler deploy --config wrangler.ci.toml
+        run: pnpm exec wrangler deploy --config wrangler.ci.toml
       - name: Smoke test worker health endpoint
         run: |
           HEALTH_URL="${{ steps.infra.outputs.worker_url }}/health"

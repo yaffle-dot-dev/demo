@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "@yaffle/test"
 import { Hono } from "hono"
 import { eq } from "drizzle-orm"
 
@@ -306,7 +306,7 @@ describe("lifecycleRoute", () => {
     )
     const itemBody = await itemRes.json() as { data: { id: string; onCompletionUrl: string } }
 
-    const originalFetch = globalThis.fetch
+    const originalFetch = globalThis.fetch as typeof globalThis.fetch & { preconnect?: unknown }
     const seen: Array<{ authorization: string | null; signature: string | null }> = []
     globalThis.fetch = Object.assign(
       async (_input: RequestInfo | URL, init?: RequestInit) => {

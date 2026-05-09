@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "@yaffle/test"
 
 import { RunnerApiClient } from "./api-client.ts"
 

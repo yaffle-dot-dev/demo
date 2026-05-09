@@ -5,7 +5,6 @@
  * infrastructure outputs.
  */
 
-import { $ } from "bun"
 import { execSync } from "node:child_process"
 
 import {
@@ -16,8 +15,10 @@ import {
   type TerraformOutput,
   YaffleClient,
 } from "../../packages/yaffle-client/src/index"
+import { exec } from "./exec"
 
 const DEFAULT_API_URL = "https://yaffle.dev"
+const outputsCache = new Map<string, Promise<Record<string, unknown>>>()
 
 function normalizeApiUrl(apiUrl: string): string {
   const trimmed = apiUrl.trim().replace(/\/+$/, "")
@@ -38,7 +39,9 @@ function resolveApiUrl(): string {
 }
 
 async function getOrgRepo(): Promise<{ org: string; repo: string }> {
-  const remote = (await $`git remote get-url origin`.quiet().text()).trim()
+  const remote = (await exec(["git", "remote", "get-url", "origin"], {
+    quiet: true,
+  })).trim()
   const match = remote.match(/github\.com[:/]([^/]+)\/([^/.]+)/)
   if (!match) {
     throw new Error("Could not determine org/repo from git remote")
@@ -58,47 +61,69 @@ export interface FetchOutputsOptions {
  * Fetch terraform outputs for a workspace. Returns a flat key→value map.
  */
 export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<string, unknown>> {
-  console.log(`Fetching outputs for workspace=${opts.workspace}...`)
-
-  const { org, repo } = await getOrgRepo()
-  const apiUrl = resolveApiUrl()
-
   const target = await resolveTarget(opts)
-  const client = await createClient(apiUrl)
+  const cacheKey = JSON.stringify({
+    workspace: opts.workspace,
+    target,
+    wait: opts.wait ?? false,
+    waitTimeout: opts.waitTimeout ?? 600,
+  })
 
-  let result: {
-    previewId: string
-    status: string
-    outputs: Record<string, TerraformOutput> | null
+  const existing = outputsCache.get(cacheKey)
+  if (existing) {
+    return existing
   }
+
+  const pending = (async () => {
+    console.log(`Fetching outputs for workspace=${opts.workspace}...`)
+
+    const { org, repo } = await getOrgRepo()
+    const apiUrl = resolveApiUrl()
+    const client = await createClient(apiUrl)
+
+    let result: {
+      previewId: string
+      status: string
+      outputs: Record<string, TerraformOutput> | null
+    }
+
+    try {
+      result = await client.getOutputs({
+        org,
+        repo,
+        target,
+        workspace: opts.workspace,
+        wait: opts.wait ?? false,
+        waitTimeout: opts.waitTimeout ?? 600,
+      })
+    } catch (err) {
+      if (err instanceof Error) {
+        console.error(`[error] yaffle outputs failed:`)
+        console.error(err.message)
+      }
+      throw err
+    }
+
+    if (!result.outputs) {
+      throw new Error(`No outputs from Yaffle for ${opts.workspace}`)
+    }
+
+    const flat: Record<string, unknown> = {}
+    for (const [key, out] of Object.entries(result.outputs)) {
+      flat[key] = out.value
+    }
+
+    return flat
+  })()
+
+  outputsCache.set(cacheKey, pending)
 
   try {
-    result = await client.getOutputs({
-      org,
-      repo,
-      target,
-      workspace: opts.workspace,
-      wait: opts.wait ?? false,
-      waitTimeout: opts.waitTimeout ?? 600,
-    })
-  } catch (err) {
-    if (err instanceof Error) {
-      console.error(`[error] yaffle outputs failed:`)
-      console.error(err.message)
-    }
-    throw err
+    return await pending
+  } catch (error) {
+    outputsCache.delete(cacheKey)
+    throw error
   }
-
-  if (!result.outputs) {
-    throw new Error(`No outputs from Yaffle for ${opts.workspace}`)
-  }
-
-  const flat: Record<string, unknown> = {}
-  for (const [key, out] of Object.entries(result.outputs)) {
-    flat[key] = out.value
-  }
-
-  return flat
 }
 
 async function resolveTarget(opts: FetchOutputsOptions): Promise<Target> {
@@ -115,7 +140,9 @@ async function resolveTarget(opts: FetchOutputsOptions): Promise<Target> {
     return { type: "env", name: environmentName }
   }
 
-  const branch = await $`git rev-parse --abbrev-ref HEAD`.quiet().text()
+  const branch = await exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+    quiet: true,
+  })
   const trimmed = branch.trim()
   if (trimmed === "main" || trimmed === "master") {
     return { type: "env", name: trimmed }

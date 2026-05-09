@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "@yaffle/test"
 
 import { apikey as apiKeyTable, user as userTable } from "../db/auth-schema.ts"
 import type { Session } from "./better-auth.ts"

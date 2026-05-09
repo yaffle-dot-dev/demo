@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "@yaffle/test"
 import { Hono } from "hono"
 
 import { cleanupTestData, createTestContext, type TestContext } from "../test-utils/auth.ts"

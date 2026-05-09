@@ -1,5 +1,6 @@
 import { initTelemetry, logger as log, shutdownTelemetry } from "./lib/telemetry.ts"
 
+import { serve } from "@hono/node-server"
 import { Hono } from "hono"
 import { logger } from "hono/logger"
 
@@ -303,6 +304,12 @@ printStartupBanner({
 
 log.info(`yaffle api listening on :${port}`, { port })
 
+const server = serve({
+  fetch: app.fetch,
+  port,
+  hostname,
+})
+
 // Graceful shutdown
 async function shutdown() {
   log.info("shutting down")
@@ -316,6 +323,16 @@ async function shutdown() {
   if ("close" in previewMutex) {
     await (previewMutex as { close(): Promise<void> }).close()
   }
+  await new Promise<void>((resolvePromise, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error)
+        return
+      }
+
+      resolvePromise()
+    })
+  })
   await shutdownTelemetry()
   process.exit(0)
 }
@@ -323,12 +340,4 @@ async function shutdown() {
 process.on("SIGTERM", shutdown)
 process.on("SIGINT", shutdown)
 
-export default {
-  port,
-  hostname,
-  fetch: app.fetch,
-  // Disable Bun's default 10s idle timeout — SSE connections can be idle
-  // for extended periods between events. Our own 30s heartbeat keeps
-  // connections alive at the EventSource/proxy layer.
-  idleTimeout: 0,
-}
+export { app, server }

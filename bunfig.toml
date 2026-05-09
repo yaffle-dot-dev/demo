@@ -1,4 +1,0 @@
-[test]
-# Use a separate test database to avoid affecting dev data
-# The database must exist: createdb yaffle_test
-preload = ["./apps/control-plane/src/test-utils/setup.ts"]

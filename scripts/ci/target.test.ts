@@ -1,4 +1,4 @@
-import { test, expect } from "bun:test"
+import { test, expect } from "@yaffle/test"
 
 import { parseYaffleToml } from "../../apps/control-plane/src/lib/config-toml"
 

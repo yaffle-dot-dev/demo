@@ -1,6 +1,8 @@
+import { spawn } from "node:child_process"
 import { join } from "node:path"
 import { existsSync } from "node:fs"
 import { writeFile } from "node:fs/promises"
+import type { Readable } from "node:stream"
 
 import type { RunType, TerraformResult } from "@yaffle/shared"
 
@@ -19,18 +21,15 @@ function getTfBinary(): string {
 }
 
 async function readStream(
-  stream: ReadableStream<Uint8Array> | null,
+  stream: Readable | null,
   onChunk?: (chunk: string) => void,
 ): Promise<string> {
   if (!stream) return ""
-  const decoder = new TextDecoder()
-  const reader = stream.getReader()
   let output = ""
 
-  while (true) {
-    const { value, done } = await reader.read()
-    if (done) break
-    const chunk = decoder.decode(value, { stream: true })
+  stream.setEncoding("utf8")
+  for await (const value of stream) {
+    const chunk = typeof value === "string" ? value : value.toString("utf8")
     output += chunk
     onChunk?.(chunk)
   }
@@ -80,11 +79,10 @@ async function execTf(
       ...(process.env.TF_LOG ? { TF_LOG: process.env.TF_LOG } : {}),
     }
 
-    const proc = Bun.spawn([binary, ...args], {
+    const proc = spawn(binary, args, {
       cwd,
-      stdout: "pipe",
-      stderr: "pipe",
       env: tfEnv,
+      stdio: ["ignore", "pipe", "pipe"],
     })
 
     // Register process for cancellation if runId provided
@@ -100,7 +98,12 @@ async function execTf(
         onOutput?.(sanitizeOutput(chunk), "stderr")
       })
 
-      const exitCode = await proc.exited
+      const exitCode = await new Promise<number>((resolvePromise, reject) => {
+        proc.on("error", reject)
+        proc.on("close", (code) => {
+          resolvePromise(code ?? 1)
+        })
+      })
       const stdout = await stdoutPromise
       const stderr = await stderrPromise
 

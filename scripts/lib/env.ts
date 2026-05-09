@@ -47,8 +47,6 @@ export function imageUri(registry: string, service: string, tier: string): strin
 
 /** Name suffix used in ECS resource names (e.g., "main-use1") */
 export function nameSuffix(tier: string, region: string): string {
-  const regionShort = region.replace(/-/g, "").replace(/east/, "e").replace(/west/, "w")
-    .replace(/us/, "us").replace(/1/, "1")
   // "us-east-1" → "use1"
   const parts = region.split("-")
   const short = parts[0] + parts[1][0] + parts[2]

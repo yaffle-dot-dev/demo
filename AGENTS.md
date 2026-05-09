@@ -150,7 +150,7 @@ yaffle/
 
 ## Build / Lint / Test Commands
 
-Package manager is **Bun**. All commands run from the repo root unless noted.
+Package manager is **pnpm**, but the preferred task runner is **vp**. All commands run from the repo root unless noted.
 
 ```bash
 # First-time setup
@@ -161,31 +161,33 @@ process-compose up            # Start all services (postgres, caddy, apps)
 process-compose up -t=false   # Start without TUI
 process-compose down          # Stop all services
 
-bun run dev:control-plane     # Run control plane only
-bun run dev:web               # Run SvelteKit frontend only
+vp run dev:control-plane      # Run control plane only
+vp run dev:web                # Run SvelteKit frontend only
 
 # Install dependencies
-bun install
+vp install                    # Install dependencies (preferred)
+pnpm install                  # Underlying package manager
 
 # Build
-bun run build                 # Build all packages
-bun run build --filter=api    # Build a specific app
+vp run build                  # Build all packages
+vp run <pkg>#build            # Build a specific app
 
 # Type checking
-bun run typecheck             # Run tsc --noEmit across workspace
+vp run typecheck              # Run package type checks across workspace
+vp run check                  # Run workspace type checks
 
 # Linting and formatting
-bun run lint                  # Lint all packages
-bun run lint --fix            # Auto-fix lint issues
-bun run format                # Format with Biome/Prettier
-bun run format --check        # Check formatting without writing
+vp lint .                     # Lint workspace with Oxlint
+vp lint . --fix               # Auto-fix lint issues
+vp fmt . --write              # Format with Oxfmt
+vp fmt . --check              # Check formatting without writing
 
 # Testing
-bun test                      # Run all tests
-bun test --filter=api         # Run tests for a specific workspace
-bun test path/to/file.test.ts # Run a single test file
-bun test --watch              # Watch mode
-bun test -t "pattern"         # Run tests matching a name pattern
+vp run test                   # Run all package and script tests
+vp run <pkg>#test             # Run tests for a specific workspace
+vp test run path/to/file.test.ts
+vp test --watch               # Watch mode
+vp test -t "pattern"          # Run tests matching a name pattern
 
 # Infrastructure
 cd infra && terraform plan    # TF plan (local dev)

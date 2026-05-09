@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test"
+import { expect, test } from "@yaffle/test"
 
 import { DependencyGraph } from "../../../packages/shared/src/dependency-graph"
 

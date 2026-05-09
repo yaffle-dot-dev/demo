@@ -108,7 +108,7 @@ Current implementation status:
 For now, the repo-level command is:
 
 ```bash
-bun run yaffle -- ...
+pnpm run yaffle -- ...
 ```
 
 which delegates to:

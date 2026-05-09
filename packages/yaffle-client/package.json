@@ -9,7 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "vp exec tsc --noEmit"
   },
   "dependencies": {
     "eventsource": "^4.1.0"

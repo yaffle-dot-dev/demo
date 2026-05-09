@@ -7,7 +7,7 @@
     "dev": "astro dev --host --port 4200",
     "build": "astro build",
     "preview": "astro preview",
-    "typecheck": "astro check"
+    "typecheck": "vp exec astro check"
   },
   "dependencies": {
     "@astrojs/check": "^0.9.4",

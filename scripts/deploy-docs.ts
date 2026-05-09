@@ -1,9 +1,10 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * Deploy docs site to S3/CloudFront.
  */
 
 import { assumeRole } from "./lib/aws-auth"
+import { importMetaDir, isMain } from "./lib/module"
 import {
   type DeployConfig,
   formatDeployTarget,
@@ -15,7 +16,7 @@ import {
   syncStaticSiteToS3,
 } from "./lib/static-site-deploy"
 
-const DOCS_DIR = `${import.meta.dir}/../apps/docs`
+const DOCS_DIR = `${importMetaDir(import.meta)}/../apps/docs`
 const DOCS_PREFIX = "docs"
 
 export async function buildDocsSite(dryRun: boolean): Promise<void> {
@@ -83,7 +84,7 @@ async function main(): Promise<void> {
   await deployDocsSite(config)
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   main().catch((err) => {
     console.error("Deploy failed:", err.message)
     process.exit(1)

@@ -4,10 +4,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "dev": "vp exec wrangler dev",
+    "deploy": "vp exec wrangler deploy",
+    "typecheck": "vp exec tsc --noEmit",
+    "test": "vp test"
   },
   "dependencies": {
     "agents": "^0.0.105",
@@ -15,7 +15,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "latest",
-    "bun-types": "^1.3.10",
+    "@types/node": "^25.6.2",
+    "@yaffle/test": "workspace:*",
     "typescript": "^5.7.0",
     "wrangler": "^4.40.0"
   }

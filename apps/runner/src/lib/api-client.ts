@@ -155,6 +155,8 @@ export class RunnerApiClient {
    * Report job completion with result.
    */
   async complete(runId: string, result: JobCompletionResult): Promise<CompleteResponse> {
+    const { logOutput, ...completionResult } = result
+
     const response = await fetch(`${this.config.apiUrl}/api/runner/complete`, {
       method: "POST",
       headers: this.headers,
@@ -162,7 +164,8 @@ export class RunnerApiClient {
         jobId: this.config.jobId,
         runId,
         status: "completed",
-        result,
+        result: completionResult,
+        ...(typeof logOutput === "string" ? { logOutput } : {}),
       }),
     })
 

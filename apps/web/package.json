@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "preview": "vite preview",
+    "dev": "vp dev",
+    "build": "vp build",
+    "preview": "vp preview",
     "smoke": "playwright test",
-    "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
+    "test": "vp test",
+    "typecheck": "vp exec svelte-kit sync && vp exec svelte-check --tsconfig ./tsconfig.json"
   },
   "dependencies": {
     "@better-auth/api-key": "1.5.6",
@@ -25,6 +26,7 @@
     "@sveltejs/kit": "^2.15.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4.0.0",
+    "@yaffle/test": "workspace:*",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "tailwindcss": "^4.0.0",

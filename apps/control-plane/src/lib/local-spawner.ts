@@ -12,6 +12,8 @@
 
 import { spawn } from "node:child_process"
 import { resolve } from "node:path"
+import { dirname } from "node:path"
+import { fileURLToPath } from "node:url"
 
 import type { IacEngineSpawner } from "./scheduler.ts"
 import { generateJobToken } from "./job-token.ts"
@@ -54,7 +56,7 @@ export class LocalChildProcessSpawner implements IacEngineSpawner {
   async spawn(jobId: string, jobToken: string): Promise<void> {
     // Get the runner script path
     // __dirname is apps/control-plane/src/lib, so go up 3 levels to repo root
-    const repoRoot = resolve(import.meta.dir, "../../../..")
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..")
     const runnerScript = resolve(repoRoot, "apps/runner/src/worker.ts")
 
     logger.info("Spawning local worker process", {
@@ -63,7 +65,8 @@ export class LocalChildProcessSpawner implements IacEngineSpawner {
       runnerScript,
     })
 
-    const child = spawn("bun", ["run", runnerScript], {
+    const child = spawn(process.execPath, ["--import", "tsx", runnerScript], {
+      cwd: repoRoot,
       detached: true, // Survives parent death
       stdio: ["ignore", "pipe", "pipe"], // Capture stdout/stderr for debugging
       env: {
@@ -102,7 +105,7 @@ export class LocalChildProcessSpawner implements IacEngineSpawner {
   }
 
   async spawnScanner(scanJobId: string, scanToken: string): Promise<void> {
-    const repoRoot = resolve(import.meta.dir, "../../../..")
+    const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..")
     const scannerScript = resolve(repoRoot, "apps/runner/src/scanner.ts")
 
     logger.info("Spawning local scanner process", {
@@ -111,7 +114,8 @@ export class LocalChildProcessSpawner implements IacEngineSpawner {
       scannerScript,
     })
 
-    const child = spawn("bun", ["run", scannerScript], {
+    const child = spawn(process.execPath, ["--import", "tsx", scannerScript], {
+      cwd: repoRoot,
       detached: true,
       stdio: ["ignore", "pipe", "pipe"],
       env: {

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import { dispatchDiscovery, parseAgentInstanceName } from "./discovery-dispatch"
 import type { DiscoveryDispatchRequest } from "./types"

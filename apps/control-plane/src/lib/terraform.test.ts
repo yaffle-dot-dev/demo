@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { afterEach, describe, expect, test } from "@yaffle/test"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -96,7 +96,7 @@ describe("runTerraform", () => {
   test("plan succeeds with a simple null_resource", async () => {
     workDir = await mkdtemp(join(tmpdir(), "yaffle-tf-test-"))
 
-    await Bun.write(
+    await writeFile(
       join(workDir, "main.tf"),
       `
 variable "environment" {
@@ -134,7 +134,7 @@ resource "null_resource" "example" {
   test("plan succeeds with no changes on empty config", async () => {
     workDir = await mkdtemp(join(tmpdir(), "yaffle-tf-test-"))
 
-    await Bun.write(
+    await writeFile(
       join(workDir, "main.tf"),
       `
 terraform {
@@ -155,7 +155,7 @@ terraform {
   test("plan + apply + destroy lifecycle", async () => {
     workDir = await mkdtemp(join(tmpdir(), "yaffle-tf-test-"))
 
-    await Bun.write(
+    await writeFile(
       join(workDir, "main.tf"),
       `
 resource "null_resource" "test" {
@@ -189,7 +189,7 @@ output "test_id" {
   test("plan fails with invalid terraform", async () => {
     workDir = await mkdtemp(join(tmpdir(), "yaffle-tf-test-"))
 
-    await Bun.write(
+    await writeFile(
       join(workDir, "main.tf"),
       `
 resource "nonexistent_provider" "thing" {

@@ -1,4 +1,5 @@
 import { parallel } from "./lib/exec"
+import { isMain } from "./lib/module"
 import { deployCp } from "./deploy-cp"
 import { deployWeb } from "./deploy-web"
 import { deployRunner } from "./deploy-runner"
@@ -14,6 +15,6 @@ export async function deploy() {
   ])
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await deploy()
 }

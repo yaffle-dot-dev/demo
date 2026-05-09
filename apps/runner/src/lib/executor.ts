@@ -1,4 +1,4 @@
-import type { Subprocess } from "bun"
+import type { ChildProcess } from "node:child_process"
 
 /**
  * Terraform Executor
@@ -8,6 +8,8 @@ import type { Subprocess } from "bun"
 
 import { join } from "node:path"
 import { writeFile, mkdir } from "node:fs/promises"
+import { spawn } from "node:child_process"
+import type { Readable } from "node:stream"
 
 import type { ExecutionContext } from "./api-client.ts"
 import { ResourceSpanParser, type ResourceSpanEvent } from "./span-parser.ts"
@@ -33,7 +35,7 @@ export interface ExecutorOptions {
   /** Callback for streaming output */
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void
   /** Callback when the active tofu subprocess changes */
-  onProcess?: (proc: Subprocess | null) => void
+  onProcess?: (proc: ChildProcess | null) => void
   /** Callback for resource span events parsed from stdout */
   onSpanEvent?: (event: ResourceSpanEvent) => void
   /** TRACEPARENT value for OTel trace correlation */
@@ -322,14 +324,12 @@ async function runCommand(
   args: string[],
   onOutput?: (chunk: string, source: "stdout" | "stderr") => void,
   extraEnv: Record<string, string> = {},
-  onProcess?: (proc: Subprocess | null) => void,
+  onProcess?: (proc: ChildProcess | null) => void,
   successExitCodes: number[] = [0],
   timeoutMs = 20 * 60 * 1000,
 ): Promise<CommandResult> {
-  const proc = Bun.spawn(args, {
+  const proc = spawn(args[0]!, args.slice(1), {
     cwd: workDir,
-    stdout: "pipe",
-    stderr: "pipe",
     env: {
       ...process.env,
       ...extraEnv,
@@ -338,8 +338,13 @@ async function runCommand(
       // Force color output for better logs
       TF_CLI_ARGS: "-no-color",
     },
+    stdio: ["ignore", "pipe", "pipe"],
   })
   onProcess?.(proc)
+
+  if (!proc.stdout || !proc.stderr) {
+    throw new Error("tofu subprocess did not expose stdout/stderr streams")
+  }
 
   let output = ""
   let stdout = ""
@@ -367,19 +372,13 @@ async function runCommand(
   }
 
   // Stream stdout
-  const stdoutReader = proc.stdout.getReader()
-  const stderrReader = proc.stderr.getReader()
-
   const readStream = async (
-    reader: ReadableStreamDefaultReader<Uint8Array>,
+    stream: Readable,
     source: "stdout" | "stderr",
   ): Promise<void> => {
-    const decoder = new TextDecoder()
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-
-      const chunk = decoder.decode(value)
+    stream.setEncoding("utf8")
+    for await (const value of stream) {
+      const chunk = typeof value === "string" ? value : value.toString("utf8")
       output += chunk
       if (source === "stdout") {
         stdout += chunk
@@ -392,11 +391,16 @@ async function runCommand(
   }
 
   await Promise.all([
-    readStream(stdoutReader, "stdout"),
-    readStream(stderrReader, "stderr"),
+    readStream(proc.stdout, "stdout"),
+    readStream(proc.stderr, "stderr"),
   ])
 
-  const exitCode = await proc.exited
+  const exitCode = await new Promise<number>((resolvePromise, reject) => {
+    proc.on("error", reject)
+    proc.on("close", (code) => {
+      resolvePromise(code ?? 1)
+    })
+  })
   if (timeoutHandle) {
     clearTimeout(timeoutHandle)
   }

@@ -4,9 +4,10 @@ import { join, resolve } from "node:path"
 import { parseArgs } from "node:util"
 
 import { exec } from "./exec"
+import { importMetaDir } from "./module"
 import { fetchOutputs } from "./outputs"
 
-const REPO_ROOT = resolve(import.meta.dir, "../..")
+const REPO_ROOT = resolve(importMetaDir(import.meta), "../..")
 const PROVIDER_DISCOVERY_AGENT_DIR = resolve(REPO_ROOT, "apps/provider-discovery-agent")
 const PROVIDER_DISCOVERY_AGENT_ENTRYPOINT = resolve(PROVIDER_DISCOVERY_AGENT_DIR, "src/index.ts")
 const PROVIDER_DISCOVERY_INFRA_WORKSPACE = "apps/provider-discovery-agent/infra"
@@ -301,18 +302,19 @@ export async function buildProviderDiscoveryAgentBundle(
 
   if (!options.skipTypecheck) {
     console.log("Typechecking provider discovery agent...")
-    await exec(["bun", "run", "--filter=@yaffle/provider-discovery-agent", "typecheck"], {
+    await exec(["vp", "run", "@yaffle/provider-discovery-agent#typecheck"], {
       cwd: REPO_ROOT,
     })
   }
 
   console.log(`Bundling provider discovery agent to ${outDir}`)
   await exec(
-    [
-      "bunx",
-      "wrangler",
-      "deploy",
-      "--dry-run",
+      [
+        "vp",
+        "exec",
+        "wrangler",
+        "deploy",
+        "--dry-run",
       "--outdir",
       outDir,
       "--config",
@@ -518,7 +520,8 @@ export async function deployProviderDiscoveryAgent(options: ProviderDiscoveryDep
   try {
     await exec(
       [
-        "bunx",
+        "vp",
+        "exec",
         "wrangler",
         "deploy",
         "--config",

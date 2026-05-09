@@ -20,6 +20,23 @@ import { createWorkspaceCache } from "./workspace-cache.ts"
 
 type WorkspaceMetadataSource = "scan_job" | "backfill" | "repair"
 
+function serializeError(error: unknown): Record<string, unknown> {
+  if (error instanceof Error) {
+    return {
+      errorName: error.name,
+      errorMessage: error.message,
+      errorStack: error.stack,
+      errorCause: error.cause instanceof Error
+        ? `${error.cause.name}: ${error.cause.message}`
+        : (error.cause != null ? String(error.cause) : undefined),
+    }
+  }
+
+  return {
+    errorMessage: String(error),
+  }
+}
+
 function buildFailedMetadataRow(params: {
   runGroupId: string
   workspacePath: string
@@ -47,8 +64,11 @@ function logWorkspaceMetadataDegradation(params: {
   workspacePath: string
   workspaceS3Key?: string | null
   degradation: ProviderRequirementsDegradation
+  error?: unknown
 }): void {
-  logger.warn("connection_readiness.degraded", {
+  const event = params.error ? "connection_readiness.degraded.error" : "connection_readiness.degraded"
+
+  logger.warn(event, {
     orgId: params.runGroup.orgId,
     repo: params.runGroup.repo,
     environment: params.runGroup.environmentName,
@@ -59,6 +79,7 @@ function logWorkspaceMetadataDegradation(params: {
     errorKind: params.degradation.errorKind,
     retryable: params.degradation.retryable,
     error: params.degradation.message,
+    ...(params.error ? serializeError(params.error) : {}),
   })
 }
 
@@ -129,6 +150,7 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
           workspacePath,
           workspaceS3Key: params.workspaceS3Key,
           degradation,
+          error,
         })
 
         return buildFailedMetadataRow({
@@ -155,6 +177,8 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
 
     try {
       const rows: RunGroupWorkspaceMetadataInsert[] = []
+      let readyCount = 0
+      let failedCount = 0
 
       for (const workspacePath of params.workspacePaths) {
         try {
@@ -175,6 +199,7 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
             extractedAt,
             updatedAt: extractedAt,
           })
+          readyCount++
         } catch (error) {
           const degradation = buildProviderRequirementsDegradation(error)
           logWorkspaceMetadataDegradation({
@@ -182,6 +207,7 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
             workspacePath,
             workspaceS3Key: params.workspaceS3Key,
             degradation,
+            error,
           })
 
           rows.push(buildFailedMetadataRow({
@@ -191,8 +217,21 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
             source: params.source,
             extractedAt,
           }))
+          failedCount++
         }
       }
+
+      logger.info("connection_readiness.metadata_extraction.completed", {
+        orgId: params.runGroup.orgId,
+        repo: params.runGroup.repo,
+        environment: params.runGroup.environmentName,
+        runGroupId: params.runGroup.id,
+        workspaceS3Key: params.workspaceS3Key,
+        workspaceCount: params.workspacePaths.length,
+        readyCount,
+        failedCount,
+        source: params.source,
+      })
 
       await upsertRunGroupWorkspaceMetadata(rows)
       const deployments = await findDeploymentsByRunGroup(params.runGroup.id)

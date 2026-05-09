@@ -12,16 +12,15 @@
     in {
       packages = forEachSystem (system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+          };
+          armPkgs = import nixpkgs {
+            system = "aarch64-linux";
+          };
           lib = pkgs.lib;
           repoRoot = ./.;
           repoRootString = toString repoRoot;
-
-          bunBaseEnv = [
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/local/bun-node-fallback-bin"
-            "BUN_RUNTIME_TRANSPILER_CACHE_PATH=0"
-            "BUN_INSTALL_BIN=/usr/local/bin"
-          ];
 
           repoSrc = lib.cleanSourceWith {
             src = repoRoot;
@@ -83,14 +82,15 @@
             "apps/web/package.json"
             "packages/design/package.json"
             "packages/shared/package.json"
+            "packages/test/package.json"
             "packages/yaffle-client/package.json"
           ];
 
           rootWorkspaceFiles = [
             "package.json"
-            "bun.lock"
+            "pnpm-lock.yaml"
+            "pnpm-workspace.yaml"
             "tsconfig.json"
-            "bunfig.toml"
           ];
 
           extraManifests = excluded:
@@ -105,10 +105,24 @@
               '') copyPaths)}
             '';
 
-          mkBunWorkspaceBuild = {
+          pnpmDepsSource = mkSourceTree "pnpm-deps-src" (
+            rootWorkspaceFiles
+            ++ workspaceManifestPaths
+          );
+
+          pnpmDeps = pkgs.fetchPnpmDeps {
+            pname = "yaffle";
+            version = "0.1.0";
+            src = pnpmDepsSource;
+            pnpm = pkgs.pnpm;
+            fetcherVersion = 3;
+            hash = "sha256-i+f/bnNw/O8R20goYuupt9sfJV2Xg7sAO1TFdnTscs8=";
+          };
+
+          mkPnpmWorkspaceBuild = {
             name,
             srcTree,
-            installArgs,
+            pnpmWorkspaces,
             buildCommands,
             installCommands,
           }:
@@ -116,26 +130,23 @@
               pname = name;
               version = "0.1.0";
               src = srcTree;
+              inherit pnpmDeps pnpmWorkspaces;
 
               nativeBuildInputs = [
-                pkgs.bun
-                pkgs.nodejs_22
+                pkgs.nodejs_25
+                pkgs.pnpm
+                pkgs.pnpmConfigHook
                 pkgs.cacert
               ];
 
-              HOME = "/tmp";
-
               configurePhase = ''
                 runHook preConfigure
+                export HOME="$TMPDIR/home"
+                mkdir -p "$HOME"
                 cd "$NIX_BUILD_TOP/$sourceRoot"
                 echo "=== ${name}: configurePhase start $(date -Iseconds) ==="
-                export BUN_INSTALL="$TMPDIR/.bun"
-                export BUN_TMPDIR="$TMPDIR"
-                mkdir -p "$BUN_INSTALL"
-                echo "${name}: bun version $(bun --version)"
                 echo "${name}: node version $(node --version)"
-                echo "${name}: running bun install ${installArgs}"
-                bun install --verbose ${installArgs}
+                echo "${name}: pnpm version $(pnpm --version)"
                 echo "=== ${name}: configurePhase end $(date -Iseconds) ==="
                 runHook postConfigure
               '';
@@ -197,31 +208,26 @@
             ]
           );
 
-          controlPlaneBundle = mkBunWorkspaceBuild {
+          controlPlaneBundle = mkPnpmWorkspaceBuild {
             name = "control-plane-bundle";
             srcTree = controlPlaneSource;
-            installArgs = "--frozen-lockfile --production --filter=@yaffle/control-plane";
+            pnpmWorkspaces = [ "@yaffle/control-plane" "@yaffle/shared" ];
             buildCommands = ''
-              mkdir -p bundle/node_modules
-              NODE_ENV=production bun build apps/control-plane/src/index.ts \
-                --outdir bundle \
-                --target bun \
-                --external minijinja-js
-              cp -R node_modules/.bun/minijinja-js@*/node_modules/minijinja-js bundle/node_modules/
+              pnpm --filter @yaffle/control-plane run build
             '';
             installCommands = ''
-              mkdir -p "$out"
-              cp -R bundle/. "$out/"
+              mkdir -p "$out/dist" "$out/node_modules"
+              cp -R apps/control-plane/dist/. "$out/dist/"
+              cp -RL apps/control-plane/node_modules/minijinja-js "$out/node_modules/minijinja-js"
             '';
           };
 
-          webBundle = mkBunWorkspaceBuild {
+          webBundle = mkPnpmWorkspaceBuild {
             name = "web-bundle";
             srcTree = webSource;
-            installArgs = "--frozen-lockfile --filter=@yaffle/web";
+            pnpmWorkspaces = [ "@yaffle/web" "@yaffle/design" "@yaffle/shared" ];
             buildCommands = ''
-              cd apps/web
-              bun run build
+              pnpm --filter @yaffle/web run build
             '';
             installCommands = ''
               mkdir -p "$out"
@@ -229,23 +235,16 @@
             '';
           };
 
-          runnerAppRoot = mkBunWorkspaceBuild {
-            name = "runner-app-root";
+          runnerBundle = mkPnpmWorkspaceBuild {
+            name = "runner-bundle";
             srcTree = runnerSource;
-            installArgs = "--frozen-lockfile --production --filter=@yaffle/runner";
-            buildCommands = "true";
+            pnpmWorkspaces = [ "@yaffle/runner" "@yaffle/shared" ];
+            buildCommands = ''
+              pnpm --filter @yaffle/runner run build
+            '';
             installCommands = ''
-              mkdir -p "$out/app/apps" "$out/app/packages"
-              cp -R apps/runner "$out/app/apps/runner"
-              cp -R packages/shared "$out/app/packages/shared"
-              if [ -d node_modules ]; then
-                cp -R node_modules "$out/app/node_modules"
-              fi
-              if [ -d apps/node_modules ]; then
-                cp -R apps/node_modules "$out/app/apps/node_modules"
-              fi
-              mkdir -p "$out/app/apps/packages"
-              ln -s ../../packages/shared "$out/app/apps/packages/shared"
+              mkdir -p "$out/dist"
+              cp -R apps/runner/dist/. "$out/dist/"
             '';
           };
 
@@ -267,44 +266,79 @@
           '';
 
           controlPlaneImageRoot = pkgs.runCommand "control-plane-image-root" { } ''
-            mkdir -p "$out/app"
-            cp -R "${controlPlaneBundle}"/. "$out/app/"
-            cp -R "${pkgs.dockerTools.caCertificates}"/etc "$out/etc"
+            mkdir -p "$out/app/dist" "$out/app/node_modules" "$out/tmp"
+            chmod 1777 "$out/tmp"
+            cp -R "${controlPlaneBundle}"/dist/. "$out/app/dist/"
+            cp -R "${controlPlaneBundle}"/node_modules/. "$out/app/node_modules/"
+            cat > "$out/app/package.json" <<'EOF'
+            {"type":"module"}
+            EOF
           '';
 
           webImageRoot = pkgs.runCommand "web-image-root" { } ''
-            mkdir -p "$out/app"
+            mkdir -p "$out/app" "$out/tmp"
+            chmod 1777 "$out/tmp"
             cp -R "${webBundle}"/. "$out/app/"
-            cp -R "${pkgs.dockerTools.caCertificates}"/etc "$out/etc"
+            cat > "$out/app/package.json" <<'EOF'
+            {"type":"module"}
+            EOF
           '';
 
           runnerImageRoot = pkgs.runCommand "runner-image-root" { } ''
-            mkdir -p "$out"
-            cp -R "${runnerAppRoot}"/. "$out/"
-            cp -R "${tofuRoot}"/usr "$out/usr"
-            cp -R "${pkgs.dockerTools.caCertificates}"/etc "$out/etc"
+            mkdir -p "$out/app/dist" "$out/tmp"
+            chmod 1777 "$out/tmp"
+            cp -R "${runnerBundle}"/dist/. "$out/app/dist/"
+            cat > "$out/app/package.json" <<'EOF'
+            {"type":"module"}
+            EOF
           '';
 
-          bunSlimBase = pkgs.dockerTools.pullImage {
-            imageName = "oven/bun";
-            finalImageName = "oven/bun";
-            finalImageTag = "1-slim";
-            imageDigest = "sha256:7e8ed3961db1cdedf17d516dda87948cfedbd294f53bf16462e5b57ed3fff0f1";
-            outputHash = "sha256-GaxQdlDlpbCaxHX4BCOJp6m/RHc0WY9HIq+ke+1OaPg=";
-            outputHashAlgo = "sha256";
-            arch = "arm64";
+          controlPlaneRuntimeRoot = pkgs.buildEnv {
+            name = "control-plane-runtime-root";
+            paths = [
+              controlPlaneImageRoot
+              pkgs.dockerTools.caCertificates
+              armPkgs.git
+              armPkgs.gnutar
+              armPkgs.gzip
+              armPkgs.nodejs_25
+            ];
+            pathsToLink = [ "/app" "/bin" "/etc" "/tmp" ];
+          };
+
+          webRuntimeRoot = pkgs.buildEnv {
+            name = "web-runtime-root";
+            paths = [
+              webImageRoot
+              pkgs.dockerTools.caCertificates
+              armPkgs.nodejs_25
+            ];
+            pathsToLink = [ "/app" "/bin" "/etc" "/tmp" ];
+          };
+
+          runnerRuntimeRoot = pkgs.buildEnv {
+            name = "runner-runtime-root";
+            paths = [
+              runnerImageRoot
+              tofuRoot
+              pkgs.dockerTools.caCertificates
+              armPkgs.gnutar
+              armPkgs.gzip
+              armPkgs.nodejs_25
+            ];
+            pathsToLink = [ "/app" "/bin" "/etc" "/tmp" "/usr" ];
           };
 
           control-plane-image = pkgs.dockerTools.buildImage {
             name = "yaffle-control-plane";
             tag = "latest";
             architecture = "arm64";
-            fromImage = bunSlimBase;
-            copyToRoot = controlPlaneImageRoot;
+            copyToRoot = controlPlaneRuntimeRoot;
             config = {
               WorkingDir = "/app";
-              Cmd = [ "bun" "index.js" ];
-              Env = bunBaseEnv ++ [
+              Cmd = [ "/bin/node" "dist/index.mjs" ];
+              Env = [
+                "PATH=/bin:/usr/bin"
                 "PORT=3000"
                 "NODE_ENV=production"
                 "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
@@ -319,12 +353,12 @@
             name = "yaffle-web";
             tag = "latest";
             architecture = "arm64";
-            fromImage = bunSlimBase;
-            copyToRoot = webImageRoot;
+            copyToRoot = webRuntimeRoot;
             config = {
               WorkingDir = "/app";
-              Cmd = [ "bun" "run" "index.js" ];
-              Env = bunBaseEnv ++ [
+              Cmd = [ "/bin/node" "index.js" ];
+              Env = [
+                "PATH=/bin:/usr/bin"
                 "PORT=3000"
                 "NODE_ENV=production"
                 "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
@@ -339,12 +373,12 @@
             name = "yaffle-runner";
             tag = "latest";
             architecture = "arm64";
-            fromImage = bunSlimBase;
-            copyToRoot = runnerImageRoot;
+            copyToRoot = runnerRuntimeRoot;
             config = {
               WorkingDir = "/workspace";
-              Cmd = [ "bun" "run" "/app/apps/runner/src/worker.ts" ];
-              Env = bunBaseEnv ++ [
+              Cmd = [ "/bin/node" "/app/dist/worker.mjs" ];
+              Env = [
+                "PATH=/bin:/usr/bin"
                 "HOME=/tmp"
                 "SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
               ];
@@ -375,20 +409,31 @@
 
       apps = forEachSystem (system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = import nixpkgs {
+            inherit system;
+          };
           yaffle-cli = self.packages.${system}.yaffle-cli;
+          repoVp = pkgs.writeShellScriptBin "vp" ''
+            if [ ! -f package.json ]; then
+              echo "Error: Must run from yaffle repo root" >&2
+              exit 1
+            fi
+
+            exec ${pkgs.pnpm}/bin/pnpm exec vp "$@"
+          '';
           ciPath = pkgs.lib.makeBinPath [
             pkgs.awscli2
-            pkgs.bun
             pkgs.gh
             pkgs.git
-            pkgs.nodejs_22
+            pkgs.nodejs_25
             pkgs.opentofu
+            pkgs.pnpm
+            repoVp
             pkgs.skopeo
             pkgs.zip
           ];
 
-          mkRepoBunApp = name: script: {
+          mkRepoNodeApp = name: script: {
             type = "app";
             program = toString (pkgs.writeShellScript name ''
               if [ ! -f "${script}" ]; then
@@ -396,10 +441,14 @@
                 exit 1
               fi
               export PATH="${ciPath}:$PATH"
-              exec bun run ${script} "$@"
+              exec ${pkgs.pnpm}/bin/pnpm exec vp run ${name} "$@"
             '');
           };
         in {
+          vp = {
+            type = "app";
+            program = "${repoVp}/bin/vp";
+          };
           yaffle-outputs = {
             type = "app";
             program = "${yaffle-cli}/bin/yaffle-outputs";
@@ -415,29 +464,29 @@
               exec cargo run -p yaffle-cli -- "$@"
             '');
           };
-          ci = mkRepoBunApp "ci" "scripts/ci/main.ts";
-          deploy-marketing = mkRepoBunApp "deploy-marketing" "scripts/deploy-marketing.ts";
-          deploy-docs = mkRepoBunApp "deploy-docs" "scripts/deploy-docs.ts";
+          ci = mkRepoNodeApp "ci" "scripts/ci/main.ts";
+          deploy-marketing = mkRepoNodeApp "deploy-marketing" "scripts/deploy-marketing.ts";
+          deploy-docs = mkRepoNodeApp "deploy-docs" "scripts/deploy-docs.ts";
 
           # CI/CD scripts — each independently runnable
-          deploy-all = mkRepoBunApp "deploy-all" "scripts/deploy-all.ts";
-          build-images = mkRepoBunApp "build-images" "scripts/build-images.ts";
-          build-cp = mkRepoBunApp "build-cp" "scripts/build-cp.ts";
-          build-web = mkRepoBunApp "build-web" "scripts/build-web.ts";
-          build-runner = mkRepoBunApp "build-runner" "scripts/build-runner.ts";
-          deploy = mkRepoBunApp "deploy" "scripts/deploy.ts";
-          deploy-cp = mkRepoBunApp "deploy-cp" "scripts/deploy-cp.ts";
-          deploy-web = mkRepoBunApp "deploy-web" "scripts/deploy-web.ts";
-          deploy-runner = mkRepoBunApp "deploy-runner" "scripts/deploy-runner.ts";
-          build-scanner = mkRepoBunApp "build-scanner" "scripts/build-scanner.ts";
-          build-provider-discovery-agent = mkRepoBunApp "build-provider-discovery-agent" "scripts/build-provider-discovery-agent.ts";
-          build-tc = mkRepoBunApp "build-tc" "scripts/build-tc.ts";
-          deploy-scanner = mkRepoBunApp "deploy-scanner" "scripts/deploy-scanner.ts";
-          deploy-tc = mkRepoBunApp "deploy-tc" "scripts/deploy-tc.ts";
-          deploy-provider-discovery-agent = mkRepoBunApp "deploy-provider-discovery-agent" "scripts/deploy-provider-discovery-agent.ts";
-          test-scanner-lambda = mkRepoBunApp "test-scanner-lambda" "scripts/test-scanner-lambda.ts";
-          publish-scanner-layers = mkRepoBunApp "publish-scanner-layers" "scripts/publish-scanner-layers.ts";
-          db-migrate = mkRepoBunApp "db-migrate" "scripts/db-migrate.ts";
+          deploy-all = mkRepoNodeApp "deploy-all" "scripts/deploy-all.ts";
+          build-images = mkRepoNodeApp "build-images" "scripts/build-images.ts";
+          build-cp = mkRepoNodeApp "build-cp" "scripts/build-cp.ts";
+          build-web = mkRepoNodeApp "build-web" "scripts/build-web.ts";
+          build-runner = mkRepoNodeApp "build-runner" "scripts/build-runner.ts";
+          deploy = mkRepoNodeApp "deploy" "scripts/deploy.ts";
+          deploy-cp = mkRepoNodeApp "deploy-cp" "scripts/deploy-cp.ts";
+          deploy-web = mkRepoNodeApp "deploy-web" "scripts/deploy-web.ts";
+          deploy-runner = mkRepoNodeApp "deploy-runner" "scripts/deploy-runner.ts";
+          build-scanner = mkRepoNodeApp "build-scanner" "scripts/build-scanner.ts";
+          build-provider-discovery-agent = mkRepoNodeApp "build-provider-discovery-agent" "scripts/build-provider-discovery-agent.ts";
+          build-tc = mkRepoNodeApp "build-tc" "scripts/build-tc.ts";
+          deploy-scanner = mkRepoNodeApp "deploy-scanner" "scripts/deploy-scanner.ts";
+          deploy-tc = mkRepoNodeApp "deploy-tc" "scripts/deploy-tc.ts";
+          deploy-provider-discovery-agent = mkRepoNodeApp "deploy-provider-discovery-agent" "scripts/deploy-provider-discovery-agent.ts";
+          test-scanner-lambda = mkRepoNodeApp "test-scanner-lambda" "scripts/test-scanner-lambda.ts";
+          publish-scanner-layers = mkRepoNodeApp "publish-scanner-layers" "scripts/publish-scanner-layers.ts";
+          db-migrate = mkRepoNodeApp "db-migrate" "scripts/db-migrate.ts";
         }
       );
 
@@ -447,6 +496,14 @@
             inherit system;
             config.allowUnfree = true;
           };
+          repoVp = pkgs.writeShellScriptBin "vp" ''
+            if [ ! -f package.json ]; then
+              echo "Error: Must run from yaffle repo root" >&2
+              exit 1
+            fi
+
+            exec ${pkgs.pnpm}/bin/pnpm exec vp "$@"
+          '';
           dotenvx = pkgs.buildNpmPackage rec {
             pname = "dotenvx";
             version = "1.51.2";
@@ -465,11 +522,12 @@
           ci = pkgs.mkShell {
             packages = with pkgs; [
               awscli2
-              bun
               gh
               git
-              nodejs_22
+              nodejs_25
               opentofu
+              pnpm
+              repoVp
               skopeo
               zip
             ];
@@ -478,8 +536,8 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               # JavaScript / TypeScript
-              bun
-              nodejs_22
+              nodejs_25
+              pnpm
 
               # Rust
               cargo
@@ -510,6 +568,7 @@
               opencode
               claude-code
               dotenvx
+              repoVp
               caddy
               process-compose
               watchexec
@@ -533,7 +592,13 @@
 
               echo ""
               echo "yaffle dev environment"
-              echo "  bun              $(bun --version)"
+              echo "  node             $(node --version)"
+              echo "  pnpm             $(pnpm --version)"
+              if [ -x node_modules/.bin/vp ]; then
+                echo "  vp               $(vp --version)"
+              else
+                echo "  vp               available after vp install"
+              fi
               echo "  cargo            $(cargo --version)"
               echo "  rustc            $(rustc --version)"
               echo "  tofu             $(tofu --version | head -1)"
@@ -546,8 +611,10 @@
               echo "  process-compose up         - start all services"
               echo "  process-compose up -t=false - start without TUI"
               echo "  process-compose down       - stop all services"
-              echo "  bun install                - install dependencies"
-              echo "  bun test                   - run tests"
+              echo "  vp install                 - install dependencies via Vite+"
+              echo "  vp run check               - run workspace type checks"
+              echo "  vp run build               - run workspace builds"
+              echo "  vp run dev:control-plane   - run the control plane"
               echo ""
               echo "logs:"
               echo "  tail -f .dev/logs/control-plane.log"

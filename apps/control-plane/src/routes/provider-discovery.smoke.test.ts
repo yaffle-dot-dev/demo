@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "@yaffle/test"
 import { eq } from "drizzle-orm"
 import { Hono } from "hono"
 
@@ -21,7 +21,7 @@ app.route("/api/orgs", orgsRoute)
 app.route("/api/internal/provider-discovery", providerDiscoveryRoute)
 
 let adminCtx: TestContext
-let originalFetch: typeof globalThis.fetch
+let originalFetch: typeof globalThis.fetch & { preconnect?: unknown }
 const createdProviderTypes = new Set<string>()
 
 function providerType(name: string): string {

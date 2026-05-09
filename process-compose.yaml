@@ -48,7 +48,7 @@ processes:
       failure_threshold: 3
 
   web:
-    command: "bunx @dotenvx/dotenvx run -o -f env/dev/base.env -- bun run dev:web"
+    command: "dotenvx run -o -f env/dev/base.env -- vp run dev:web"
     log_location: .dev/logs/web.log
     readiness_probe:
       http_get:
@@ -60,7 +60,7 @@ processes:
       failure_threshold: 3
 
   marketing:
-    command: "bun run --filter=@yaffle/marketing dev"
+    command: "vp run dev:mlp"
     log_location: .dev/logs/marketing.log
     readiness_probe:
       exec:
@@ -71,10 +71,9 @@ processes:
 
   docs:
     command: |
-      cd apps/docs
-      bun run build
+      vp run @yaffle/docs#build
       echo "Watching for changes..."
-      watchexec -w src -w astro.config.mjs -e mdx,md,astro,css,ts,js -- bun run build
+      watchexec -w apps/docs/src -w apps/docs/astro.config.mjs -e mdx,md,astro,css,ts,js -- vp run @yaffle/docs#build
     log_location: .dev/logs/docs.log
     readiness_probe:
       exec:
@@ -85,7 +84,7 @@ processes:
 
   smee:
     command: |
-      bunx @dotenvx/dotenvx run -o -f env/dev/base.env -- bash -lc 'npx smee-client --url "$SMEE_URL" --target http://localhost:3000/api/webhooks/github'
+      dotenvx run -o -f env/dev/base.env -- bash -lc 'vp exec smee-client --url "$SMEE_URL" --target http://localhost:3000/api/webhooks/github'
     log_location: .dev/logs/smee.log
     depends_on:
       caddy:

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "@yaffle/test"
 import { eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { gunzipSync } from "node:zlib"
@@ -486,8 +486,8 @@ function extractFileFromTar(tar: Buffer, filename: string): string {
       break
     }
 
-    const name = header.subarray(0, 100).toString("utf-8").replace(/\0.*$/, "")
-    const sizeOctal = header.subarray(124, 136).toString("utf-8").replace(/\0.*$/, "").trim()
+    const name = header.subarray(0, 100).toString("utf-8").replace(/\u0000.*$/, "")
+    const sizeOctal = header.subarray(124, 136).toString("utf-8").replace(/\u0000.*$/, "").trim()
     const size = Number.parseInt(sizeOctal || "0", 8)
     offset += 512
 

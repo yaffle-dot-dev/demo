@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "@yaffle/test"
 import { eq } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"

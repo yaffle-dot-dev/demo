@@ -134,13 +134,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          bun-version: latest
+          node-version: "25"
+          cache: pnpm
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -163,7 +169,7 @@ jobs:
         #       parse-json-secrets: false
 
         #   - name: Run database migrations
-        #     run: cd apps/control-plane && bunx drizzle-kit migrate
+        #     run: cd apps/control-plane && pnpm exec drizzle-kit migrate
 
         #   # -----------------------------------------------------------------
         #   # Deploy control plane

@@ -1,9 +1,10 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * Deploy marketing site to S3/CloudFront.
  */
 
 import { assumeRole } from "./lib/aws-auth"
+import { importMetaDir, isMain } from "./lib/module"
 import {
   type DeployConfig,
   type DeployTarget,
@@ -84,7 +85,7 @@ function validatePricing(pricing: StripePricing): StripePricing {
   }
 }
 
-const MARKETING_DIR = `${import.meta.dir}/../apps/marketing`
+const MARKETING_DIR = `${importMetaDir(import.meta)}/../apps/marketing`
 
 async function loadMarketingInfrastructure(target: DeployTarget, wait: boolean): Promise<{
   siteInfra: Awaited<ReturnType<typeof loadStaticSiteInfrastructure>>
@@ -197,7 +198,7 @@ async function main(): Promise<void> {
   await deployMarketingSite(config)
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   main().catch((err) => {
     console.error("Deploy failed:", err.message)
     process.exit(1)

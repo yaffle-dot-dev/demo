@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from "@yaffle/test"
 import { eq } from "drizzle-orm"
 import { Hono } from "hono"
 

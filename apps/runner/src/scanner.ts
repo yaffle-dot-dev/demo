@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 /**
  * Yaffle Scanner Worker — CLI entry point.
  *

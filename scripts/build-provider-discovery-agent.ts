@@ -4,6 +4,7 @@ import {
   buildProviderDiscoveryAgentBundle,
   getProviderDiscoveryDefaultOutDir,
 } from "./lib/provider-discovery-agent"
+import { isMain } from "./lib/module"
 
 function parseBuildArgs(): { outDir: string; skipTypecheck: boolean } {
   const { values } = parseArgs({
@@ -41,7 +42,7 @@ async function main(): Promise<void> {
   console.log(`\nBundle ready: ${outDir}`)
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   main().catch((error) => {
     console.error("Build failed:", error instanceof Error ? error.message : String(error))
     process.exit(1)

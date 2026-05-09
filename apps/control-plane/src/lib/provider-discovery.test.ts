@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "@yaffle/test"
 
 import {
   PROVIDER_DISCOVERY_REQUEUE_COOLDOWN_MS,

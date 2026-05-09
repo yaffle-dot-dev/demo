@@ -3,8 +3,9 @@ import { resolve } from "node:path"
 import { parseArgs } from "node:util"
 
 import { exec } from "./lib/exec"
+import { importMetaDir, isMain } from "./lib/module"
 
-const REPO_ROOT = resolve(import.meta.dir, "..")
+const REPO_ROOT = resolve(importMetaDir(import.meta), "..")
 const TRAFFIC_CONTROLLER_DIR = resolve(REPO_ROOT, "apps/traffic-controller")
 const TRAFFIC_CONTROLLER_DIST_DIR = resolve(REPO_ROOT, "dist/traffic-controller")
 const API_ENTRYPOINT = resolve(TRAFFIC_CONTROLLER_DIR, "src/api-lambda.ts")
@@ -46,15 +47,17 @@ Options:
 async function bundleLambda(entrypoint: string, outfile: string, zipPath: string): Promise<void> {
   await rm(outfile, { force: true })
   await rm(zipPath, { force: true })
+  const bundleDir = outfile.replace(/\.mjs$/, "-bundle")
+  await rm(bundleDir, { recursive: true, force: true })
 
   await exec([
-    "bun",
-    "build",
+    "vp",
+    "pack",
     entrypoint,
-    "--outfile",
-    outfile,
+    "--out-dir",
+    bundleDir,
     "--target",
-    "node",
+    "node25",
     "--format",
     "esm",
   ], {
@@ -62,13 +65,18 @@ async function bundleLambda(entrypoint: string, outfile: string, zipPath: string
   })
 
   await exec([
-    "zip",
-    "-j",
-    zipPath,
-    outfile,
+    "bash",
+    "-lc",
+    `cp "${bundleDir}"/*.mjs "${TRAFFIC_CONTROLLER_DIST_DIR}" && zip -j "${zipPath}" "${bundleDir}"/*.mjs`,
   ], {
     cwd: REPO_ROOT,
   })
+
+  await exec([
+    "rm",
+    "-rf",
+    bundleDir,
+  ], { cwd: REPO_ROOT })
 }
 
 export async function buildTrafficController(
@@ -78,7 +86,7 @@ export async function buildTrafficController(
 
   if (!options.skipTypecheck) {
     console.log("Typechecking traffic-controller...")
-    await exec(["bun", "run", "--filter=@yaffle/traffic-controller", "typecheck"], {
+    await exec(["vp", "run", "@yaffle/traffic-controller#typecheck"], {
       cwd: REPO_ROOT,
     })
   }
@@ -94,6 +102,6 @@ export async function buildTrafficController(
   console.log(`- ${RECONCILE_ZIP}`)
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await buildTrafficController(parseBuildArgs())
 }

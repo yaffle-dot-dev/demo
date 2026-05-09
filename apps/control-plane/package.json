@@ -4,21 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
-    "dev:hot": "bun run --hot src/index.ts",
-    "build": "NODE_ENV=production bun build src/index.ts --outdir dist --target bun",
-    "start": "bun run dist/index.js",
-    "smoke": "bun test src/routes/*.smoke.test.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "bun test",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "backfill:environment-group-projections": "bun run src/scripts/backfill-environment-group-projections.ts",
-    "backfill:run-group-workspace-metadata": "bun run src/scripts/backfill-run-group-workspace-metadata.ts",
-    "gc:local-first": "bun run src/scripts/run-local-first-gc.ts",
-    "migrate:org-broker-roles": "bun run src/scripts/migrate-org-broker-roles.ts",
-    "token:warm-runner": "bun run src/scripts/generate-warm-runner-token.ts",
-    "spawn:warm-runner-ecs": "bun run src/scripts/spawn-warm-runner-ecs.ts"
+    "dev": "vp exec tsx watch src/index.ts",
+    "dev:hot": "vp exec tsx watch src/index.ts",
+    "build": "vp pack src/index.ts --out-dir dist --format esm --target node25",
+    "start": "vp node dist/index.mjs",
+    "smoke": "vp test run src/routes/*.smoke.test.ts --setupFiles ./src/test-utils/setup.ts",
+    "typecheck": "vp exec tsc --noEmit",
+    "test": "vp test run --setupFiles ./src/test-utils/setup.ts",
+    "db:generate": "vp exec drizzle-kit generate",
+    "db:migrate": "vp exec drizzle-kit migrate",
+    "backfill:environment-group-projections": "vp exec tsx src/scripts/backfill-environment-group-projections.ts",
+    "backfill:run-group-workspace-metadata": "vp exec tsx src/scripts/backfill-run-group-workspace-metadata.ts",
+    "gc:local-first": "vp exec tsx src/scripts/run-local-first-gc.ts",
+    "migrate:org-broker-roles": "vp exec tsx src/scripts/migrate-org-broker-roles.ts",
+    "token:warm-runner": "vp exec tsx src/scripts/generate-warm-runner-token.ts",
+    "spawn:warm-runner-ecs": "vp exec tsx src/scripts/spawn-warm-runner-ecs.ts"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch-logs": "^3.1011.0",
@@ -31,6 +31,7 @@
     "@aws-sdk/client-sts": "^3.1001.0",
     "@aws-sdk/s3-request-presigner": "^3.1003.0",
     "@better-auth/api-key": "1.5.6",
+    "@hono/node-server": "^2.0.2",
     "@octokit/webhooks": "^13.4.0",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/api-logs": "^0.212.0",
@@ -57,7 +58,8 @@
     "zod": "^3.24.0"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/node": "^25.6.2",
+    "@yaffle/test": "workspace:*",
     "drizzle-kit": "^0.31.10",
     "typescript": "^5.7.0"
   }

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 /**
  * Tests for the job priority sorting logic used in findQueuedJobsForSpawning.

@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, beforeEach, describe, expect, mock, test } from "@yaffle/test"
 import { sql } from "drizzle-orm"
 
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"

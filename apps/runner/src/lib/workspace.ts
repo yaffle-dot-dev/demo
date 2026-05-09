@@ -4,9 +4,11 @@
  * Downloads and extracts workspace tarballs from S3 presigned URLs.
  */
 
-import { mkdir, rm } from "node:fs/promises"
+import { spawnSync } from "node:child_process"
+import { access, mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { constants as fsConstants } from "node:fs"
 
 /**
  * Download and extract a workspace from a presigned S3 URL.
@@ -32,18 +34,19 @@ export async function downloadWorkspace(
   }
 
   const arrayBuffer = await response.arrayBuffer()
-  await Bun.write(tarballPath, arrayBuffer)
+  await writeFile(tarballPath, Buffer.from(arrayBuffer))
 
   // Extract the tarball
   const extractDir = join(workDir, "extracted")
   await mkdir(extractDir, { recursive: true })
 
-  const tarResult = Bun.spawnSync(
-    ["tar", "-xzf", tarballPath, "-C", extractDir],
-    { stderr: "pipe", stdout: "pipe" },
+  const tarResult = spawnSync(
+    "tar",
+    ["-xzf", tarballPath, "-C", extractDir],
+    { stdio: ["ignore", "pipe", "pipe"] },
   )
 
-  if (tarResult.exitCode !== 0) {
+  if ((tarResult.status ?? 1) !== 0) {
     const stderr = tarResult.stderr.toString()
     throw new Error(`Failed to extract workspace: ${stderr}`)
   }
@@ -55,13 +58,10 @@ export async function downloadWorkspace(
   const finalPath = workspacePath === "." ? extractDir : join(extractDir, workspacePath)
 
   // Verify the path exists
-  const stat = await Bun.file(finalPath).exists()
-  if (!stat) {
-    // Check if it's a directory
-    const dirCheck = Bun.spawnSync(["test", "-d", finalPath])
-    if (dirCheck.exitCode !== 0) {
-      throw new Error(`Workspace path not found: ${workspacePath}`)
-    }
+  try {
+    await access(finalPath, fsConstants.F_OK)
+  } catch {
+    throw new Error(`Workspace path not found: ${workspacePath}`)
   }
 
   return finalPath

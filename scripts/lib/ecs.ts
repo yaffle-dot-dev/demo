@@ -152,6 +152,41 @@ export function renderImage(
   }
 }
 
+export function renderContainerHealthCheck(
+  taskDef: Record<string, any>,
+  containerName: string,
+  command: string[],
+): Record<string, any> {
+  const containers = taskDef.containerDefinitions as Array<Record<string, any>>
+  const target = containers?.find((container) => container.name === containerName)
+
+  if (!target) {
+    const names = containers?.map((container) => container.name).join(", ") ?? "none"
+    throw new Error(`Container '${containerName}' not found in task def (has: ${names})`)
+  }
+
+  return {
+    ...taskDef,
+    containerDefinitions: containers.map((container) => {
+      if (container.name !== containerName) {
+        return container
+      }
+
+      return {
+        ...container,
+        healthCheck: container.healthCheck
+          ? {
+            ...container.healthCheck,
+            command,
+          }
+          : {
+            command,
+          },
+      }
+    }),
+  }
+}
+
 /**
  * Register a new task definition revision. Returns the full ARN.
  */
@@ -212,7 +247,8 @@ export async function waitForStability(
   await waitUntilServicesStable(
     { client: client(), maxWaitTime: maxWaitSeconds },
     { cluster, services: [service] },
-  ).catch((error) => {
+  ).catch(async (error) => {
+    await logServiceStabilityDiagnostics(cluster, service)
     throw formatAwsError(
       `ECS service ${service} in cluster ${cluster} did not stabilize`,
       error,
@@ -220,6 +256,57 @@ export async function waitForStability(
   })
 
   console.log(`Service ${service} is stable`)
+}
+
+async function logServiceStabilityDiagnostics(cluster: string, service: string): Promise<void> {
+  try {
+    const result = await client().send(
+      new DescribeServicesCommand({
+        cluster,
+        services: [service],
+      }),
+    )
+
+    const currentService = result.services?.[0]
+    if (!currentService) {
+      return
+    }
+
+    console.error("ECS service stability diagnostics:")
+    console.error(
+      JSON.stringify(
+        {
+          serviceName: currentService.serviceName,
+          status: currentService.status,
+          desiredCount: currentService.desiredCount,
+          runningCount: currentService.runningCount,
+          pendingCount: currentService.pendingCount,
+          taskDefinition: currentService.taskDefinition,
+          deployments: (currentService.deployments ?? []).map((deployment) => ({
+            id: deployment.id,
+            status: deployment.status,
+            rolloutState: deployment.rolloutState,
+            rolloutStateReason: deployment.rolloutStateReason,
+            desiredCount: deployment.desiredCount,
+            runningCount: deployment.runningCount,
+            pendingCount: deployment.pendingCount,
+            failedTasks: deployment.failedTasks,
+            taskDefinition: deployment.taskDefinition,
+          })),
+          recentEvents: (currentService.events ?? []).slice(0, 10).map((event) => ({
+            createdAt: event.createdAt,
+            message: event.message,
+          })),
+        },
+        null,
+        2,
+      ),
+    )
+  } catch (diagnosticError) {
+    console.error(
+      `Failed to collect ECS stability diagnostics for ${cluster}/${service}: ${String(diagnosticError)}`,
+    )
+  }
 }
 
 export async function getCurrentServiceImage(

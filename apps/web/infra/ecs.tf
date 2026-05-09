@@ -70,8 +70,11 @@ resource "aws_ecs_task_definition" "web" {
         }
       }
 
+      # Container liveness uses a direct node command rather than CMD-SHELL
+      # because the runtime image intentionally does not include /bin/sh.
+      # External readiness remains on /app/_/health via the service target group.
       healthCheck = {
-        command     = ["CMD-SHELL", "bun -e \"fetch('http://localhost:3000/app/_/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+        command     = ["CMD", "/bin/node", "-e", "fetch('http://localhost:3000/app/_/health').then(r=>{if(!r.ok)process.exit(1);process.exit(0)}).catch(()=>process.exit(1))"]
         interval    = 30
         timeout     = 5
         retries     = 3
@@ -112,6 +115,12 @@ resource "aws_ecs_service" "web" {
 
   deployment_minimum_healthy_percent = local.is_preview ? 0 : 50
   deployment_maximum_percent         = 200
+  health_check_grace_period_seconds  = local.is_preview ? 0 : 60
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
 
   enable_ecs_managed_tags = true
   propagate_tags          = "TASK_DEFINITION"

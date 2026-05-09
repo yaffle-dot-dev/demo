@@ -3,8 +3,8 @@
  * Verifies: git, tar, Tailscale connectivity, secrets extension, secret access.
  *
  * Usage:
- *   bun run scripts/test-scanner-lambda.ts
- *   bun run scripts/test-scanner-lambda.ts --ping-url https://yaffle.tail66f312.ts.net:3000/api/health
+ *   node --import tsx scripts/test-scanner-lambda.ts
+ *   node --import tsx scripts/test-scanner-lambda.ts --ping-url https://yaffle.tail66f312.ts.net:3000/api/health
  */
 
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda"

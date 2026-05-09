@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "bun run src/worker.ts",
-    "start:warm": "bun run src/warm-runner.ts",
-    "typecheck": "tsc --noEmit"
+    "build": "vp pack src/worker.ts src/warm-runner.ts src/scanner.ts src/scanner-lambda.ts --out-dir dist --format esm --target node25",
+    "start": "vp node dist/worker.mjs",
+    "start:warm": "vp node dist/warm-runner.mjs",
+    "test": "vp test",
+    "typecheck": "vp exec tsc --noEmit"
   },
   "dependencies": {
     "@yaffle/shared": "workspace:*",
@@ -14,7 +16,8 @@
     "undici": "^7.0.0"
   },
   "devDependencies": {
-    "@types/bun": "latest",
+    "@types/node": "^25.6.2",
+    "@yaffle/test": "workspace:*",
     "typescript": "^5.7.0"
   }
 }

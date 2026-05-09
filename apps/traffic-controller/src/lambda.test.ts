@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import { handleApiCommand, handler as apiHandler, handlerWithDeps as apiHandlerWithDeps } from "./api-lambda.ts"
 import { handler as reconcileHandler, handlerWithDeps as reconcileHandlerWithDeps } from "./reconcile-lambda.ts"

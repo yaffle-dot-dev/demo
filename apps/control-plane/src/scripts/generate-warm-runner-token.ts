@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 import { findOrgById, findOrgBySlug } from "../db/queries/organizations.ts"
 import { generateWarmRunnerToken } from "../lib/job-token.ts"
@@ -11,7 +11,7 @@ function looksLikeUuid(value: string): boolean {
 }
 
 if (!identifier) {
-  console.error("Usage: bun run src/scripts/generate-warm-runner-token.ts <org-id-or-slug> [ttl-hours]")
+  console.error("Usage: pnpm exec tsx src/scripts/generate-warm-runner-token.ts <org-id-or-slug> [ttl-hours]")
   process.exit(1)
 }
 

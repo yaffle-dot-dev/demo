@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process"
+import { glob } from "node:fs/promises"
 import { mkdtemp, rm, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -32,24 +34,22 @@ export async function prepareWorkspace(opts: {
     : `https://github.com/${opts.owner}/${opts.repo}.git`
 
   // Shallow clone -- we only need the files at the target SHA
-  const cloneResult = Bun.spawnSync(
-    ["git", "clone", "--depth", "1", cloneUrl, workDir],
-    { stderr: "pipe", stdout: "pipe" },
+  const cloneResult = spawnSync(
+    "git",
+    ["clone", "--depth", "1", cloneUrl, workDir],
+    { stdio: ["ignore", "pipe", "pipe"] },
   )
 
-  if (cloneResult.exitCode !== 0) {
+  if ((cloneResult.status ?? 1) !== 0) {
     const stderr = cloneResult.stderr.toString()
     await cleanupWorkspace(workDir)
-    throw new Error(`git clone failed (exit ${cloneResult.exitCode}): ${stderr}`)
+    throw new Error(`git clone failed (exit ${cloneResult.status ?? 1}): ${stderr}`)
   }
 
   // Fetch the specific SHA and checkout
   // For shallow clones with --depth 1, the default branch is already checked out.
   // If the headSha differs from HEAD, we need to fetch it explicitly.
-  const headResult = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
-    cwd: workDir,
-    stdout: "pipe",
-  })
+  const headResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: workDir })
   const currentHead = headResult.stdout.toString().trim()
 
   logger.info(`workspace clone check: requested=${opts.headSha} cloned=${currentHead}`, {
@@ -59,33 +59,32 @@ export async function prepareWorkspace(opts: {
   })
 
   if (currentHead !== opts.headSha) {
-    const fetchResult = Bun.spawnSync(
-      ["git", "fetch", "origin", opts.headSha, "--depth", "1"],
-      { cwd: workDir, stderr: "pipe", stdout: "pipe" },
+    const fetchResult = spawnSync(
+      "git",
+      ["fetch", "origin", opts.headSha, "--depth", "1"],
+      { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] },
     )
 
-    if (fetchResult.exitCode !== 0) {
+    if ((fetchResult.status ?? 1) !== 0) {
       const stderr = fetchResult.stderr.toString()
       await cleanupWorkspace(workDir)
-      throw new Error(`git fetch failed (exit ${fetchResult.exitCode}): ${stderr}`)
+      throw new Error(`git fetch failed (exit ${fetchResult.status ?? 1}): ${stderr}`)
     }
 
-    const checkoutResult = Bun.spawnSync(
-      ["git", "checkout", opts.headSha],
-      { cwd: workDir, stderr: "pipe", stdout: "pipe" },
+    const checkoutResult = spawnSync(
+      "git",
+      ["checkout", opts.headSha],
+      { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] },
     )
 
-    if (checkoutResult.exitCode !== 0) {
+    if ((checkoutResult.status ?? 1) !== 0) {
       const stderr = checkoutResult.stderr.toString()
       await cleanupWorkspace(workDir)
-      throw new Error(`git checkout failed (exit ${checkoutResult.exitCode}): ${stderr}`)
+      throw new Error(`git checkout failed (exit ${checkoutResult.status ?? 1}): ${stderr}`)
     }
 
     // Verify we're now at the correct SHA
-    const verifyResult = Bun.spawnSync(["git", "rev-parse", "HEAD"], {
-      cwd: workDir,
-      stdout: "pipe",
-    })
+    const verifyResult = spawnSync("git", ["rev-parse", "HEAD"], { cwd: workDir })
     const finalSha = verifyResult.stdout.toString().trim()
     logger.info(`workspace checkout complete: final=${finalSha}`, {
       "workspace.final_sha": finalSha,
@@ -117,10 +116,9 @@ export async function cleanupWorkspace(workDir: string): Promise<void> {
  * Returns paths relative to the workspace root.
  */
 export async function findTerraformDirs(workDir: string): Promise<string[]> {
-  const glob = new Bun.Glob("**/*.tf")
   const tfFiles: string[] = []
 
-  for await (const file of glob.scan({ cwd: workDir, absolute: false })) {
+  for await (const file of glob("**/*.tf", { cwd: workDir, exclude: ["**/node_modules/**"] })) {
     tfFiles.push(file)
   }
 
@@ -219,14 +217,15 @@ export class WorkspacePackager {
       tarballPath,
     })
 
-    const tarResult = Bun.spawnSync(
-      ["tar", "-czf", tarballPath, "-C", sourceDir, "."],
-      { stderr: "pipe", stdout: "pipe" },
+    const tarResult = spawnSync(
+      "tar",
+      ["-czf", tarballPath, "-C", sourceDir, "."],
+      { stdio: ["ignore", "pipe", "pipe"] },
     )
 
-    if (tarResult.exitCode !== 0) {
+    if ((tarResult.status ?? 1) !== 0) {
       const stderr = tarResult.stderr.toString()
-      throw new Error(`tar failed (exit ${tarResult.exitCode}): ${stderr}`)
+      throw new Error(`tar failed (exit ${tarResult.status ?? 1}): ${stderr}`)
     }
 
     // Upload tarball to S3

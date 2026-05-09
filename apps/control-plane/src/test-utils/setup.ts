@@ -43,7 +43,7 @@ if (process.env.YAFFLE_SKIP_TEST_DB_SETUP === "true") {
 } else {
 
 /**
- * Test setup - runs before all tests via bunfig.toml preload.
+ * Test setup - runs before all tests via the Vitest setupFiles hook.
  *
  * CRITICAL: Tests must use a separate database to avoid corrupting dev data.
  * This file ensures DATABASE_URL points to the test database.
@@ -149,7 +149,7 @@ if (finalUrl.includes(DEV_DB_NAME)) {
     `FATAL: Tests would run against dev database (${DEV_DB_NAME}). ` +
     `Set DATABASE_URL to use ${TEST_DB_NAME} or another test database.\n` +
     `Create the test database with: createdb ${TEST_DB_NAME}\n` +
-    `Run migrations: DATABASE_URL=postgresql://yaffle@localhost:5432/${TEST_DB_NAME} bun run db:migrate`
+    `Run migrations: DATABASE_URL=postgresql://yaffle@localhost:5432/${TEST_DB_NAME} pnpm run db:migrate`
   )
 }
 

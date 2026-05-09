@@ -22,7 +22,7 @@ on:
         description: "Build command to run"
         required: false
         type: string
-        default: "bun run build"
+        default: "pnpm run build"
       dist-path:
         description: "Path to built assets relative to app-path"
         required: false
@@ -70,9 +70,12 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
-      - name: Setup Bun
-        uses: oven-sh/setup-bun@v2
+          node-version: "25"
+          cache: pnpm
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.2
       - name: Configure AWS credentials (bootstrap)
         if: inputs.tailscale-ping-target != ''
         uses: aws-actions/configure-aws-credentials@v4
@@ -105,7 +108,7 @@ jobs:
           version: latest
 
       - name: Install dependencies
-        run: bun install --frozen-lockfile
+        run: pnpm install --frozen-lockfile
       - name: Load Yaffle API token from Secrets Manager
         uses: aws-actions/aws-secretsmanager-get-secrets@v2
         with:

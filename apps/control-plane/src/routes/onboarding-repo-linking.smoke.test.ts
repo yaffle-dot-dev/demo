@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "@yaffle/test"
 import { eq } from "drizzle-orm"
 import { Hono } from "hono"
 
@@ -59,7 +59,7 @@ async function req(
 
 function mockGithubApi(): { calls: string[]; restore: () => void } {
   const calls: string[] = []
-  const originalFetch = globalThis.fetch
+  const originalFetch = globalThis.fetch as typeof globalThis.fetch & { preconnect?: unknown }
 
   globalThis.fetch = Object.assign(
     async (input: string | URL | Request, init?: RequestInit) => {

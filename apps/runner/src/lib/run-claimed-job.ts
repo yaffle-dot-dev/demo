@@ -1,4 +1,5 @@
-import type { Subprocess } from "bun"
+import type { ChildProcess } from "node:child_process"
+import { readFile } from "node:fs/promises"
 
 import { HeartbeatSupervisor } from "./supervisor.ts"
 import { cleanupWorkspace, downloadWorkspace } from "./workspace.ts"
@@ -16,7 +17,7 @@ export async function runClaimedJob(input: {
   const { apiClient, jobId, runId, workerId } = input
 
   let cancellationRequested = false
-  let activeProcess: Subprocess | null = null
+  let activeProcess: ChildProcess | null = null
 
   const supervisor = new HeartbeatSupervisor({
     apiClient,
@@ -36,7 +37,7 @@ export async function runClaimedJob(input: {
 
   let logBuffer = ""
   let fullLogOutput = ""
-  let logFlushTimer: Timer | null = null
+  let logFlushTimer: ReturnType<typeof setTimeout> | null = null
   const LOG_FLUSH_INTERVAL = 100
 
   const flushLogs = async (): Promise<void> => {
@@ -69,7 +70,7 @@ export async function runClaimedJob(input: {
   }
 
   let spanBuffer: SpanEvent[] = []
-  let spanFlushTimer: Timer | null = null
+  let spanFlushTimer: ReturnType<typeof setTimeout> | null = null
   const SPAN_FLUSH_INTERVAL = 200
 
   const flushSpans = async (): Promise<void> => {
@@ -165,8 +166,14 @@ export async function runClaimedJob(input: {
       if (result.planFilePath) {
         try {
           const { uploadUrl, s3Key } = await apiClient.getPlanFileUploadUrl(runId)
-          const planData = await Bun.file(result.planFilePath).arrayBuffer()
-          await apiClient.uploadPlanFile(uploadUrl, planData)
+          const planData = await readFile(result.planFilePath)
+          await apiClient.uploadPlanFile(
+            uploadUrl,
+            planData.buffer.slice(
+              planData.byteOffset,
+              planData.byteOffset + planData.byteLength,
+            ),
+          )
           planFileS3Key = s3Key
           log("Plan file uploaded to S3", { jobId, workerId, s3Key })
         } catch (err) {

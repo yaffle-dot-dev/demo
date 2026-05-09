@@ -218,7 +218,7 @@ export class EcsEngineSpawner implements IacEngineSpawner {
 
     const taskArn = await this.runTask({
       environment: envVars,
-      command: ["bun", "run", "/app/apps/runner/src/scanner.ts"],
+      command: ["node", "/app/dist/scanner.mjs"],
       tags: await this.buildScannerTaskTags(scanJobId),
     })
 
@@ -249,7 +249,7 @@ export class EcsEngineSpawner implements IacEngineSpawner {
 
     const taskArn = await this.runTask({
       environment: envVars,
-      command: ["bun", "run", "/app/apps/runner/src/warm-runner.ts"],
+      command: ["node", "/app/dist/warm-runner.mjs"],
       tags: [
         ...buildOrgResourceTags(
           {

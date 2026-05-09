@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import type { Workspace as TfcWorkspace } from "../db/queries/workspaces.ts"
 

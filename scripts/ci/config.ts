@@ -3,8 +3,9 @@ import { resolve } from "node:path"
 
 import type { YaffleTomlConfig } from "../../apps/control-plane/src/lib/config-toml"
 import { parseYaffleToml } from "../../apps/control-plane/src/lib/config-toml"
+import { importMetaDir } from "../lib/module"
 
-const DEFAULT_CONFIG_PATH = resolve(import.meta.dir, "../..", "yaffle.toml")
+const DEFAULT_CONFIG_PATH = resolve(importMetaDir(import.meta), "../..", "yaffle.toml")
 
 export async function loadYaffleConfig(filePath = DEFAULT_CONFIG_PATH): Promise<YaffleTomlConfig> {
   const raw = await readFile(filePath, "utf8")

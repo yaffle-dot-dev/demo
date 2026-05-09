@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from "bun:test"
+import { afterEach, describe, expect, mock, test } from "@yaffle/test"
 
 import {
   discoverProviderCredentials,

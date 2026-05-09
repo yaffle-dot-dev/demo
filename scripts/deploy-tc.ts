@@ -7,9 +7,10 @@ import { LambdaClient, UpdateFunctionCodeCommand } from "@aws-sdk/client-lambda"
 import { buildTrafficController } from "./build-tc"
 import { applyAwsSession, assumeRole } from "./lib/aws-auth"
 import { getConfig } from "./lib/env"
+import { importMetaDir, isMain } from "./lib/module"
 import { fetchOutputs } from "./lib/outputs"
 
-const REPO_ROOT = resolve(import.meta.dir, "..")
+const REPO_ROOT = resolve(importMetaDir(import.meta), "..")
 const DEFAULT_API_ZIP = resolve(REPO_ROOT, "dist/traffic-controller/api-lambda.zip")
 const DEFAULT_RECONCILE_ZIP = resolve(REPO_ROOT, "dist/traffic-controller/reconcile-lambda.zip")
 const TRAFFIC_CONTROLLER_INFRA_WORKSPACE = "apps/traffic-controller/infra"
@@ -159,6 +160,6 @@ export async function deployTrafficController(
   }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await deployTrafficController()
 }

@@ -192,14 +192,14 @@ validate_cli_runtime() {
   echo "::group::Validate cli"
   pushd "$SPLIT_DIR" >/dev/null
 
-  if ! command -v bun >/dev/null 2>&1; then
-    fail "bun is required to validate the standalone CLI"
+  if ! command -v vp >/dev/null 2>&1; then
+    fail "vp is required to validate the standalone CLI"
   fi
 
-  bun install
-  bun run typecheck
-  bun test
-  bun run build
+  vp install
+  vp run typecheck
+  vp test
+  vp run build
 
   rm -rf node_modules dist
   popd >/dev/null

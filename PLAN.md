@@ -651,7 +651,7 @@ yaffle/
 ### Phase 0: Local Development
 ```bash
 # Run control plane locally
-bun run dev:control-plane
+pnpm run dev:control-plane
 
 # TF runs locally (no ECS yet)
 cd infra && terraform plan

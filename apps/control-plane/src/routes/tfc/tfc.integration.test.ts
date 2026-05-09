@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "@yaffle/test"
 import { Hono } from "hono"
 import { createHash } from "node:crypto"
 
@@ -33,14 +33,14 @@ import { eq } from "drizzle-orm"
  *
  * Prerequisites:
  * - Database must be running and migrated:
- *   DATABASE_URL=postgresql://yaffle@localhost:5432/yaffle_test bun run db:migrate
+ *   DATABASE_URL=postgresql://yaffle@localhost:5432/yaffle_test pnpm run db:migrate
  * - BETTER_AUTH_SECRET must be set (for JWT signing):
  *   BETTER_AUTH_SECRET=test-secret-at-least-32-characters-long
  *
  * Run with:
  *   DATABASE_URL=postgresql://yaffle@localhost:5432/yaffle_test \
  *   BETTER_AUTH_SECRET=test-secret-at-least-32-characters-long \
- *   bun test src/routes/tfc/tfc.integration.test.ts
+ *   pnpm exec vitest run src/routes/tfc/tfc.integration.test.ts
  */
 
 // Test app with TFC routes mounted

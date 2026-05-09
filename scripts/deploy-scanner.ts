@@ -11,6 +11,7 @@ import { LambdaClient, UpdateFunctionCodeCommand } from "@aws-sdk/client-lambda"
 import { applyAwsSession, assumeRole } from "./lib/aws-auth"
 import { getConfig } from "./lib/env"
 import { fetchOutputs } from "./lib/outputs"
+import { isMain } from "./lib/module"
 
 export async function deployScanner() {
   const { dryRun, region } = await getConfig()
@@ -78,6 +79,6 @@ async function resolveScannerDeploymentTarget(): Promise<{ functionName: string;
   return { functionName, appDeployerRoleArn }
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await deployScanner()
 }

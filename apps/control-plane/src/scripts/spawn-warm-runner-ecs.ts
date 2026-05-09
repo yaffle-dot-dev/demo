@@ -1,4 +1,4 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 import { findOrgById, findOrgBySlug } from "../db/queries/organizations.ts"
 import { createEcsSpawner } from "../lib/ecs-spawner.ts"
@@ -14,7 +14,7 @@ const ttlArg = process.argv[4]
 
 if (!identifier) {
   console.error(
-    "Usage: bun run src/scripts/spawn-warm-runner-ecs.ts <org-id-or-slug> [max-slots] [ttl-hours]",
+    "Usage: pnpm exec tsx src/scripts/spawn-warm-runner-ecs.ts <org-id-or-slug> [max-slots] [ttl-hours]",
   )
   process.exit(1)
 }

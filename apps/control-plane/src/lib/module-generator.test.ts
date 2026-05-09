@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 import { gunzipSync } from "node:zlib"
 
 import { generateShimModule } from "./module-generator.ts"
@@ -7,7 +7,7 @@ import { generateShimModule } from "./module-generator.ts"
  * Unit tests for the module generator.
  *
  * Run with:
- *   bun test src/lib/module-generator.test.ts
+ *   pnpm exec vitest run src/lib/module-generator.test.ts
  */
 
 describe("generateShimModule", () => {
@@ -201,17 +201,17 @@ function extractFileFromTar(tar: Buffer, filename: string): string {
     }
 
     // Extract filename (first 100 bytes, null-terminated)
-    const name = header
-      .subarray(0, 100)
-      .toString("utf-8")
-      .replace(/\0+$/, "")
+      const name = header
+        .subarray(0, 100)
+        .toString("utf-8")
+        .replace(/\u0000+$/, "")
 
     // Extract size (bytes 124-135, octal string)
-    const sizeStr = header
-      .subarray(124, 136)
-      .toString("utf-8")
-      .replace(/\0+$/, "")
-      .trim()
+      const sizeStr = header
+        .subarray(124, 136)
+        .toString("utf-8")
+        .replace(/\u0000+$/, "")
+        .trim()
     const size = parseInt(sizeStr, 8)
 
     offset += 512 // Move past header

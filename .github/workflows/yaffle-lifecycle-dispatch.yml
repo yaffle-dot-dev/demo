@@ -14,7 +14,7 @@ jobs:
   lifecycle:
     name: ${{ github.event.client_payload.yaffle.phase }} · ${{ github.event.client_payload.yaffle.item_key }}
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 20
     concurrency:
       group: yaffle-lifecycle-${{ github.event.client_payload.yaffle.environment }}-${{ github.event.client_payload.yaffle.item_key }}-${{ github.event.client_payload.yaffle.phase }}
       cancel-in-progress: false
@@ -28,9 +28,7 @@ jobs:
       TARGET_SHA: ${{ github.event.client_payload.yaffle.git_sha || github.sha }}
       TARGET_BASE_SHA: ${{ github.event.client_payload.yaffle.git_base_sha || '' }}
       TARGET_BRANCH: ${{ github.event.client_payload.yaffle.git_branch || '' }}
-      NIX_CONFIG: |
-        substituters = https://cache.nixos.org/
-        extra-substituters =
+      PNPM_STORE_DIR: ~/.pnpm-store
     steps:
       - name: Check out repo
         uses: actions/checkout@v6
@@ -41,18 +39,16 @@ jobs:
       - name: Install Determinate Nix
         uses: DeterminateSystems/determinate-nix-action@v3
 
-      - name: Debug Nix substituters
-        shell: bash
-        run: |
-          set -x
-          nix --version
-          echo "effective NIX_CONFIG"
-          printf '%s\n' "$NIX_CONFIG"
-          echo "effective nix config"
-          nix config show | grep -E '^(substituters|extra-substituters|trusted-public-keys|netrc-file|connect-timeout|download-attempts|http-connections|stalled-download-timeout)'
+      - name: Restore pnpm store cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.pnpm-store
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
 
       - name: Install dependencies
-        run: nix develop -L .#ci --command bun install --frozen-lockfile
+        run: nix develop -L .#ci --command pnpm install --frozen-lockfile --prefer-offline
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -124,7 +120,7 @@ jobs:
           COMPLETION_STATUS: ${{ steps.lifecycle.outputs.status || 'failed' }}
           COMPLETION_SUMMARY: ${{ steps.lifecycle.outputs.summary || 'lifecycle workflow did not report a result' }}
         run: |
-          nix develop -L .#ci --command bun -e '
+          nix develop -L .#ci --command node --input-type=module -e '
             const response = await fetch(process.env.ON_COMPLETION_URL, {
               method: "POST",
               headers: { "content-type": "application/json" },

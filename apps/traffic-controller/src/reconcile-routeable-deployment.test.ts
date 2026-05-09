@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import { reconcileRouteableDeployment } from "./reconcile-routeable-deployment.ts"
 

@@ -2,6 +2,8 @@
  * ECR authentication helpers using AWS SDK.
  */
 
+import { mkdir, readFile, writeFile } from "node:fs/promises"
+
 import {
   DescribeImagesCommand,
   ECRClient,
@@ -69,7 +71,7 @@ export async function loginToEcr(registry: string, region: string): Promise<void
       throw new Error("Failed to get ECR authorization token")
     }
 
-    const decoded = atob(authData.authorizationToken)
+    const decoded = Buffer.from(authData.authorizationToken, "base64").toString("utf8")
     const [username, password] = decoded.split(":")
 
     if (!username || !password) {
@@ -79,13 +81,11 @@ export async function loginToEcr(registry: string, region: string): Promise<void
     const dockerConfigDir = `${process.env.HOME}/.docker`
     const dockerConfigPath = `${dockerConfigDir}/config.json`
 
-    await Bun.write(`${dockerConfigDir}/.keep`, "")
-    const fs = await import("node:fs")
-    fs.mkdirSync(dockerConfigDir, { recursive: true })
+    await mkdir(dockerConfigDir, { recursive: true })
 
     let config: Record<string, any> = {}
     try {
-      config = JSON.parse(await Bun.file(dockerConfigPath).text())
+      config = JSON.parse(await readFile(dockerConfigPath, "utf8"))
     } catch {
       // No existing config
     }
@@ -95,7 +95,7 @@ export async function loginToEcr(registry: string, region: string): Promise<void
       auth: authData.authorizationToken,
     }
 
-    await Bun.write(dockerConfigPath, JSON.stringify(config, null, 2))
+    await writeFile(dockerConfigPath, JSON.stringify(config, null, 2))
     console.log(`Logged in to ECR: ${registry}`)
   })()
 

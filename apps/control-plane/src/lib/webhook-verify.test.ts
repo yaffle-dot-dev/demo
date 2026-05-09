@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer"
 
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "@yaffle/test"
 
 import { WebhookVerificationError } from "@yaffle/shared"
 

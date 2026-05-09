@@ -5,12 +5,13 @@ import {
   buildGraphFromInferred,
   scanAllWorkspaceDependencies,
 } from "../../../packages/shared/src"
+import { importMetaDir } from "../../lib/module"
 
 import { loadYaffleConfig } from "../config"
 
 import type { DiscoveredDeployable } from "./types"
 
-const REPO_ROOT = resolve(import.meta.dir, "../../..")
+const REPO_ROOT = resolve(importMetaDir(import.meta), "../../..")
 
 export interface DeployableExecutionNode {
   deployable: DiscoveredDeployable

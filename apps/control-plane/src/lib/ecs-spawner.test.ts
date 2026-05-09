@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test"
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "@yaffle/test"
 
 const mockSend = mock(async (_command: unknown) => ({
   tasks: [{ taskArn: "arn:aws:ecs:us-east-1:123456789012:task/cluster/task-123" }],

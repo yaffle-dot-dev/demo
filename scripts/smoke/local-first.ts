@@ -1,9 +1,14 @@
+import type { ChildProcess } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { mkdtemp, mkdir, cp, access, rm } from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { constants as fsConstants } from "node:fs"
 import { tmpdir } from "node:os"
-import { dirname, join, resolve } from "node:path"
+import { join } from "node:path"
 import { createServer } from "node:net"
+import { setTimeout as sleep } from "node:timers/promises"
+import type { Readable } from "node:stream"
+import { writeFile } from "node:fs/promises"
 import { GenericContainer, Wait } from "testcontainers"
 
 const REPO_ROOT = "/Users/alexlauni/Code/yaffle/root"
@@ -24,7 +29,7 @@ async function main(): Promise<void> {
   await mkdir(homeDir, { recursive: true })
   await cp(FIXTURE_SOURCE, fixtureRoot, { recursive: true })
   await mkdir(join(fixtureRoot, ".git"), { recursive: true })
-  await Bun.write(
+  await writeFile(
     join(fixtureRoot, ".git/config"),
     `[remote "origin"]\n  url = https://github.com/test-org/fixture.git\n`,
   )
@@ -70,24 +75,22 @@ async function main(): Promise<void> {
     PORT: String(controlPlanePort),
   }
 
-  let controlPlane: Bun.Subprocess | undefined
-  let caddy: Bun.Subprocess | undefined
+  let controlPlane: ChildProcess | undefined
+  let caddy: ChildProcess | undefined
   try {
     await runCommand(["caddy", "version"], REPO_ROOT, process.env, "check caddy")
 
     await runCommand(
-      ["bun", "run", "--filter=@yaffle/control-plane", "db:migrate"],
+      ["vp", "run", "@yaffle/control-plane#db:migrate"],
       REPO_ROOT,
       controlPlaneEnv,
       "database migrations",
     )
 
-    controlPlane = Bun.spawn({
-      cmd: ["bun", "run", "apps/control-plane/src/index.ts"],
+    controlPlane = spawn(process.execPath, ["--import", "tsx", "apps/control-plane/src/index.ts"], {
       cwd: REPO_ROOT,
       env: controlPlaneEnv,
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["ignore", "pipe", "pipe"],
     })
 
     const stdoutBuffer = pipeSubprocessOutput(controlPlane.stdout, "[control-plane] ")
@@ -97,7 +100,7 @@ async function main(): Promise<void> {
     console.log("[smoke] control plane is healthy")
 
     const caddyConfigPath = join(tempRoot, "Caddyfile")
-    await Bun.write(
+    await writeFile(
       caddyConfigPath,
       `{
   admin 127.0.0.1:${caddyAdminPort}
@@ -113,12 +116,10 @@ https://yaffle.localhost:${proxyPort} {
 `,
     )
 
-    caddy = Bun.spawn({
-      cmd: ["caddy", "run", "--config", caddyConfigPath],
+    caddy = spawn("caddy", ["run", "--config", caddyConfigPath], {
       cwd: REPO_ROOT,
       env: process.env,
-      stdout: "pipe",
-      stderr: "pipe",
+      stdio: ["ignore", "pipe", "pipe"],
     })
     pipeSubprocessOutput(caddy.stdout, "[caddy] ")
     pipeSubprocessOutput(caddy.stderr, "[caddy] ")
@@ -196,11 +197,11 @@ https://yaffle.localhost:${proxyPort} {
   } finally {
     if (caddy) {
       caddy.kill("SIGTERM")
-      await caddy.exited.catch(() => {})
+      await waitForExit(caddy).catch(() => {})
     }
     if (controlPlane) {
       controlPlane.kill("SIGTERM")
-      await controlPlane.exited.catch(() => {})
+      await waitForExit(controlPlane).catch(() => {})
     }
 
     await postgres.stop().catch(() => {})
@@ -213,12 +214,11 @@ function configureContainerRuntimeEnv(): void {
     return
   }
 
-  const inspect = Bun.spawnSync(["podman", "machine", "inspect", "podman-machine-default"], {
+  const inspect = spawnSync("podman", ["machine", "inspect", "podman-machine-default"], {
     cwd: REPO_ROOT,
-    stderr: "pipe",
-    stdout: "pipe",
+    stdio: ["ignore", "pipe", "pipe"],
   })
-  if (inspect.exitCode !== 0) {
+  if ((inspect.status ?? 1) !== 0) {
     return
   }
 
@@ -273,7 +273,7 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
       lastError = error
     }
 
-    await Bun.sleep(500)
+    await sleep(500)
   }
 
   throw new Error(`timed out waiting for ${url}: ${String(lastError)}`)
@@ -295,7 +295,7 @@ async function waitForHttps(url: string, timeoutMs: number): Promise<void> {
       lastError = error
     }
 
-    await Bun.sleep(500)
+    await sleep(500)
   }
 
   throw new Error(`timed out waiting for ${url}: ${String(lastError)}`)
@@ -304,17 +304,15 @@ async function waitForHttps(url: string, timeoutMs: number): Promise<void> {
 async function runCommand(
   cmd: string[],
   cwd: string,
-  envVars: NodeJS.ProcessEnv | Bun.Env | undefined,
+  envVars: NodeJS.ProcessEnv | undefined,
   label: string,
   captureStdout = false,
 ): Promise<string> {
   console.log(`[smoke] ${label}: ${cmd.join(" ")}`)
-  const proc = Bun.spawn({
-    cmd,
+  const proc = spawn(cmd[0]!, cmd.slice(1), {
     cwd,
     env: envVars,
-    stdout: captureStdout ? "pipe" : "inherit",
-    stderr: "pipe",
+    stdio: ["ignore", captureStdout ? "pipe" : "inherit", "pipe"],
   })
 
   let stdout = ""
@@ -322,7 +320,7 @@ async function runCommand(
     stdout = await streamToString(proc.stdout)
   }
   const stderr = proc.stderr ? await streamToString(proc.stderr) : ""
-  const exitCode = await proc.exited
+  const exitCode = await waitForExit(proc)
   if (exitCode !== 0) {
     throw new Error(`${label} failed with exit code ${exitCode}\n${stderr}`)
   }
@@ -330,7 +328,7 @@ async function runCommand(
   return stdout
 }
 
-function pipeSubprocessOutput(stream: ReadableStream<Uint8Array> | null, prefix: string): string[] {
+function pipeSubprocessOutput(stream: Readable | null, prefix: string): string[] {
   const buffer: string[] = []
   if (!stream) {
     return buffer
@@ -344,21 +342,27 @@ function pipeSubprocessOutput(stream: ReadableStream<Uint8Array> | null, prefix:
 }
 
 async function streamToString(
-  stream: ReadableStream<Uint8Array>,
+  stream: Readable,
   onChunk?: (chunk: string) => void,
 ): Promise<string> {
-  const reader = stream.getReader()
-  const decoder = new TextDecoder()
   let output = ""
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    const chunk = decoder.decode(value, { stream: true })
+
+  stream.setEncoding("utf8")
+  for await (const value of stream) {
+    const chunk = typeof value === "string" ? value : value.toString("utf8")
     output += chunk
     onChunk?.(chunk)
   }
-  output += decoder.decode()
   return output
+}
+
+async function waitForExit(proc: ChildProcess): Promise<number> {
+  return new Promise((resolvePromise, reject) => {
+    proc.on("error", reject)
+    proc.on("close", (code) => {
+      resolvePromise(code ?? 1)
+    })
+  })
 }
 
 function parseShellExports(stdout: string): Record<string, string> {

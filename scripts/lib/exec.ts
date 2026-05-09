@@ -1,3 +1,5 @@
+import { spawn } from "node:child_process"
+
 /**
  * Shell execution and parallel task helpers.
  */
@@ -45,16 +47,40 @@ export async function exec(cmd: string[], opts?: ExecOptions): Promise<string> {
   const captureStdout = opts?.quiet || opts?.captureStdout
   const captureStderr = opts?.quiet || opts?.captureStderr
 
-  const proc = Bun.spawn(cmd, {
+  const stdoutChunks: Buffer[] = []
+  const stderrChunks: Buffer[] = []
+
+  const proc = spawn(cmd[0]!, cmd.slice(1), {
     cwd: opts?.cwd,
     env: { ...process.env, ...opts?.env },
-    stdout: captureStdout ? "pipe" : "inherit",
-    stderr: captureStderr ? "pipe" : "inherit",
+    stdio: [
+      "ignore",
+      captureStdout ? "pipe" : "inherit",
+      captureStderr ? "pipe" : "inherit",
+    ],
   })
 
-  const result = await proc.exited
-  const stdout = captureStdout && proc.stdout ? await new Response(proc.stdout).text() : ""
-  const stderr = captureStderr && proc.stderr ? await new Response(proc.stderr).text() : ""
+  if (captureStdout) {
+    proc.stdout?.on("data", (chunk: Buffer) => {
+      stdoutChunks.push(Buffer.from(chunk))
+    })
+  }
+
+  if (captureStderr) {
+    proc.stderr?.on("data", (chunk: Buffer) => {
+      stderrChunks.push(Buffer.from(chunk))
+    })
+  }
+
+  const result = await new Promise<number>((resolvePromise, reject) => {
+    proc.on("error", reject)
+    proc.on("close", (code) => {
+      resolvePromise(code ?? 1)
+    })
+  })
+
+  const stdout = captureStdout ? Buffer.concat(stdoutChunks).toString("utf8") : ""
+  const stderr = captureStderr ? Buffer.concat(stderrChunks).toString("utf8") : ""
 
   if (result !== 0) {
     const detail = stderr.trim() || stdout.trim()

@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { afterEach, describe, expect, test } from "@yaffle/test"
+import { access, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { constants as fsConstants } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -16,8 +17,8 @@ describe("findTerraformDirs", () => {
 
   test("finds tf files in root directory", async () => {
     workDir = await mkdtemp(join(tmpdir(), "yaffle-ws-test-"))
-    await Bun.write(join(workDir, "main.tf"), "resource {}")
-    await Bun.write(join(workDir, "variables.tf"), "variable {}")
+    await writeFile(join(workDir, "main.tf"), "resource {}")
+    await writeFile(join(workDir, "variables.tf"), "variable {}")
 
     const dirs = await findTerraformDirs(workDir)
     expect(dirs).toEqual(["."])
@@ -25,9 +26,9 @@ describe("findTerraformDirs", () => {
 
   test("finds tf files in subdirectories", async () => {
     workDir = await mkdtemp(join(tmpdir(), "yaffle-ws-test-"))
-    await Bun.write(join(workDir, "infra", "main.tf"), "resource {}")
-    await Bun.write(join(workDir, "infra", "ecs.tf"), "resource {}")
-    await Bun.write(join(workDir, "modules", "vpc", "main.tf"), "resource {}")
+    await writeFile(join(workDir, "infra", "main.tf"), "resource {}")
+    await writeFile(join(workDir, "infra", "ecs.tf"), "resource {}")
+    await writeFile(join(workDir, "modules", "vpc", "main.tf"), "resource {}")
 
     const dirs = await findTerraformDirs(workDir)
     expect(dirs).toEqual(["infra", "modules/vpc"])
@@ -35,7 +36,7 @@ describe("findTerraformDirs", () => {
 
   test("returns empty array when no tf files exist", async () => {
     workDir = await mkdtemp(join(tmpdir(), "yaffle-ws-test-"))
-    await Bun.write(join(workDir, "README.md"), "hello")
+    await writeFile(join(workDir, "README.md"), "hello")
 
     const dirs = await findTerraformDirs(workDir)
     expect(dirs).toEqual([])
@@ -45,12 +46,11 @@ describe("findTerraformDirs", () => {
 describe("cleanupWorkspace", () => {
   test("removes directory and contents", async () => {
     const workDir = await mkdtemp(join(tmpdir(), "yaffle-ws-test-"))
-    await Bun.write(join(workDir, "file.txt"), "data")
+    await writeFile(join(workDir, "file.txt"), "data")
 
     await cleanupWorkspace(workDir)
 
-    const exists = await Bun.file(join(workDir, "file.txt")).exists()
-    expect(exists).toBe(false)
+    await expect(access(join(workDir, "file.txt"), fsConstants.F_OK)).rejects.toThrow()
   })
 
   test("does not throw on missing directory", async () => {

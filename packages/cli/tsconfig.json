@@ -9,7 +9,7 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "types": ["bun-types", "node"],
+    "types": ["node"],
     "outDir": "dist",
     "rootDir": "src",
     "declaration": true,

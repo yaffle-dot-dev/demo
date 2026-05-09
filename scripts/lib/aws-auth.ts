@@ -1,4 +1,4 @@
-import { $ } from "bun"
+import { exec } from "./exec"
 
 const AWS_REGION = process.env.AWS_REGION || "us-east-1"
 
@@ -10,12 +10,14 @@ export interface AwsSessionEnv extends Record<string, string> {
 }
 
 function printCommandError(err: unknown): void {
-  if (!err || typeof err !== "object" || !("stderr" in err)) {
-    return
-  }
+  const message = err instanceof Error
+    ? err.message.trim()
+    : (!err || typeof err !== "object" || !("stderr" in err)
+      ? ""
+      : typeof err.stderr === "string"
+        ? err.stderr.trim()
+        : String(err.stderr).trim())
 
-  const stderr = err.stderr
-  const message = typeof stderr === "string" ? stderr.trim() : String(stderr).trim()
   if (message) {
     console.error(message)
   }
@@ -28,20 +30,25 @@ export async function assumeRole(
 ): Promise<AwsSessionEnv> {
   console.log(`Assuming role: ${roleArn}`)
 
-  const proc = $`aws sts assume-role \
-    --role-arn ${roleArn} \
-    --role-session-name ${sessionName} \
-    --duration-seconds 3600 \
-    --region ${AWS_REGION}`
-    .env({
-      ...process.env,
-      ...(sourceEnv ?? {}),
-    })
-    .quiet()
-
   let output: string
   try {
-    output = await proc.text()
+    output = await exec([
+      "aws",
+      "sts",
+      "assume-role",
+      "--role-arn",
+      roleArn,
+      "--role-session-name",
+      sessionName,
+      "--duration-seconds",
+      "3600",
+      "--region",
+      AWS_REGION,
+    ], {
+      env: sourceEnv,
+      quiet: true,
+      captureStderr: true,
+    })
   } catch (err) {
     console.error("[error] aws sts assume-role failed:")
     printCommandError(err)

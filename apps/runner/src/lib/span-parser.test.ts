@@ -1,4 +1,4 @@
-import { describe, test, expect } from "bun:test"
+import { describe, test, expect } from "@yaffle/test"
 import { ResourceSpanParser, type ResourceSpanEvent } from "./span-parser.ts"
 
 function collectEvents(input: string): ResourceSpanEvent[] {

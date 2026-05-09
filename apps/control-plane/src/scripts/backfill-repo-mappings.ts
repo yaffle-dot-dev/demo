@@ -6,8 +6,8 @@
  * 2. Creates github_repo_mappings for all active repos -> the org
  *
  * Usage:
- *   bun run src/scripts/backfill-repo-mappings.ts          # dry-run
- *   bun run src/scripts/backfill-repo-mappings.ts --apply   # apply changes
+ *   pnpm exec tsx src/scripts/backfill-repo-mappings.ts          # dry-run
+ *   pnpm exec tsx src/scripts/backfill-repo-mappings.ts --apply   # apply changes
  */
 import { db } from "../lib/db.ts"
 import { organizations, githubInstallations, repositories, githubRepoMappings } from "../db/schema.ts"

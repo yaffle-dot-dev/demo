@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it } from "@yaffle/test"
 import {
   parseApprover,
   serializeApprover,

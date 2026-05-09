@@ -6,10 +6,12 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "typecheck": "vp exec tsc --noEmit",
+    "test": "vp test"
   },
   "devDependencies": {
+    "@types/node": "^25.6.2",
+    "@yaffle/test": "workspace:*",
     "typescript": "^5.7.0"
   },
   "dependencies": {

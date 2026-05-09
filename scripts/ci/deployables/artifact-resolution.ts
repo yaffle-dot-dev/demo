@@ -1,3 +1,4 @@
+import { exec } from "../../lib/exec"
 import { listChangedFiles } from "../git"
 import type { CiTarget } from "../types"
 
@@ -151,16 +152,10 @@ async function resolveChangedFiles(target: CiTarget): Promise<string[] | null> {
 
 async function inferBaseSha(sha: string): Promise<string | undefined> {
   try {
-    const proc = Bun.spawn(["git", "rev-list", "--parents", "-n", "1", sha], {
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env,
-    })
-    const exitCode = await proc.exited
-    if (exitCode !== 0 || !proc.stdout) {
-      return undefined
-    }
-    const output = (await new Response(proc.stdout).text()).trim()
+    const output = (await exec(["git", "rev-list", "--parents", "-n", "1", sha], {
+      quiet: true,
+      captureStderr: true,
+    })).trim()
     const parts = output.split(/\s+/).filter(Boolean)
     return parts.length >= 2 ? parts[1] : undefined
   } catch {

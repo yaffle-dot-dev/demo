@@ -1,7 +1,7 @@
-import { $ } from "bun"
 import { parseArgs } from "node:util"
 
 import { assumeRole } from "./aws-auth"
+import { exec } from "./exec"
 import { fetchOutputs } from "./outputs"
 
 export type DeployTarget =
@@ -83,7 +83,9 @@ function getRequiredOutput(
 }
 
 async function getCurrentBranch(): Promise<string> {
-  const branch = await $`git rev-parse --abbrev-ref HEAD`.text()
+  const branch = await exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], {
+    quiet: true,
+  })
   return branch.trim()
 }
 
@@ -126,18 +128,14 @@ export async function runStaticSiteBuild(options: RunStaticSiteBuildOptions): Pr
   console.log(`\nBuilding ${options.appLabel} site...`)
 
   if (options.dryRun) {
-    console.log(`[dry-run] Would run: bun run build (cwd: ${options.appDir})`)
+    console.log(`[dry-run] Would run: vp run build (cwd: ${options.appDir})`)
     return
   }
 
-  const command = $`bun run build`.cwd(options.appDir)
-
-  if (options.env) {
-    await command.env(options.env)
-    return
-  }
-
-  await command
+  await exec(["vp", "run", "build"], {
+    cwd: options.appDir,
+    env: options.env,
+  })
 }
 
 export async function parseStaticSiteDeployArgs(scriptName: string): Promise<DeployConfig> {
@@ -239,16 +237,37 @@ export async function syncStaticSiteToS3(options: SyncStaticSiteToS3Options): Pr
 
   const creds = await assumeRole(options.deployRoleArn, options.sessionName, options.deployerSession)
 
-  await $`aws s3 sync ${options.sourceDir} ${destination} \
-    --delete \
-    --cache-control "public, max-age=31536000, immutable" \
-    --exclude "*" \
-    --include "_astro/*"`.env(creds)
+  await exec([
+    "aws",
+    "s3",
+    "sync",
+    options.sourceDir,
+    destination,
+    "--delete",
+    "--cache-control",
+    "public, max-age=31536000, immutable",
+    "--exclude",
+    "*",
+    "--include",
+    "_astro/*",
+  ], {
+    env: creds,
+  })
 
-  await $`aws s3 sync ${options.sourceDir} ${destination} \
-    --delete \
-    --cache-control "public, max-age=0, must-revalidate" \
-    --exclude "_astro/*"`.env(creds)
+  await exec([
+    "aws",
+    "s3",
+    "sync",
+    options.sourceDir,
+    destination,
+    "--delete",
+    "--cache-control",
+    "public, max-age=0, must-revalidate",
+    "--exclude",
+    "_astro/*",
+  ], {
+    env: creds,
+  })
 }
 
 export async function invalidateStaticSiteCache(
@@ -269,7 +288,15 @@ export async function invalidateStaticSiteCache(
     options.deployerSession,
   )
 
-  await $`aws cloudfront create-invalidation \
-    --distribution-id ${options.distributionId} \
-    --paths ${invalidationPath}`.env(creds)
+  await exec([
+    "aws",
+    "cloudfront",
+    "create-invalidation",
+    "--distribution-id",
+    options.distributionId,
+    "--paths",
+    invalidationPath,
+  ], {
+    env: creds,
+  })
 }

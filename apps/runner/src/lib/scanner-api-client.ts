@@ -78,16 +78,12 @@ export class ScannerApiClient {
    * Send heartbeat. Compatible with HeartbeatSupervisor interface.
    */
   async heartbeat(): Promise<{ success: boolean; reason?: string }> {
-    try {
-      const response = await this.request("/heartbeat", {
-        method: "POST",
-      })
+    const response = await this.request("/heartbeat", {
+      method: "POST",
+    })
 
-      const data = await response.json()
-      return { success: data.continue !== false }
-    } catch (err) {
-      throw err
-    }
+    const data = await response.json()
+    return { success: data.continue !== false }
   }
 
   /**

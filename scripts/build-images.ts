@@ -1,4 +1,5 @@
 import { parallel } from "./lib/exec"
+import { isMain } from "./lib/module"
 import { buildCp } from "./build-cp"
 import { buildWeb } from "./build-web"
 import { buildRunner } from "./build-runner"
@@ -11,6 +12,6 @@ export async function buildImages() {
   ])
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await buildImages()
 }

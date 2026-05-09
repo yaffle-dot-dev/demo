@@ -1,6 +1,7 @@
-#!/usr/bin/env bun
+#!/usr/bin/env node
 
 import { randomUUID } from "node:crypto"
+import { setTimeout as sleep } from "node:timers/promises"
 
 import { RunnerApiClient } from "./lib/api-client.ts"
 import { runClaimedJob } from "./lib/run-claimed-job.ts"
@@ -98,7 +99,7 @@ async function main(): Promise<void> {
         }
 
         await apiClient.heartbeat(registration.runnerId, workerId, activeSlots)
-        await Bun.sleep(registration.pollIntervalMs)
+        await sleep(registration.pollIntervalMs)
         continue
       }
 

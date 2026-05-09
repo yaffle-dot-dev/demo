@@ -1,4 +1,4 @@
-import type { Preview, PrPreviewGroup, EnvPreviewGroup } from "$lib/api"
+import type { Preview } from "$lib/api"
 import type {
   ConnectionState,
   PreviewGroup,
@@ -8,7 +8,7 @@ import type {
   OrgProvisioningStatus,
   StreamPayloadMeta,
 } from "./types"
-import { hasActiveRun, getLatestRunGroup, getCurrentRunGroup } from "./types"
+import { hasActiveRun, getLatestRunGroup } from "./types"
 
 // ---------------------------------------------------------------------------
 // PreviewStreamStore - state for PR/env detail pages

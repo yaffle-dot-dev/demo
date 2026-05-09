@@ -3,6 +3,7 @@ import type { DeployableArtifactResolution } from "./ci/deployables/types"
 import { getConfig, imageUri } from "./lib/env"
 import { imageTagExists, loginToEcr } from "./lib/ecr"
 import { shouldSkipArtifactBuild } from "./lib/artifact-build"
+import { isMain } from "./lib/module"
 import { buildImageArchive, pushImageArchive } from "./lib/nix-image"
 
 export async function buildWeb(artifact?: DeployableArtifactResolution) {
@@ -35,6 +36,6 @@ export async function buildWeb(artifact?: DeployableArtifactResolution) {
   await pushImageArchive(archivePath, `${image}:latest`)
 }
 
-if (import.meta.main) {
+if (isMain(import.meta)) {
   await buildWeb()
 }

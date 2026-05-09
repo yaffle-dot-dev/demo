@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, test } from "@yaffle/test"
 
 import { buildSignedCallbackHeaders } from "../../../provider-discovery-agent/src/signing.ts"
 

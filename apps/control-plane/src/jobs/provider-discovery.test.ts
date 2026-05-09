@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "@yaffle/test"
 
 import { handleProviderDiscoveryJob, resolveProviderDiscoveryCallbackUrl } from "./provider-discovery.ts"
 
@@ -75,7 +75,7 @@ describe("handleProviderDiscoveryJob", () => {
     process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET = "provider-callback-secret"
     process.env.YAFFLE_PUBLIC_API_URL = "https://api.yaffle.test"
 
-    const originalFetch = globalThis.fetch
+    const originalFetch = globalThis.fetch as typeof globalThis.fetch & { preconnect?: unknown }
     let requestBody: Record<string, unknown> | null = null
 
     globalThis.fetch = Object.assign(

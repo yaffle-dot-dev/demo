@@ -1,4 +1,4 @@
-import type { ConnectionState, SSEConnectionOptions } from "./types"
+import type { SSEConnectionOptions } from "./types"
 
 // ---------------------------------------------------------------------------
 // Backoff configuration

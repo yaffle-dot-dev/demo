@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, test } from "@yaffle/test"
 import { Hono } from "hono"
 
 import { db } from "../lib/db.ts"

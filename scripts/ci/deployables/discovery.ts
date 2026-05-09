@@ -1,9 +1,11 @@
+import { glob } from "node:fs/promises"
 import { resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
 import type { DiscoveredDeployable, DeployableDefinition } from "./types"
+import { importMetaDir } from "../../lib/module"
 
-const REPO_ROOT = resolve(import.meta.dir, "../../..")
+const REPO_ROOT = resolve(importMetaDir(import.meta), "../../..")
 const DEPLOYABLE_GLOB = "apps/**/*.yaffle.deployable.ts"
 
 let cachedDeployables: Promise<DiscoveredDeployable[]> | null = null
@@ -56,7 +58,7 @@ async function loadDescriptorModule(relativePath: string): Promise<DiscoveredDep
 
 async function discoverDeployablesUncached(): Promise<DiscoveredDeployable[]> {
   const files: string[] = []
-  for await (const filePath of new Bun.Glob(DEPLOYABLE_GLOB).scan({ cwd: REPO_ROOT })) {
+  for await (const filePath of glob(DEPLOYABLE_GLOB, { cwd: REPO_ROOT })) {
     files.push(filePath)
   }
 

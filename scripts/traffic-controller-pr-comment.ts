@@ -100,7 +100,7 @@ async function githubApi<T>(repo: string, path: string, init?: RequestInit): Pro
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
       "X-GitHub-Api-Version": "2022-11-28",
-      ...(init?.headers ?? {}),
+      ...init?.headers,
     },
   })
 
@@ -166,7 +166,7 @@ async function waitForFinalOperation(initial: TrafficControllerResponse): Promis
   }
 
   for (let attempt = 0; attempt < 15; attempt++) {
-    await Bun.sleep(2000)
+    await sleep(2000)
     const poll = await invokeTrafficController({
       command: "get_operation",
       operationId: initial.data.operationId,
@@ -227,3 +227,4 @@ async function main(): Promise<void> {
 }
 
 await main()
+import { setTimeout as sleep } from "node:timers/promises"
