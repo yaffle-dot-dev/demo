@@ -82,19 +82,6 @@ processes:
       period_seconds: 10
       failure_threshold: 3
 
-  smee:
-    command: |
-      dotenvx run -o -f env/dev/base.env -- bash -lc 'vp exec smee-client --url "$SMEE_URL" --target http://localhost:3000/api/webhooks/github'
-    log_location: .dev/logs/smee.log
-    depends_on:
-      caddy:
-        condition: process_healthy
-    readiness_probe:
-      exec:
-        command: "pgrep -f smee-client"
-      period_seconds: 10
-      failure_threshold: 3
-
   # opencode:
   #   command: "opencode web --port 4096 --hostname 0.0.0.0"
   #   log_location: .dev/logs/opencode.log
