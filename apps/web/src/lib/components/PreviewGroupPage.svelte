@@ -169,6 +169,38 @@
       && displayDependencyGraph.workspaces.length > 0
   )
 
+  const latestRunGroupIsInFlight = $derived(
+    !!viewedRunGroup
+      && isLatestRunGroup
+      && (viewedRunGroup.status === "scanning"
+        || viewedRunGroup.status === "pending"
+        || viewedRunGroup.status === "running")
+  )
+
+  function buildPendingWorkspacePlaceholder(path: string, isOutOfScope: boolean, fullWs?: WorkspaceWithRuns): WorkspaceWithRuns {
+    const preview: WorkspacePreview = {
+      id: fullWs?.preview.id ?? `placeholder-${path}`,
+      workspacePath: path,
+      status: isOutOfScope ? "out_of_scope" : "pending",
+      connectionStatus: "not_required",
+      missingProviders: [],
+      conflictProviders: [],
+      matchedConnections: [],
+      blockedReason: null,
+      degradation: null,
+      stateKey: fullWs?.preview.stateKey ?? "",
+      mode: fullWs?.preview.mode ?? "preview",
+      requireApproval: fullWs?.preview.requireApproval ?? false,
+      createdAt: fullWs?.preview.createdAt ?? new Date().toISOString(),
+    }
+
+    return {
+      preview,
+      runs: [],
+      outputs: null,
+    }
+  }
+
   // Build the complete list of workspaces from the dependency graph.
   // For workspaces without runs yet, create placeholder entries showing "Queued" status.
   const filteredWorkspaces = $derived.by((): WorkspaceWithRuns[] => {
@@ -190,24 +222,10 @@
 
     if (usingFreshPendingDag) {
       return graph.workspaces.map((path): WorkspaceWithRuns => ({
-        preview: {
-          id: `pending-${viewedRunGroup.id}-${path}`,
-          workspacePath: path,
-          status: manualScopeWorkspacePaths !== null && !manualScopeWorkspacePaths.has(path)
-            ? "out_of_scope"
-            : "pending",
-          connectionStatus: "not_required",
-          missingProviders: [],
-          conflictProviders: [],
-          matchedConnections: [],
-          blockedReason: null,
-          stateKey: "",
-          mode: "preview",
-          requireApproval: false,
-          createdAt: new Date().toISOString(),
-        },
-        runs: [],
-        outputs: null,
+        ...buildPendingWorkspacePlaceholder(
+          path,
+          manualScopeWorkspacePaths !== null && !manualScopeWorkspacePaths.has(path),
+        ),
       }))
     }
 
@@ -236,10 +254,15 @@
       }
 
       // Check if workspace exists but has no runs in this run group
-      // Use its actual status from the full workspaces list
+      // When the latest run group is still in flight, treat missing workspaces as queued
+      // placeholders instead of reusing stale status/degradation from the previous run group.
       const fullWs = allWsByPath.get(path)
       if (fullWs) {
         const isOutOfScope = manualScopeWorkspacePaths !== null && !manualScopeWorkspacePaths.has(path)
+        if (latestRunGroupIsInFlight) {
+          return buildPendingWorkspacePlaceholder(path, isOutOfScope, fullWs)
+        }
+
         return {
           ...fullWs,
           preview: {
@@ -262,25 +285,7 @@
 
       // Otherwise, create a placeholder for workspaces not yet created
       const isOutOfScope = manualScopeWorkspacePaths !== null && !manualScopeWorkspacePaths.has(path)
-      const placeholder: WorkspacePreview = {
-        id: `placeholder-${path}`,
-        workspacePath: path,
-        status: isOutOfScope ? "out_of_scope" : "pending",
-        connectionStatus: "not_required",
-        missingProviders: [],
-        conflictProviders: [],
-        matchedConnections: [],
-        blockedReason: null,
-        stateKey: "",
-        mode: "preview",
-        requireApproval: false,
-        createdAt: new Date().toISOString(),
-      }
-      return {
-        preview: placeholder,
-        runs: [],
-        outputs: null,
-      }
+      return buildPendingWorkspacePlaceholder(path, isOutOfScope)
     })
   })
 
