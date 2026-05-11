@@ -63,8 +63,8 @@ exec dotenvx run -o "${DOTENV_ARGS[@]}" -- \
     ASSUME_CONTROL_PLANE_ROLE="${YAFFLE_ASSUME_CONTROL_PLANE_ROLE:-false}"
 
     if [ "$ASSUME_CONTROL_PLANE_ROLE" = "true" ]; then
-      exec ./scripts/run-with-assumed-role-refresh.sh -- vp run dev:control-plane
+      exec ./scripts/run-with-assumed-role-refresh.sh -- pnpm --dir apps/control-plane dev
     fi
 
-    exec vp run dev:control-plane
+    exec pnpm --dir apps/control-plane dev
   '

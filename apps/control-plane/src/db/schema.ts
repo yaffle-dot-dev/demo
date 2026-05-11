@@ -245,6 +245,8 @@ export const runGroups = pgTable("run_groups", {
   checkRunId: bigint("check_run_id", { mode: "number" }),
   checkCompletedAt: timestamp("check_completed_at", { withTimezone: true }),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
+  triggeredByUserId: text("triggered_by_user_id").references(() => user.id, { onDelete: "set null" }),
+  triggeredByLogin: text("triggered_by_login"),
   status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
   // Inferred dependency graph for this run group
   // Structure: { workspaces: string[], edges: [string, string][] }

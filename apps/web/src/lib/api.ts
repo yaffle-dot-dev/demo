@@ -74,10 +74,12 @@ export interface RunGroup {
   headSha: string
   selectedWorkspacePaths?: string[]
   trigger: string
+  triggeredByLogin?: string | null
   status: string
   /** Inferred dependency graph for this run group */
   dependencyGraph: DependencyGraph | null
   systemError: RunGroupSystemError | null
+  environmentLifecycle?: EnvironmentLifecycleSummary | null
   createdAt: string
   startedAt: string | null
   completedAt: string | null
@@ -146,6 +148,7 @@ export interface LifecycleItemSummary {
   summary: string | null
   reason: string | null
   metadata: Record<string, unknown>
+  destinationUrl?: string
   startedAt: string | null
   finishedAt: string | null
   events: LifecycleEventSummary[]
@@ -153,6 +156,7 @@ export interface LifecycleItemSummary {
 
 export interface LifecycleRunSummary {
   id: string
+  runGroupId: string | null
   status: string
   executionMode: string
   startedAt: string

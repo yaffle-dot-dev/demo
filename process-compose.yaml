@@ -48,7 +48,7 @@ processes:
       failure_threshold: 3
 
   web:
-    command: "dotenvx run -o -f env/dev/base.env -- vp run dev:web"
+    command: "dotenvx run -o -f env/dev/base.env -- pnpm --dir apps/web dev"
     log_location: .dev/logs/web.log
     readiness_probe:
       http_get:
@@ -60,7 +60,7 @@ processes:
       failure_threshold: 3
 
   marketing:
-    command: "vp run dev:mlp"
+    command: "pnpm --dir apps/marketing dev"
     log_location: .dev/logs/marketing.log
     readiness_probe:
       exec:

@@ -10,6 +10,7 @@ import {
   type LifecycleEvent,
   type LifecycleItem,
   type LifecycleRun,
+  getLifecycleStateForRunGroup,
   getLatestLifecycleStateForRepoEnvironment,
   listLifecycleEventsForItems,
 } from "../db/queries/lifecycle.ts"
@@ -164,7 +165,7 @@ reposRoute.get(
           authorGithubId: null,
           authorLogin: null,
           workspaces: [],
-          runGroups: runGroupsData.map(serializeRunGroup),
+          runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
         },
       })
     }
@@ -197,7 +198,7 @@ reposRoute.get(
         authorGithubId: first.authorGithubId,
         authorLogin: first.authorLogin,
         workspaces: deploymentsWithRuns,
-        runGroups: runGroupsData.map(serializeRunGroup),
+        runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
       },
     })
   },
@@ -262,7 +263,7 @@ reposRoute.get(
                     authorGithubId: null,
                     authorLogin: null,
                     workspaces: [],
-                    runGroups: runGroupsData.map(serializeRunGroup),
+                    runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
                   },
                 })
             if (emptyPayload !== lastPayload) {
@@ -312,7 +313,7 @@ reposRoute.get(
               authorGithubId: first.authorGithubId,
               authorLogin: first.authorLogin,
               workspaces: deploymentsWithRuns,
-              runGroups: runGroupsData.map(serializeRunGroup),
+              runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
             },
           })
 
@@ -433,7 +434,7 @@ reposRoute.get(
           branch,
           headSha: latestRunGroup.headSha,
           workspaces: [],
-          runGroups: runGroupsData.map(serializeRunGroup),
+          runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
         },
       })
     }
@@ -462,7 +463,7 @@ reposRoute.get(
         branch,
         headSha: first.headSha,
         workspaces: deploymentsWithRuns,
-        runGroups: runGroupsData.map(serializeRunGroup),
+        runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
       },
     })
   },
@@ -517,7 +518,7 @@ reposRoute.get(
                     branch,
                     headSha: runGroupsData[0]?.headSha ?? "",
                     workspaces: [],
-                    runGroups: runGroupsData.map(serializeRunGroup),
+                    runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
                   },
                 })
             if (emptyPayload !== lastPayload) {
@@ -564,7 +565,7 @@ reposRoute.get(
               branch,
               headSha: first.headSha,
               workspaces: deploymentsWithRuns,
-              runGroups: runGroupsData.map(serializeRunGroup),
+              runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
             },
           })
 
@@ -689,6 +690,7 @@ type SerializedLifecycleItem = {
   summary: string | null
   reason: string | null
   metadata: Record<string, unknown>
+  destinationUrl: string
   startedAt: string | null
   finishedAt: string | null
   events: SerializedLifecycleEvent[]
@@ -697,6 +699,7 @@ type SerializedLifecycleItem = {
 type SerializedEnvironmentLifecycle = {
   run: {
     id: string
+    runGroupId: string | null
     status: string
     executionMode: string
     startedAt: string
@@ -751,7 +754,7 @@ async function buildEnvironmentSnapshotData(params: {
 
   const deployments = filterDeploymentsByHeadSha(allDeployments, params.headSha)
   const runGroupsData = filterRunGroupsByHeadSha(allRunGroups, params.headSha)
-  const serializedRunGroups = runGroupsData.map(serializeRunGroup)
+  const serializedRunGroups = await serializeRunGroupsWithLifecycle(runGroupsData)
 
   if (deployments.length === 0) {
     if (runGroupsData.length === 0) {
@@ -944,6 +947,7 @@ function serializeEnvironmentLifecycle(
   return {
     run: {
       id: run.id,
+      runGroupId: run.runGroupId,
       status: run.status,
       executionMode: run.executionMode,
       startedAt: run.startedAt.toISOString(),
@@ -966,6 +970,7 @@ function serializeLifecycleItem(item: LifecycleItem, events: LifecycleEvent[]): 
     summary: item.summary ?? null,
     reason: item.reason ?? null,
     metadata: item.metadata as Record<string, unknown>,
+    destinationUrl: item.destinationUrl,
     startedAt: item.startedAt?.toISOString() ?? null,
     finishedAt: item.finishedAt?.toISOString() ?? null,
     events: events.map((event) => ({
@@ -1478,15 +1483,37 @@ interface SerializedRunGroup {
   headSha: string
   selectedWorkspacePaths: string[]
   trigger: string
+  triggeredByLogin: string | null
   status: string
   dependencyGraph: SerializedDependencyGraph | null
   systemError: SerializedSystemError | null
+  environmentLifecycle?: SerializedEnvironmentLifecycle | null
   createdAt: string
   startedAt: string | null
   completedAt: string | null
 }
 
-function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
+async function serializeRunGroupsWithLifecycle(runGroups: RunGroup[]): Promise<SerializedRunGroup[]> {
+  return Promise.all(
+    runGroups.map(async (runGroup) => {
+      const lifecycleState = await getLifecycleStateForRunGroup(runGroup.id)
+      const lifecycleEvents = lifecycleState
+        ? await listLifecycleEventsForItems(lifecycleState.items.map((item) => item.id))
+        : []
+      return serializeRunGroup(
+        runGroup,
+        lifecycleState
+          ? serializeEnvironmentLifecycle(lifecycleState.run, lifecycleState.items, lifecycleEvents)
+          : null,
+      )
+    }),
+  )
+}
+
+function serializeRunGroup(
+  rg: RunGroup,
+  environmentLifecycle?: SerializedEnvironmentLifecycle | null,
+): SerializedRunGroup {
   const rawGraph = rg.dependencyGraph as (SerializedDependencyGraph & { systemError?: SerializedSystemError }) | null
 
   return {
@@ -1499,6 +1526,7 @@ function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
       ? rg.selectedWorkspacePaths.filter((value): value is string => typeof value === "string")
       : [],
     trigger: rg.trigger,
+    triggeredByLogin: rg.triggeredByLogin,
     status: rg.status,
     dependencyGraph: rawGraph
       ? {
@@ -1507,6 +1535,7 @@ function serializeRunGroup(rg: RunGroup): SerializedRunGroup {
         }
       : null,
     systemError: rawGraph?.systemError ?? null,
+    environmentLifecycle,
     createdAt: rg.createdAt.toISOString(),
     startedAt: rg.startedAt?.toISOString() ?? null,
     completedAt: rg.completedAt?.toISOString() ?? null,

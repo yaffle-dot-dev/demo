@@ -296,6 +296,7 @@
     hasNewerRunGroup={stream.hasNewerRunGroup}
     latestHeadSha={latestRunGroupSha}
     onSwitchToLatest={stream.switchToLatest}
+    onSelectRunGroup={stream.pinToRunGroup}
     {canManageConnections}
     {runViewStartMs}
     runViewCorrelation={{ runViewSessionId, pageViewId }}

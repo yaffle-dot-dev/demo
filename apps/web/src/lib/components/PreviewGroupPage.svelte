@@ -2,7 +2,7 @@
   import { page } from "$app/stores"
   import { goto } from "$app/navigation"
   import { base } from "$app/paths"
-  import { untrack } from "svelte"
+  import { tick, untrack } from "svelte"
   import type {
     EnvironmentLifecycleSummary,
     LifecycleItemSummary,
@@ -41,7 +41,6 @@
   import {
     buildPreviewDag,
     type PreviewDagNode,
-    type PreviewLifecycleDagNode,
   } from "$lib/lifecycle-dag"
   import { deriveLifecycleAggregateStatus } from "$lib/lifecycle-conditions"
   import { computeCliAlignedColumns } from "$lib/dag-layout-cli"
@@ -68,6 +67,8 @@
     latestHeadSha?: string | null
     /** Callback to unpin and switch to latest run group */
     onSwitchToLatest?: () => void
+    /** Callback to pin and show a specific run group */
+    onSelectRunGroup?: (runGroupId: string) => void
     /** Whether current user can manage org connections */
     canManageConnections?: boolean
     /** Navigation start time for first-render timing */
@@ -103,6 +104,7 @@
   const hasNewerRunGroup = $derived(props.hasNewerRunGroup ?? false)
   const latestHeadSha = $derived(props.latestHeadSha ?? null)
   const onSwitchToLatest = $derived(props.onSwitchToLatest ?? null)
+  const onSelectRunGroup = $derived(props.onSelectRunGroup ?? null)
   const canManageConnections = $derived(props.canManageConnections ?? false)
   const runViewStartMs = $derived(props.runViewStartMs ?? null)
   const runViewCorrelation = $derived(props.runViewCorrelation ?? null)
@@ -296,7 +298,42 @@
   const isViewingLatest = $derived(isLatestRunGroup)
 
   const activeEnvironmentLifecycle = $derived(
-    isLatestRunGroup ? environmentLifecycle : null,
+    viewedRunGroup
+      ? viewedRunGroup.environmentLifecycle ?? null
+      : isLatestRunGroup ? environmentLifecycle : null
+  )
+
+  let lifecyclePhasePresence = $state<Record<string, string[]>>({})
+
+  $effect(() => {
+    const next = new Map(
+      Object.entries(lifecyclePhasePresence).map(([workspacePath, phases]) => [
+        workspacePath,
+        new Set(phases),
+      ]),
+    )
+
+    const knownLifecycles = [
+      environmentLifecycle,
+      ...runGroups.map((runGroup) => runGroup.environmentLifecycle ?? null),
+      activeEnvironmentLifecycle,
+    ]
+
+    for (const lifecycle of knownLifecycles) {
+      for (const item of lifecycle?.items ?? []) {
+        const phases = next.get(item.workspacePath) ?? new Set<string>()
+        phases.add(item.phase)
+        next.set(item.workspacePath, phases)
+      }
+    }
+
+    lifecyclePhasePresence = Object.fromEntries(
+      [...next.entries()].map(([workspacePath, phases]) => [workspacePath, [...phases]]),
+    )
+  })
+
+  const lifecycleStatusStale = $derived(
+    activeEnvironmentLifecycle?.run.runGroupId !== viewedRunGroup?.id,
   )
 
   const isManualScopedRunGroup = $derived(
@@ -323,13 +360,7 @@
   })
 
   const dagNodeStatuses = $derived.by((): Record<string, string> => {
-    const statuses: Record<string, string> = { ...workspaceDisplayStatuses }
-
-    for (const item of activeEnvironmentLifecycle?.items ?? []) {
-      statuses[`${item.workspacePath}::${item.phase}::${item.key}`] = item.state
-    }
-
-    return statuses
+    return { ...workspaceDisplayStatuses }
   })
 
   const previewDag = $derived.by(() => buildPreviewDag({
@@ -340,6 +371,29 @@
 
   const dagNodes = $derived(previewDag.nodes)
   const dagDependencyGraph = $derived(previewDag.dependencyGraph)
+
+  function lifecyclePhaseStatus(items: LifecycleItemSummary[]): string {
+    if (items.length === 0 || lifecycleStatusStale) return "unknown"
+
+    const states = new Set(items.map((item) => item.state))
+    for (const state of ["failed", "blocked", "running", "pending", "degraded", "succeeded"]) {
+      if (states.has(state)) return state
+    }
+    return "unknown"
+  }
+
+  const lifecyclePhaseStatuses = $derived.by((): Record<string, Record<string, string>> => {
+    const statuses: Record<string, Record<string, string>> = {}
+    for (const node of dagNodes) {
+      const activationItems = node.lifecycleItems.filter((item) => item.phase === "activation")
+      const verificationItems = node.lifecycleItems.filter((item) => item.phase === "verification")
+      statuses[node.workspacePath] = {
+        activation: lifecyclePhaseStatus(activationItems),
+        verification: lifecyclePhaseStatus(verificationItems),
+      }
+    }
+    return statuses
+  })
 
   // Helper: check if a workspace has an actively running run group status.
   function isWorkspaceActivelyRunning(ws: WorkspaceWithRuns): boolean {
@@ -483,45 +537,18 @@
     return tabId === "plan" || tabId === "apply"
   }
 
-  function preferredSpotlightTab(): TabId | null {
-    if (isTerminalTab(activeTab)) {
-      return activeTab
-    }
-
-    if (latestApply && !applyIsStale) {
-      if (latestApply.status === "running" || latestApply.status === "pending") {
-        return "apply"
-      }
-    }
-
-    if (latestPlan?.status === "running") {
-      return "plan"
-    }
-
-    if (latestApply && !applyIsStale) {
-      return "apply"
-    }
-
-    if (latestPlan) {
-      return "plan"
-    }
-
-    return null
-  }
-
   function enterDetailSpotlight(): void {
     focusPanel("details")
-
-    const preferredTab = preferredSpotlightTab()
-    if (preferredTab) {
-      activeTab = preferredTab
-    }
-
+    scrollYBeforeSpotlight = window.scrollY
     detailSpotlight = true
   }
 
-  function exitDetailSpotlight(): void {
+  async function exitDetailSpotlight(): Promise<void> {
     detailSpotlight = false
+    await tick()
+    requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollYBeforeSpotlight, left: window.scrollX, behavior: "instant" })
+    })
   }
 
   function toggleDetailSpotlight(): void {
@@ -715,13 +742,17 @@
     }
   }
 
-  const selectedLifecycleNode = $derived(
-    selectedDagNode?.kind === "lifecycle"
-      ? selectedDagNode as PreviewLifecycleDagNode
-      : null,
+  const selectedWorkspaceLifecycleItems = $derived(
+    selectedDagNode?.kind === "workspace" ? selectedDagNode.lifecycleItems : [],
   )
 
-  const selectedLifecycleItem = $derived(selectedLifecycleNode?.item ?? null)
+  const selectedActivationItems = $derived(
+    selectedWorkspaceLifecycleItems.filter((item) => item.phase === "activation"),
+  )
+
+  const selectedVerificationItems = $derived(
+    selectedWorkspaceLifecycleItems.filter((item) => item.phase === "verification"),
+  )
 
   function humanizeLifecycleKey(key: string): string {
     return key
@@ -735,8 +766,8 @@
   }
 
   function lifecyclePhaseLabel(phase: string): string {
-    if (phase === "activation") return "Activation Gate"
-    if (phase === "verification") return "Verification Gate"
+    if (phase === "activation") return "Activation"
+    if (phase === "verification") return "Verification"
     return "Lifecycle"
   }
 
@@ -765,7 +796,7 @@
 
   function lifecycleEventLabel(eventType: string): string {
     switch (eventType) {
-      case "created": return "Gate armed"
+      case "created": return "Item created"
       case "dispatched": return "Sent outward"
       case "dispatch_failed": return "Dispatch failed"
       case "blocked": return "Policy blocked"
@@ -790,7 +821,7 @@
     }
 
     if (event.eventType === "dispatched") {
-      return "Yaffle handed the gate to the external system"
+      return "Yaffle handed the lifecycle item to the external system"
     }
 
     if (event.eventType === "dispatch_failed") {
@@ -800,7 +831,7 @@
     }
 
     if (event.eventType === "created") {
-      return "Yaffle is ready to receive the external ready signal"
+      return "Yaffle is ready to receive the external lifecycle signal"
     }
 
     return Object.keys(event.payload).length > 0
@@ -810,10 +841,10 @@
 
   function lifecycleNarrative(item: LifecycleItemSummary): string {
     if (item.phase === "verification") {
-      return `This gate sits after ${item.workspacePath} and proves the preview is acceptable before you trust it.`
+      return `This verification item belongs to ${item.workspacePath} and contributes to whether the environment is acceptable.`
     }
 
-    return `This gate sits after ${item.workspacePath} and turns finished infra into a preview people can actually use.`
+    return `This activation item belongs to ${item.workspacePath} and contributes to whether the environment is usable or acceptable.`
   }
 
   function lifecycleScopeNarrative(item: LifecycleItemSummary): string {
@@ -888,12 +919,13 @@
   })
 
   // Tab state
-  type TabId = "plan" | "apply" | "outputs" | "timeline"
-  let activeTab = $state<TabId>("plan")
+  type TabId = "overview" | "plan" | "apply" | "outputs" | "activation" | "verification" | "runs" | "timeline"
+  let activeTab = $state<TabId>("overview")
   type PanelFocus = "dag" | "details"
   let panelFocus = $state<PanelFocus>("dag")
   let detailSpotlight = $state(false)
   let showShortcutsOverlay = $state(false)
+  let scrollYBeforeSpotlight = $state(0)
 
   // Terminal expanded state - collapsed by default, persisted to localStorage
   const TERMINAL_EXPANDED_KEY = "yaffle:terminal-expanded"
@@ -926,6 +958,11 @@
 
   // Visible runs for the selected workspace (already filtered by run group)
   const visibleRuns = $derived(selectedWorkspace?.runs ?? [])
+  const selectedWorkspaceAllRuns = $derived(
+    selectedWorkspace
+      ? workspaces.find((workspace) => workspace.preview.workspacePath === selectedWorkspace.preview.workspacePath)?.runs ?? visibleRuns
+      : [],
+  )
 
   // Get latest plan/apply from the visible (possibly filtered) runs
   const latestPlan = $derived(
@@ -984,7 +1021,7 @@
   })
 
   const tabs = $derived.by((): Tab[] => {
-    const result: Tab[] = []
+    const result: Tab[] = [{ id: "overview", label: "Overview" }]
     if (showTimeline) {
       result.push({ id: "timeline", label: "Timeline" })
     }
@@ -996,6 +1033,15 @@
     }
     if (hasOutputs && !applyIsStale && !isWorkspaceInFlight) {
       result.push({ id: "outputs", label: "Outputs" })
+    }
+    if (selectedActivationItems.length > 0) {
+      result.push({ id: "activation", label: "Activation" })
+    }
+    if (selectedVerificationItems.length > 0) {
+      result.push({ id: "verification", label: "Verification" })
+    }
+    if (runGroups.length > 0) {
+      result.push({ id: "runs", label: "Runs" })
     }
     return result
   })
@@ -1030,6 +1076,300 @@
 
     return null
   })
+
+  function lifecycleTabItems(tab: TabId): LifecycleItemSummary[] {
+    if (tab === "activation") return selectedActivationItems
+    if (tab === "verification") return selectedVerificationItems
+    return []
+  }
+
+  type LifecycleVector = Record<"pending" | "running" | "succeeded" | "degraded" | "blocked" | "failed", number>
+
+  const lifecycleStates: Array<keyof LifecycleVector> = ["pending", "running", "succeeded", "degraded", "blocked", "failed"]
+
+  function buildLifecycleVector(items: LifecycleItemSummary[]): LifecycleVector {
+    const vector: LifecycleVector = {
+      pending: 0,
+      running: 0,
+      succeeded: 0,
+      degraded: 0,
+      blocked: 0,
+      failed: 0,
+    }
+    for (const item of items) {
+      if (item.state in vector) {
+        vector[item.state as keyof LifecycleVector] += 1
+      }
+    }
+    return vector
+  }
+
+  function vectorSummary(vector: LifecycleVector): string {
+    const total = lifecycleStates.reduce((sum, state) => sum + vector[state], 0)
+    if (total === 0) return "idle"
+
+    const populated = lifecycleStates.filter((state) => vector[state] > 0)
+    return populated.length === 1 ? populated[0] : "mixed"
+  }
+
+  const selectedLifecycleVectors = $derived.by(() => ({
+    activation: buildLifecycleVector(selectedActivationItems),
+    verification: buildLifecycleVector(selectedVerificationItems),
+  }))
+
+  function conditionFromVector(vector: LifecycleVector, allowDegraded: boolean): {
+    met: boolean
+    label: string
+    tone: "good" | "warn" | "bad" | "muted"
+    reason: string
+  } {
+    if (vector.failed > 0 || vector.blocked > 0) {
+      return {
+        met: false,
+        label: "unmet",
+        tone: "bad",
+        reason: vector.failed > 0 ? "Required lifecycle work failed." : "Required lifecycle work is blocked.",
+      }
+    }
+    if (vector.running > 0 || vector.pending > 0) {
+      return {
+        met: false,
+        label: "unmet",
+        tone: "warn",
+        reason: "Required lifecycle work is still running.",
+      }
+    }
+    if (!allowDegraded && vector.degraded > 0) {
+      return {
+        met: false,
+        label: "unmet",
+        tone: "warn",
+        reason: "Required lifecycle work is degraded.",
+      }
+    }
+    return {
+      met: true,
+      label: "met",
+      tone: vector.degraded > 0 ? "warn" : "good",
+      reason: vectorSummary(vector) === "idle" ? "No scoped lifecycle requirements." : "Required lifecycle work passed.",
+    }
+  }
+
+  function sumVectors(...vectors: LifecycleVector[]): LifecycleVector {
+    const result = buildLifecycleVector([])
+    for (const vector of vectors) {
+      for (const state of lifecycleStates) {
+        result[state] += vector[state]
+      }
+    }
+    return result
+  }
+
+  const selectedSemanticOverview = $derived.by(() => {
+    const activation = selectedLifecycleVectors.activation
+    const verification = selectedLifecycleVectors.verification
+    const usableVector = buildLifecycleVector(
+      selectedWorkspaceLifecycleItems.filter((item) => item.scopes.includes("usable")),
+    )
+    const acceptableVector = buildLifecycleVector(
+      selectedWorkspaceLifecycleItems.filter((item) => item.scopes.includes("acceptable")),
+    )
+    const infraApplied = latestApply?.status === "success" || latestApply?.status === "skipped"
+    const infraRunning = latestApply?.status === "running" || selectedWorkspaceDisplayStatus === "applying"
+    const planRunning = latestPlan?.status === "running" || selectedWorkspaceDisplayStatus === "planning"
+    const planFailed = latestPlan?.status === "failed"
+    const applyFailed = latestApply?.status === "failed"
+    const hasOutputFacts = displayOutputs != null && Object.keys(displayOutputs as object).length > 0
+
+    return {
+      materialization: infraRunning
+        ? {
+            label: "materializing",
+            tone: "warn" as const,
+            reason: "Workspace materialization is in progress.",
+          }
+        : infraApplied
+          ? {
+              label: "present",
+              tone: "good" as const,
+              reason: "Workspace resources are present.",
+            }
+          : applyFailed
+            ? {
+                label: "partially_present",
+                tone: "bad" as const,
+                reason: "Workspace materialization is incomplete.",
+              }
+            : {
+                label: "absent",
+                tone: "muted" as const,
+                reason: "No materialized resources are visible for this run.",
+              },
+      freshness: planRunning || infraRunning
+        ? {
+            label: "in_flux",
+            tone: "warn" as const,
+            reason: "Dependency truth is changing.",
+          }
+        : planFailed || applyFailed
+          ? {
+              label: "stale",
+              tone: "bad" as const,
+              reason: "This workspace does not have trusted current truth.",
+            }
+          : hasOutputFacts && !applyIsStale
+            ? {
+                label: "fresh",
+                tone: "good" as const,
+                reason: "Workspace reflects current dependency truth.",
+              }
+            : {
+                label: "unknown",
+                tone: "muted" as const,
+                reason: "Freshness is not known for this workspace.",
+              },
+      readiness: conditionFromVector(usableVector, true),
+      acceptability: conditionFromVector(
+        acceptableVector.pending + acceptableVector.running + acceptableVector.succeeded + acceptableVector.degraded + acceptableVector.blocked + acceptableVector.failed > 0
+          ? acceptableVector
+          : sumVectors(activation, verification),
+        false,
+      ),
+    }
+  })
+
+  const selectedSemanticCards = $derived([
+    {
+      title: "Materialization",
+      item: selectedSemanticOverview.materialization,
+    },
+    {
+      title: "Freshness",
+      item: selectedSemanticOverview.freshness,
+    },
+    {
+      title: "Readiness",
+      item: selectedSemanticOverview.readiness,
+    },
+    {
+      title: "Acceptability",
+      item: selectedSemanticOverview.acceptability,
+    },
+  ])
+
+  function semanticToneClass(tone: "good" | "warn" | "bad" | "muted"): string {
+    switch (tone) {
+      case "good": return "border-status-ready/25 bg-status-ready/8 text-status-ready"
+      case "warn": return "border-status-pending/25 bg-status-pending/8 text-status-pending"
+      case "bad": return "border-status-failed/25 bg-status-failed/8 text-status-failed"
+      default: return "border-border/70 bg-surface/50 text-text-dim"
+    }
+  }
+
+  function runStatusClass(status: string): string {
+    switch (status) {
+      case "success": return "text-status-ready bg-status-ready/10"
+      case "running": return "text-status-applying bg-status-applying/10"
+      case "pending": return "text-status-pending bg-status-pending/10"
+      case "failed": return "text-status-failed bg-status-failed/10"
+      case "cancelled": return "text-status-failed bg-status-failed/10"
+      case "skipped": return "text-text-dim bg-surface-overlay"
+      default: return "text-text-dim bg-surface-overlay"
+    }
+  }
+
+  function runGroupLink(runGroupId: string): string {
+    const url = new URL($page.url)
+    url.searchParams.set("runGroupId", runGroupId)
+    return url.toString()
+  }
+
+  function handleRunGroupSelect(event: MouseEvent, runGroupId: string): void {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+      return
+    }
+
+    event.preventDefault()
+    onSelectRunGroup?.(runGroupId)
+    goto(runGroupLink(runGroupId), { noScroll: true })
+  }
+
+  function formatAbsoluteLocalTime(value: string | null): string {
+    if (!value) return "-"
+
+    return new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZoneName: "short",
+    }).format(new Date(value))
+  }
+
+  function runGroupActor(runGroup: RunGroup): string {
+    if (runGroup.triggeredByLogin) return runGroup.triggeredByLogin
+    return authorLogin ?? runGroup.trigger
+  }
+
+  function runGroupTriggerLabel(runGroup: RunGroup): string {
+    return runGroup.trigger === "manual" ? "manual/local run" : `git/webhook: ${runGroup.trigger}`
+  }
+
+  function statusMark(status: string | null | undefined): string {
+    switch (status) {
+      case "success":
+      case "succeeded": return "✓"
+      case "running": return "…"
+      case "pending": return "○"
+      case "failed": return "✕"
+      case "blocked": return "!"
+      case "degraded": return "◐"
+      case "skipped": return "-"
+      default: return ""
+    }
+  }
+
+  function runGroupWorkspaceRun(runGroupId: string, runType: string): Run | null {
+    return selectedWorkspaceAllRuns.find((run) => run.runGroupId === runGroupId && run.runType === runType) ?? null
+  }
+
+  function runGroupLifecycleStatus(runGroup: RunGroup, phase: string): string | null {
+    const items = runGroup.environmentLifecycle?.items
+      .filter((item) => item.workspacePath === selectedWorkspace?.preview.workspacePath && item.phase === phase) ?? []
+    if (items.length === 0) return null
+
+    return lifecyclePhaseStatus(items)
+  }
+
+  function lifecycleExternalUrl(item: LifecycleItemSummary): string | null {
+    if (item.destinationUrl) return item.destinationUrl
+    const metadataUrl = item.metadata.url ?? item.metadata.destinationUrl ?? item.metadata.externalUrl
+    return typeof metadataUrl === "string" ? metadataUrl : null
+  }
+
+  function lifecycleLogLines(item: LifecycleItemSummary): Array<{ label: string; detail?: string; href?: string | null; at?: string | null }> {
+    const href = lifecycleExternalUrl(item)
+    const lines = [
+      {
+        label: `starting ${item.phase}`,
+        detail: item.summary ?? undefined,
+        at: item.startedAt ?? item.events[0]?.createdAt ?? null,
+      },
+      {
+        label: `${item.phase} running`,
+        detail: href ? "external lifecycle handoff" : "waiting for external lifecycle result",
+        href,
+        at: item.events.find((event) => event.eventType === "dispatched")?.createdAt ?? item.startedAt,
+      },
+      {
+        label: `${item.phase} settled: ${lifecycleStatusLabel(item.state)}`,
+        detail: item.reason ?? item.summary ?? undefined,
+        at: item.finishedAt ?? item.events.at(-1)?.createdAt ?? null,
+      },
+    ]
+
+    return lines
+  }
 
   const selectedTerminalRunId = $derived(selectedTerminalRun?.id ?? null)
   const selectedTerminalRunStreaming = $derived(selectedTerminalRun?.status === "running")
@@ -1713,7 +2053,7 @@ terraform {
           <div class="flex items-center justify-between gap-3">
             <div>
               <div class="text-sm font-medium text-text">Detail focus</div>
-              <div class="mt-1 text-xs text-text-dim">Move between timeline, plan, apply, and outputs.</div>
+              <div class="mt-1 text-xs text-text-dim">Move between timeline, plan, apply, outputs, and lifecycle details.</div>
             </div>
           </div>
 
@@ -1943,7 +2283,7 @@ terraform {
 
   <!-- Main content -->
   <div class="flex-1 flex flex-col min-h-0">
-    {#if filteredWorkspaces.length === 0 && (viewedRunGroup?.status === "scanning" || viewedRunGroup?.status === "pending")}
+    {#if isLatestRunGroup && filteredWorkspaces.length === 0 && (viewedRunGroup?.status === "scanning" || viewedRunGroup?.status === "pending")}
       <!-- Scanning state: clean centered loading -->
       <div class="flex-1 flex items-center justify-center pt-16">
         <div class="flex flex-col items-center gap-3">
@@ -1990,8 +2330,6 @@ terraform {
       >
         <div class="px-4 py-1 flex items-center justify-between">
           <div class="flex items-center gap-3">
-            <span class="text-xs text-text-dim font-medium uppercase tracking-wider">Delivery path</span>
-            <span class="text-[10px] text-text-dim">infra → activation → verification</span>
             {#if isManualScopedRunGroup}
               <span class="text-[10px] text-text-dim">
                 scope: {viewedRunGroup?.selectedWorkspacePaths?.length ?? 0} / {displayDependencyGraph?.workspaces.length ?? filteredWorkspaces.length} workspaces · dim nodes reuse current env state
@@ -2021,13 +2359,16 @@ terraform {
             {/if}
           </div>
         </div>
-        <DagVisualization
-          nodes={dagNodes}
-          dependencyGraph={dagDependencyGraph}
-          nodeStatuses={dagNodeStatuses}
-          {selectedPath}
-          onSelect={selectDagNode}
-        />
+          <DagVisualization
+            nodes={dagNodes}
+            dependencyGraph={dagDependencyGraph}
+            nodeStatuses={dagNodeStatuses}
+            {selectedPath}
+            onSelect={selectDagNode}
+            {lifecycleStatusStale}
+            {lifecyclePhasePresence}
+            {lifecyclePhaseStatuses}
+          />
       </div>
     {/if}
 
@@ -2092,12 +2433,9 @@ terraform {
                         {selectedWorkspaceConnectionBlockReason}
                       </div>
                     {/if}
-                    {#if selectedLifecycleNode && selectedLifecycleItem}
-                      <div
-                        class="mt-1 truncate text-[11px] text-text-dim"
-                        title={selectedLifecycleItem.summary ?? selectedLifecycleItem.reason ?? lifecycleScopeNarrative(selectedLifecycleItem)}
-                      >
-                        {lifecyclePhaseLabel(selectedLifecycleItem.phase)} {humanizeLifecycleKey(selectedLifecycleItem.key)} - {selectedLifecycleItem.summary ?? selectedLifecycleItem.reason ?? lifecycleScopeNarrative(selectedLifecycleItem)}
+                    {#if selectedActivationItems.length > 0 || selectedVerificationItems.length > 0}
+                      <div class="mt-1 truncate text-[11px] text-text-dim">
+                        activation {selectedActivationItems.length} · verification {selectedVerificationItems.length}
                       </div>
                     {/if}
                   </div>
@@ -2169,6 +2507,9 @@ terraform {
                     {selectedPath}
                     onSelect={selectDagNode}
                     compact={true}
+                    {lifecycleStatusStale}
+                    {lifecyclePhasePresence}
+                    {lifecyclePhaseStatuses}
                   />
                 </div>
               </aside>
@@ -2283,61 +2624,9 @@ terraform {
             </div>
           </div>
 
-          {#if selectedLifecycleNode && selectedLifecycleItem}
-            <div class="mx-6 mt-4 rounded-xl border border-yaffle-500/20 bg-yaffle-500/8 overflow-hidden">
-              <div class="px-4 py-3 border-b border-yaffle-500/15 flex items-center justify-between gap-3">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span class="text-xs text-yaffle-300 px-1.5 py-0.5 bg-yaffle-500/10 rounded whitespace-nowrap">
-                    {lifecyclePhaseLabel(selectedLifecycleItem.phase)}
-                  </span>
-                  <span class="font-mono text-sm text-text truncate">{humanizeLifecycleKey(selectedLifecycleItem.key)}</span>
-                  <span class="text-xs px-1.5 py-0.5 rounded whitespace-nowrap {lifecycleStatusClass(selectedLifecycleItem.state)}">
-                    {lifecycleStatusLabel(selectedLifecycleItem.state)}
-                  </span>
-                </div>
-                <div class="text-[11px] text-text-dim whitespace-nowrap">
-                  {selectedLifecycleItem.events.length} events
-                </div>
-              </div>
-              <div class="px-4 py-3 border-b border-border/70">
-                <div class="text-sm text-text">{lifecycleNarrative(selectedLifecycleItem)}</div>
-                <div class="mt-2 text-xs text-text-dim">
-                  {selectedLifecycleItem.summary ?? selectedLifecycleItem.reason ?? lifecycleScopeNarrative(selectedLifecycleItem)}
-                </div>
-              </div>
-              {#if selectedLifecycleItem.events.length > 0}
-                <div class="divide-y divide-border/70">
-                  {#each selectedLifecycleItem.events as event (event.id)}
-                    <div class="px-4 py-3 flex items-start justify-between gap-4">
-                      <div>
-                        <div class="text-sm text-text">{lifecycleEventLabel(event.eventType)}</div>
-                        <div class="mt-1 text-xs text-text-dim">{lifecycleEventSummary(event)}</div>
-                      </div>
-                      <div class="text-[11px] text-text-dim whitespace-nowrap">{formatRelativeTime(event.createdAt)}</div>
-                    </div>
-                  {/each}
-                </div>
-              {:else}
-                <div class="px-4 py-6 text-sm text-text-dim">
-                  No external results have landed yet.
-                </div>
-              {/if}
-            </div>
-          {/if}
         {/if}
 
-        {#if isQueuedWorkspace}
-          <div class="flex flex-col items-center justify-center h-48 text-center">
-            <svg class="w-10 h-10 text-text-dim/50 mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <circle cx="12" cy="12" r="10" stroke-dasharray="4 4"/>
-              <path d="M12 6v6l4 2" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <p class="text-sm text-text-muted mb-1">{selectedWorkspaceWaitingLabel}</p>
-            <p class="text-xs text-text-dim/75 max-w-sm">
-              {selectedWorkspaceWaitingMessage}
-            </p>
-          </div>
-        {:else if tabs.length > 0}
+        {#if tabs.length > 0}
           <!-- Tabs subbar -->
           <div class="flex-shrink-0 flex items-center justify-between border-b border-border px-6">
             <div class="flex gap-4">
@@ -2362,7 +2651,7 @@ terraform {
               {/each}
             </div>
             <!-- Expand/collapse button (only show for terminal tabs) -->
-            {#if !detailSpotlight && activeTab !== "outputs" && activeTab !== "timeline"}
+            {#if !detailSpotlight && isTerminalTab(activeTab)}
               <button
                 class="p-1.5 text-text-muted hover:text-text transition-colors rounded hover:bg-surface-overlay"
                 onclick={toggleTerminalExpanded}
@@ -2382,7 +2671,22 @@ terraform {
           </div>
 
           <!-- Tab content area -->
-          {#if activeTab === "timeline"}
+          {#if activeTab === "overview"}
+            <div class="flex-1 overflow-auto p-6">
+              <div class="grid gap-px overflow-hidden rounded-xl border border-border/80 bg-border/60 md:grid-cols-2 xl:grid-cols-4">
+                {#each selectedSemanticCards as card}
+                  <div class="bg-surface px-4 py-4">
+                    <div class="flex items-center justify-between gap-3">
+                      <div class="text-[10px] uppercase tracking-[0.2em] text-text-dim">{card.title}</div>
+                      <div class="h-2 w-2 rounded-full {semanticToneClass(card.item.tone)}"></div>
+                    </div>
+                    <div class="mt-3 font-mono text-lg text-text">{card.item.label}</div>
+                    <p class="mt-3 text-sm leading-6 text-text-muted">{card.item.reason}</p>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {:else if activeTab === "timeline"}
             <div class="flex-1 overflow-auto p-4">
               <ResourceTimeline
                 liveSpans={liveSpans}
@@ -2394,6 +2698,126 @@ terraform {
           {:else if activeTab === "outputs" && hasOutputs && !isWorkspaceInFlight}
             <div class="flex-1 overflow-auto p-6">
               <OutputsView outputs={displayOutputs as Record<string, {value: unknown, sensitive?: boolean}> | null} />
+            </div>
+          {:else if activeTab === "activation" || activeTab === "verification"}
+            {@const lifecycleItems = lifecycleTabItems(activeTab)}
+            <div class="flex-1 overflow-auto p-6">
+              {#if lifecycleItems.length > 0}
+                <div class="space-y-6 font-mono text-sm">
+                  {#each lifecycleItems as item (item.id)}
+                    <div>
+                      <div class="mb-3 flex items-center gap-3 text-xs uppercase tracking-[0.18em] text-text-dim">
+                        <span>{lifecyclePhaseLabel(item.phase)}</span>
+                        <span class="font-mono text-text">{humanizeLifecycleKey(item.key)}</span>
+                        <span class="normal-case tracking-normal {lifecycleStatusClass(item.state)}">{lifecycleStatusLabel(item.state)}</span>
+                      </div>
+                      <div class="rounded-xl border border-border/70 bg-black/20 px-4 py-3">
+                        {#each lifecycleLogLines(item) as line}
+                          <div class="grid grid-cols-[7rem_1fr] gap-4 py-1.5">
+                            <span class="text-text-dim">{line.at ? formatRelativeTime(line.at) : "--"}</span>
+                            <span class="text-text">
+                              {line.label}
+                              {#if line.href}
+                                <a class="ml-2 text-yaffle-400 hover:text-yaffle-300" href={line.href} target="_blank" rel="noopener noreferrer">open</a>
+                              {/if}
+                              {#if line.detail}
+                                <span class="ml-2 text-text-dim">{line.detail}</span>
+                              {/if}
+                            </span>
+                          </div>
+                        {/each}
+                        {#each item.events as event (event.id)}
+                          <div class="grid grid-cols-[7rem_1fr] gap-4 py-1.5 text-text-muted">
+                            <span class="text-text-dim">{formatRelativeTime(event.createdAt)}</span>
+                            <span>{lifecycleEventLabel(event.eventType)} <span class="text-text-dim">{lifecycleEventSummary(event)}</span></span>
+                          </div>
+                        {/each}
+                        <div class="mt-2 border-t border-border/60 pt-2 text-xs text-text-dim">
+                          scopes: {item.scopes.length > 0 ? item.scopes.join(", ") : "advisory"}
+                        </div>
+                      </div>
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <div class="text-text-dim text-sm text-center py-8">
+                  No {activeTab} lifecycle items for this workspace.
+                </div>
+              {/if}
+            </div>
+          {:else if activeTab === "runs"}
+            <div class="flex-1 overflow-auto p-6">
+              {#if runGroups.length > 0}
+                <div class="overflow-hidden rounded-xl border border-border/70">
+                  <div class="grid grid-cols-[1rem_13.5rem_5.5rem_minmax(8rem,1fr)_3.5rem_3.5rem_5.75rem_5.75rem] gap-3 border-b border-border/70 bg-surface/70 px-4 py-2 text-xs uppercase tracking-[0.16em] text-text-dim">
+                    <span></span>
+                    <span>date</span>
+                    <span>commit</span>
+                    <span>triggered by</span>
+                    <span>plan</span>
+                    <span>apply</span>
+                    <span>activation</span>
+                    <span>verification</span>
+                  </div>
+                  <div class="divide-y divide-border/70">
+                    {#each runGroups as runGroup (runGroup.id)}
+                      {@const plan = runGroupWorkspaceRun(runGroup.id, "plan")}
+                      {@const apply = runGroupWorkspaceRun(runGroup.id, "apply")}
+                        <div class="grid grid-cols-[1rem_13.5rem_5.5rem_minmax(8rem,1fr)_3.5rem_3.5rem_5.75rem_5.75rem] items-center gap-3 px-4 py-3 font-mono text-sm {runGroup.id === viewedRunGroup?.id ? 'bg-yaffle-500/5' : ''}">
+                          <span class="flex h-4 items-center justify-center" title={runGroup.id === viewedRunGroup?.id ? "currently shown" : undefined}>
+                            {#if runGroup.id === viewedRunGroup?.id}
+                              <span class="h-2 w-2 rounded-full bg-yaffle-400 shadow-[0_0_12px_rgba(109,211,255,0.55)]"></span>
+                            {/if}
+                          </span>
+                          <a
+                            class="text-text hover:text-yaffle-400"
+                            href={runGroupLink(runGroup.id)}
+                            onclick={(event) => handleRunGroupSelect(event, runGroup.id)}
+                          >
+                          {formatAbsoluteLocalTime(runGroup.startedAt ?? runGroup.createdAt)}
+                        </a>
+                        <a
+                          class="text-text-dim hover:text-yaffle-400"
+                          href={githubCommitUrl({ org, repo }, runGroup.headSha)}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                        >
+                          {shortSha(runGroup.headSha)}
+                        </a>
+                        <span
+                          class="flex min-w-0 items-center gap-2 text-text-dim"
+                          title={`${runGroupActor(runGroup)} (${runGroupTriggerLabel(runGroup)})`}
+                        >
+                          {#if runGroup.trigger === "manual"}
+                            <svg class="h-3.5 w-3.5 shrink-0 text-text-faint" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                              <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="1.5" />
+                              <path d="M4.75 6.25 6.75 8 4.75 9.75" />
+                              <path d="M8.5 10.25h3" />
+                            </svg>
+                          {:else}
+                            <svg class="h-3.5 w-3.5 shrink-0 text-text-faint" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                              <circle cx="4" cy="4" r="1.5" />
+                              <circle cx="12" cy="4" r="1.5" />
+                              <circle cx="8" cy="12" r="1.5" />
+                              <path d="M5.35 4.65 7.1 10.6" />
+                              <path d="M10.65 4.65 8.9 10.6" />
+                            </svg>
+                          {/if}
+                          <span class="truncate">{runGroupActor(runGroup)}</span>
+                        </span>
+                        <span class={runStatusClass(plan?.status ?? "")}>{statusMark(plan?.status)}</span>
+                        <span class={runStatusClass(apply?.status ?? "")}>{statusMark(apply?.status)}</span>
+                        <span class={lifecycleStatusClass(runGroupLifecycleStatus(runGroup, "activation") ?? "")}>{statusMark(runGroupLifecycleStatus(runGroup, "activation"))}</span>
+                        <span class={lifecycleStatusClass(runGroupLifecycleStatus(runGroup, "verification") ?? "")}>{statusMark(runGroupLifecycleStatus(runGroup, "verification"))}</span>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              {:else}
+                <div class="text-text-dim text-sm text-center py-8">
+                  No runs recorded for this workspace in the current view.
+                </div>
+              {/if}
             </div>
           {:else if (activeTab === "plan" && latestPlan) || (activeTab === "apply" && latestApply)}
             <!-- Terminal connected directly to tabs bar -->
@@ -2422,7 +2846,7 @@ terraform {
           {/if}
         {/if}
       {:else}
-        <div class="flex-1 flex flex-col items-center justify-center text-text-dim gap-2">
+        <div class="flex-1 flex flex-col min-h-0 text-text-dim">
           {#if systemError}
             <div class="w-full max-w-4xl px-6 py-8">
               <div class="rounded-xl border border-status-failed/30 bg-status-failed/8 overflow-hidden">
@@ -2449,13 +2873,82 @@ terraform {
               </div>
             </div>
           {:else if filteredWorkspaces.length === 0}
-            <svg class="w-12 h-12 text-text-dim/50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-              <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" stroke-linecap="round" stroke-linejoin="round"/>
-            </svg>
-            <p class="text-sm">No runs yet</p>
-            <p class="text-xs text-text-dim/75">Runs will appear here when triggered by a push or PR event.</p>
+            <div class="flex-shrink-0 flex items-center justify-between border-b border-border px-6">
+              <div class="flex gap-4">
+                <button class="py-2 text-sm font-medium transition-colors border-b-2 -mb-px border-yaffle-500 text-text">
+                  Runs
+                </button>
+              </div>
+            </div>
+            <div class="flex-1 overflow-auto p-6">
+              <div class="rounded-xl border border-border/80 bg-surface/60 overflow-hidden">
+                <div class="border-b border-border/70 px-5 py-4">
+                  <div class="text-sm font-medium text-text">No workspace data for this run</div>
+                  <p class="mt-1 text-xs text-text-dim">
+                    This run group has no workspace records to inspect. Select another run below or switch back to latest.
+                  </p>
+                </div>
+                <div class="grid grid-cols-[1rem_13.5rem_5.5rem_minmax(8rem,1fr)_6rem] gap-3 border-b border-border/70 bg-surface/70 px-4 py-2 text-xs uppercase tracking-[0.16em] text-text-dim">
+                  <span></span>
+                  <span>date</span>
+                  <span>commit</span>
+                  <span>triggered by</span>
+                  <span>status</span>
+                </div>
+                <div class="divide-y divide-border/70">
+                  {#each runGroups as runGroup (runGroup.id)}
+                    <div class="grid grid-cols-[1rem_13.5rem_5.5rem_minmax(8rem,1fr)_6rem] items-center gap-3 px-4 py-3 font-mono text-sm {runGroup.id === viewedRunGroup?.id ? 'bg-yaffle-500/5' : ''}">
+                      <span class="flex h-4 items-center justify-center" title={runGroup.id === viewedRunGroup?.id ? "currently shown" : undefined}>
+                        {#if runGroup.id === viewedRunGroup?.id}
+                          <span class="h-2 w-2 rounded-full bg-yaffle-400 shadow-[0_0_12px_rgba(109,211,255,0.55)]"></span>
+                        {/if}
+                      </span>
+                      <a
+                        class="text-text hover:text-yaffle-400"
+                        href={runGroupLink(runGroup.id)}
+                        onclick={(event) => handleRunGroupSelect(event, runGroup.id)}
+                      >
+                        {formatAbsoluteLocalTime(runGroup.startedAt ?? runGroup.createdAt)}
+                      </a>
+                      <a
+                        class="text-text-dim hover:text-yaffle-400"
+                        href={githubCommitUrl({ org, repo }, runGroup.headSha)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        {shortSha(runGroup.headSha)}
+                      </a>
+                      <span
+                        class="flex min-w-0 items-center gap-2 text-text-dim"
+                        title={`${runGroupActor(runGroup)} (${runGroupTriggerLabel(runGroup)})`}
+                      >
+                        {#if runGroup.trigger === "manual"}
+                          <svg class="h-3.5 w-3.5 shrink-0 text-text-faint" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <rect x="2.25" y="3.25" width="11.5" height="9.5" rx="1.5" />
+                            <path d="M4.75 6.25 6.75 8 4.75 9.75" />
+                            <path d="M8.5 10.25h3" />
+                          </svg>
+                        {:else}
+                          <svg class="h-3.5 w-3.5 shrink-0 text-text-faint" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                            <circle cx="4" cy="4" r="1.5" />
+                            <circle cx="12" cy="4" r="1.5" />
+                            <circle cx="8" cy="12" r="1.5" />
+                            <path d="M5.35 4.65 7.1 10.6" />
+                            <path d="M10.65 4.65 8.9 10.6" />
+                          </svg>
+                        {/if}
+                        <span class="truncate">{runGroupActor(runGroup)}</span>
+                      </span>
+                      <span class={runStatusClass(runGroup.status)}>{runGroup.status}</span>
+                    </div>
+                  {/each}
+                </div>
+              </div>
+            </div>
           {:else}
-            <p>Select a workspace or gate to inspect the delivery path.</p>
+            <div class="flex-1 flex items-center justify-center">
+              <p>Select a workspace to inspect the delivery path.</p>
+            </div>
           {/if}
         </div>
       {/if}

@@ -2,7 +2,7 @@ import { describe, expect, test } from "@yaffle/test"
 
 import type { DependencyGraph, EnvironmentLifecycleSummary, WorkspaceWithRuns } from "$lib/api"
 
-import { buildPreviewDag, lifecycleNodeId } from "$lib/lifecycle-dag"
+import { buildPreviewDag } from "$lib/lifecycle-dag"
 
 function workspace(workspacePath: string): WorkspaceWithRuns {
   return {
@@ -26,7 +26,7 @@ function workspace(workspacePath: string): WorkspaceWithRuns {
 }
 
 describe("buildPreviewDag", () => {
-  test("adds activation and verification items as explicit nodes", () => {
+  test("attaches activation and verification items to workspace nodes", () => {
     const dependencyGraph: DependencyGraph = {
       workspaces: ["infra/shared", "apps/web/infra"],
       edges: [["apps/web/infra", "infra/shared"]],
@@ -81,19 +81,13 @@ describe("buildPreviewDag", () => {
       lifecycle,
     })
 
-    expect(result.nodes.map((node) => node.id)).toEqual([
-      "infra/shared",
-      lifecycleNodeId("infra/shared", "activation", "preview-ready"),
-      lifecycleNodeId("infra/shared", "verification", "preview-smoke"),
-      "apps/web/infra",
-    ])
-    expect(result.dependencyGraph?.edges).toEqual([
-      ["apps/web/infra", "infra/shared"],
-      [lifecycleNodeId("infra/shared", "activation", "preview-ready"), "infra/shared"],
-      [
-        lifecycleNodeId("infra/shared", "verification", "preview-smoke"),
-        lifecycleNodeId("infra/shared", "activation", "preview-ready"),
-      ],
+    expect(result.nodes.map((node) => node.id)).toEqual(["infra/shared", "apps/web/infra"])
+    expect(result.dependencyGraph?.edges).toEqual([["apps/web/infra", "infra/shared"]])
+    expect(result.nodes[0]?.kind).toBe("workspace")
+    if (result.nodes[0]?.kind !== "workspace") return
+    expect(result.nodes[0].lifecycleItems.map((item) => `${item.phase}:${item.key}`)).toEqual([
+      "activation:preview-ready",
+      "verification:preview-smoke",
     ])
   })
 })

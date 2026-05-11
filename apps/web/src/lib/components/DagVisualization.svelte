@@ -1,12 +1,12 @@
 <script lang="ts">
-  import type { DependencyGraph, Run, WorkspaceWithRuns } from "$lib/api"
+  import type { DependencyGraph, LifecycleItemSummary, Run, WorkspaceWithRuns } from "$lib/api"
   import { triggerApply, pauseApply } from "$lib/api"
   import { statusConfig } from "$lib/status"
   import {
     getBlockingUpstreamWorkspacePaths,
     getWorkspaceConnectionBlockReason,
   } from "$lib/workspace-status"
-  import type { PreviewDagNode, PreviewLifecycleDagNode, PreviewWorkspaceDagNode } from "$lib/lifecycle-dag"
+  import type { PreviewDagNode, PreviewWorkspaceDagNode } from "$lib/lifecycle-dag"
   import DagLayout from "./DagLayout.svelte"
   import type { DagPosition } from "./DagLayout.svelte"
 
@@ -17,6 +17,9 @@
     selectedPath: string
     onSelect: (path: string) => void
     compact?: boolean
+    lifecycleStatusStale?: boolean
+    lifecyclePhasePresence?: Record<string, string[]>
+    lifecyclePhaseStatuses?: Record<string, Record<string, string>>
   }
 
   let props: Props = $props()
@@ -29,6 +32,9 @@
   const selectedPath = $derived(props.selectedPath)
   const onSelect = $derived(props.onSelect)
   const compact = $derived(props.compact ?? false)
+  const lifecycleStatusStale = $derived(props.lifecycleStatusStale ?? false)
+  const lifecyclePhasePresence = $derived(props.lifecyclePhasePresence ?? {})
+  const lifecyclePhaseStatuses = $derived(props.lifecyclePhaseStatuses ?? {})
 
   const workspaceNodes = $derived(
     dagNodes.filter((node): node is PreviewWorkspaceDagNode => node.kind === "workspace"),
@@ -448,13 +454,9 @@
 
   // Estimate text width (approximate using character count)
   function estimateTextWidth(node: PreviewDagNode): number {
-    const label = node.kind === "workspace"
-      ? node.workspacePath
-      : `${lifecyclePhaseIcon(node.phase)} ${humanizeLifecycleKey(node.key)}`
+    const label = node.workspacePath
     const glyphWidth = compact ? 6 : 7
-    const minWidth = compact
-      ? node.kind === "lifecycle" ? 76 : 64
-      : node.kind === "lifecycle" ? 184 : 148
+    const minWidth = compact ? 90 : 184
 
     return Math.max(
       label.length * glyphWidth + NODE_PAD_X * 2 + COMPACT_LABEL_RESERVED_WIDTH,
@@ -472,10 +474,6 @@
     return node.id
   }
 
-  function lifecyclePhaseIcon(phase: string): string {
-    return phase === "verification" ? "VERIFY" : "READY"
-  }
-
   function humanizeLifecycleKey(key: string): string {
     return key
       .replace(/^preview[-_]/, "")
@@ -485,20 +483,6 @@
       .filter(Boolean)
       .map((part) => part[0]?.toUpperCase() + part.slice(1))
       .join(" ") || key
-  }
-
-  function lifecycleNodeScopeText(node: PreviewLifecycleDagNode): string {
-    if (node.item.scopes.length === 0) {
-      return node.phase === "verification"
-        ? "confirms the preview externally"
-        : "waits for the preview to come alive"
-    }
-
-    if (node.phase === "verification") {
-      return `proves ${node.item.scopes.join(" + ")}`
-    }
-
-    return `unlocks ${node.item.scopes.join(" + ")}`
   }
 
   function truncateCopy(value: string, maxLength: number): string {
@@ -518,19 +502,45 @@
     }
   }
 
-  function lifecycleStatusText(node: PreviewLifecycleDagNode): string {
-    switch (node.item.state) {
+  function lifecycleStatusText(phase: string, state: string): string {
+    switch (state) {
       case "succeeded":
-        return node.phase === "verification" ? "checks passed" : "preview is live"
+        return phase === "verification" ? "checks passed" : "preview is live"
       case "degraded": return "ready with warnings"
       case "blocked": return "policy blocked"
       case "failed":
-        return node.phase === "verification" ? "checks failed" : "readiness failed"
+        return phase === "verification" ? "checks failed" : "readiness failed"
       case "running":
-        return node.phase === "verification" ? "checking preview" : "waiting for signal"
+        return phase === "verification" ? "checking preview" : "waiting for signal"
       default:
-        return node.phase === "verification" ? "queued to verify" : "queued to open"
+        return phase === "verification" ? "queued to verify" : "queued to open"
     }
+  }
+
+  function phaseItems(node: PreviewWorkspaceDagNode, phase: string): LifecycleItemSummary[] {
+    return node.lifecycleItems.filter((item) => item.phase === phase)
+  }
+
+  function summarizePhase(items: LifecycleItemSummary[]): string {
+    if (items.length === 0) return "idle"
+
+    const counts = new Map<string, number>()
+    for (const item of items) {
+      counts.set(item.state, (counts.get(item.state) ?? 0) + 1)
+    }
+    if (counts.size === 1) return items[0]?.state ?? "idle"
+
+    for (const state of ["failed", "blocked", "running", "pending", "degraded"]) {
+      const count = counts.get(state)
+      if (count) return `${state} ${count}/${items.length}`
+    }
+
+    return `mixed ${items.length}`
+  }
+
+  function summarizePhaseState(items: LifecycleItemSummary[]): string {
+    const summary = summarizePhase(items)
+    return summary.split(" ")[0] ?? "idle"
   }
 
   function compactWorkspaceGlyph(
@@ -571,18 +581,25 @@
     return { icon: fallbackCfg.icon, className: fallbackCfg.color, title: fallbackCfg.label }
   }
 
-  function compactLifecycleGlyph(state: string): { icon: string; className: string } {
-    return {
-      icon: statusIcon(
-        state === "running"
-          ? "running"
-          : state === "succeeded"
-            ? "success"
-            : state,
-      ),
-      className: lifecycleStatusClass(state),
+  function lifecyclePhaseTitle(phase: string, items: LifecycleItemSummary[]): string {
+    if (items.length === 0) return `${phase}: not started in this run`
+
+    return `${phase}: ${items
+      .map((item) => `${humanizeLifecycleKey(item.key)} ${item.state}`)
+      .join(", ")}`
+  }
+
+  function lifecycleStatusLightClass(state: string): string {
+    switch (state) {
+      case "succeeded": return "lifecycle-light lifecycle-light-success"
+      case "degraded": return "lifecycle-light lifecycle-light-warning"
+      case "blocked":
+      case "failed": return "lifecycle-light lifecycle-light-failed"
+      case "running": return "lifecycle-light lifecycle-light-running"
+      default: return "lifecycle-light lifecycle-light-pending"
     }
   }
+
 </script>
 
 {#snippet node({ item, position, width, height }: { item: PreviewDagNode; position: DagPosition; width: number; height: number })}
@@ -622,6 +639,13 @@
         isBlocked,
         displayStatus,
       )}
+      {@const activationItems = phaseItems(item, "activation")}
+      {@const verificationItems = phaseItems(item, "verification")}
+      {@const presentPhases = lifecyclePhasePresence[wsPath] ?? []}
+      {@const hasActivation = activationItems.length > 0 || presentPhases.includes("activation")}
+      {@const hasVerification = verificationItems.length > 0 || presentPhases.includes("verification")}
+      {@const activationState = lifecyclePhaseStatuses[wsPath]?.activation ?? (lifecycleStatusStale || activationItems.length === 0 ? "unknown" : summarizePhaseState(activationItems))}
+      {@const verificationState = lifecyclePhaseStatuses[wsPath]?.verification ?? (lifecycleStatusStale || verificationItems.length === 0 ? "unknown" : summarizePhaseState(verificationItems))}
 
       <rect
         {width}
@@ -645,6 +669,20 @@
           <title>{wsPath}</title>
           {truncateCopy(wsPath, compactLabelMax)}
         </text>
+        {#if hasActivation}
+          <g transform="translate({Math.max(NODE_PAD_X + 50, width - (hasVerification ? 31 : 15))}, 12)" class={lifecycleStatusLightClass(activationState)}>
+            <title>{lifecyclePhaseTitle("activation", activationItems)}</title>
+            <circle r="5.5" class="lifecycle-light-well" />
+            <circle r="3.8" class="lifecycle-light-face" />
+          </g>
+        {/if}
+        {#if hasVerification}
+          <g transform="translate({width - 13}, 12)" class={lifecycleStatusLightClass(verificationState)}>
+            <title>{lifecyclePhaseTitle("verification", verificationItems)}</title>
+            <circle r="5.5" class="lifecycle-light-well" />
+            <circle r="3.8" class="lifecycle-light-face" />
+          </g>
+        {/if}
       {:else}
         <text x={NODE_PAD_X} y="18" class="node-label">
           <title>{wsPath}</title>
@@ -753,43 +791,23 @@
             <text y="28" class="node-status {fallbackCfg.color}">{fallbackCfg.icon} {fallbackCfg.label}</text>
           {/if}
         </g>
-      {/if}
-    {:else if item.kind === "lifecycle"}
-      {@const lifecycleStatus = nodeStatuses[item.id] ?? item.item.state}
-      {@const lifecycleGlyph = compactLifecycleGlyph(lifecycleStatus)}
-      <rect
-        {width}
-        {height}
-        rx="10"
-        class="node-bg transition-all lifecycle-node"
-        class:selected={isSelected}
-        class:lifecycle-activation={item.phase === "activation"}
-        class:lifecycle-verification={item.phase === "verification"}
-      />
 
-      {#if compact}
-        {@const compactLabelMax = compactLabelLimit(width)}
-        <text x={NODE_PAD_X} y="16" class="node-status compact-node-status {lifecycleGlyph.className}">
-          {lifecycleGlyph.icon}
-        </text>
-        <text x={NODE_PAD_X + 14} y="16" class="node-label lifecycle-node-label compact-node-label">
-          <title>{item.key}</title>
-          {truncateCopy(humanizeLifecycleKey(item.key), compactLabelMax)}
-        </text>
-      {:else}
-        <text x={NODE_PAD_X} y="16" class="node-phase-label lifecycle-phase-label">
-          {lifecyclePhaseIcon(item.phase)} {item.phase}
-        </text>
-        <text x={NODE_PAD_X} y="38" class="node-label lifecycle-node-label">
-          <title>{item.key}</title>
-          {truncateCopy(humanizeLifecycleKey(item.key), 24)}
-        </text>
-        <text x={NODE_PAD_X} y="58" class="node-status {lifecycleStatusClass(lifecycleStatus)} lifecycle-status-copy">
-          {statusIcon(lifecycleStatus === "running" ? "running" : lifecycleStatus === "succeeded" ? "success" : lifecycleStatus)} {truncateCopy(lifecycleStatusText(item), 24)}
-        </text>
-        <text x={NODE_PAD_X} y="76" class="node-status lifecycle-node-subcopy">
-          {truncateCopy(item.item.reason ?? lifecycleNodeScopeText(item), 28)}
-        </text>
+        <g transform="translate({width - (hasActivation && hasVerification ? 36 : 18)}, 72)">
+          {#if hasActivation}
+            <g transform="translate(0, 0)" class={lifecycleStatusLightClass(activationState)}>
+              <title>{lifecyclePhaseTitle("activation", activationItems)}</title>
+              <circle r="7" class="lifecycle-light-well" />
+              <circle r="5" class="lifecycle-light-face" />
+            </g>
+          {/if}
+          {#if hasVerification}
+            <g transform="translate({hasActivation ? 20 : 0}, 0)" class={lifecycleStatusLightClass(verificationState)}>
+              <title>{lifecyclePhaseTitle("verification", verificationItems)}</title>
+              <circle r="7" class="lifecycle-light-well" />
+              <circle r="5" class="lifecycle-light-face" />
+            </g>
+          {/if}
+        </g>
       {/if}
     {:else}
       {@const compactLabelMax = compactLabelLimit(width)}
@@ -914,6 +932,55 @@
   .lifecycle-node-subcopy {
     fill: var(--color-text-dim);
     font-size: 9px;
+  }
+
+  .lifecycle-light {
+    color: var(--color-text-dim);
+    opacity: 0.9;
+  }
+
+  .lifecycle-light-well {
+    fill: color-mix(in srgb, var(--color-surface-overlay) 76%, black 24%);
+    stroke: color-mix(in srgb, var(--color-border) 72%, black 28%);
+    stroke-width: 1;
+    filter: drop-shadow(0 -1px 0 rgb(0 0 0 / 0.48)) drop-shadow(0 1px 0 rgb(255 255 255 / 0.055));
+  }
+
+  .lifecycle-light-face {
+    fill: color-mix(in srgb, currentColor 18%, var(--color-surface-overlay) 82%);
+    stroke: color-mix(in srgb, currentColor 38%, var(--color-border) 62%);
+    stroke-width: 0.8;
+  }
+
+  .lifecycle-light-pending {
+    color: var(--color-text-dim);
+    opacity: 0.46;
+  }
+
+  .lifecycle-light-running {
+    color: var(--color-status-applying);
+    animation: lifecycle-light-pulse 1.8s ease-in-out infinite;
+  }
+
+  .lifecycle-light-success {
+    color: var(--color-status-ready);
+  }
+
+  .lifecycle-light-warning {
+    color: var(--color-status-pending);
+  }
+
+  .lifecycle-light-failed {
+    color: var(--color-status-failed);
+  }
+
+  @keyframes lifecycle-light-pulse {
+    0%, 100% {
+      opacity: 0.62;
+    }
+    50% {
+      opacity: 0.96;
+    }
   }
 
   .node-status {

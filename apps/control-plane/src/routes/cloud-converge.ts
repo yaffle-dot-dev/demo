@@ -11,6 +11,7 @@ import { ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
 import { getLifecycleStateForRunGroup, listLifecycleEventsForItems } from "../db/queries/lifecycle.ts"
 import { findOrgById, findOrgMembership } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
+import { findUserById } from "../db/queries/users.ts"
 import { parseYaffleToml, type YaffleTomlConfig } from "../lib/config-toml.ts"
 import {
   findPushTriggerEnvironment,
@@ -195,6 +196,7 @@ export function createCloudConvergeRoute(deps: {
       ctx.kind === "pull_request" ? "transient" : "named",
     )
 
+    const actor = await findUserById(principal.userId)
     const runGroup = await createRunGroup({
       orgId: org.id,
       repoBindingId: repoBinding.id,
@@ -206,6 +208,8 @@ export function createCloudConvergeRoute(deps: {
       headSha: values.headSha,
       selectedWorkspacePaths: selectedWorkspacePaths,
       trigger: "manual",
+      triggeredByUserId: principal.userId,
+      triggeredByLogin: actor?.name ?? actor?.email ?? null,
       status: "pending",
     })
 

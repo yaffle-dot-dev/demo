@@ -52,7 +52,6 @@ const YAFFLE_TEXT_MUTED: Color = Color::Rgb(181, 181, 168);
 const YAFFLE_GREEN: Color = Color::Rgb(139, 196, 49);
 const YAFFLE_GREEN_SOFT: Color = Color::Rgb(109, 163, 35);
 const YAFFLE_CREAM: Color = Color::Rgb(252, 224, 71);
-const YAFFLE_AMBER: Color = Color::Rgb(221, 176, 76);
 const YAFFLE_RED: Color = Color::Rgb(250, 45, 45);
 
 type CliResult = Result<(), CliFailure>;
@@ -1355,9 +1354,13 @@ enum ShellFocus {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DetailTab {
+    Overview,
     Plan,
     Apply,
     Outputs,
+    Activation,
+    Verification,
+    Runs,
 }
 
 #[derive(Debug)]
@@ -1401,14 +1404,6 @@ struct EnvironmentDagNode {
 #[derive(Debug, Clone)]
 enum EnvironmentDagNodeKind {
     Workspace,
-    LifecycleItem {
-        phase: String,
-        key: String,
-        scopes: Vec<String>,
-        failure_policy: yaffle_config::LifecycleFailurePolicy,
-        timeout: Option<String>,
-        destination_url: String,
-    },
 }
 
 #[derive(Debug)]
@@ -1691,7 +1686,11 @@ impl LocalEnvironmentDetailState {
             match self.tab {
                 DetailTab::Apply => self.load_selected_tab_if_needed(repo_root),
                 DetailTab::Outputs => self.load_selected_tab_if_needed(repo_root),
-                DetailTab::Plan => {}
+                DetailTab::Activation | DetailTab::Verification => {
+                    self.load_selected_tab_if_needed(repo_root)
+                }
+                DetailTab::Runs | DetailTab::Plan => {}
+                DetailTab::Overview => self.load_selected_tab_if_needed(repo_root),
             }
         }
     }
@@ -1795,18 +1794,26 @@ impl LocalEnvironmentDetailState {
         match key {
             KeyCode::Left | KeyCode::Char('h') => {
                 self.tab = match self.tab {
-                    DetailTab::Plan => DetailTab::Outputs,
+                    DetailTab::Overview => DetailTab::Runs,
+                    DetailTab::Plan => DetailTab::Overview,
                     DetailTab::Apply => DetailTab::Plan,
                     DetailTab::Outputs => DetailTab::Apply,
+                    DetailTab::Activation => DetailTab::Outputs,
+                    DetailTab::Verification => DetailTab::Activation,
+                    DetailTab::Runs => DetailTab::Verification,
                 };
                 self.detail_scroll = 0;
                 self.load_selected_tab_if_needed(repo_root);
             }
             KeyCode::Right | KeyCode::Char('l') => {
                 self.tab = match self.tab {
+                    DetailTab::Overview => DetailTab::Plan,
                     DetailTab::Plan => DetailTab::Apply,
                     DetailTab::Apply => DetailTab::Outputs,
-                    DetailTab::Outputs => DetailTab::Plan,
+                    DetailTab::Outputs => DetailTab::Activation,
+                    DetailTab::Activation => DetailTab::Verification,
+                    DetailTab::Verification => DetailTab::Runs,
+                    DetailTab::Runs => DetailTab::Overview,
                 };
                 self.detail_scroll = 0;
                 self.load_selected_tab_if_needed(repo_root);
@@ -1843,7 +1850,11 @@ impl LocalEnvironmentDetailState {
         match self.tab {
             DetailTab::Apply => self.start_status_load_if_needed(repo_root),
             DetailTab::Outputs => self.start_outputs_load_if_needed(repo_root),
-            DetailTab::Plan => {}
+            DetailTab::Activation | DetailTab::Verification => {
+                self.start_status_load_if_needed(repo_root)
+            }
+            DetailTab::Overview => self.start_status_load_if_needed(repo_root),
+            DetailTab::Runs | DetailTab::Plan => {}
         };
     }
 
@@ -1925,38 +1936,33 @@ impl LocalEnvironmentDetailState {
             Some(EnvironmentDagNodeKind::Workspace) => {
                 self.selected_workspace_path().unwrap_or("none").to_string()
             }
-            Some(EnvironmentDagNodeKind::LifecycleItem { phase, key, .. }) => {
-                format!(
-                    "{} · {}",
-                    lifecycle_phase_label(phase),
-                    humanize_lifecycle_key(key)
-                )
-            }
             None => "none".to_string(),
         }
     }
 
-    fn selected_lifecycle_item(&self) -> Option<&Value> {
-        let node = self.selected_node()?;
-        let EnvironmentDagNodeKind::LifecycleItem { phase, key, .. } = &node.kind else {
-            return None;
+    fn selected_workspace_lifecycle_items(&self, phase: &str) -> Vec<&Value> {
+        let Some(selected) = self.selected_workspace_path() else {
+            return Vec::new();
         };
-        let status = self.status_response.as_ref()?;
-        let lifecycle = status
+        let Some(status) = self.status_response.as_ref() else {
+            return Vec::new();
+        };
+        let Some(lifecycle) = status
             .workspaces
             .iter()
-            .find(|workspace| workspace.workspace_path == node.workspace_path)
-            .and_then(|workspace| workspace.lifecycle.as_ref())?;
+            .find(|workspace| workspace.workspace_path == selected)
+            .and_then(|workspace| workspace.lifecycle.as_ref())
+        else {
+            return Vec::new();
+        };
 
         lifecycle
             .get("items")
             .and_then(Value::as_array)
-            .and_then(|items| {
-                items.iter().find(|item| {
-                    item.get("phase").and_then(Value::as_str) == Some(phase.as_str())
-                        && item.get("key").and_then(Value::as_str) == Some(key.as_str())
-                })
-            })
+            .into_iter()
+            .flatten()
+            .filter(|item| item.get("phase").and_then(Value::as_str) == Some(phase))
+            .collect()
     }
 
     fn reload_selected_tab(&mut self, repo_root: &Path) -> Result<(), CliFailure> {
@@ -1977,7 +1983,23 @@ impl LocalEnvironmentDetailState {
                 self.start_outputs_load_if_needed(repo_root);
                 Ok(())
             }
-            DetailTab::Plan => Ok(()),
+            DetailTab::Activation | DetailTab::Verification => {
+                self.status_response = None;
+                self.status_error = None;
+                self.status_loading = false;
+                self.status_rx = None;
+                self.start_status_load_if_needed(repo_root);
+                Ok(())
+            }
+            DetailTab::Overview => {
+                self.status_response = None;
+                self.status_error = None;
+                self.status_loading = false;
+                self.status_rx = None;
+                self.start_status_load_if_needed(repo_root);
+                Ok(())
+            }
+            DetailTab::Runs | DetailTab::Plan => Ok(()),
         }
     }
 
@@ -2263,11 +2285,19 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
     let detail_title = Line::from(vec![
         Span::styled(" Detail ", Style::default().fg(YAFFLE_TEXT_MUTED)),
         Span::raw(" "),
+        render_detail_tab_chip("Overview", detail.tab == DetailTab::Overview),
+        Span::raw(" "),
         render_detail_tab_chip("Plan", detail.tab == DetailTab::Plan),
         Span::raw(" "),
         render_detail_tab_chip("Apply", detail.tab == DetailTab::Apply),
         Span::raw(" "),
         render_detail_tab_chip("Outputs", detail.tab == DetailTab::Outputs),
+        Span::raw(" "),
+        render_detail_tab_chip("Activation", detail.tab == DetailTab::Activation),
+        Span::raw(" "),
+        render_detail_tab_chip("Verification", detail.tab == DetailTab::Verification),
+        Span::raw(" "),
+        render_detail_tab_chip("Runs", detail.tab == DetailTab::Runs),
     ]);
     let detail_block = Block::default()
         .title(detail_title)
@@ -2328,6 +2358,68 @@ fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
 fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> DetailPanelContent {
     let selected = detail.selected_node_title();
     match detail.tab {
+        DetailTab::Overview => {
+            let header_lines = vec![
+                Line::from(format!("Selected workspace: {selected}")),
+                Line::from("Materialization, freshness, readiness, acceptability"),
+                Line::from(""),
+            ];
+            let mut body_lines = Vec::new();
+            match (&detail.status_response, &detail.status_error) {
+                (Some(status), _) => {
+                    let snapshot = detail.selected_workspace_path().and_then(|workspace_path| {
+                        status
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.workspace_path == workspace_path)
+                    });
+                    body_lines.push(Line::from(format!(
+                        "Materialization: {}",
+                        snapshot
+                            .and_then(|workspace| workspace.materialization.clone())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    )));
+                    body_lines.push(Line::from(format!(
+                        "Freshness: {}",
+                        snapshot
+                            .and_then(|workspace| workspace.freshness.clone())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    )));
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(format!(
+                        "Readiness: {}",
+                        workspace_scope_condition_summary(detail, &selected, "usable", true)
+                    )));
+                    body_lines.push(Line::from(format!(
+                        "Acceptability: {}",
+                        workspace_scope_condition_summary(detail, &selected, "acceptable", false)
+                    )));
+                    let blocked_reasons = detail.selected_workspace_lifecycle_block_reasons();
+                    if !blocked_reasons.is_empty() {
+                        body_lines.push(Line::from(""));
+                        body_lines.push(Line::from("Lifecycle governance:"));
+                        for reason in blocked_reasons {
+                            body_lines.push(Line::from(reason));
+                        }
+                    }
+                }
+                (None, _) if detail.status_loading => {
+                    body_lines.push(Line::from("Loading status information..."));
+                }
+                (None, Some(error)) => {
+                    body_lines.push(Line::from("Status information could not be loaded."));
+                    body_lines.push(Line::from(error.clone()));
+                }
+                (None, None) => {
+                    body_lines.push(Line::from("Status information loads on demand."));
+                    body_lines.push(Line::from("Press `r` in the detail panel to load it."));
+                }
+            }
+            DetailPanelContent {
+                header_lines,
+                body_lines,
+            }
+        }
         DetailTab::Plan => {
             let target_summary = summarize_selected_workspaces(detail);
             let header_lines = vec![
@@ -2340,52 +2432,19 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
                     "Press `c` to run converge. If nothing is explicitly selected, Yaffle converges the full environment.",
                 ),
                 Line::from(
-                    "Press space on a workspace node to narrow the run. Gates always ride along with their workspace.",
+                    "Press space on a workspace node to narrow the run. Lifecycle items ride along with their workspace.",
                 ),
             ];
             if let Some(node) = detail.selected_node() {
-                if let EnvironmentDagNodeKind::LifecycleItem {
-                    phase,
-                    key,
-                    scopes,
-                    failure_policy,
-                    timeout,
-                    destination_url,
-                } = &node.kind
-                {
-                    body_lines.push(Line::from(""));
-                    body_lines.push(Line::from(format!(
-                        "{} '{}'.",
-                        lifecycle_phase_label(phase),
-                        humanize_lifecycle_key(key)
-                    )));
-                    body_lines.push(Line::from(lifecycle_gate_purpose(
-                        phase,
-                        &node.workspace_path,
-                    )));
-                    body_lines.push(Line::from(format!(
-                        "{}",
-                        lifecycle_scope_copy(phase, scopes)
-                    )));
-                    body_lines.push(Line::from(format!(
-                        "Failure mode: {}",
-                        lifecycle_failure_policy_label(*failure_policy)
-                    )));
-                    if let Some(timeout) = timeout {
-                        body_lines.push(Line::from(format!("Timeout budget: {timeout}")));
-                    }
-                    body_lines.push(Line::from(format!("External handoff: {destination_url}")));
-                } else if let EnvironmentDagNodeKind::Workspace = &node.kind {
-                    body_lines.push(Line::from(""));
-                    body_lines.push(Line::from(format!(
-                        "Focused workspace: '{}'.",
-                        node.workspace_path
-                    )));
-                    if detail.selected_workspaces.is_empty() {
-                        body_lines.push(Line::from(
-                            "Current run target: full environment. Press space here to converge just this workspace and its dependencies.",
-                        ));
-                    }
+                body_lines.push(Line::from(""));
+                body_lines.push(Line::from(format!(
+                    "Focused workspace: '{}'.",
+                    node.workspace_path
+                )));
+                if detail.selected_workspaces.is_empty() {
+                    body_lines.push(Line::from(
+                        "Current run target: full environment. Press space here to converge just this workspace and its dependencies.",
+                    ));
                 }
             }
             if let Some(error) = detail.active_run_error() {
@@ -2462,83 +2521,32 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
             let mut body_lines = Vec::new();
             match (&detail.status_response, &detail.status_error) {
                 (Some(status), _) => {
-                    if let Some(lifecycle_item) = detail.selected_lifecycle_item() {
-                        let summary = lifecycle_item.get("summary").and_then(Value::as_str);
-                        let reason = lifecycle_item.get("reason").and_then(Value::as_str);
-                        let state = lifecycle_item
-                            .get("state")
-                            .and_then(Value::as_str)
-                            .unwrap_or("unknown");
-                        body_lines.push(Line::from(format!(
-                            "Gate state: {}",
-                            lifecycle_state_copy(
-                                detail
-                                    .selected_node()
-                                    .and_then(|node| match &node.kind {
-                                        EnvironmentDagNodeKind::LifecycleItem { phase, .. } => {
-                                            Some(phase.as_str())
-                                        }
-                                        _ => None,
-                                    })
-                                    .unwrap_or("lifecycle"),
-                                state,
-                                summary,
-                            )
-                        )));
-                        if let Some(reason) = reason {
-                            body_lines.push(Line::from(format!("Operator note: {reason}")));
-                        }
+                    let snapshot = detail.selected_workspace_path().and_then(|workspace_path| {
+                        status
+                            .workspaces
+                            .iter()
+                            .find(|workspace| workspace.workspace_path == workspace_path)
+                    });
+                    body_lines.push(Line::from(format!(
+                        "Materialization: {}",
+                        snapshot
+                            .and_then(|workspace| workspace.materialization.clone())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    )));
+                    body_lines.push(Line::from(format!(
+                        "Freshness: {}",
+                        snapshot
+                            .and_then(|workspace| workspace.freshness.clone())
+                            .unwrap_or_else(|| "unknown".to_string())
+                    )));
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(status.result.summary.clone()));
+                    let blocked_reasons = detail.selected_workspace_lifecycle_block_reasons();
+                    if !blocked_reasons.is_empty() {
                         body_lines.push(Line::from(""));
-                        body_lines.push(Line::from("External handoff timeline:"));
-                        let mut rendered_event = false;
-                        if let Some(events) = lifecycle_item.get("events").and_then(Value::as_array)
-                        {
-                            for event in events {
-                                rendered_event = true;
-                                let event_type = event
-                                    .get("eventType")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("event");
-                                let summary = format_lifecycle_event_summary(event);
-                                body_lines.push(Line::from(format!(
-                                    "{}: {}",
-                                    title_case_lifecycle_event(event_type),
-                                    summary
-                                )));
-                            }
-                        }
-                        if !rendered_event {
-                            body_lines.push(Line::from("No lifecycle events recorded yet."));
-                        }
-                    } else {
-                        let snapshot =
-                            detail.selected_workspace_path().and_then(|workspace_path| {
-                                status
-                                    .workspaces
-                                    .iter()
-                                    .find(|workspace| workspace.workspace_path == workspace_path)
-                            });
-                        body_lines.push(Line::from(format!(
-                            "Materialization: {}",
-                            snapshot
-                                .and_then(|workspace| workspace.materialization.clone())
-                                .unwrap_or_else(|| "unknown".to_string())
-                        )));
-                        body_lines.push(Line::from(format!(
-                            "Freshness: {}",
-                            snapshot
-                                .and_then(|workspace| workspace.freshness.clone())
-                                .unwrap_or_else(|| "unknown".to_string())
-                        )));
-                        body_lines.push(Line::from(""));
-                        body_lines.push(Line::from(status.result.summary.clone()));
-                        let blocked_reasons = detail.selected_workspace_lifecycle_block_reasons();
-                        if !blocked_reasons.is_empty() {
-                            body_lines.push(Line::from(""));
-                            body_lines.push(Line::from("Lifecycle governance:"));
-                            for reason in blocked_reasons {
-                                body_lines.push(Line::from(reason));
-                            }
+                        body_lines.push(Line::from("Lifecycle governance:"));
+                        for reason in blocked_reasons {
+                            body_lines.push(Line::from(reason));
                         }
                     }
                 }
@@ -2650,6 +2658,95 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
                 body_lines,
             }
         }
+        DetailTab::Activation | DetailTab::Verification => {
+            let phase = match detail.tab {
+                DetailTab::Activation => "activation",
+                DetailTab::Verification => "verification",
+                _ => "lifecycle",
+            };
+            let selected_workspace_path = detail.selected_workspace_path().unwrap_or("none");
+            let header_lines = vec![
+                Line::from(format!("Selected workspace: {selected_workspace_path}")),
+                Line::from(format!("{} lifecycle items", title_case(phase))),
+                Line::from(""),
+            ];
+            let mut body_lines = Vec::new();
+            match (&detail.status_response, &detail.status_error) {
+                (Some(_), _) => {
+                    let items = detail.selected_workspace_lifecycle_items(phase);
+                    if items.is_empty() {
+                        body_lines.push(Line::from(format!(
+                            "No {phase} lifecycle items for this workspace."
+                        )));
+                    } else {
+                        for item in items {
+                            render_lifecycle_item_lines(item, phase, &mut body_lines);
+                        }
+                    }
+                }
+                (None, _) if detail.status_loading => {
+                    body_lines.push(Line::from("Loading lifecycle status..."));
+                }
+                (None, Some(error)) => {
+                    body_lines.push(Line::from("Lifecycle status could not be loaded."));
+                    body_lines.push(Line::from("Press `r` in the detail panel to retry."));
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(error.clone()));
+                }
+                (None, None) => {
+                    body_lines.push(Line::from("Lifecycle status loads on demand."));
+                    body_lines.push(Line::from("Press `r` in the detail panel to load it."));
+                }
+            }
+            DetailPanelContent {
+                header_lines,
+                body_lines,
+            }
+        }
+        DetailTab::Runs => {
+            let selected_workspace_path = detail.selected_workspace_path().unwrap_or("none");
+            let header_lines = vec![
+                Line::from(format!("Selected workspace: {selected_workspace_path}")),
+                Line::from("Run history"),
+                Line::from(""),
+            ];
+            let mut body_lines = Vec::new();
+            if let Some(run) = detail.active_run.as_ref() {
+                if let Some((state, phase)) =
+                    detail.active_run_status_for_workspace(selected_workspace_path)
+                {
+                    body_lines.push(Line::from(format!(
+                        "Current converge: {}",
+                        if run.running { "running" } else { "finished" }
+                    )));
+                    body_lines.push(Line::from(format!(
+                        "Workspace state: {}",
+                        match state {
+                            WorkspaceRunState::Pending => "waiting",
+                            WorkspaceRunState::Running => "running",
+                            WorkspaceRunState::Succeeded => "succeeded",
+                            WorkspaceRunState::Failed => "failed",
+                        }
+                    )));
+                    body_lines.push(Line::from(format!(
+                        "Current phase: {}",
+                        phase.map(phase_label).unwrap_or("not started")
+                    )));
+                }
+                if let Some(error) = run.last_error.as_ref() {
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(format!("Last error: {}", error.error.message)));
+                }
+            } else {
+                body_lines.push(Line::from(
+                    "No local converge run has been started from this TUI session yet.",
+                ));
+            }
+            DetailPanelContent {
+                header_lines,
+                body_lines,
+            }
+        }
     }
 }
 
@@ -2708,14 +2805,6 @@ fn title_case(value: &str) -> &'static str {
     }
 }
 
-fn lifecycle_phase_label(phase: &str) -> &'static str {
-    match phase {
-        "activation" => "Activation gate",
-        "verification" => "Verification gate",
-        _ => "Lifecycle gate",
-    }
-}
-
 fn humanize_lifecycle_key(key: &str) -> String {
     let cleaned = key
         .trim()
@@ -2745,19 +2834,6 @@ fn humanize_lifecycle_key(key: &str) -> String {
         key.to_string()
     } else {
         words.join(" ")
-    }
-}
-
-fn lifecycle_gate_purpose(phase: &str, workspace_path: &str) -> String {
-    match phase {
-        "verification" => format!(
-            "This gate runs after '{}' and proves the preview is acceptable before you trust it.",
-            workspace_path
-        ),
-        _ => format!(
-            "This gate runs after '{}' and turns finished infra into a preview people can use.",
-            workspace_path
-        ),
     }
 }
 
@@ -2792,6 +2868,66 @@ fn lifecycle_state_copy(phase: &str, state: &str, summary: Option<&str>) -> Stri
     }
 }
 
+fn render_lifecycle_item_lines(item: &Value, phase: &str, body_lines: &mut Vec<Line<'static>>) {
+    let key = item.get("key").and_then(Value::as_str).unwrap_or("unknown");
+    let state = item
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let summary = item.get("summary").and_then(Value::as_str);
+    let reason = item.get("reason").and_then(Value::as_str);
+    let scopes = item
+        .get("scopes")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if !body_lines.is_empty() {
+        body_lines.push(Line::from(""));
+    }
+    body_lines.push(Line::from(format!(
+        "{}: {}",
+        humanize_lifecycle_key(key),
+        lifecycle_state_copy(phase, state, summary)
+    )));
+    body_lines.push(Line::from(
+        reason
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| lifecycle_scope_copy(phase, &scopes)),
+    ));
+    body_lines.push(Line::from(format!(
+        "Scopes: {}",
+        if scopes.is_empty() {
+            "advisory".to_string()
+        } else {
+            scopes.join(", ")
+        }
+    )));
+
+    if let Some(events) = item.get("events").and_then(Value::as_array) {
+        if !events.is_empty() {
+            body_lines.push(Line::from("Events:"));
+            for event in events {
+                let event_type = event
+                    .get("eventType")
+                    .and_then(Value::as_str)
+                    .unwrap_or("event");
+                body_lines.push(Line::from(format!(
+                    "- {}: {}",
+                    title_case_lifecycle_event(event_type),
+                    format_lifecycle_event_summary(event)
+                )));
+            }
+        }
+    }
+}
+
 fn title_case_lifecycle_event(value: &str) -> &'static str {
     match value {
         "created" => "Gate armed",
@@ -2800,13 +2936,6 @@ fn title_case_lifecycle_event(value: &str) -> &'static str {
         "blocked" => "Policy blocked",
         "callback" => "External result",
         _ => "Event",
-    }
-}
-
-fn lifecycle_failure_policy_label(policy: yaffle_config::LifecycleFailurePolicy) -> &'static str {
-    match policy {
-        yaffle_config::LifecycleFailurePolicy::Failed => "failed",
-        yaffle_config::LifecycleFailurePolicy::Degraded => "degraded",
     }
 }
 
@@ -2873,7 +3002,7 @@ fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line<'sta
     let box_width = 24usize;
     let column_gap = 8usize;
     let row_gap = 2usize;
-    let row_height = 3usize;
+    let row_height = 4usize;
 
     let width = detail.levels.len().max(1) * (box_width + column_gap) + 4;
     let max_rows = detail.levels.iter().map(Vec::len).max().unwrap_or(1);
@@ -2984,20 +3113,9 @@ fn draw_environment_dag_node(
 ) {
     let selected_cursor = detail.selected_level == level_index && detail.selected_row == row_index;
     let selected_for_converge = detail.selected_workspaces.contains(&node.workspace_path);
-    let lifecycle_color = match &node.kind {
-        EnvironmentDagNodeKind::LifecycleItem { phase, .. } if phase == "verification" => {
-            YAFFLE_AMBER
-        }
-        EnvironmentDagNodeKind::LifecycleItem { .. } => YAFFLE_GREEN_SOFT,
-        EnvironmentDagNodeKind::Workspace => YAFFLE_BORDER_ACCENT,
-    };
     let border_style = if selected_cursor {
         Style::default()
             .fg(YAFFLE_CREAM)
-            .add_modifier(Modifier::BOLD)
-    } else if matches!(node.kind, EnvironmentDagNodeKind::LifecycleItem { .. }) {
-        Style::default()
-            .fg(lifecycle_color)
             .add_modifier(Modifier::BOLD)
     } else if selected_for_converge {
         Style::default()
@@ -3010,8 +3128,6 @@ fn draw_environment_dag_node(
         Style::default()
             .fg(YAFFLE_CREAM)
             .add_modifier(Modifier::BOLD)
-    } else if matches!(node.kind, EnvironmentDagNodeKind::LifecycleItem { .. }) {
-        Style::default().fg(lifecycle_color)
     } else {
         Style::default().fg(YAFFLE_TEXT)
     };
@@ -3027,22 +3143,7 @@ fn draw_environment_dag_node(
     let label =
         truncate_workspace_label(&environment_dag_node_label(node), width.saturating_sub(6));
     write_styled_string(canvas, x, y + 1, "│", border_style);
-    let lead_char = match &node.kind {
-        EnvironmentDagNodeKind::Workspace => {
-            if selected_for_converge {
-                '■'
-            } else {
-                '□'
-            }
-        }
-        EnvironmentDagNodeKind::LifecycleItem { phase, .. } => {
-            if phase == "verification" {
-                'V'
-            } else {
-                'R'
-            }
-        }
-    };
+    let lead_char = if selected_for_converge { '■' } else { '□' };
     write_styled_string(canvas, x + 1, y + 1, &lead_char.to_string(), border_style);
     write_styled_string(canvas, x + 2, y + 1, &status_char.to_string(), text_style);
     write_styled_string(canvas, x + 3, y + 1, " ", text_style);
@@ -3054,10 +3155,20 @@ fn draw_environment_dag_node(
         text_style,
     );
     write_styled_string(canvas, x + width - 1, y + 1, "│", border_style);
+    let lifecycle_lights = workspace_lifecycle_lights(detail, &node.workspace_path);
+    write_styled_string(canvas, x, y + 2, "│", border_style);
+    write_styled_string(
+        canvas,
+        x + 2,
+        y + 2,
+        &lifecycle_lights,
+        Style::default().fg(YAFFLE_TEXT_MUTED),
+    );
+    write_styled_string(canvas, x + width - 1, y + 2, "│", border_style);
     write_styled_string(
         canvas,
         x,
-        y + 2,
+        y + 3,
         &format!("└{}┘", "─".repeat(width.saturating_sub(2))),
         border_style,
     );
@@ -3090,72 +3201,173 @@ fn dag_node_status_char(detail: &LocalEnvironmentDetailState, node: &Environment
                 }
             }
         }
-        EnvironmentDagNodeKind::LifecycleItem { .. } => {
-            lifecycle_item_snapshot_for_node(detail, node)
-                .and_then(|item| item.get("state").and_then(Value::as_str))
-                .map(lifecycle_state_char)
-                .unwrap_or('○')
-        }
     }
 }
 
-fn lifecycle_item_snapshot_for_node<'a>(
-    detail: &'a LocalEnvironmentDetailState,
-    node: &EnvironmentDagNode,
-) -> Option<&'a Value> {
-    let EnvironmentDagNodeKind::LifecycleItem { phase, key, .. } = &node.kind else {
-        return None;
+fn workspace_lifecycle_phase_summary(
+    detail: &LocalEnvironmentDetailState,
+    workspace_path: &str,
+    phase: &str,
+) -> String {
+    let Some(status) = detail.status_response.as_ref() else {
+        return "?".to_string();
     };
-
-    let status = detail.status_response.as_ref()?;
-    let lifecycle = status
+    let Some(items) = status
         .workspaces
         .iter()
-        .find(|workspace| workspace.workspace_path == node.workspace_path)
-        .and_then(|workspace| workspace.lifecycle.as_ref())?;
-
-    lifecycle
-        .get("items")
+        .find(|workspace| workspace.workspace_path == workspace_path)
+        .and_then(|workspace| workspace.lifecycle.as_ref())
+        .and_then(|lifecycle| lifecycle.get("items"))
         .and_then(Value::as_array)
-        .and_then(|items| {
-            items.iter().find(|item| {
-                item.get("phase").and_then(Value::as_str) == Some(phase.as_str())
-                    && item.get("key").and_then(Value::as_str) == Some(key.as_str())
-            })
-        })
+    else {
+        return "idle".to_string();
+    };
+
+    let mut states = BTreeMap::<String, usize>::new();
+    let mut total = 0usize;
+    for item in items {
+        if item.get("phase").and_then(Value::as_str) != Some(phase) {
+            continue;
+        }
+        total += 1;
+        let state = item
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        *states.entry(state).or_default() += 1;
+    }
+
+    if total == 0 {
+        return "idle".to_string();
+    }
+    if states.len() == 1 {
+        return states
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "idle".to_string());
+    }
+    for state in ["failed", "blocked", "running", "pending", "degraded"] {
+        if let Some(count) = states.get(state) {
+            return format!("{state} {count}/{total}");
+        }
+    }
+    format!("mixed {total}")
 }
 
-fn lifecycle_state_char(state: &str) -> char {
+fn workspace_lifecycle_lights(detail: &LocalEnvironmentDetailState, workspace_path: &str) -> String {
+    let mut lights = Vec::new();
+    if let Some(state) = workspace_lifecycle_phase_state(detail, workspace_path, "activation") {
+        lights.push(format!("↗ {}", lifecycle_status_light_char(&state)));
+    }
+    if let Some(state) = workspace_lifecycle_phase_state(detail, workspace_path, "verification") {
+        lights.push(format!("✓ {}", lifecycle_status_light_char(&state)));
+    }
+    lights.join("  ")
+}
+
+fn workspace_lifecycle_phase_state(
+    detail: &LocalEnvironmentDetailState,
+    workspace_path: &str,
+    phase: &str,
+) -> Option<String> {
+    let summary = workspace_lifecycle_phase_summary(detail, workspace_path, phase);
+    if summary == "idle" || summary == "?" {
+        return None;
+    }
+    Some(
+        summary
+            .split_whitespace()
+            .next()
+            .unwrap_or("pending")
+            .to_string(),
+    )
+}
+
+fn lifecycle_status_light_char(state: &str) -> char {
     match state {
-        "running" => '▶',
         "succeeded" => '●',
         "degraded" => '◐',
-        "blocked" => '!',
-        "failed" => '✕',
-        "pending" => '○',
-        _ => '·',
+        "blocked" | "failed" => '✕',
+        "running" => '◉',
+        _ => '○',
     }
+}
+
+fn workspace_scope_condition_summary(
+    detail: &LocalEnvironmentDetailState,
+    workspace_path: &str,
+    scope: &str,
+    allow_degraded: bool,
+) -> String {
+    let mut states = BTreeMap::<String, usize>::new();
+    let mut total = 0usize;
+    for item in lifecycle_items_for_workspace(detail, workspace_path) {
+        let scopes = item
+            .get("scopes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        if !scopes.contains(&scope) {
+            continue;
+        }
+        total += 1;
+        let state = item
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .to_string();
+        *states.entry(state).or_default() += 1;
+    }
+
+    if total == 0 {
+        return "met (no scoped lifecycle requirements)".to_string();
+    }
+    if states.get("failed").copied().unwrap_or(0) > 0 {
+        return "unmet (failed lifecycle work)".to_string();
+    }
+    if states.get("blocked").copied().unwrap_or(0) > 0 {
+        return "unmet (blocked lifecycle work)".to_string();
+    }
+    if states.get("running").copied().unwrap_or(0) > 0
+        || states.get("pending").copied().unwrap_or(0) > 0
+    {
+        return "unmet (progressing lifecycle work)".to_string();
+    }
+    if !allow_degraded && states.get("degraded").copied().unwrap_or(0) > 0 {
+        return "unmet (degraded lifecycle work)".to_string();
+    }
+
+    "met".to_string()
+}
+
+fn lifecycle_items_for_workspace<'a>(
+    detail: &'a LocalEnvironmentDetailState,
+    workspace_path: &str,
+) -> Vec<&'a Value> {
+    detail
+        .status_response
+        .as_ref()
+        .and_then(|status| {
+            status
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_path == workspace_path)
+        })
+        .and_then(|workspace| workspace.lifecycle.as_ref())
+        .and_then(|lifecycle| lifecycle.get("items"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 fn environment_dag_node_label(node: &EnvironmentDagNode) -> String {
     match &node.kind {
         EnvironmentDagNodeKind::Workspace => node.label.clone(),
-        EnvironmentDagNodeKind::LifecycleItem { phase, key, .. } => {
-            let label = humanize_lifecycle_key(key);
-            if phase == "verification" {
-                if label.eq_ignore_ascii_case("smoke") {
-                    "smoke check".to_string()
-                } else {
-                    format!("check {label}")
-                }
-            } else {
-                if label.eq_ignore_ascii_case("ready") {
-                    "ready gate".to_string()
-                } else {
-                    format!("ready {label}")
-                }
-            }
-        }
     }
 }
 
@@ -3269,7 +3481,7 @@ fn load_environment_detail(
         selected_row: 0,
         selected_workspaces: std::collections::BTreeSet::new(),
         focus: ShellFocus::Graph,
-        tab: DetailTab::Plan,
+        tab: DetailTab::Overview,
         detail_scroll: 0,
         status_response: None,
         status_error: None,
@@ -3391,10 +3603,10 @@ fn count_workspaces_for_environment(
 }
 
 fn build_environment_dag_nodes(
-    config: &yaffle_config::YaffleConfig,
+    _config: &yaffle_config::YaffleConfig,
     graph: &ResolvedWorkspaceGraph,
-    environment_name: &str,
-    canonical_repo_namespace: Option<&str>,
+    _environment_name: &str,
+    _canonical_repo_namespace: Option<&str>,
 ) -> Vec<EnvironmentDagNode> {
     let order = graph
         .topological_order()
@@ -3413,84 +3625,6 @@ fn build_environment_dag_nodes(
             dependencies,
             kind: EnvironmentDagNodeKind::Workspace,
         });
-
-        let Some(workspace_config) = config
-            .workspaces
-            .iter()
-            .find(|workspace| workspace.path == workspace_path)
-        else {
-            continue;
-        };
-
-        let activation_hooks = workspace_config
-            .activation
-            .iter()
-            .filter(|hook| {
-                yaffle_config::environment_name_matches_patterns(
-                    environment_name,
-                    &hook.environments,
-                )
-            })
-            .collect::<Vec<_>>();
-        let verification_hooks = workspace_config
-            .verification
-            .iter()
-            .filter(|hook| {
-                yaffle_config::environment_name_matches_patterns(
-                    environment_name,
-                    &hook.environments,
-                )
-            })
-            .collect::<Vec<_>>();
-
-        let activation_ids = activation_hooks
-            .iter()
-            .map(|hook| lifecycle_node_id(&workspace_path, "activation", &hook.key))
-            .collect::<Vec<_>>();
-
-        for hook in activation_hooks {
-            nodes.push(EnvironmentDagNode {
-                id: lifecycle_node_id(&workspace_path, "activation", &hook.key),
-                workspace_path: workspace_path.clone(),
-                label: hook.key.clone(),
-                dependencies: vec![workspace_path.clone()],
-                kind: EnvironmentDagNodeKind::LifecycleItem {
-                    phase: "activation".to_string(),
-                    key: hook.key.clone(),
-                    scopes: hook.scopes.clone(),
-                    failure_policy: hook.failure,
-                    timeout: hook.timeout.clone(),
-                    destination_url: lifecycle_hook_destination_label(
-                        hook,
-                        canonical_repo_namespace,
-                    ),
-                },
-            });
-        }
-
-        for hook in verification_hooks {
-            nodes.push(EnvironmentDagNode {
-                id: lifecycle_node_id(&workspace_path, "verification", &hook.key),
-                workspace_path: workspace_path.clone(),
-                label: hook.key.clone(),
-                dependencies: if activation_ids.is_empty() {
-                    vec![workspace_path.clone()]
-                } else {
-                    activation_ids.clone()
-                },
-                kind: EnvironmentDagNodeKind::LifecycleItem {
-                    phase: "verification".to_string(),
-                    key: hook.key.clone(),
-                    scopes: hook.scopes.clone(),
-                    failure_policy: hook.failure,
-                    timeout: hook.timeout.clone(),
-                    destination_url: lifecycle_hook_destination_label(
-                        hook,
-                        canonical_repo_namespace,
-                    ),
-                },
-            });
-        }
     }
 
     nodes
@@ -3520,32 +3654,6 @@ fn build_graph_levels(nodes: &[EnvironmentDagNode]) -> Vec<Vec<String>> {
         levels[stage].push(node_id);
     }
     levels
-}
-
-fn lifecycle_node_id(workspace_path: &str, phase: &str, key: &str) -> String {
-    format!("{workspace_path}::{phase}::{key}")
-}
-
-fn lifecycle_hook_destination_label(
-    hook: &yaffle_config::LifecycleHook,
-    canonical_repo_namespace: Option<&str>,
-) -> String {
-    match &hook.dispatch {
-        yaffle_config::LifecycleHookDispatch::Generic(request) => request.url.clone(),
-        yaffle_config::LifecycleHookDispatch::GitHubRepositoryDispatch(github) => {
-            let (owner, repo) = match (&github.owner, &github.repo) {
-                (Some(owner), Some(repo)) => (owner.clone(), repo.clone()),
-                _ => canonical_repo_namespace
-                    .and_then(|namespace| namespace.split_once("--"))
-                    .map(|(owner, repo)| (owner.to_string(), repo.to_string()))
-                    .unwrap_or_else(|| ("<repo>".to_string(), "<repo>".to_string())),
-            };
-            format!(
-                "repository_dispatch {owner}/{repo} -> {}",
-                github.event_type
-            )
-        }
-    }
 }
 
 fn infer_repo_namespace(repo_root: &Path) -> Option<String> {

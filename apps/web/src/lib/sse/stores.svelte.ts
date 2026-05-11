@@ -26,13 +26,15 @@ export class PreviewStreamStore {
   viewedRunGroupId = $state<string | null>(null)
   /** The headSha at the time auto-pin activated (the SHA being viewed) */
   pinnedHeadSha = $state<string | null>(null)
+  /** Whether the current pin was created because a genuinely new run appeared live. */
+  autoPinnedForNewRun = $state(false)
 
   get isStreaming(): boolean {
     return this.data !== null && hasActiveRun(this.data)
   }
 
   get hasNewerRunGroup(): boolean {
-    if (!this.viewedRunGroupId || !this.data) return false
+    if (!this.viewedRunGroupId || !this.data || !this.autoPinnedForNewRun) return false
     const latestRunGroup = getLatestRunGroup(this.data)
     if (!latestRunGroup) return false
     // There's a newer run group if the latest ID differs from our pinned one
@@ -61,6 +63,7 @@ export class PreviewStreamStore {
         // Use the run group's headSha, not the preview's (which may have already updated)
         this.viewedRunGroupId = oldLatest.id
         this.pinnedHeadSha = oldLatest.headSha
+        this.autoPinnedForNewRun = true
       }
     }
 
@@ -71,11 +74,13 @@ export class PreviewStreamStore {
   switchToLatest(): void {
     this.viewedRunGroupId = null
     this.pinnedHeadSha = null
+    this.autoPinnedForNewRun = false
   }
 
   /** Pin to a specific run group ID */
   pinToRunGroup(runGroupId: string): void {
     this.viewedRunGroupId = runGroupId
+    this.autoPinnedForNewRun = false
     // pinnedHeadSha is only set during auto-pin; manual pin doesn't change the SHA display
   }
 
@@ -86,6 +91,7 @@ export class PreviewStreamStore {
     this.connectionState = "disconnected"
     this.viewedRunGroupId = null
     this.pinnedHeadSha = null
+    this.autoPinnedForNewRun = false
   }
 }
 
