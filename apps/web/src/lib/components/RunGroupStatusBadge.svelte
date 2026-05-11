@@ -16,7 +16,7 @@
     const statusSet = new Set(statuses)
 
     // Workspace statuses that indicate active work
-    const activeStatuses = ["planning", "applying", "destroying"]
+    const activeStatuses = ["planning", "applying", "activating", "destroying"]
     const hasActive = activeStatuses.some((s) => statusSet.has(s))
 
     // Workspace statuses that indicate waiting (not yet started or waiting for something)
@@ -26,6 +26,7 @@
     // Terminal states
     const hasFailed = statusSet.has("failed") || statusSet.has("cancelled")
     const hasSystemError = statusSet.has("system_error")
+    const hasPartial = statusSet.has("partial")
     const terminalSuccessStatuses = ["ready", "destroyed", "planned", "skipped"]
     const hasSuccess = terminalSuccessStatuses.some((s) => statusSet.has(s))
 
@@ -36,6 +37,7 @@
     // plan_limited is handled by PlanLimitedBadge (clickable link to billing)
     // System errors are retriable infrastructure issues, distinct from user failures
     if (hasSystemError) return "system_error"
+    if (hasPartial) return "partial"
     if (hasFailed && hasSuccess) return "mixed"
     if (hasFailed) return "failed"
     if (hasSuccess && !hasWaiting) return "success"

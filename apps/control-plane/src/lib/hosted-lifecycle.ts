@@ -24,6 +24,10 @@ import {
 import { findPrincipalById, findPrincipalRepoBindingById } from "../db/queries/principals.ts"
 import { findRepoByFullName, findRepoByName } from "../db/queries/repositories.ts"
 import { findRunGroupById } from "../db/queries/run-groups.ts"
+import {
+  findDeploymentById,
+  transitionDeploymentStatus,
+} from "../db/queries/workspace-deployments.ts"
 import { getInstallationOctokit } from "./github.ts"
 import { findConnectionsByName } from "../db/queries/connections.ts"
 import { getConnectionScopeConfig, scopeListAllows } from "./connection-scope.ts"
@@ -31,6 +35,12 @@ import { assumeOrgBrokerRole } from "./org-broker-auth.ts"
 import { getConnectionSecret } from "./connection-secrets.ts"
 import { createHmac } from "node:crypto"
 import { findOrgById } from "../db/queries/organizations.ts"
+import { cascadeFailure, notifyDownstreams } from "./deployment-side-effects.ts"
+import { deriveLifecycleConditions, deriveWorkspaceLifecycleState } from "./lifecycle-conditions.ts"
+
+export interface HostedLifecycleExecutionResult {
+  runId: string | null
+}
 
 export async function executeHostedLifecycleForDeployment(values: {
   deployment: {
@@ -46,14 +56,14 @@ export async function executeHostedLifecycleForDeployment(values: {
     installationId: number | null
   }
   outputs: Record<string, unknown>
-}): Promise<void> {
+}): Promise<HostedLifecycleExecutionResult> {
   if (!values.deployment.runGroupId || !values.deployment.installationId) {
-    return
+    return { runId: null }
   }
 
   const runGroup = await findRunGroupById(values.deployment.runGroupId)
   if (!runGroup?.repoBindingId) {
-    return
+    return { runId: null }
   }
 
   const binding = await findPrincipalRepoBindingById(runGroup.repoBindingId)
@@ -73,7 +83,7 @@ export async function executeHostedLifecycleForDeployment(values: {
     : values.deployment.environmentName
   const configRaw = await fetchProducerConfig(values.deployment.installationId, repoFullName, values.deployment.headSha)
   if (!configRaw) {
-    return
+    return { runId: null }
   }
   const baseSha = await resolveHostedLifecycleBaseSha({
     installationId: values.deployment.installationId,
@@ -83,13 +93,13 @@ export async function executeHostedLifecycleForDeployment(values: {
   const config = parseYaffleToml(configRaw)
   const workspace = config.workspaces.find((entry: Workspace) => entry.path === values.deployment.workspacePath)
   if (!workspace) {
-    return
+    return { runId: null }
   }
 
   const activationHooks = lifecycleHooksForEnvironment(workspace.activation ?? [], environmentName)
   const verificationHooks = lifecycleHooksForEnvironment(workspace.verification ?? [], environmentName)
   if (activationHooks.length === 0 && verificationHooks.length === 0) {
-    return
+    return { runId: null }
   }
 
   let lifecycleRun = await findLifecycleRunByRunGroupId(runGroup.id)
@@ -146,6 +156,78 @@ export async function executeHostedLifecycleForDeployment(values: {
 
   for (const pending of pendingDispatches) {
     await dispatchHostedLifecycleItem(pending.itemId)
+  }
+
+  return { runId: lifecycleRun.id }
+}
+
+export async function reconcileHostedDeploymentState(values: {
+  deploymentId: string
+  workspacePath: string
+  lifecycleRunId: string | null
+}): Promise<void> {
+  const deployment = await findDeploymentById(values.deploymentId)
+  if (!deployment || deployment.status === "destroyed") {
+    return
+  }
+
+  const workspaceItems = values.lifecycleRunId
+    ? (await listLifecycleItemsForRun(values.lifecycleRunId)).filter((item) => item.workspacePath === values.workspacePath)
+    : []
+
+  const workspaceState = deriveWorkspaceLifecycleState(
+    workspaceItems.map((item) => ({
+      workspacePath: item.workspacePath,
+      phase: item.phase,
+      state: item.state,
+      scopes: item.scopes,
+    })),
+  )
+  const conditions = deriveLifecycleConditions(
+    workspaceItems.map((item) => ({
+      workspacePath: item.workspacePath,
+      phase: item.phase,
+      state: item.state,
+      scopes: item.scopes,
+    })),
+  )
+
+  if (conditions.infra_ready.met) {
+    await notifyDownstreams(deployment.id, "apply")
+  }
+
+  const infraDagFailed = conditions.infra_ready.vector.degraded > 0
+    || conditions.infra_ready.vector.blocked > 0
+    || conditions.infra_ready.vector.failed > 0
+
+  if (workspaceState.deploymentStatus === "failed") {
+    const updated = await transitionDeploymentStatus(
+      deployment.id,
+      ["planning", "applying", "activating", "ready"],
+      "failed",
+    )
+    if (updated && infraDagFailed) {
+      await cascadeFailure(deployment.id)
+    }
+    return
+  }
+
+  if (workspaceState.deploymentStatus === "activating") {
+    await transitionDeploymentStatus(
+      deployment.id,
+      ["planning", "applying"],
+      "activating",
+    )
+    return
+  }
+
+  await transitionDeploymentStatus(
+    deployment.id,
+    ["planning", "applying", "activating"],
+    "ready",
+  )
+  if (infraDagFailed) {
+    await cascadeFailure(deployment.id)
   }
 }
 

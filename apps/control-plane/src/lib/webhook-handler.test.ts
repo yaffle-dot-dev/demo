@@ -15,7 +15,7 @@ import { db } from "./db.ts"
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
 import { setRepoMapping } from "../db/queries/repo-mappings.ts"
 import { claimScanJob, completeScanJob, createScanJob } from "../db/queries/scan-jobs.ts"
-import { iacJobHistory, iacJobs, previews } from "../db/schema.ts"
+import { iacJobHistory, iacJobs, previews, runGroups } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
 import { completeRunGroup } from "./run-group-orchestrator.ts"
 import { createHandler } from "./webhook-handler.ts"
@@ -333,6 +333,11 @@ describe("webhook-handler", () => {
     expect(jobs[0].jobType).toBe("plan")
     expect(jobs[0].deploymentId).toBe(pvs[0].id)
 
+    const groups = await db.select().from(runGroups)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].repoBindingId).toBeTruthy()
+    expect(groups[0].selectedWorkspacePaths).toEqual(["infra"])
+
     // Runner is NOT called - execution happens via IaC engine
     expect(runner.calls).toHaveLength(0)
   })
@@ -593,6 +598,11 @@ describe("webhook-handler", () => {
     const jobs = await getQueuedJobs()
     expect(jobs).toHaveLength(1)
     expect(jobs[0].jobType).toBe("plan")
+
+    const groups = await db.select().from(runGroups)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].repoBindingId).toBeTruthy()
+    expect(groups[0].selectedWorkspacePaths).toEqual(["infra"])
 
     // Runner NOT called - execution via IaC engine
     expect(runner.calls).toHaveLength(0)

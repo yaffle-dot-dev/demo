@@ -70,11 +70,13 @@ import { getRunnerCredentialHosts, getRunnerReachableTfcHost } from "../lib/tfc-
 import {
   cascadeFailure,
   notifyDestroyComplete,
-  notifyDownstreams,
 } from "../lib/deployment-side-effects.ts"
 import { resolveExecutionCredentialsForDeployment } from "../lib/execution-credentials.ts"
 import { publishHostedOutputModuleForRunGroupBinding } from "../lib/hosted-output-modules.ts"
-import { executeHostedLifecycleForDeployment } from "../lib/hosted-lifecycle.ts"
+import {
+  executeHostedLifecycleForDeployment,
+  reconcileHostedDeploymentState,
+} from "../lib/hosted-lifecycle.ts"
 import { getConfiguredSchedulerConcurrencyLimits } from "../lib/scheduler.ts"
 import { isWarmRunnerWorkspaceExcluded } from "../lib/warm-runner.ts"
 
@@ -984,7 +986,7 @@ runnerJobRoute.post("/complete", async (c) => {
               workspacePath: deployment.workspacePath,
               outputs: latestOutputs,
             })
-            await executeHostedLifecycleForDeployment({
+            const lifecycle = await executeHostedLifecycleForDeployment({
               deployment: {
                 id: deployment.id,
                 orgId: deployment.orgId,
@@ -999,9 +1001,11 @@ runnerJobRoute.post("/complete", async (c) => {
               },
               outputs: latestOutputs ?? {},
             })
-
-            await updateDeploymentStatus(deployment.id, "ready")
-            await notifyDownstreams(deployment.id, "apply")
+            await reconcileHostedDeploymentState({
+              deploymentId: deployment.id,
+              workspacePath: deployment.workspacePath,
+              lifecycleRunId: lifecycle.runId,
+            })
           } catch (error) {
             logger.error("runner.complete.noop_lifecycle_failed", {
               "job.id": jobId,
@@ -1025,7 +1029,7 @@ runnerJobRoute.post("/complete", async (c) => {
               ? result.outputs as Record<string, unknown>
               : null,
           })
-          await executeHostedLifecycleForDeployment({
+          const lifecycle = await executeHostedLifecycleForDeployment({
             deployment: {
               id: deployment.id,
               orgId: deployment.orgId,
@@ -1042,9 +1046,11 @@ runnerJobRoute.post("/complete", async (c) => {
               ? result.outputs as Record<string, unknown>
               : {},
           })
-
-          await updateDeploymentStatus(deployment.id, "ready")
-          await notifyDownstreams(deployment.id, "apply")
+          await reconcileHostedDeploymentState({
+            deploymentId: deployment.id,
+            workspacePath: deployment.workspacePath,
+            lifecycleRunId: lifecycle.runId,
+          })
         } catch (error) {
           logger.error("runner.complete.hosted_output_publish_failed", {
             "job.id": jobId,

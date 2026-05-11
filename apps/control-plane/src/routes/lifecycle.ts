@@ -21,12 +21,16 @@ import {
 } from "../db/queries/lifecycle.ts"
 import { findConnectionsByName } from "../db/queries/connections.ts"
 import { findEnvironmentPolicy } from "../db/queries/environment-policies.ts"
+import { findDeploymentByRunGroupAndWorkspacePath } from "../db/queries/workspace-deployments.ts"
 import { ensurePrincipalRepoBinding, findPrincipalRepoBindingById } from "../db/queries/principals.ts"
 import { findOrgMembership, findOrgById } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { getConnectionSecret } from "../lib/connection-secrets.ts"
 import { getInstallationOctokit } from "../lib/github.ts"
-import { dispatchHostedLifecycleVerificationIfReady } from "../lib/hosted-lifecycle.ts"
+import {
+  dispatchHostedLifecycleVerificationIfReady,
+  reconcileHostedDeploymentState,
+} from "../lib/hosted-lifecycle.ts"
 import { assumeOrgBrokerRole } from "../lib/org-broker-auth.ts"
 import { buildPublicUrl } from "../lib/public-origin.ts"
 import { getConnectionScopeConfig, scopeListAllows } from "../lib/connection-scope.ts"
@@ -519,6 +523,20 @@ lifecycleRoute.post("/completions/:token", async (c) => {
         status: finalStatus,
         finishedAt: finalStatus === "running" ? null : new Date(),
       })
+    }
+
+    if (consumed.run.runGroupId) {
+      const deployment = await findDeploymentByRunGroupAndWorkspacePath(
+        consumed.run.runGroupId,
+        consumed.item.workspacePath,
+      )
+      if (deployment) {
+        await reconcileHostedDeploymentState({
+          deploymentId: deployment.id,
+          workspacePath: deployment.workspacePath,
+          lifecycleRunId: consumed.run.id,
+        })
+      }
     }
   }
 

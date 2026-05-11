@@ -20,6 +20,11 @@ import {
 } from "../lib/config-toml.ts"
 import { getEnv } from "../lib/env.ts"
 import { fetchFileContent, getInstallationToken } from "../lib/github.ts"
+import {
+  deriveLifecycleConditions,
+  deriveRunGroupLifecycleState,
+  deriveWorkspaceLifecycleState,
+} from "../lib/lifecycle-conditions.ts"
 import { logger } from "../lib/telemetry.ts"
 import { buildWorkspaceVariablesByPath, type WorkspaceVariablesByPath } from "../lib/workspace-variables.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
@@ -52,7 +57,7 @@ const manualConvergeSchema = z.object({
   environmentName: z.string().min(1),
   ref: z.string().min(1),
   headSha: z.string().min(1),
-  workspacePaths: z.array(z.string().min(1)).min(1),
+  workspacePaths: z.array(z.string().min(1)).default([]),
 })
 
 const uuidParam = z.string().uuid()
@@ -157,11 +162,17 @@ export function createCloudConvergeRoute(deps: {
       )
     }
 
-    const eligibleWorkspacePaths = new Set(
-      getWorkspacesForEnvironment(config, values.environmentName, ctx.kind === "pull_request"),
+    const eligibleWorkspacePathsInOrder = getWorkspacesForEnvironment(
+      config,
+      values.environmentName,
+      ctx.kind === "pull_request",
     )
-    const selectedWorkspacePaths = [...new Set(values.workspacePaths)]
-    const invalidWorkspacePaths = selectedWorkspacePaths.filter((workspacePath) =>
+    const eligibleWorkspacePaths = new Set(eligibleWorkspacePathsInOrder)
+    const requestedWorkspacePaths = [...new Set(values.workspacePaths)]
+    const selectedWorkspacePaths = requestedWorkspacePaths.length > 0
+      ? requestedWorkspacePaths
+      : eligibleWorkspacePathsInOrder
+    const invalidWorkspacePaths = requestedWorkspacePaths.filter((workspacePath) =>
       !eligibleWorkspacePaths.has(workspacePath)
     )
     if (invalidWorkspacePaths.length > 0) {
@@ -278,13 +289,29 @@ export function createCloudConvergeRoute(deps: {
     const latestRuns = await listRunsForDeployments(deployments.map((deployment) => deployment.id))
     const lifecycleState = await getLifecycleStateForRunGroup(runGroup.id)
     const lifecycleEvents = await listLifecycleEventsForItems(lifecycleState?.items.map((item) => item.id) ?? [])
+    const lifecycleItems = lifecycleState?.items ?? []
 
     const serializedDeployments = await Promise.all(deployments.map(async (deployment) => {
       const latestRun = latestRuns.get(deployment.id)?.[0] ?? null
+      const workspaceLifecycleItems = lifecycleItems.filter((item) => item.workspacePath === deployment.workspacePath)
+      const workspaceLifecycleState = deriveWorkspaceLifecycleState(
+        workspaceLifecycleItems.map((item) => ({
+          workspacePath: item.workspacePath,
+          phase: item.phase,
+          state: item.state,
+          scopes: item.scopes,
+        })),
+      )
       const base = {
         id: deployment.id,
         workspacePath: deployment.workspacePath,
         status: deployment.status,
+        lifecycle: workspaceLifecycleItems.length > 0
+          ? {
+              deploymentStatus: workspaceLifecycleState.deploymentStatus,
+              conditions: serializeLifecycleConditions(workspaceLifecycleState.conditions),
+            }
+          : null,
         latestRun: latestRun
           ? {
               id: latestRun.id,
@@ -316,10 +343,16 @@ export function createCloudConvergeRoute(deps: {
     const runGroupStatus = deriveCloudConvergeRunGroupStatus(
       runGroup.status,
       serializedDeployments.map((deployment) => ({
+        workspacePath: deployment.workspacePath,
         status: deployment.status,
         latestRunStatus: deployment.latestRun?.status ?? null,
       })),
-      lifecycleState?.items.map((item) => item.state) ?? null,
+      lifecycleItems.map((item) => ({
+        workspacePath: item.workspacePath,
+        phase: item.phase,
+        state: item.state,
+        scopes: item.scopes,
+      })),
     )
 
     return c.json({
@@ -346,6 +379,14 @@ export function createCloudConvergeRoute(deps: {
                 executionMode: lifecycleState.run.executionMode,
                 startedAt: lifecycleState.run.startedAt.toISOString(),
                 finishedAt: lifecycleState.run.finishedAt?.toISOString() ?? null,
+                conditions: serializeLifecycleConditions(deriveLifecycleConditions(
+                  lifecycleItems.map((item) => ({
+                    workspacePath: item.workspacePath,
+                    phase: item.phase,
+                    state: item.state,
+                    scopes: item.scopes,
+                  })),
+                )),
               },
               items: lifecycleState.items.map((item) => ({
                 id: item.id,
@@ -493,8 +534,8 @@ function stripGitRef(ref: string): string {
 
 function deriveCloudConvergeRunGroupStatus(
   runGroupStatus: string,
-  deployments: Array<{ status: string; latestRunStatus: string | null }>,
-  lifecycleItemStates: string[] | null,
+  deployments: Array<{ workspacePath: string; status: string; latestRunStatus: string | null }>,
+  lifecycleItems: Array<{ workspacePath: string; phase: string; state: string; scopes: string[] }>,
 ): string {
   if (
     deployments.some((deployment) =>
@@ -505,35 +546,29 @@ function deriveCloudConvergeRunGroupStatus(
     return "failed"
   }
 
-  if (!lifecycleItemStates || lifecycleItemStates.length === 0) {
+  if (deployments.length === 0 || lifecycleItems.length === 0) {
     return runGroupStatus
   }
-
-  const lifecycleStatus = lifecycleItemStates.some((state) => state === "failed")
-    ? "failed"
-    : lifecycleItemStates.some((state) => state === "degraded")
-      ? "degraded"
-      : lifecycleItemStates.every((state) => state === "succeeded")
-        ? "succeeded"
-        : "running"
 
   if (runGroupStatus === "failed") {
     return "failed"
   }
 
-  if (lifecycleStatus === "running") {
-    return "running"
-  }
+  return deriveRunGroupLifecycleState({
+    deployments,
+    items: lifecycleItems,
+  }).status
+}
 
-  if (lifecycleStatus === "failed") {
-    return "failed"
-  }
-
-  if (lifecycleStatus === "degraded") {
-    return "partial"
-  }
-
-  return runGroupStatus
+function serializeLifecycleConditions(
+  conditions: ReturnType<typeof deriveLifecycleConditions>,
+): Array<{
+  name: string
+  met: boolean
+  summary: string
+  vector: { pending: number; running: number; succeeded: number; degraded: number; blocked: number; failed: number }
+}> {
+  return Object.values(conditions)
 }
 
 function buildCloudRunGroupWebUrl(orgSlug: string, repo: string, environmentName: string): string {

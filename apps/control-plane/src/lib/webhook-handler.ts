@@ -20,6 +20,11 @@ import {
 import { findOrgById } from "../db/queries/organizations.ts"
 import { findOrgForRepo } from "../db/queries/repo-mappings.ts"
 import {
+  createPrincipal,
+  ensurePrincipalRepoBinding,
+  findPrincipalRepoBindingByNamespaceAndFingerprint,
+} from "../db/queries/principals.ts"
+import {
   findDeploymentById,
   findDeploymentsByEnvironment,
   updateDeploymentStatus,
@@ -542,6 +547,28 @@ function inferEnvironmentIdentity(ctx: WebhookContext): {
   }
 }
 
+const WEBHOOK_REPO_FINGERPRINT_PREFIX = "webhook-hosted::"
+
+async function ensureWebhookRunGroupRepoBinding(ctx: WebhookContext) {
+  const canonicalRepoNamespace = `${ctx.owner}--${ctx.repo}`
+  const localRepoFingerprint = `${WEBHOOK_REPO_FINGERPRINT_PREFIX}${canonicalRepoNamespace}`
+
+  const existing = await findPrincipalRepoBindingByNamespaceAndFingerprint({
+    canonicalRepoNamespace,
+    localRepoFingerprint,
+  })
+  if (existing) {
+    return existing
+  }
+
+  const principal = await createPrincipal({ type: "anonymous_session" })
+  return ensurePrincipalRepoBinding({
+    principalId: principal.id,
+    canonicalRepoNamespace,
+    localRepoFingerprint,
+  })
+}
+
 function extractConfigErrorLocation(raw: string, message: string): { line: number | null; column: number | null } {
   const parseMatch = message.match(/line\s+(\d+),\s*column\s+(\d+)/i)
   if (parseMatch) {
@@ -627,12 +654,14 @@ async function recordConfigLoadFailure(
 
   const runGroup = await createRunGroup({
     orgId,
+    repoBindingId: (await ensureWebhookRunGroupRepoBinding(ctx)).id,
     repo: ctx.repo,
     environmentKind: identity.environmentKind,
     environmentName: identity.environmentName,
     prNumber: identity.prNumber,
     ref: identity.ref,
     headSha: ctx.headSha,
+    selectedWorkspacePaths: [],
     trigger: identity.trigger,
     status: "failed",
     dependencyGraph: {
@@ -793,12 +822,14 @@ async function handlePrOpenedOrUpdated(
   const trigger: RunGroupTrigger = ctx.action === "opened" ? "pr_opened" : "pr_sync"
   const runGroup = await createRunGroup({
     orgId: org.id,
+    repoBindingId: (await ensureWebhookRunGroupRepoBinding(ctx)).id,
     repo: ctx.repo,
     environmentKind: "transient",
     environmentName,
     prNumber: ctx.prNumber,
     ref: `refs/heads/${ctx.branch}`,
     headSha: ctx.headSha,
+    selectedWorkspacePaths: workspacePaths,
     trigger,
     status: "pending",
   })
@@ -1072,12 +1103,14 @@ async function handlePushEvent(
   // Push events to the default branch are "named" environments (e.g., "main", "production")
   const runGroup = await createRunGroup({
     orgId: org.id,
+    repoBindingId: (await ensureWebhookRunGroupRepoBinding(ctx)).id,
     repo: ctx.repo,
     environmentKind: "named",
     environmentName,
     prNumber: null, // null for branch/env runs
     ref: ctx.ref,
     headSha: ctx.headSha,
+    selectedWorkspacePaths: workspacePaths,
     trigger: "push",
     status: "pending",
   })

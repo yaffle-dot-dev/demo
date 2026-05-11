@@ -82,6 +82,7 @@
     "pending",
     "planning",
     "applying",
+    "activating",
     "awaiting_approval",
     "ready",
     "failed",

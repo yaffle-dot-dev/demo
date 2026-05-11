@@ -148,6 +148,12 @@ export function getWorkspaceDisplayStatus(params: {
   if (workspace.preview.status === "out_of_scope") {
     return "out_of_scope"
   }
+  if (workspace.preview.status === "failed" || workspace.preview.status === "system_error") {
+    return "failed"
+  }
+  if (workspace.preview.status === "activating") {
+    return "activating"
+  }
   const plan = workspace.runs.find((run) => run.runType === "plan")
   const apply = workspace.runs.find((run) => run.runType === "apply")
 
@@ -178,7 +184,7 @@ export function getWorkspaceDisplayStatus(params: {
 }
 
 export function isWorkspaceActivelyRunningStatus(status: string): boolean {
-  return status === "planning" || status === "applying" || status === "destroying"
+  return status === "planning" || status === "applying" || status === "activating" || status === "destroying"
 }
 
 export function isWorkspaceInProgressStatus(status: string): boolean {
@@ -186,6 +192,7 @@ export function isWorkspaceInProgressStatus(status: string): boolean {
     || status === "pending"
     || status === "planning"
     || status === "applying"
+    || status === "activating"
     || status === "awaiting_approval"
     || status === "destroying"
 }

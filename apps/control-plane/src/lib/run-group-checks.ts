@@ -6,7 +6,9 @@ import { db } from "./db.ts"
 import { getEnv } from "./env.ts"
 import { createCheckRun, updateCheckRun } from "./github.ts"
 import { getRunGroupCheckSummary } from "./run-group-check-copy.ts"
+import { deriveRunGroupLifecycleState } from "./lifecycle-conditions.ts"
 import { logger } from "./telemetry.ts"
+import { getLifecycleStateForRunGroup } from "../db/queries/lifecycle.ts"
 import { findGithubInstallationsForOrg } from "../db/queries/organizations.ts"
 import { findRepoByInstallationAndName } from "../db/queries/repositories.ts"
 import { iacJobs, organizations, runGroups, workspaceDeployments } from "../db/schema.ts"
@@ -180,7 +182,10 @@ export async function syncRunGroupCheckFromDeployments(runGroupId: string): Prom
   }
 
   const deployments = await db
-    .select({ status: workspaceDeployments.status })
+    .select({
+      status: workspaceDeployments.status,
+      workspacePath: workspaceDeployments.workspacePath,
+    })
     .from(workspaceDeployments)
     .where(eq(workspaceDeployments.runGroupId, runGroupId))
 
@@ -209,12 +214,31 @@ export async function syncRunGroupCheckFromDeployments(runGroupId: string): Prom
     return
   }
 
-  if (statuses.every((status) => status === "ready" || status === "destroyed")) {
-    await completeRunGroupCheck({
-      runGroupId,
-      conclusion: "success",
-    })
+  const lifecycleState = await getLifecycleStateForRunGroup(runGroupId)
+  const lifecycle = deriveRunGroupLifecycleState({
+    deployments,
+    items: (lifecycleState?.items ?? []).map((item) => ({
+      workspacePath: item.workspacePath,
+      phase: item.phase,
+      state: item.state,
+      scopes: item.scopes,
+    })),
+  })
+
+  if (!lifecycle.isComplete) {
+    return
   }
+
+  await completeRunGroupCheck({
+    runGroupId,
+    conclusion: lifecycle.status === "success" ? "success" : "failure",
+    ...(lifecycle.status === "partial"
+      ? {
+          title: "Settled with degradation",
+          summary: "Yaffle finished the infrastructure changes for this commit, but an acceptable lifecycle check settled degraded.",
+        }
+      : {}),
+  })
 }
 
 async function loadRunGroupCheckContext(runGroupId: string): Promise<RunGroupCheckContext | undefined> {

@@ -3,6 +3,7 @@ export type PreviewStatus =
   | "planning"
   | "awaiting_apply"
   | "applying"
+  | "activating"
   | "awaiting_approval"
   | "ready"
   | "failed"

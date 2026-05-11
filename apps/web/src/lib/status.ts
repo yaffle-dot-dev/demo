@@ -13,6 +13,7 @@ export const STATUS_CONFIG: Record<string, { label: string; color: string; icon:
   planned: { label: "Planned", color: "text-status-ready", icon: "✓" },
   awaiting_apply: { label: "Planned", color: "text-status-ready", icon: "✓" },
   applying: { label: "Applying", color: "text-status-applying", icon: "..." },
+  activating: { label: "Activating", color: "text-status-applying", icon: "..." },
   awaiting_approval: { label: "Awaiting approval", color: "text-status-planning", icon: "?" },
   ready: { label: "Ready", color: "text-status-ready", icon: "✓" },
   failed: { label: "Failed", color: "text-status-failed", icon: "✗" },
@@ -27,6 +28,7 @@ export const STATUS_CONFIG: Record<string, { label: string; color: string; icon:
   // Run group aggregate states
   in_progress: { label: "In Progress", color: "text-status-applying", icon: "..." },
   success: { label: "Success", color: "text-status-ready", icon: "✓" },
+  partial: { label: "Degraded", color: "text-status-planning", icon: "!" },
   mixed: { label: "Mixed", color: "text-status-failed", icon: "!" },
 }
 

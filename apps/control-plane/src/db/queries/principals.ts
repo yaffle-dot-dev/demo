@@ -259,6 +259,27 @@ export async function findPrincipalRepoBindingById(
   })
 }
 
+export async function findPrincipalRepoBindingByNamespaceAndFingerprint(values: {
+  canonicalRepoNamespace: string
+  localRepoFingerprint: string
+}): Promise<PrincipalRepoBinding | undefined> {
+  return withDbSpan("select", "principal_repo_bindings", async () => {
+    const rows = await db
+      .select()
+      .from(principalRepoBindings)
+      .where(
+        and(
+          eq(principalRepoBindings.canonicalRepoNamespace, values.canonicalRepoNamespace),
+          eq(principalRepoBindings.localRepoFingerprint, values.localRepoFingerprint),
+        ),
+      )
+      .orderBy(desc(principalRepoBindings.lastSeenAt), desc(principalRepoBindings.createdAt))
+      .limit(1)
+
+    return rows[0]
+  })
+}
+
 export async function migrateAnonymousPrincipalToAccount(values: {
   anonymousPrincipalId: string
   accountPrincipalId: string

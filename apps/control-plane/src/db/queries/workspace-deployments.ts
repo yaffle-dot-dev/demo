@@ -1,4 +1,4 @@
-import { and, asc, arrayContains, desc, eq, gt, lt, notInArray, sql, type SQL } from "drizzle-orm"
+import { and, asc, arrayContains, desc, eq, gt, inArray, lt, notInArray, sql, type SQL } from "drizzle-orm"
 
 import type { PreviewStatus } from "@yaffle/shared"
 
@@ -639,6 +639,26 @@ export async function findDeploymentsByRunGroup(
   })
 }
 
+export async function findDeploymentByRunGroupAndWorkspacePath(
+  runGroupId: string,
+  workspacePath: string,
+): Promise<WorkspaceDeployment | undefined> {
+  return withDbSpan("select", "workspace_deployments", async () => {
+    const rows = await db
+      .select()
+      .from(workspaceDeployments)
+      .where(
+        and(
+          eq(workspaceDeployments.runGroupId, runGroupId),
+          eq(workspaceDeployments.workspacePath, workspacePath),
+        ),
+      )
+      .limit(1)
+
+    return rows[0]
+  })
+}
+
 /**
  * Mark a deployment as skipped (due to upstream failure).
  */
@@ -667,6 +687,58 @@ export async function markDeploymentSkipped(
       const { orgId, repo, environmentKind, environmentName } = updated[0]
       events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
     }
+  })
+}
+
+export async function transitionDeploymentStatus(
+  deploymentId: string,
+  fromStatuses: PreviewStatus[],
+  toStatus: PreviewStatus,
+): Promise<WorkspaceDeployment | undefined> {
+  if (fromStatuses.length === 0) {
+    return undefined
+  }
+
+  return withDbSpan("update", "workspace_deployments", async () => {
+    const updated = await db
+      .update(workspaceDeployments)
+      .set({
+        status: toStatus,
+        statusChangedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(workspaceDeployments.id, deploymentId),
+          inArray(workspaceDeployments.status, fromStatuses),
+        ),
+      )
+      .returning()
+
+    const deployment = updated[0]
+    if (!deployment) {
+      return undefined
+    }
+
+    events.emitDeploymentUpdate(
+      deployment.id,
+      deployment.orgId,
+      deployment.repo,
+      deployment.environmentKind as EnvironmentKind,
+      deployment.environmentName,
+    )
+    await enqueueEnvironmentGroupProjectionRebuild({
+      orgId: deployment.orgId,
+      repo: deployment.repo,
+      environmentKind: deployment.environmentKind as EnvironmentKind,
+      environmentName: deployment.environmentName,
+    })
+
+    if (deployment.runGroupId) {
+      const { syncRunGroupCheckFromDeployments } = await import("../../lib/run-group-checks.ts")
+      await syncRunGroupCheckFromDeployments(deployment.runGroupId)
+    }
+
+    return deployment
   })
 }
 

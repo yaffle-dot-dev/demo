@@ -43,6 +43,7 @@
     type PreviewDagNode,
     type PreviewLifecycleDagNode,
   } from "$lib/lifecycle-dag"
+  import { deriveLifecycleAggregateStatus } from "$lib/lifecycle-conditions"
   import { computeCliAlignedColumns } from "$lib/dag-layout-cli"
 
   interface Props {
@@ -977,6 +978,7 @@
     return status === "pending"
       || status === "planning"
       || status === "applying"
+      || status === "activating"
       || status === "awaiting_approval"
       || status === "destroying"
   })
@@ -1538,6 +1540,10 @@
       return "This workspace is paused and waiting for approval before apply can start."
     }
 
+    if (selectedWorkspaceDisplayStatus === "activating") {
+      return "Infrastructure is applied. Yaffle is waiting for post-apply activation to settle."
+    }
+
     if (selectedWorkspaceDisplayStatus === "planning" || selectedWorkspaceDisplayStatus === "applying") {
       return "This workspace is starting up. Live run details will appear as soon as the runner claims work."
     }
@@ -1554,11 +1560,38 @@
   )
 
   // Workspace statuses for the run group status badge.
-  const workspaceStatusList = $derived(
-    filteredWorkspaces.map((workspace) =>
+  const lifecycleAggregateStatus = $derived.by(() =>
+    isLatestRunGroup
+      ? deriveLifecycleAggregateStatus({
+          workspaces: filteredWorkspaces,
+          lifecycle: activeEnvironmentLifecycle,
+        })
+      : null,
+  )
+
+  const workspaceStatusList = $derived.by(() => {
+    const statuses = filteredWorkspaces.map((workspace) =>
       workspaceDisplayStatuses[workspace.preview.workspacePath] ?? workspace.preview.status
     )
-  )
+
+    if (lifecycleAggregateStatus === "partial") {
+      return [...statuses, "partial"]
+    }
+
+    if (lifecycleAggregateStatus === "failed") {
+      return statuses.some((status) => status === "failed" || status === "system_error")
+        ? statuses
+        : [...statuses, "failed"]
+    }
+
+    if (lifecycleAggregateStatus === "running") {
+      return statuses.some((status) => isWorkspaceInProgressStatus(status) || status === "failed")
+        ? statuses
+        : [...statuses, "activating"]
+    }
+
+    return statuses
+  })
 
   // Build workspace name matching server-side logic
   function buildWorkspaceName(repoName: string, environment: string, identifier: string, workspacePath: string): string {

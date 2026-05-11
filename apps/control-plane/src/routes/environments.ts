@@ -694,6 +694,7 @@ function aggregateStatus(workspaces: EnvironmentWorkspace[]): string {
   if (statuses.has("failed")) return "failed"
   if (
     statuses.has("applying") ||
+    statuses.has("activating") ||
     statuses.has("planning") ||
     statuses.has("pending") ||
     statuses.has("awaiting_approval")

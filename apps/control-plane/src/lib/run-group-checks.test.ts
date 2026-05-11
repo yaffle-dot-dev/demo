@@ -13,8 +13,10 @@ import { getRunGroupCheckSummary } from "./run-group-check-copy.ts"
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
 import { setRepoMapping } from "../db/queries/repo-mappings.ts"
 import { completeJob } from "../db/queries/iac-jobs.ts"
+import { ensureAccountPrincipal, ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
 import { claimScanJob, completeScanJob, createScanJob } from "../db/queries/scan-jobs.ts"
-import { runGroups, previews, iacJobs } from "../db/schema.ts"
+import { iacJobs, lifecycleItems, lifecycleRuns, previews, runGroups } from "../db/schema.ts"
+import { createTestUser } from "../test-utils/auth.ts"
 import { db } from "./db.ts"
 import { KeyedMutex } from "./mutex.ts"
 import type { Runner, RunOpts } from "./runner.ts"
@@ -350,6 +352,147 @@ describe("run-group-checks", () => {
 
     const updatedGroups = await db.select().from(runGroups)
     expect(updatedGroups[0].checkCompletedAt).not.toBeNull()
+  })
+
+  test("keeps the check open while acceptable lifecycle work is still running", async () => {
+    await handler.handleWebhookEvent(makePrContext())
+
+    mockUpdateCheckRun.mockReset()
+
+    const groups = await db.select().from(runGroups)
+    const deployments = await db.select().from(previews)
+    const jobs = await db.select().from(iacJobs)
+    expect(groups).toHaveLength(1)
+    expect(deployments).toHaveLength(1)
+    expect(jobs).toHaveLength(1)
+
+    await completeJob(jobs[0].id, {})
+
+    const user = await createTestUser({ id: "lifecycle-check-user" })
+    const principal = await ensureAccountPrincipal({ userId: user.id })
+    const binding = await ensurePrincipalRepoBinding({
+      principalId: principal.id,
+      canonicalRepoNamespace: "test-org--test-repo",
+      localRepoFingerprint: "repo-fingerprint-1",
+    })
+
+    const [run] = await db.insert(lifecycleRuns).values({
+      principalId: principal.id,
+      repoBindingId: binding.id,
+      runGroupId: groups[0].id,
+      environmentName: "pr-42",
+      executionMode: "cloud",
+      status: "running",
+    }).returning()
+
+    await db.insert(lifecycleItems).values([
+      {
+        runId: run.id,
+        workspacePath: deployments[0].workspacePath,
+        key: "activate",
+        phase: "activation",
+        kind: "webhook",
+        state: "succeeded",
+        failurePolicy: "failed",
+        scopes: ["usable"],
+        destinationUrl: "https://example.com/activate",
+        destinationClass: "public",
+        dispatchMode: "cloud",
+      },
+      {
+        runId: run.id,
+        workspacePath: deployments[0].workspacePath,
+        key: "verify",
+        phase: "verification",
+        kind: "webhook",
+        state: "running",
+        failurePolicy: "failed",
+        scopes: ["acceptable"],
+        destinationUrl: "https://example.com/verify",
+        destinationClass: "public",
+        dispatchMode: "cloud",
+      },
+    ])
+
+    await updateDeploymentStatus(deployments[0].id, "ready")
+
+    expect(mockUpdateCheckRun).not.toHaveBeenCalled()
+  })
+
+  test("fails the check when acceptable lifecycle work settles degraded", async () => {
+    await handler.handleWebhookEvent(makePrContext())
+
+    mockUpdateCheckRun.mockReset()
+
+    const groups = await db.select().from(runGroups)
+    const deployments = await db.select().from(previews)
+    const jobs = await db.select().from(iacJobs)
+    expect(groups).toHaveLength(1)
+    expect(deployments).toHaveLength(1)
+    expect(jobs).toHaveLength(1)
+
+    await completeJob(jobs[0].id, {})
+
+    const user = await createTestUser({ id: "lifecycle-check-degraded-user" })
+    const principal = await ensureAccountPrincipal({ userId: user.id })
+    const binding = await ensurePrincipalRepoBinding({
+      principalId: principal.id,
+      canonicalRepoNamespace: "test-org--test-repo",
+      localRepoFingerprint: "repo-fingerprint-2",
+    })
+
+    const [run] = await db.insert(lifecycleRuns).values({
+      principalId: principal.id,
+      repoBindingId: binding.id,
+      runGroupId: groups[0].id,
+      environmentName: "pr-42",
+      executionMode: "cloud",
+      status: "degraded",
+      finishedAt: new Date(),
+    }).returning()
+
+    await db.insert(lifecycleItems).values([
+      {
+        runId: run.id,
+        workspacePath: deployments[0].workspacePath,
+        key: "activate",
+        phase: "activation",
+        kind: "webhook",
+        state: "succeeded",
+        failurePolicy: "failed",
+        scopes: ["usable"],
+        destinationUrl: "https://example.com/activate",
+        destinationClass: "public",
+        dispatchMode: "cloud",
+      },
+      {
+        runId: run.id,
+        workspacePath: deployments[0].workspacePath,
+        key: "verify",
+        phase: "verification",
+        kind: "webhook",
+        state: "degraded",
+        failurePolicy: "degraded",
+        scopes: ["acceptable"],
+        destinationUrl: "https://example.com/verify",
+        destinationClass: "public",
+        dispatchMode: "cloud",
+      },
+    ])
+
+    await updateDeploymentStatus(deployments[0].id, "ready")
+
+    expect(mockUpdateCheckRun).toHaveBeenCalledTimes(1)
+    expect(mockUpdateCheckRun).toHaveBeenCalledWith(0, "test-org", "test-repo", 123, {
+      status: "completed",
+      conclusion: "failure",
+      detailsUrl:
+        "https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=" + groups[0].id,
+      title: "Settled with degradation",
+      summary:
+        "Yaffle finished the infrastructure changes for this commit, but an acceptable lifecycle check settled degraded.\n\n"
+        + `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${groups[0].id})`,
+    })
   })
 
   test("completes the check as failed when a push deployment fails", async () => {
