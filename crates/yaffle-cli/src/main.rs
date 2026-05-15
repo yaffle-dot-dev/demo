@@ -1,25 +1,18 @@
 use std::collections::BTreeMap;
 use std::fmt::{Display, Formatter};
 use std::io::{self, IsTerminal, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell};
-use crossterm::event::{self, Event, KeyCode};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
-use crossterm::{execute as crossterm_execute, terminal};
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
-use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
-use ratatui::Terminal;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -29,10 +22,10 @@ use yaffle_contracts::{
 };
 use yaffle_engine::{
     build_cloud_cli_authorize_url, clear_local_cloud_auth, compute_local_repo_fingerprint,
-    exchange_cloud_cli_login_code, execute, execute_with_progress,
-    get_cloud_remote_converge_status, load_local_cloud_auth_status,
+    exchange_cloud_cli_login_code, execute, execute_with_progress, get_cloud_cli_capabilities,
+    get_cloud_cli_inventory, get_cloud_remote_converge_status, load_local_cloud_auth_status,
     local_first_feature_token_configured, prepare_tf_login_exports, start_cloud_remote_converge,
-    CloudCliLoginResult, CloudRemoteConvergeHandle, CloudRemoteConvergeRequest,
+    CloudCliInventory, CloudCliLoginResult, CloudRemoteConvergeHandle, CloudRemoteConvergeRequest,
     CloudRemoteConvergeStatus, CloudRemoteLatestRunSummary, ConvergeWorkspacePhase,
     EngineProgressEvent, EngineRequest, LocalCloudAuthStatus, StoredPrincipalCredential,
     StoredPrincipalType, TofuLogStream,
@@ -42,17 +35,124 @@ use yaffle_graph::{
     WorkspaceGraphOptions,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct Color(&'static str);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Modifier(u8);
+
+impl Modifier {
+    const BOLD: Self = Self(1);
+    const UNDERLINED: Self = Self(1 << 1);
+}
+
+impl std::ops::BitOr for Modifier {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct Style {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fg: Option<Color>,
+    #[serde(skip_serializing_if = "is_false")]
+    bold: bool,
+    #[serde(skip_serializing_if = "is_false")]
+    underlined: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+impl Default for Style {
+    fn default() -> Self {
+        Self {
+            fg: None,
+            bold: false,
+            underlined: false,
+        }
+    }
+}
+
+impl Style {
+    fn default() -> Self {
+        Default::default()
+    }
+
+    fn fg(mut self, color: Color) -> Self {
+        self.fg = Some(color);
+        self
+    }
+
+    fn add_modifier(mut self, modifier: Modifier) -> Self {
+        self.bold = self.bold || modifier.0 & Modifier::BOLD.0 != 0;
+        self.underlined = self.underlined || modifier.0 & Modifier::UNDERLINED.0 != 0;
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct Span {
+    text: String,
+    style: Style,
+}
+
+impl Span {
+    fn raw(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            style: Style::default(),
+        }
+    }
+
+    fn styled(text: impl Into<String>, style: Style) -> Self {
+        Self {
+            text: text.into(),
+            style,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct Line {
+    spans: Vec<Span>,
+}
+
+impl From<Vec<Span>> for Line {
+    fn from(spans: Vec<Span>) -> Self {
+        Self { spans }
+    }
+}
+
+impl From<String> for Line {
+    fn from(text: String) -> Self {
+        Self {
+            spans: vec![Span::raw(text)],
+        }
+    }
+}
+
+impl From<&str> for Line {
+    fn from(text: &str) -> Self {
+        Self {
+            spans: vec![Span::raw(text)],
+        }
+    }
+}
+
 const CLOUD_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
-const YAFFLE_SURFACE: Color = Color::Rgb(12, 12, 11);
-const YAFFLE_SURFACE_RAISED: Color = Color::Rgb(24, 24, 26);
-const YAFFLE_BORDER: Color = Color::Rgb(61, 61, 50);
-const YAFFLE_BORDER_ACCENT: Color = Color::Rgb(78, 95, 41);
-const YAFFLE_TEXT: Color = Color::Rgb(250, 250, 248);
-const YAFFLE_TEXT_MUTED: Color = Color::Rgb(181, 181, 168);
-const YAFFLE_GREEN: Color = Color::Rgb(139, 196, 49);
-const YAFFLE_GREEN_SOFT: Color = Color::Rgb(109, 163, 35);
-const YAFFLE_CREAM: Color = Color::Rgb(252, 224, 71);
-const YAFFLE_RED: Color = Color::Rgb(250, 45, 45);
+const YAFFLE_BORDER: Color = Color("#3d3d32");
+const YAFFLE_BORDER_ACCENT: Color = Color("#4e5f29");
+const YAFFLE_TEXT: Color = Color("#fafaf8");
+const YAFFLE_TEXT_MUTED: Color = Color("#b5b5a8");
+const YAFFLE_GREEN: Color = Color("#8bc431");
+const YAFFLE_GREEN_SOFT: Color = Color("#6da323");
+const YAFFLE_CREAM: Color = Color("#fce047");
+const YAFFLE_RED: Color = Color("#fa2d2d");
 
 type CliResult = Result<(), CliFailure>;
 
@@ -497,6 +597,32 @@ fn follow_remote_converge(
     }
 }
 
+fn run_remote_converge_for_tui(
+    working_dir: PathBuf,
+    request: EngineRequest,
+    tx: mpsc::Sender<ConvergeTuiEvent>,
+) -> Result<CloudRemoteConvergeStatus, String> {
+    let principal =
+        load_account_cloud_principal(false, &request).map_err(|error| error.to_string())?;
+    let remote_request =
+        build_remote_converge_request(&working_dir, &request).map_err(|error| error.to_string())?;
+    let handle = start_cloud_remote_converge(&principal, &remote_request)
+        .map_err(|error| error.friendly_message())?;
+    let _ = tx.send(ConvergeTuiEvent::RemoteQueued(handle.clone()));
+
+    loop {
+        let snapshot = get_cloud_remote_converge_status(&principal, &handle.run_group_id)
+            .map_err(|error| error.friendly_message())?;
+        let _ = tx.send(ConvergeTuiEvent::RemoteStatus(snapshot.clone()));
+
+        if remote_status_terminal(&snapshot.run_group.status) {
+            return Ok(snapshot);
+        }
+
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
 fn maybe_print_remote_snapshot(
     previous: Option<&CloudRemoteConvergeStatus>,
     current: &CloudRemoteConvergeStatus,
@@ -670,7 +796,7 @@ fn infer_repo_full_name(working_dir: &Path, request: &EngineRequest) -> Result<S
     }
 
     let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let github_prefix = remote.split("github.com").nth(1).ok_or_else(|| {
+    parse_github_repo_full_name(&remote).ok_or_else(|| {
         command_error(
             false,
             Some(request.operation.clone()),
@@ -679,7 +805,11 @@ fn infer_repo_full_name(working_dir: &Path, request: &EngineRequest) -> Result<S
             "repo_identity_unavailable",
             "Remote converge currently requires a GitHub origin remote.",
         )
-    })?;
+    })
+}
+
+fn parse_github_repo_full_name(remote: &str) -> Option<String> {
+    let github_prefix = remote.split("github.com").nth(1)?;
     let trimmed = github_prefix
         .trim_start_matches(':')
         .trim_start_matches('/');
@@ -688,17 +818,10 @@ fn infer_repo_full_name(working_dir: &Path, request: &EngineRequest) -> Result<S
     let owner = parts.next().unwrap_or("");
     let repo = parts.next().unwrap_or("");
     if owner.is_empty() || repo.is_empty() {
-        return Err(command_error(
-            false,
-            Some(request.operation.clone()),
-            request.target.clone(),
-            Some(request.selection.clone()),
-            "repo_identity_unavailable",
-            "Could not infer owner/repo from git remote origin.",
-        ));
+        return None;
     }
 
-    Ok(format!("{owner}/{repo}"))
+    Some(format!("{owner}/{repo}"))
 }
 
 fn current_git_head_sha(working_dir: &Path, request: &EngineRequest) -> Result<String, CliFailure> {
@@ -982,105 +1105,482 @@ fn run_shell_with_startup(startup_converge: Option<EngineRequest>) -> CliResult 
         app.start_converge_in_place(request)?;
     }
 
-    enable_raw_mode().map_err(|error| {
-        command_error(
-            false,
-            None,
-            None,
-            None,
-            "tui_init_failed",
-            format!("Failed to enable terminal raw mode: {error}"),
-        )
-    })?;
-
-    let mut stdout = io::stdout();
-    crossterm_execute!(
-        stdout,
-        terminal::EnterAlternateScreen,
-        crossterm::cursor::Hide
-    )
-    .map_err(|error| {
-        command_error(
-            false,
-            None,
-            None,
-            None,
-            "tui_init_failed",
-            format!("Failed to enter the Yaffle terminal app: {error}"),
-        )
-    })?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend).map_err(|error| {
-        command_error(
-            false,
-            None,
-            None,
-            None,
-            "tui_init_failed",
-            format!("Failed to create the Yaffle terminal app: {error}"),
-        )
-    })?;
-
-    let loop_result = run_shell_loop(&mut terminal, &mut app);
-
-    let _ = disable_raw_mode();
-    let _ = crossterm_execute!(
-        terminal.backend_mut(),
-        terminal::LeaveAlternateScreen,
-        crossterm::cursor::Show
-    );
-    let _ = terminal.show_cursor();
-
-    match loop_result? {
-        ShellAction::Quit => Ok(()),
-    }
+    run_opentui_shell(app)
 }
 
-fn run_shell_loop(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut LocalAppState,
-) -> Result<ShellAction, CliFailure> {
-    loop {
-        terminal
-            .draw(|frame| render_shell_app(frame, app))
-            .map_err(|error| {
-                command_error(
-                    false,
-                    None,
-                    None,
-                    None,
-                    "tui_render_failed",
-                    format!("Failed to render the Yaffle terminal app: {error}"),
-                )
-            })?;
+fn run_opentui_shell(app: LocalAppState) -> CliResult {
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "tui_server_failed",
+            format!("Failed to bind the Yaffle OpenTUI IPC server: {error}"),
+        )
+    })?;
+    listener.set_nonblocking(true).map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "tui_server_failed",
+            format!("Failed to configure the Yaffle OpenTUI IPC server: {error}"),
+        )
+    })?;
+    let server_addr = listener.local_addr().map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "tui_server_failed",
+            format!("Failed to resolve the Yaffle OpenTUI IPC server address: {error}"),
+        )
+    })?;
+    let server_url = format!("http://{server_addr}");
+    let token = generate_pkce_verifier().map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "tui_server_failed",
+            format!("Failed to generate an OpenTUI IPC session token: {error}"),
+        )
+    })?;
 
-        if event::poll(Duration::from_millis(120)).map_err(|error| {
+    let app_state = Arc::new(Mutex::new(app));
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let server_error = Arc::new(Mutex::new(None::<CliFailure>));
+    let server_state = Arc::clone(&app_state);
+    let server_shutdown = Arc::clone(&shutdown);
+    let server_error_sink = Arc::clone(&server_error);
+    let server_token = token.clone();
+    let server_thread = thread::spawn(move || {
+        serve_opentui_requests(
+            listener,
+            server_state,
+            server_shutdown,
+            server_error_sink,
+            server_token,
+        );
+    });
+
+    let renderer_path = resolve_opentui_renderer_path()?;
+    let bun = std::env::var("YAFFLE_OPENTUI_BUN").unwrap_or_else(|_| "bun".to_string());
+    let status = Command::new(&bun)
+        .arg("run")
+        .arg(&renderer_path)
+        .env("YAFFLE_TUI_SERVER", &server_url)
+        .env("YAFFLE_TUI_TOKEN", &token)
+        .status()
+        .map_err(|error| {
+            shutdown.store(true, Ordering::SeqCst);
             command_error(
                 false,
                 None,
                 None,
                 None,
-                "tui_event_failed",
-                format!("Failed to poll terminal events: {error}"),
+                "opentui_renderer_failed",
+                format!(
+                    "Failed to launch the Yaffle OpenTUI renderer with `{bun}` at '{}': {error}",
+                    renderer_path.display(),
+                ),
             )
-        })? {
-            if let Event::Key(key_event) = event::read().map_err(|error| {
+        })?;
+
+    shutdown.store(true, Ordering::SeqCst);
+    let _ = server_thread.join();
+
+    if let Ok(mut error) = server_error.lock() {
+        if let Some(error) = error.take() {
+            return Err(error);
+        }
+    }
+
+    if !status.success() {
+        return Err(command_error(
+            false,
+            None,
+            None,
+            None,
+            "opentui_renderer_failed",
+            format!("Yaffle's OpenTUI renderer exited with status {status}."),
+        ));
+    }
+
+    Ok(())
+}
+
+fn resolve_opentui_renderer_path() -> Result<PathBuf, CliFailure> {
+    if let Ok(path) = std::env::var("YAFFLE_OPENTUI_RENDERER") {
+        let path = PathBuf::from(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        return Err(command_error(
+            false,
+            None,
+            None,
+            None,
+            "opentui_renderer_missing",
+            format!(
+                "YAFFLE_OPENTUI_RENDERER points at '{}', but that file does not exist.",
+                path.display(),
+            ),
+        ));
+    }
+
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let candidates = [manifest_dir.join("../../packages/cli/src/main.tsx")];
+
+    for candidate in candidates {
+        if candidate.is_file() {
+            return candidate.canonicalize().map_err(|error| {
                 command_error(
                     false,
                     None,
                     None,
                     None,
-                    "tui_event_failed",
-                    format!("Failed to read terminal events: {error}"),
+                    "opentui_renderer_missing",
+                    format!(
+                        "Failed to resolve OpenTUI renderer path '{}': {error}",
+                        candidate.display(),
+                    ),
                 )
-            })? {
-                if let Some(action) = app.handle_key(key_event.code)? {
-                    return Ok(action);
+            });
+        }
+    }
+
+    Err(command_error(
+        false,
+        None,
+        None,
+        None,
+        "opentui_renderer_missing",
+        "Could not find the Yaffle OpenTUI renderer. Run from the repo root or set YAFFLE_OPENTUI_RENDERER.",
+    ))
+}
+
+fn serve_opentui_requests(
+    listener: TcpListener,
+    app_state: Arc<Mutex<LocalAppState>>,
+    shutdown: Arc<AtomicBool>,
+    server_error: Arc<Mutex<Option<CliFailure>>>,
+    token: String,
+) {
+    while !shutdown.load(Ordering::SeqCst) {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                if let Err(error) = stream.set_nonblocking(false) {
+                    let _ = write_text_response(
+                        &mut stream,
+                        500,
+                        &format!("Failed to prepare OpenTUI IPC stream: {error}"),
+                    );
+                    continue;
                 }
+                if let Err(error) =
+                    handle_opentui_request(&mut stream, &app_state, &shutdown, token.as_str())
+                {
+                    let _ = write_text_response(&mut stream, 500, &error.payload.error.message);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(16));
+            }
+            Err(error) => {
+                if let Ok(mut sink) = server_error.lock() {
+                    *sink = Some(command_error(
+                        false,
+                        None,
+                        None,
+                        None,
+                        "tui_server_failed",
+                        format!("Yaffle OpenTUI IPC server failed: {error}"),
+                    ));
+                }
+                shutdown.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
+fn handle_opentui_request(
+    stream: &mut TcpStream,
+    app_state: &Arc<Mutex<LocalAppState>>,
+    shutdown: &Arc<AtomicBool>,
+    token: &str,
+) -> Result<(), CliFailure> {
+    let request = read_http_request(stream).map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "tui_server_failed",
+            format!("Failed to read OpenTUI IPC request: {error}"),
+        )
+    })?;
+
+    if request.path != "/health"
+        && request
+            .headers
+            .get("x-yaffle-tui-token")
+            .map(String::as_str)
+            != Some(token)
+    {
+        let _ = write_text_response(stream, 401, "unauthorized");
+        return Ok(());
+    }
+
+    match (request.method.as_str(), request.path.as_str()) {
+        ("GET", "/health") => write_json_response(
+            stream,
+            200,
+            &serde_json::json!({ "data": { "status": "ok" } }),
+        )
+        .map_err(|error| opentui_response_error(error)),
+        ("GET", "/snapshot") => {
+            let snapshot = {
+                let mut app = app_state.lock().map_err(|_| {
+                    command_error(
+                        false,
+                        None,
+                        None,
+                        None,
+                        "tui_state_failed",
+                        "Yaffle OpenTUI state lock was poisoned.",
+                    )
+                })?;
+                app.tick();
+                render_shell_snapshot(&app)
+            };
+            write_json_response(stream, 200, &snapshot).map_err(opentui_response_error)
+        }
+        ("POST", "/key") => {
+            let event =
+                serde_json::from_slice::<OpenTuiKeyEvent>(&request.body).map_err(|error| {
+                    command_error(
+                        false,
+                        None,
+                        None,
+                        None,
+                        "tui_event_failed",
+                        format!("OpenTUI sent an invalid key event: {error}"),
+                    )
+                })?;
+            let Some(key) = event.to_tui_key() else {
+                return write_json_response(
+                    stream,
+                    200,
+                    &serde_json::json!({ "data": { "action": null } }),
+                )
+                .map_err(opentui_response_error);
+            };
+            let action = {
+                let mut app = app_state.lock().map_err(|_| {
+                    command_error(
+                        false,
+                        None,
+                        None,
+                        None,
+                        "tui_state_failed",
+                        "Yaffle OpenTUI state lock was poisoned.",
+                    )
+                })?;
+                app.handle_key(key)?
+            };
+            if matches!(action, Some(ShellAction::Quit)) {
+                shutdown.store(true, Ordering::SeqCst);
+                return write_json_response(
+                    stream,
+                    200,
+                    &serde_json::json!({ "data": { "action": "quit" } }),
+                )
+                .map_err(opentui_response_error);
+            }
+            write_json_response(
+                stream,
+                200,
+                &serde_json::json!({ "data": { "action": null } }),
+            )
+            .map_err(opentui_response_error)
+        }
+        ("POST", "/shutdown") => {
+            shutdown.store(true, Ordering::SeqCst);
+            write_json_response(
+                stream,
+                200,
+                &serde_json::json!({ "data": { "action": "quit" } }),
+            )
+            .map_err(opentui_response_error)
+        }
+        _ => write_text_response(stream, 404, "not found").map_err(opentui_response_error),
+    }
+}
+
+fn opentui_response_error(error: io::Error) -> CliFailure {
+    command_error(
+        false,
+        None,
+        None,
+        None,
+        "tui_server_failed",
+        format!("Failed to write OpenTUI IPC response: {error}"),
+    )
+}
+
+#[derive(Debug)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> io::Result<HttpRequest> {
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    let mut header_end = None;
+    let mut content_length = 0usize;
+
+    loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+
+        if header_end.is_none() {
+            if let Some(position) = buffer.windows(4).position(|window| window == b"\r\n\r\n") {
+                let end = position + 4;
+                header_end = Some(end);
+                let header_text = String::from_utf8_lossy(&buffer[..position]);
+                content_length = header_text
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
             }
         }
 
-        app.tick();
+        if let Some(end) = header_end {
+            if buffer.len() >= end + content_length {
+                break;
+            }
+        }
+
+        if buffer.len() > 1024 * 1024 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "OpenTUI IPC request exceeded 1 MiB",
+            ));
+        }
+    }
+
+    let Some(header_end) = header_end else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OpenTUI IPC request was missing HTTP headers",
+        ));
+    };
+    let header_text = String::from_utf8_lossy(&buffer[..header_end - 4]);
+    let mut lines = header_text.lines();
+    let request_line = lines.next().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "OpenTUI IPC request was missing a request line",
+        )
+    })?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().unwrap_or("GET").to_string();
+    let raw_path = request_parts.next().unwrap_or("/");
+    let path = raw_path.split('?').next().unwrap_or(raw_path).to_string();
+    let mut headers = BTreeMap::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    let body_end = (header_end + content_length).min(buffer.len());
+
+    Ok(HttpRequest {
+        method,
+        path,
+        headers,
+        body: buffer[header_end..body_end].to_vec(),
+    })
+}
+
+fn write_json_response<T: Serialize>(
+    stream: &mut TcpStream,
+    status: u16,
+    value: &T,
+) -> io::Result<()> {
+    let body = serde_json::to_vec(value)
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error.to_string()))?;
+    write_http_response(stream, status, "application/json; charset=utf-8", &body)
+}
+
+fn write_text_response(stream: &mut TcpStream, status: u16, body: &str) -> io::Result<()> {
+    write_http_response(stream, status, "text/plain; charset=utf-8", body.as_bytes())
+}
+
+fn write_http_response(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    body: &[u8],
+) -> io::Result<()> {
+    let response = format!(
+        "HTTP/1.1 {status} {}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        http_status_text(status),
+        body.len(),
+    );
+    stream.write_all(response.as_bytes())?;
+    stream.write_all(body)
+}
+
+fn http_status_text(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        401 => "Unauthorized",
+        404 => "Not Found",
+        _ => "Error",
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenTuiKeyEvent {
+    name: String,
+    #[serde(default)]
+    ctrl: bool,
+}
+
+impl OpenTuiKeyEvent {
+    fn to_tui_key(&self) -> Option<TuiKey> {
+        if self.ctrl && self.name == "c" {
+            return Some(TuiKey::Char('q'));
+        }
+
+        match self.name.as_str() {
+            "up" => Some(TuiKey::Up),
+            "down" => Some(TuiKey::Down),
+            "left" => Some(TuiKey::Left),
+            "right" => Some(TuiKey::Right),
+            "enter" | "return" => Some(TuiKey::Enter),
+            "escape" => Some(TuiKey::Esc),
+            "tab" => Some(TuiKey::Tab),
+            "space" => Some(TuiKey::Space),
+            value if value.chars().count() == 1 => value.chars().next().map(TuiKey::Char),
+            _ => None,
+        }
     }
 }
 
@@ -1088,6 +1588,9 @@ fn run_shell_loop(
 enum ConvergeTuiEvent {
     Progress(EngineProgressEvent),
     Finished(Result<EngineResponse, EngineError>),
+    RemoteQueued(CloudRemoteConvergeHandle),
+    RemoteStatus(CloudRemoteConvergeStatus),
+    RemoteFinished(Result<CloudRemoteConvergeStatus, String>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1249,6 +1752,70 @@ impl ConvergeTuiState {
         }
     }
 
+    fn apply_remote_handle(&mut self, handle: &CloudRemoteConvergeHandle) {
+        self.environment_name = handle.environment_name.clone();
+        self.workspaces = handle
+            .workspace_paths
+            .iter()
+            .map(|path| WorkspaceConvergeView {
+                path: path.clone(),
+                state: WorkspaceRunState::Pending,
+                phase: Some(ConvergeWorkspacePhase::PreparingAuth),
+            })
+            .collect();
+        self.summary = "Remote converge queued".to_string();
+        self.detail = format!(
+            "Yaffle Cloud queued run group {} for remote execution.",
+            handle.run_group_id
+        );
+    }
+
+    fn apply_remote_status(&mut self, status: &CloudRemoteConvergeStatus) {
+        if self.workspaces.is_empty() {
+            self.workspaces = status
+                .deployments
+                .iter()
+                .map(|deployment| WorkspaceConvergeView {
+                    path: deployment.workspace_path.clone(),
+                    state: remote_workspace_state(deployment.status.as_str()),
+                    phase: remote_workspace_phase(deployment),
+                })
+                .collect();
+        }
+
+        for deployment in &status.deployments {
+            if let Some(workspace) = self
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.path == deployment.workspace_path)
+            {
+                workspace.state = remote_workspace_state(deployment.status.as_str());
+                workspace.phase = remote_workspace_phase(deployment);
+            }
+        }
+
+        self.active_workspace = status
+            .deployments
+            .iter()
+            .find(|deployment| {
+                remote_workspace_state(deployment.status.as_str()) == WorkspaceRunState::Running
+            })
+            .or_else(|| status.deployments.last())
+            .map(|deployment| deployment.workspace_path.clone());
+        if self.follow_running_workspace {
+            let active_path = self.active_workspace.clone();
+            if let Some(active_path) = active_path.as_deref() {
+                self.select_workspace_by_path(active_path);
+            }
+        }
+
+        self.summary = format!("Remote converge {}", status.run_group.status);
+        self.detail = format!(
+            "Yaffle Cloud run group {} is {}.",
+            status.run_group.id, status.run_group.status
+        );
+    }
+
     fn mark_finished_success(&mut self, summary: &str) {
         self.summary = "Converge complete".to_string();
         self.detail = summary.to_string();
@@ -1289,7 +1856,7 @@ impl ConvergeTuiState {
     }
 }
 
-fn render_workspace_log_line(log: &WorkspaceLogLine) -> Line<'static> {
+fn render_workspace_log_line(log: &WorkspaceLogLine) -> Line {
     let label = match log.stream {
         TofuLogStream::Stdout => "stdout",
         TofuLogStream::Stderr => "stderr",
@@ -1318,18 +1885,118 @@ fn phase_label(phase: &ConvergeWorkspacePhase) -> &'static str {
     }
 }
 
+fn remote_workspace_state(status: &str) -> WorkspaceRunState {
+    match status {
+        "success" | "skipped" => WorkspaceRunState::Succeeded,
+        "failed" => WorkspaceRunState::Failed,
+        "planning" | "applying" | "destroying" | "running" => WorkspaceRunState::Running,
+        _ => WorkspaceRunState::Pending,
+    }
+}
+
+fn remote_workspace_phase(
+    deployment: &yaffle_engine::CloudRemoteDeploymentStatus,
+) -> Option<ConvergeWorkspacePhase> {
+    if remote_workspace_state(deployment.status.as_str()) == WorkspaceRunState::Succeeded {
+        return Some(ConvergeWorkspacePhase::Completed);
+    }
+
+    let Some(run) = deployment.latest_run.as_ref() else {
+        return Some(ConvergeWorkspacePhase::PreparingAuth);
+    };
+
+    if run.status == "success" || run.status == "skipped" {
+        return Some(ConvergeWorkspacePhase::Completed);
+    }
+
+    match run.run_type.as_str() {
+        "apply" => Some(ConvergeWorkspacePhase::ApplyingTofu),
+        "plan" => Some(ConvergeWorkspacePhase::InitializingTofu),
+        _ => Some(ConvergeWorkspacePhase::PreparingAuth),
+    }
+}
+
 #[derive(Debug)]
 enum ShellAction {
     Quit,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuiKey {
+    Char(char),
+    Up,
+    Down,
+    Left,
+    Right,
+    Enter,
+    Esc,
+    Tab,
+    Space,
+}
+
 #[derive(Debug)]
 struct ActiveConvergeRun {
+    execution_location: TuiExecutionLocation,
     progress: ConvergeTuiState,
     rx: mpsc::Receiver<ConvergeTuiEvent>,
     running: bool,
     last_response: Option<EngineResponse>,
     last_error: Option<EngineError>,
+    last_remote_status: Option<CloudRemoteConvergeStatus>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuiCapabilityMode {
+    AnonymousLocal,
+    AccountLocal,
+    AccountRemote,
+}
+
+impl TuiCapabilityMode {
+    fn as_snapshot_value(self) -> &'static str {
+        match self {
+            Self::AnonymousLocal => "anonymousLocal",
+            Self::AccountLocal => "accountLocal",
+            Self::AccountRemote => "accountRemote",
+        }
+    }
+
+    fn execution_location(self) -> TuiExecutionLocation {
+        match self {
+            Self::AnonymousLocal | Self::AccountLocal => TuiExecutionLocation::Local,
+            Self::AccountRemote => TuiExecutionLocation::Remote,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuiExecutionLocation {
+    Local,
+    Remote,
+}
+
+impl TuiExecutionLocation {
+    fn as_snapshot_value(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Remote => "remote",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Local => "local execution",
+            Self::Remote => "remote execution",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TuiCapability {
+    mode: TuiCapabilityMode,
+    label: String,
+    detail: String,
+    repo_full_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1338,6 +2005,13 @@ struct LocalEnvironmentEntry {
     kind: String,
     workspace_count: usize,
     local_state_detected: bool,
+    repo: Option<String>,
+    origin: Option<String>,
+    status: Option<String>,
+    head_sha: Option<String>,
+    updated_at: Option<String>,
+    actor: Option<String>,
+    last_run: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1363,6 +2037,11 @@ enum DetailTab {
     Runs,
 }
 
+const ENVIRONMENT_DAG_BOX_WIDTH: usize = 24;
+const ENVIRONMENT_DAG_COLUMN_GAP: usize = 8;
+const ENVIRONMENT_DAG_ROW_GAP: usize = 2;
+const ENVIRONMENT_DAG_ROW_HEIGHT: usize = 4;
+
 #[derive(Debug)]
 struct LocalEnvironmentDetailState {
     environment_name: String,
@@ -1374,6 +2053,7 @@ struct LocalEnvironmentDetailState {
     selected_workspaces: std::collections::BTreeSet<String>,
     focus: ShellFocus,
     tab: DetailTab,
+    detail_spotlight: bool,
     detail_scroll: usize,
     status_response: Option<EngineResponse>,
     status_error: Option<String>,
@@ -1388,8 +2068,8 @@ struct LocalEnvironmentDetailState {
 }
 
 struct DetailPanelContent {
-    header_lines: Vec<Line<'static>>,
-    body_lines: Vec<Line<'static>>,
+    header_lines: Vec<Line>,
+    body_lines: Vec<Line>,
 }
 
 #[derive(Debug, Clone)]
@@ -1410,6 +2090,7 @@ enum EnvironmentDagNodeKind {
 struct LocalAppState {
     repo_root: PathBuf,
     config: yaffle_config::YaffleConfig,
+    capability: TuiCapability,
     environments: Vec<LocalEnvironmentEntry>,
     selected_env_index: usize,
     view: ShellView,
@@ -1420,11 +2101,13 @@ struct LocalAppState {
 impl LocalAppState {
     fn load(working_dir: &Path) -> Result<Self, CliFailure> {
         let (repo_root, config) = load_local_config_context(working_dir)?;
-        let environments = discover_local_environments(&repo_root, &config);
+        let capability = resolve_tui_capability(&repo_root);
+        let environments = discover_tui_environments(&repo_root, &config, &capability);
 
         Ok(Self {
             repo_root,
             config,
+            capability,
             environments,
             selected_env_index: 0,
             view: ShellView::EnvironmentList,
@@ -1467,7 +2150,14 @@ impl LocalAppState {
     }
 
     fn start_converge_in_place(&mut self, request: EngineRequest) -> Result<(), CliFailure> {
-        let prior_cloud_auth_status = load_local_cloud_auth_status().ok();
+        if self.capability.mode == TuiCapabilityMode::AccountRemote {
+            return self.start_remote_converge_in_place(request);
+        }
+
+        self.start_local_converge_in_place(request)
+    }
+
+    fn start_local_converge_in_place(&mut self, request: EngineRequest) -> Result<(), CliFailure> {
         let Some(detail) = self.detail.as_mut() else {
             return Err(command_error(
                 false,
@@ -1492,7 +2182,6 @@ impl LocalAppState {
         detail.tab = DetailTab::Apply;
         detail.follow_running_workspace = true;
 
-        let prior_cloud_auth_status = prior_cloud_auth_status;
         let working_dir = self.repo_root.clone();
         let (tx, rx) = mpsc::channel::<ConvergeTuiEvent>();
         let request_for_worker = request.clone();
@@ -1512,11 +2201,13 @@ impl LocalAppState {
             );
         }
         detail.active_run = Some(ActiveConvergeRun {
+            execution_location: TuiExecutionLocation::Local,
             progress,
             rx,
             running: true,
             last_response: None,
             last_error: None,
+            last_remote_status: None,
         });
         detail.status_response = None;
         detail.status_error = None;
@@ -1526,11 +2217,72 @@ impl LocalAppState {
         detail.outputs_error = None;
         detail.outputs_loading = false;
         detail.outputs_rx = None;
-        maybe_print_guest_bootstrap_notice(prior_cloud_auth_status.as_ref());
         Ok(())
     }
 
-    fn handle_key(&mut self, key: KeyCode) -> Result<Option<ShellAction>, CliFailure> {
+    fn start_remote_converge_in_place(&mut self, request: EngineRequest) -> Result<(), CliFailure> {
+        let Some(detail) = self.detail.as_mut() else {
+            return Err(command_error(
+                false,
+                Some(EngineOperation::Converge),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "environment_view_missing",
+                "Cannot start converge without an open environment view.",
+            ));
+        };
+
+        if detail
+            .active_run
+            .as_ref()
+            .map(|run| run.running)
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
+        detail.focus = ShellFocus::Graph;
+        detail.tab = DetailTab::Apply;
+        detail.follow_running_workspace = true;
+
+        let working_dir = self.repo_root.clone();
+        let (tx, rx) = mpsc::channel::<ConvergeTuiEvent>();
+        let request_for_worker = request.clone();
+        thread::spawn(move || {
+            let result = run_remote_converge_for_tui(working_dir, request_for_worker, tx.clone());
+            let _ = tx.send(ConvergeTuiEvent::RemoteFinished(result));
+        });
+
+        let mut progress = ConvergeTuiState::new(detail.environment_name.clone());
+        progress.detail =
+            "Yaffle Cloud is preparing remote execution for this converge.".to_string();
+        if !request.selection.workspaces.is_empty() {
+            progress.detail = format!(
+                "Converging a selected subset remotely: {}",
+                request.selection.workspaces.join(", ")
+            );
+        }
+        detail.active_run = Some(ActiveConvergeRun {
+            execution_location: TuiExecutionLocation::Remote,
+            progress,
+            rx,
+            running: true,
+            last_response: None,
+            last_error: None,
+            last_remote_status: None,
+        });
+        detail.status_response = None;
+        detail.status_error = None;
+        detail.status_loading = false;
+        detail.status_rx = None;
+        detail.outputs_response = None;
+        detail.outputs_error = None;
+        detail.outputs_loading = false;
+        detail.outputs_rx = None;
+        Ok(())
+    }
+
+    fn handle_key(&mut self, key: TuiKey) -> Result<Option<ShellAction>, CliFailure> {
         match self.view {
             ShellView::EnvironmentList => self.handle_environment_list_key(key),
             ShellView::EnvironmentDetail => self.handle_environment_detail_key(key),
@@ -1539,17 +2291,17 @@ impl LocalAppState {
 
     fn handle_environment_list_key(
         &mut self,
-        key: KeyCode,
+        key: TuiKey,
     ) -> Result<Option<ShellAction>, CliFailure> {
         match key {
-            KeyCode::Char('q') => return Ok(Some(ShellAction::Quit)),
-            KeyCode::Down | KeyCode::Char('j') => {
+            TuiKey::Char('q') => return Ok(Some(ShellAction::Quit)),
+            TuiKey::Down | TuiKey::Char('j') => {
                 if !self.environments.is_empty() {
                     self.selected_env_index =
                         (self.selected_env_index + 1) % self.environments.len();
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            TuiKey::Up | TuiKey::Char('k') => {
                 if !self.environments.is_empty() {
                     self.selected_env_index = if self.selected_env_index == 0 {
                         self.environments.len() - 1
@@ -1558,7 +2310,7 @@ impl LocalAppState {
                     };
                 }
             }
-            KeyCode::Enter => {
+            TuiKey::Enter => {
                 if let Some(entry) = self.environments.get(self.selected_env_index) {
                     let detail =
                         load_environment_detail(&self.repo_root, &self.config, &entry.name)?;
@@ -1577,7 +2329,7 @@ impl LocalAppState {
 
     fn handle_environment_detail_key(
         &mut self,
-        key: KeyCode,
+        key: TuiKey,
     ) -> Result<Option<ShellAction>, CliFailure> {
         let Some(detail) = self.detail.as_mut() else {
             self.view = ShellView::EnvironmentList;
@@ -1585,8 +2337,11 @@ impl LocalAppState {
         };
 
         match key {
-            KeyCode::Char('q') => return Ok(Some(ShellAction::Quit)),
-            KeyCode::Char('b') | KeyCode::Esc => {
+            TuiKey::Char('q') => return Ok(Some(ShellAction::Quit)),
+            TuiKey::Esc if detail.detail_spotlight => {
+                detail.detail_spotlight = false;
+            }
+            TuiKey::Char('b') | TuiKey::Esc => {
                 if detail
                     .active_run
                     .as_ref()
@@ -1599,16 +2354,22 @@ impl LocalAppState {
                 self.detail = None;
                 self.footer_message = "Enter opens an environment. q quits.".to_string();
             }
-            KeyCode::Tab => {
+            TuiKey::Tab => {
                 detail.focus = match detail.focus {
                     ShellFocus::Graph => ShellFocus::Detail,
                     ShellFocus::Detail => ShellFocus::Graph,
                 };
             }
-            KeyCode::Char('f') => {
+            TuiKey::Char('z') => {
+                detail.detail_spotlight = !detail.detail_spotlight;
+                if detail.detail_spotlight {
+                    detail.focus = ShellFocus::Detail;
+                }
+            }
+            TuiKey::Char('f') => {
                 detail.follow_running_workspace = true;
             }
-            KeyCode::Char('c') => {
+            TuiKey::Char('c') => {
                 let request = detail.to_engine_request();
                 self.start_converge_in_place(request)?;
             }
@@ -1651,6 +2412,38 @@ impl LocalEnvironmentDetailState {
                             finished_failure = true;
                         }
                     },
+                    ConvergeTuiEvent::RemoteQueued(handle) => {
+                        run.progress.apply_remote_handle(&handle);
+                    }
+                    ConvergeTuiEvent::RemoteStatus(status) => {
+                        run.progress.apply_remote_status(&status);
+                        if self.follow_running_workspace {
+                            follow_target = run.progress.active_workspace.clone();
+                        }
+                        run.last_remote_status = Some(status);
+                    }
+                    ConvergeTuiEvent::RemoteFinished(result) => match result {
+                        Ok(status) => {
+                            run.running = false;
+                            run.progress.apply_remote_status(&status);
+                            if remote_status_failed(&status) {
+                                run.progress
+                                    .mark_finished_failure(&remote_failure_message(&status));
+                                finished_failure = true;
+                            } else {
+                                run.progress.mark_finished_success(
+                                    "Remote execution finished successfully in Yaffle Cloud.",
+                                );
+                                finished_success = true;
+                            }
+                            run.last_remote_status = Some(status);
+                        }
+                        Err(message) => {
+                            run.running = false;
+                            run.progress.mark_finished_failure(&message);
+                            finished_failure = true;
+                        }
+                    },
                 }
             }
         }
@@ -1677,12 +2470,17 @@ impl LocalEnvironmentDetailState {
         self.poll_status_load();
         self.poll_outputs_load();
 
-        if !self
+        let run_finished = !self
             .active_run
             .as_ref()
             .map(|run| run.running)
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        let should_load_local_detail = self
+            .active_run
+            .as_ref()
+            .map(|run| run.execution_location == TuiExecutionLocation::Local)
+            .unwrap_or(true);
+        if run_finished && should_load_local_detail {
             match self.tab {
                 DetailTab::Apply => self.load_selected_tab_if_needed(repo_root),
                 DetailTab::Outputs => self.load_selected_tab_if_needed(repo_root),
@@ -1729,11 +2527,11 @@ impl LocalEnvironmentDetailState {
         }
     }
 
-    fn handle_graph_key(&mut self, key: KeyCode) {
+    fn handle_graph_key(&mut self, key: TuiKey) {
         let previous_level = self.selected_level;
         let previous_row = self.selected_row;
         match key {
-            KeyCode::Left | KeyCode::Char('h') => {
+            TuiKey::Left | TuiKey::Char('h') => {
                 if self.selected_level > 0 {
                     self.selected_level -= 1;
                     self.selected_row = self
@@ -1741,7 +2539,7 @@ impl LocalEnvironmentDetailState {
                         .min(self.levels[self.selected_level].len().saturating_sub(1));
                 }
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            TuiKey::Right | TuiKey::Char('l') => {
                 if self.selected_level + 1 < self.levels.len() {
                     self.selected_level += 1;
                     self.selected_row = self
@@ -1749,14 +2547,14 @@ impl LocalEnvironmentDetailState {
                         .min(self.levels[self.selected_level].len().saturating_sub(1));
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            TuiKey::Down | TuiKey::Char('j') => {
                 if let Some(level) = self.levels.get(self.selected_level) {
                     if !level.is_empty() {
                         self.selected_row = (self.selected_row + 1) % level.len();
                     }
                 }
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            TuiKey::Up | TuiKey::Char('k') => {
                 if let Some(level) = self.levels.get(self.selected_level) {
                     if !level.is_empty() {
                         self.selected_row = if self.selected_row == 0 {
@@ -1767,7 +2565,7 @@ impl LocalEnvironmentDetailState {
                     }
                 }
             }
-            KeyCode::Char(' ') => {
+            TuiKey::Space => {
                 if self
                     .active_run
                     .as_ref()
@@ -1790,9 +2588,9 @@ impl LocalEnvironmentDetailState {
         }
     }
 
-    fn handle_detail_key(&mut self, key: KeyCode, repo_root: &Path) -> Result<(), CliFailure> {
+    fn handle_detail_key(&mut self, key: TuiKey, repo_root: &Path) -> Result<(), CliFailure> {
         match key {
-            KeyCode::Left | KeyCode::Char('h') => {
+            TuiKey::Left | TuiKey::Char('h') => {
                 self.tab = match self.tab {
                     DetailTab::Overview => DetailTab::Runs,
                     DetailTab::Plan => DetailTab::Overview,
@@ -1805,7 +2603,7 @@ impl LocalEnvironmentDetailState {
                 self.detail_scroll = 0;
                 self.load_selected_tab_if_needed(repo_root);
             }
-            KeyCode::Right | KeyCode::Char('l') => {
+            TuiKey::Right | TuiKey::Char('l') => {
                 self.tab = match self.tab {
                     DetailTab::Overview => DetailTab::Plan,
                     DetailTab::Plan => DetailTab::Apply,
@@ -1818,13 +2616,13 @@ impl LocalEnvironmentDetailState {
                 self.detail_scroll = 0;
                 self.load_selected_tab_if_needed(repo_root);
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            TuiKey::Down | TuiKey::Char('j') => {
                 self.detail_scroll = self.detail_scroll.saturating_add(1);
             }
-            KeyCode::Up | KeyCode::Char('k') => {
+            TuiKey::Up | TuiKey::Char('k') => {
                 self.detail_scroll = self.detail_scroll.saturating_sub(1);
             }
-            KeyCode::Char('r') => {
+            TuiKey::Char('r') => {
                 self.reload_selected_tab(repo_root)?;
             }
             _ => {}
@@ -2122,237 +2920,430 @@ impl LocalEnvironmentDetailState {
     }
 }
 
-fn render_shell_app(frame: &mut ratatui::Frame, app: &LocalAppState) {
-    match app.view {
-        ShellView::EnvironmentList => render_environment_browser(frame, app),
-        ShellView::EnvironmentDetail => render_environment_detail(frame, app),
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShellSnapshot {
+    view: &'static str,
+    cloud: CloudStatusSnapshot,
+    capability: TuiCapabilitySnapshot,
+    browser: EnvironmentBrowserSnapshot,
+    detail: Option<EnvironmentDetailSnapshot>,
+    footer_message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TuiCapabilitySnapshot {
+    mode: &'static str,
+    execution_location: &'static str,
+    label: String,
+    detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo_full_name: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CloudStatusSnapshot {
+    kind: &'static str,
+    label: String,
+    detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    identity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvironmentBrowserSnapshot {
+    header_lines: Vec<Line>,
+    environments: Vec<EnvironmentListItemSnapshot>,
+    footer: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvironmentListItemSnapshot {
+    name: String,
+    kind: String,
+    workspace_count: usize,
+    local_state_detected: bool,
+    selected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    repo: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    head_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    updated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    actor: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_run: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvironmentDetailSnapshot {
+    environment_name: String,
+    selected_node: String,
+    detail_spotlight: bool,
+    graph_focus: EnvironmentGraphFocusSnapshot,
+    selected_workspace: Option<SelectedWorkspaceSnapshot>,
+    target_summary: String,
+    mode_line: String,
+    governance_line: String,
+    focus: &'static str,
+    running: bool,
+    graph_lines: Vec<Line>,
+    tabs: Vec<DetailTabSnapshot>,
+    detail_header_lines: Vec<Line>,
+    detail_body_lines: Vec<Line>,
+    detail_scroll: usize,
+    footer: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvironmentGraphFocusSnapshot {
+    node_id: String,
+    level: usize,
+    row: usize,
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SelectedWorkspaceSnapshot {
+    path: String,
+    run_state: String,
+    current_phase: String,
+    materialization: String,
+    freshness: String,
+    readiness: String,
+    acceptability: String,
+    activation: String,
+    verification: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DetailTabSnapshot {
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+}
+
+fn render_shell_snapshot(app: &LocalAppState) -> ShellSnapshot {
+    ShellSnapshot {
+        view: match app.view {
+            ShellView::EnvironmentList => "environmentList",
+            ShellView::EnvironmentDetail => "environmentDetail",
+        },
+        cloud: render_cloud_status_snapshot(&app.capability),
+        capability: render_tui_capability_snapshot(&app.capability),
+        browser: render_environment_browser_snapshot(app),
+        detail: app
+            .detail
+            .as_ref()
+            .map(|detail| render_environment_detail_snapshot(detail, &app.capability)),
+        footer_message: app.footer_message.clone(),
     }
 }
 
-fn render_environment_browser(frame: &mut ratatui::Frame, app: &LocalAppState) {
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4),
-            Constraint::Min(8),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
-
-    let header = Paragraph::new(vec![
-        Line::from(vec![Span::styled(
-            "Yaffle",
-            Style::default()
-                .fg(YAFFLE_GREEN)
-                .add_modifier(Modifier::BOLD),
-        )]),
-        Line::from("Choose an environment to inspect or converge."),
-    ])
-    .block(
-        Block::default()
-            .title(" Environments ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(YAFFLE_BORDER_ACCENT))
-            .style(Style::default().bg(YAFFLE_SURFACE).fg(YAFFLE_TEXT)),
-    );
-    frame.render_widget(header, areas[0]);
-
-    let items = if app.environments.is_empty() {
-        vec![ListItem::new("No local environments found.")]
-    } else {
-        app.environments
-            .iter()
-            .enumerate()
-            .map(|(index, env)| {
-                let marker = if index == app.selected_env_index {
-                    "▶"
-                } else {
-                    " "
-                };
-                let state_badge = if env.local_state_detected {
-                    "local state"
-                } else {
-                    "config only"
-                };
-                ListItem::new(Line::from(vec![
-                    Span::styled(marker, Style::default().fg(YAFFLE_CREAM)),
-                    Span::raw(" "),
-                    Span::styled(
-                        &env.name,
-                        Style::default()
-                            .fg(YAFFLE_TEXT)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(format!(
-                        "  [{}]  {} workspace(s)  {}",
-                        env.kind, env.workspace_count, state_badge
-                    )),
-                ]))
-            })
-            .collect()
-    };
-
-    let list = List::new(items).block(
-        Block::default()
-            .title(" Local + Known Environments ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(YAFFLE_BORDER_ACCENT))
-            .style(Style::default().bg(YAFFLE_SURFACE).fg(YAFFLE_TEXT)),
-    );
-    frame.render_widget(list, areas[1]);
-
-    let footer = Paragraph::new("j/k move • enter open • q quit").block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(YAFFLE_BORDER))
-            .style(Style::default().bg(YAFFLE_SURFACE).fg(YAFFLE_TEXT_MUTED)),
-    );
-    frame.render_widget(footer, areas[2]);
+fn render_tui_capability_snapshot(capability: &TuiCapability) -> TuiCapabilitySnapshot {
+    TuiCapabilitySnapshot {
+        mode: capability.mode.as_snapshot_value(),
+        execution_location: capability.mode.execution_location().as_snapshot_value(),
+        label: capability.label.clone(),
+        detail: capability.detail.clone(),
+        repo_full_name: capability.repo_full_name.clone(),
+    }
 }
 
-fn render_environment_detail(frame: &mut ratatui::Frame, app: &LocalAppState) {
-    let Some(detail) = app.detail.as_ref() else {
-        render_environment_browser(frame, app);
-        return;
+fn render_cloud_status_snapshot(capability: &TuiCapability) -> CloudStatusSnapshot {
+    let Ok(status) = load_local_cloud_auth_status() else {
+        return CloudStatusSnapshot {
+            kind: "unavailable",
+            label: "Cloud status unavailable".to_string(),
+            detail: "Could not read local Yaffle Cloud auth state.".to_string(),
+            identity: None,
+            expires_at: None,
+        };
     };
 
-    let areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(4),
-            Constraint::Min(14),
-            Constraint::Min(12),
-            Constraint::Length(3),
-        ])
-        .split(frame.area());
+    let Some(principal) = status.stored_principal else {
+        return CloudStatusSnapshot {
+            kind: "none",
+            label: capability.label.clone(),
+            detail: capability.detail.clone(),
+            identity: None,
+            expires_at: None,
+        };
+    };
 
+    let expires_at = principal.expires_at.clone();
+    let identity = match principal.principal_type {
+        StoredPrincipalType::Account => Some(describe_identity(&principal)),
+        StoredPrincipalType::AnonymousSession => None,
+    };
+
+    if status.expired {
+        return CloudStatusSnapshot {
+            kind: "expired",
+            label: match principal.principal_type {
+                StoredPrincipalType::Account => "Cloud account expired".to_string(),
+                StoredPrincipalType::AnonymousSession => "Anonymous session expired".to_string(),
+            },
+            detail: "Run `yaffle cloud login` or `yaffle converge` to refresh credentials."
+                .to_string(),
+            identity,
+            expires_at,
+        };
+    }
+
+    match principal.principal_type {
+        StoredPrincipalType::Account => CloudStatusSnapshot {
+            kind: match capability.mode {
+                TuiCapabilityMode::AccountRemote => "paid",
+                _ => "free",
+            },
+            label: capability.label.clone(),
+            detail: capability.detail.clone(),
+            identity,
+            expires_at,
+        },
+        StoredPrincipalType::AnonymousSession => CloudStatusSnapshot {
+            kind: "anonymous",
+            label: capability.label.clone(),
+            detail: capability.detail.clone(),
+            identity: None,
+            expires_at,
+        },
+    }
+}
+
+fn render_environment_browser_snapshot(app: &LocalAppState) -> EnvironmentBrowserSnapshot {
+    EnvironmentBrowserSnapshot {
+        header_lines: vec![
+            Line::from(vec![Span::styled(
+                "Yaffle",
+                Style::default()
+                    .fg(YAFFLE_GREEN)
+                    .add_modifier(Modifier::BOLD),
+            )]),
+            Line::from("Choose an environment to inspect or converge."),
+        ],
+        environments: app
+            .environments
+            .iter()
+            .enumerate()
+            .map(|(index, environment)| EnvironmentListItemSnapshot {
+                name: environment.name.clone(),
+                kind: environment.kind.clone(),
+                workspace_count: environment.workspace_count,
+                local_state_detected: environment.local_state_detected,
+                selected: index == app.selected_env_index,
+                repo: environment.repo.clone(),
+                origin: environment.origin.clone(),
+                status: environment.status.clone(),
+                head_sha: environment.head_sha.clone(),
+                updated_at: environment.updated_at.clone(),
+                actor: environment.actor.clone(),
+                last_run: environment.last_run.clone(),
+            })
+            .collect(),
+        footer: "j/k move • enter open • q/ctrl+c quit",
+    }
+}
+
+fn render_environment_detail_snapshot(
+    detail: &LocalEnvironmentDetailState,
+    capability: &TuiCapability,
+) -> EnvironmentDetailSnapshot {
     let selected = detail.selected_node_title();
     let running_summary = detail.running_summary();
+    let running = running_summary.map(|(_, running)| running).unwrap_or(false);
     let governance_warning = detail.active_run_error().and_then(|error| {
         (error.error.code == "environment_governance_blocked")
             .then_some(error.error.message.as_str())
     });
-    let header = Paragraph::new(vec![
-        Line::from(vec![
-            Span::styled(
-                format!("Environment: {}", detail.environment_name),
-                Style::default()
-                    .fg(YAFFLE_GREEN)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!("   selected node: {selected}")),
-        ]),
-        Line::from(summarize_selected_workspaces(detail)),
-        Line::from(match running_summary {
-            Some((progress, true)) => format!(
-                "Mode: running • {} • focus follows active workspace: {}",
-                progress.summary,
-                if detail.follow_running_workspace {
-                    "on"
-                } else {
-                    "off"
-                }
-            ),
-            Some((progress, false)) => format!("Mode: review • last run: {}", progress.summary),
-            None => "Mode: review".to_string(),
-        }),
-        Line::from(
-            governance_warning
-                .map(|reason| format!("Governance: blocked • {reason}"))
-                .unwrap_or_else(|| "Governance: no environment admission block".to_string()),
-        ),
-    ])
-    .block(
-        Block::default()
-            .title(" Environment View ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(YAFFLE_BORDER_ACCENT))
-            .style(Style::default().bg(YAFFLE_SURFACE).fg(YAFFLE_TEXT)),
-    );
-    frame.render_widget(header, areas[0]);
-
-    let dag = Paragraph::new(render_environment_dag(detail))
-        .block(
-            Block::default()
-                .title(" Delivery Path ")
-                .borders(Borders::ALL)
-                .border_style(panel_border_style(detail.focus == ShellFocus::Graph))
-                .style(Style::default().bg(YAFFLE_SURFACE).fg(YAFFLE_TEXT)),
-        )
-        .wrap(Wrap { trim: false });
-    frame.render_widget(dag, areas[1]);
-
-    let detail_title = Line::from(vec![
-        Span::styled(" Detail ", Style::default().fg(YAFFLE_TEXT_MUTED)),
-        Span::raw(" "),
-        render_detail_tab_chip("Overview", detail.tab == DetailTab::Overview),
-        Span::raw(" "),
-        render_detail_tab_chip("Plan", detail.tab == DetailTab::Plan),
-        Span::raw(" "),
-        render_detail_tab_chip("Apply", detail.tab == DetailTab::Apply),
-        Span::raw(" "),
-        render_detail_tab_chip("Outputs", detail.tab == DetailTab::Outputs),
-        Span::raw(" "),
-        render_detail_tab_chip("Activation", detail.tab == DetailTab::Activation),
-        Span::raw(" "),
-        render_detail_tab_chip("Verification", detail.tab == DetailTab::Verification),
-        Span::raw(" "),
-        render_detail_tab_chip("Runs", detail.tab == DetailTab::Runs),
-    ]);
-    let detail_block = Block::default()
-        .title(detail_title)
-        .borders(Borders::ALL)
-        .border_style(panel_border_style(detail.focus == ShellFocus::Detail))
-        .style(Style::default().bg(YAFFLE_SURFACE_RAISED).fg(YAFFLE_TEXT));
-    let detail_inner = detail_block.inner(areas[2]);
-    frame.render_widget(detail_block, areas[2]);
-
     let detail_content = render_environment_detail_panel(detail);
-    let header_height = detail_content
-        .header_lines
-        .len()
-        .min(detail_inner.height.saturating_sub(1) as usize) as u16;
-    let detail_areas = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(header_height), Constraint::Min(0)])
-        .split(detail_inner);
 
-    if !detail_content.header_lines.is_empty() && header_height > 0 {
-        let header_panel = Paragraph::new(detail_content.header_lines)
-            .wrap(Wrap { trim: false })
-            .style(Style::default().bg(YAFFLE_SURFACE_RAISED).fg(YAFFLE_TEXT));
-        frame.render_widget(header_panel, detail_areas[0]);
+    EnvironmentDetailSnapshot {
+        environment_name: detail.environment_name.clone(),
+        selected_node: selected,
+        detail_spotlight: detail.detail_spotlight,
+        graph_focus: render_environment_graph_focus_snapshot(detail),
+        selected_workspace: render_selected_workspace_snapshot(detail),
+        target_summary: summarize_selected_workspaces(detail),
+        mode_line: render_detail_mode_line(detail, capability, running_summary),
+        governance_line: governance_warning
+            .map(|reason| format!("Governance: blocked • {reason}"))
+            .unwrap_or_else(|| "Governance: no environment admission block".to_string()),
+        focus: match detail.focus {
+            ShellFocus::Graph => "graph",
+            ShellFocus::Detail => "detail",
+        },
+        running,
+        graph_lines: render_environment_dag(detail),
+        tabs: render_detail_tabs(detail.tab),
+        detail_header_lines: detail_content.header_lines,
+        detail_body_lines: detail_content.body_lines,
+        detail_scroll: detail.detail_scroll,
+        footer: environment_detail_footer(detail),
+    }
+}
+
+fn render_detail_mode_line(
+    detail: &LocalEnvironmentDetailState,
+    capability: &TuiCapability,
+    running_summary: Option<(&ConvergeTuiState, bool)>,
+) -> String {
+    let execution_location = detail
+        .active_run
+        .as_ref()
+        .map(|run| run.execution_location)
+        .unwrap_or_else(|| capability.mode.execution_location());
+    match running_summary {
+        Some((progress, true)) => format!(
+            "{} • running • {} • focus follows active workspace: {}",
+            execution_location.label(),
+            progress.summary,
+            if detail.follow_running_workspace {
+                "on"
+            } else {
+                "off"
+            }
+        ),
+        Some((progress, false)) => format!(
+            "{} • review • last run: {}",
+            execution_location.label(),
+            progress.summary
+        ),
+        None => format!("{} • review", execution_location.label()),
+    }
+}
+
+fn render_environment_graph_focus_snapshot(
+    detail: &LocalEnvironmentDetailState,
+) -> EnvironmentGraphFocusSnapshot {
+    EnvironmentGraphFocusSnapshot {
+        node_id: detail.selected_node_id().unwrap_or_default().to_string(),
+        level: detail.selected_level,
+        row: detail.selected_row,
+        x: detail.selected_level * (ENVIRONMENT_DAG_BOX_WIDTH + ENVIRONMENT_DAG_COLUMN_GAP) + 2,
+        y: detail.selected_row * (ENVIRONMENT_DAG_ROW_HEIGHT + ENVIRONMENT_DAG_ROW_GAP) + 1,
+        width: ENVIRONMENT_DAG_BOX_WIDTH,
+        height: ENVIRONMENT_DAG_ROW_HEIGHT,
+    }
+}
+
+fn render_selected_workspace_snapshot(
+    detail: &LocalEnvironmentDetailState,
+) -> Option<SelectedWorkspaceSnapshot> {
+    let workspace_path = detail.selected_workspace_path()?.to_string();
+    let active = detail.active_run_status_for_workspace(&workspace_path);
+    let snapshot = detail.status_response.as_ref().and_then(|response| {
+        response
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.workspace_path == workspace_path)
+    });
+
+    Some(SelectedWorkspaceSnapshot {
+        path: workspace_path.clone(),
+        run_state: active
+            .map(|(state, _)| workspace_run_state_label(state).to_string())
+            .unwrap_or_else(|| "not running".to_string()),
+        current_phase: active
+            .and_then(|(_, phase)| phase.map(phase_label))
+            .unwrap_or("not started")
+            .to_string(),
+        materialization: snapshot
+            .and_then(|workspace| workspace.materialization.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        freshness: snapshot
+            .and_then(|workspace| workspace.freshness.clone())
+            .unwrap_or_else(|| "unknown".to_string()),
+        readiness: workspace_scope_condition_summary(detail, &workspace_path, "usable", true),
+        acceptability: workspace_scope_condition_summary(
+            detail,
+            &workspace_path,
+            "acceptable",
+            false,
+        ),
+        activation: workspace_lifecycle_phase_summary(detail, &workspace_path, "activation"),
+        verification: workspace_lifecycle_phase_summary(detail, &workspace_path, "verification"),
+    })
+}
+
+fn workspace_run_state_label(state: WorkspaceRunState) -> &'static str {
+    match state {
+        WorkspaceRunState::Pending => "waiting",
+        WorkspaceRunState::Running => "running",
+        WorkspaceRunState::Succeeded => "converged",
+        WorkspaceRunState::Failed => "failed",
+    }
+}
+
+fn render_detail_tabs(selected: DetailTab) -> Vec<DetailTabSnapshot> {
+    [
+        (DetailTab::Overview, "overview", "Overview"),
+        (DetailTab::Plan, "plan", "Plan"),
+        (DetailTab::Apply, "apply", "Apply"),
+        (DetailTab::Outputs, "outputs", "Outputs"),
+        (DetailTab::Activation, "activation", "Activation"),
+        (DetailTab::Verification, "verification", "Verification"),
+        (DetailTab::Runs, "runs", "Runs"),
+    ]
+    .into_iter()
+    .map(|(tab, id, label)| DetailTabSnapshot {
+        id,
+        label,
+        selected: tab == selected,
+    })
+    .collect()
+}
+
+fn environment_detail_footer(detail: &LocalEnvironmentDetailState) -> &'static str {
+    if detail.detail_spotlight {
+        return "detail spotlight • z/esc exit • h/l switch tabs • j/k scroll • tab graph/detail • q/ctrl+c quit";
     }
 
-    let body_panel = Paragraph::new(detail_content.body_lines)
-        .wrap(Wrap { trim: false })
-        .scroll((detail.detail_scroll as u16, 0))
-        .style(Style::default().bg(YAFFLE_SURFACE_RAISED).fg(YAFFLE_TEXT));
-    frame.render_widget(body_panel, detail_areas[1]);
-
-    let footer = Paragraph::new(match detail.focus {
+    match detail.focus {
         ShellFocus::Graph => {
-            if detail.active_run.as_ref().map(|run| run.running).unwrap_or(false) {
-                "graph focus • h/l move levels • j/k move nodes • space disabled while running • tab detail • b locked • q quit"
+            if detail
+                .active_run
+                .as_ref()
+                .map(|run| run.running)
+                .unwrap_or(false)
+            {
+                "graph focus • h/l move levels • j/k move nodes • space disabled while running • z spotlight • tab detail • b locked • q/ctrl+c quit"
             } else {
-                "graph focus • h/l move levels • j/k move nodes • space select • c converge • tab detail • b back • q quit"
+                "graph focus • h/l move levels • j/k move nodes • space select • c converge • z spotlight • tab detail • b back • q/ctrl+c quit"
             }
         }
         ShellFocus::Detail => {
-            if detail.active_run.as_ref().map(|run| run.running).unwrap_or(false) {
-                "detail focus • h/l switch tabs • j/k scroll • r reload data • tab graph • c disabled • b locked • q quit"
+            if detail
+                .active_run
+                .as_ref()
+                .map(|run| run.running)
+                .unwrap_or(false)
+            {
+                "detail focus • h/l switch tabs • j/k scroll • r reload data • z spotlight • tab graph • c disabled • b locked • q/ctrl+c quit"
             } else {
-                "detail focus • h/l switch tabs • j/k scroll • r reload data • tab graph • c converge • b back • q quit"
+                "detail focus • h/l switch tabs • j/k scroll • r reload data • z spotlight • tab graph • c converge • b back • q/ctrl+c quit"
             }
         }
-    })
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(YAFFLE_BORDER))
-            .style(Style::default().bg(YAFFLE_SURFACE).fg(YAFFLE_TEXT_MUTED)),
-    );
-    frame.render_widget(footer, areas[3]);
+    }
 }
 
 fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> DetailPanelContent {
@@ -2500,6 +3491,10 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
                     )));
                 }
                 let mut body_lines = vec![Line::from(progress.detail.clone())];
+                if let Some(message) = &progress.failure_message {
+                    body_lines.push(Line::from(""));
+                    body_lines.push(Line::from(message.clone()));
+                }
                 if !detail.selected_workspace_log_lines().is_empty() {
                     body_lines.push(Line::from(""));
                     body_lines.push(Line::from("Recent activity:"));
@@ -2750,16 +3745,6 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
     }
 }
 
-fn panel_border_style(selected: bool) -> Style {
-    if selected {
-        Style::default()
-            .fg(YAFFLE_CREAM)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(YAFFLE_BORDER_ACCENT)
-    }
-}
-
 fn summarize_selected_workspaces(detail: &LocalEnvironmentDetailState) -> String {
     let selected = ordered_selected_workspaces(detail);
 
@@ -2868,7 +3853,7 @@ fn lifecycle_state_copy(phase: &str, state: &str, summary: Option<&str>) -> Stri
     }
 }
 
-fn render_lifecycle_item_lines(item: &Value, phase: &str, body_lines: &mut Vec<Line<'static>>) {
+fn render_lifecycle_item_lines(item: &Value, phase: &str, body_lines: &mut Vec<Line>) {
     let key = item.get("key").and_then(Value::as_str).unwrap_or("unknown");
     let state = item
         .get("state")
@@ -2985,28 +3970,11 @@ fn format_lifecycle_event_summary(event: &Value) -> String {
     }
 }
 
-fn render_detail_tab_chip(label: &str, selected: bool) -> Span<'static> {
-    if selected {
-        Span::styled(
-            format!("[{label}]"),
-            Style::default()
-                .fg(YAFFLE_CREAM)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        )
-    } else {
-        Span::styled(label.to_string(), Style::default().fg(YAFFLE_TEXT_MUTED))
-    }
-}
-
-fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line<'static>> {
-    let box_width = 24usize;
-    let column_gap = 8usize;
-    let row_gap = 2usize;
-    let row_height = 4usize;
-
-    let width = detail.levels.len().max(1) * (box_width + column_gap) + 4;
+fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line> {
+    let width =
+        detail.levels.len().max(1) * (ENVIRONMENT_DAG_BOX_WIDTH + ENVIRONMENT_DAG_COLUMN_GAP) + 4;
     let max_rows = detail.levels.iter().map(Vec::len).max().unwrap_or(1);
-    let height = max_rows * (row_height + row_gap) + 3;
+    let height = max_rows * (ENVIRONMENT_DAG_ROW_HEIGHT + ENVIRONMENT_DAG_ROW_GAP) + 3;
     let mut canvas = vec![
         vec![
             DagCell {
@@ -3020,9 +3988,9 @@ fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line<'sta
 
     let mut positions = BTreeMap::new();
     for (level_index, level) in detail.levels.iter().enumerate() {
-        let x = level_index * (box_width + column_gap) + 2;
+        let x = level_index * (ENVIRONMENT_DAG_BOX_WIDTH + ENVIRONMENT_DAG_COLUMN_GAP) + 2;
         for (row_index, node_id) in level.iter().enumerate() {
-            let y = row_index * (row_height + row_gap) + 1;
+            let y = row_index * (ENVIRONMENT_DAG_ROW_HEIGHT + ENVIRONMENT_DAG_ROW_GAP) + 1;
             positions.insert(node_id.clone(), (x, y));
             let Some(node) = detail.dag_nodes.iter().find(|node| node.id == *node_id) else {
                 continue;
@@ -3031,7 +3999,7 @@ fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line<'sta
                 &mut canvas,
                 x,
                 y,
-                box_width,
+                ENVIRONMENT_DAG_BOX_WIDTH,
                 node,
                 detail,
                 level_index,
@@ -3049,7 +4017,7 @@ fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line<'sta
                 continue;
             };
 
-            let source_mid_x = source_x + box_width;
+            let source_mid_x = source_x + ENVIRONMENT_DAG_BOX_WIDTH;
             let source_mid_y = source_y + 1;
             let target_mid_x = target_x.saturating_sub(2);
             let target_mid_y = target_y + 1;
@@ -3256,7 +4224,10 @@ fn workspace_lifecycle_phase_summary(
     format!("mixed {total}")
 }
 
-fn workspace_lifecycle_lights(detail: &LocalEnvironmentDetailState, workspace_path: &str) -> String {
+fn workspace_lifecycle_lights(
+    detail: &LocalEnvironmentDetailState,
+    workspace_path: &str,
+) -> String {
     let mut lights = Vec::new();
     if let Some(state) = workspace_lifecycle_phase_state(detail, workspace_path, "activation") {
         lights.push(format!("↗ {}", lifecycle_status_light_char(&state)));
@@ -3482,6 +4453,7 @@ fn load_environment_detail(
         selected_workspaces: std::collections::BTreeSet::new(),
         focus: ShellFocus::Graph,
         tab: DetailTab::Overview,
+        detail_spotlight: false,
         detail_scroll: 0,
         status_response: None,
         status_error: None,
@@ -3538,10 +4510,190 @@ fn load_local_config_context(
     ))
 }
 
-fn discover_local_environments(
+fn resolve_tui_capability(repo_root: &Path) -> TuiCapability {
+    let Ok(status) = load_local_cloud_auth_status() else {
+        return TuiCapability {
+            mode: TuiCapabilityMode::AnonymousLocal,
+            label: "Local execution".to_string(),
+            detail: "Could not read local Cloud auth; converges will run locally.".to_string(),
+            repo_full_name: None,
+        };
+    };
+
+    let Some(principal) = status.stored_principal else {
+        return TuiCapability {
+            mode: TuiCapabilityMode::AnonymousLocal,
+            label: "Local execution".to_string(),
+            detail: "Not signed in; local converge can use anonymous hosted outputs when needed."
+                .to_string(),
+            repo_full_name: None,
+        };
+    };
+
+    if status.expired {
+        return TuiCapability {
+            mode: TuiCapabilityMode::AnonymousLocal,
+            label: "Cloud session expired".to_string(),
+            detail: "Run `yaffle cloud login` to refresh account-backed capabilities.".to_string(),
+            repo_full_name: None,
+        };
+    }
+
+    if principal.principal_type == StoredPrincipalType::AnonymousSession {
+        return TuiCapability {
+            mode: TuiCapabilityMode::AnonymousLocal,
+            label: "Anonymous local-first".to_string(),
+            detail: "Local execution with a temporary machine-local guest session.".to_string(),
+            repo_full_name: None,
+        };
+    }
+
+    let Some(repo_full_name) = try_infer_repo_full_name_for_tui(repo_root) else {
+        return TuiCapability {
+            mode: TuiCapabilityMode::AccountLocal,
+            label: "Account local-first".to_string(),
+            detail: "Signed in; local execution is active because this repo has no GitHub origin."
+                .to_string(),
+            repo_full_name: None,
+        };
+    };
+
+    if !local_first_feature_token_configured() {
+        return TuiCapability {
+            mode: TuiCapabilityMode::AccountLocal,
+            label: "Account local-first".to_string(),
+            detail:
+                "Signed in; remote capability cannot be checked without the Cloud feature token."
+                    .to_string(),
+            repo_full_name: Some(repo_full_name),
+        };
+    }
+
+    match get_cloud_cli_capabilities(&principal, &repo_full_name) {
+        Ok(capabilities) if capabilities.remote_converge.available => TuiCapability {
+            mode: TuiCapabilityMode::AccountRemote,
+            label: "Remote-capable account".to_string(),
+            detail: capabilities.remote_converge.message,
+            repo_full_name: Some(repo_full_name),
+        },
+        Ok(capabilities) => TuiCapability {
+            mode: TuiCapabilityMode::AccountLocal,
+            label: "Account local-first".to_string(),
+            detail: capabilities.remote_converge.message,
+            repo_full_name: Some(repo_full_name),
+        },
+        Err(_) => TuiCapability {
+            mode: TuiCapabilityMode::AccountLocal,
+            label: "Account local-first".to_string(),
+            detail: "Signed in; remote capability is not advertised by this backend yet, so this TUI will use local execution."
+                .to_string(),
+            repo_full_name: Some(repo_full_name),
+        },
+    }
+}
+
+fn try_infer_repo_full_name_for_tui(working_dir: &Path) -> Option<String> {
+    let output = Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(working_dir)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let remote = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    parse_github_repo_full_name(&remote)
+}
+
+fn discover_tui_environments(
     repo_root: &Path,
     config: &yaffle_config::YaffleConfig,
+    capability: &TuiCapability,
 ) -> Vec<LocalEnvironmentEntry> {
+    if capability.mode == TuiCapabilityMode::AccountRemote {
+        if let Some(repo_full_name) = capability.repo_full_name.as_deref() {
+            if let Ok(status) = load_local_cloud_auth_status() {
+                if let Some(principal) = status.stored_principal {
+                    if !status.expired && principal.principal_type == StoredPrincipalType::Account {
+                        if let Ok(inventory) = get_cloud_cli_inventory(&principal, repo_full_name) {
+                            return cloud_inventory_to_environment_entries(repo_root, &inventory);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    discover_local_environments(repo_root, config)
+}
+
+fn cloud_inventory_to_environment_entries(
+    repo_root: &Path,
+    inventory: &CloudCliInventory,
+) -> Vec<LocalEnvironmentEntry> {
+    let local_state_envs = discover_local_state_environment_names(repo_root);
+    let mut environments = inventory
+        .environments
+        .iter()
+        .map(|environment| LocalEnvironmentEntry {
+            name: environment.environment_name.clone(),
+            kind: match environment.environment_kind.as_str() {
+                "transient" => "transient".to_string(),
+                _ => "named".to_string(),
+            },
+            workspace_count: environment.workspace_count,
+            local_state_detected: local_state_envs.contains(&environment.environment_name),
+            repo: Some(environment.repo.clone()),
+            origin: Some(cloud_environment_origin(environment)),
+            status: Some(environment.status.clone()),
+            head_sha: Some(environment.head_sha.clone()),
+            updated_at: Some(environment.updated_at.clone()),
+            actor: environment.actor_login.clone(),
+            last_run: cloud_environment_last_run(environment),
+        })
+        .collect::<Vec<_>>();
+
+    environments.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.kind.cmp(&right.kind))
+    });
+    environments
+}
+
+fn cloud_environment_origin(environment: &yaffle_engine::CloudCliInventoryEnvironment) -> String {
+    if environment.source_kind.as_deref() == Some("github_pull_request") {
+        return environment
+            .pr_number
+            .map(|number| format!("PR #{number}"))
+            .unwrap_or_else(|| "pull request".to_string());
+    }
+
+    let ref_name = environment
+        .git_ref
+        .strip_prefix("refs/heads/")
+        .or_else(|| environment.git_ref.strip_prefix("refs/tags/"))
+        .unwrap_or(environment.git_ref.as_str());
+    if environment.git_ref.starts_with("refs/tags/") {
+        format!("tag {ref_name}")
+    } else {
+        format!("branch {ref_name}")
+    }
+}
+
+fn cloud_environment_last_run(
+    environment: &yaffle_engine::CloudCliInventoryEnvironment,
+) -> Option<String> {
+    let run_type = environment.last_run_type.as_deref()?;
+    let run_status = environment.last_run_status.as_deref()?;
+    match environment.last_run_completed_at.as_deref() {
+        Some(completed_at) => Some(format!("{run_type} {run_status} at {completed_at}")),
+        None => Some(format!("{run_type} {run_status}")),
+    }
+}
+
+fn discover_local_state_environment_names(repo_root: &Path) -> std::collections::BTreeSet<String> {
     let mut local_state_envs = std::collections::BTreeSet::new();
     let state_root = repo_root.join(".yaffle").join("state");
     if let Ok(entries) = std::fs::read_dir(state_root) {
@@ -3554,6 +4706,15 @@ fn discover_local_environments(
         }
     }
 
+    local_state_envs
+}
+
+fn discover_local_environments(
+    repo_root: &Path,
+    config: &yaffle_config::YaffleConfig,
+) -> Vec<LocalEnvironmentEntry> {
+    let local_state_envs = discover_local_state_environment_names(repo_root);
+
     let mut environments = config
         .environments
         .iter()
@@ -3562,6 +4723,13 @@ fn discover_local_environments(
             kind: "named".to_string(),
             workspace_count: count_workspaces_for_environment(config, &environment.name),
             local_state_detected: local_state_envs.contains(&environment.name),
+            repo: None,
+            origin: None,
+            status: None,
+            head_sha: None,
+            updated_at: None,
+            actor: None,
+            last_run: None,
         })
         .collect::<Vec<_>>();
 
@@ -3577,6 +4745,13 @@ fn discover_local_environments(
             },
             local_state_detected: true,
             name: environment,
+            repo: None,
+            origin: None,
+            status: None,
+            head_sha: None,
+            updated_at: None,
+            actor: None,
+            last_run: None,
         });
     }
 
@@ -4537,6 +5712,173 @@ mod tests {
 
         assert_eq!(state.workspaces[0].state, WorkspaceRunState::Failed);
         assert_eq!(state.failure_message.as_deref(), Some("tofu init failed"));
+    }
+
+    #[test]
+    fn opentui_key_events_preserve_existing_navigation_bindings() {
+        assert_eq!(
+            OpenTuiKeyEvent {
+                name: "down".to_string(),
+                ctrl: false,
+            }
+            .to_tui_key(),
+            Some(TuiKey::Down)
+        );
+        assert_eq!(
+            OpenTuiKeyEvent {
+                name: "j".to_string(),
+                ctrl: false,
+            }
+            .to_tui_key(),
+            Some(TuiKey::Char('j'))
+        );
+        assert_eq!(
+            OpenTuiKeyEvent {
+                name: "space".to_string(),
+                ctrl: false,
+            }
+            .to_tui_key(),
+            Some(TuiKey::Space)
+        );
+        assert_eq!(
+            OpenTuiKeyEvent {
+                name: "c".to_string(),
+                ctrl: true,
+            }
+            .to_tui_key(),
+            Some(TuiKey::Char('q'))
+        );
+    }
+
+    #[test]
+    fn opentui_detail_tabs_preserve_existing_order() {
+        let tabs = render_detail_tabs(DetailTab::Outputs);
+        let labels = tabs.iter().map(|tab| tab.label).collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "Overview",
+                "Plan",
+                "Apply",
+                "Outputs",
+                "Activation",
+                "Verification",
+                "Runs",
+            ]
+        );
+        assert_eq!(tabs.iter().filter(|tab| tab.selected).count(), 1);
+        assert!(tabs.iter().any(|tab| tab.id == "outputs" && tab.selected));
+    }
+
+    #[test]
+    fn tui_capability_modes_keep_execution_location_separate_from_environment_kind() {
+        assert_eq!(
+            TuiCapabilityMode::AnonymousLocal.as_snapshot_value(),
+            "anonymousLocal"
+        );
+        assert_eq!(
+            TuiCapabilityMode::AccountLocal.as_snapshot_value(),
+            "accountLocal"
+        );
+        assert_eq!(
+            TuiCapabilityMode::AccountRemote.as_snapshot_value(),
+            "accountRemote"
+        );
+        assert_eq!(
+            TuiCapabilityMode::AnonymousLocal
+                .execution_location()
+                .as_snapshot_value(),
+            "local"
+        );
+        assert_eq!(
+            TuiCapabilityMode::AccountLocal
+                .execution_location()
+                .as_snapshot_value(),
+            "local"
+        );
+        assert_eq!(
+            TuiCapabilityMode::AccountRemote
+                .execution_location()
+                .as_snapshot_value(),
+            "remote"
+        );
+    }
+
+    #[test]
+    fn parses_github_repo_full_names_from_common_origin_urls() {
+        assert_eq!(
+            parse_github_repo_full_name("git@github.com:yaffledev/yaffle.git"),
+            Some("yaffledev/yaffle".to_string())
+        );
+        assert_eq!(
+            parse_github_repo_full_name("https://github.com/yaffledev/yaffle.git"),
+            Some("yaffledev/yaffle".to_string())
+        );
+        assert_eq!(
+            parse_github_repo_full_name("https://example.com/repo.git"),
+            None
+        );
+    }
+
+    #[test]
+    fn cloud_inventory_entries_include_named_and_transient_environments() {
+        let inventory = CloudCliInventory {
+            repo_full_name: "yaffledev/yaffle".to_string(),
+            environments: vec![
+                yaffle_engine::CloudCliInventoryEnvironment {
+                    repo: "yaffle".to_string(),
+                    environment_kind: "transient".to_string(),
+                    environment_name: "pr-42".to_string(),
+                    source_kind: Some("github_pull_request".to_string()),
+                    status: "ready".to_string(),
+                    git_ref: "refs/heads/feature/test".to_string(),
+                    head_sha: "abcdef1234567890".to_string(),
+                    updated_at: "2026-05-24T00:00:00Z".to_string(),
+                    workspace_count: 3,
+                    pr_number: Some(42),
+                    actor_login: Some("alex".to_string()),
+                    last_run_type: Some("apply".to_string()),
+                    last_run_status: Some("success".to_string()),
+                    last_run_completed_at: Some("2026-05-24T00:01:00Z".to_string()),
+                },
+                yaffle_engine::CloudCliInventoryEnvironment {
+                    repo: "yaffle".to_string(),
+                    environment_kind: "named".to_string(),
+                    environment_name: "main".to_string(),
+                    source_kind: None,
+                    status: "ready".to_string(),
+                    git_ref: "refs/heads/main".to_string(),
+                    head_sha: "1234567890abcdef".to_string(),
+                    updated_at: "2026-05-24T00:00:00Z".to_string(),
+                    workspace_count: 2,
+                    pr_number: None,
+                    actor_login: None,
+                    last_run_type: None,
+                    last_run_status: None,
+                    last_run_completed_at: None,
+                },
+            ],
+        };
+
+        let entries =
+            cloud_inventory_to_environment_entries(Path::new("/tmp/yaffle-no-state"), &inventory);
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "main");
+        assert_eq!(entries[0].kind, "named");
+        assert_eq!(entries[0].workspace_count, 2);
+        assert_eq!(entries[0].origin.as_deref(), Some("branch main"));
+        assert_eq!(entries[0].head_sha.as_deref(), Some("1234567890abcdef"));
+        assert_eq!(entries[1].name, "pr-42");
+        assert_eq!(entries[1].kind, "transient");
+        assert_eq!(entries[1].workspace_count, 3);
+        assert_eq!(entries[1].origin.as_deref(), Some("PR #42"));
+        assert_eq!(entries[1].actor.as_deref(), Some("alex"));
+        assert_eq!(
+            entries[1].last_run.as_deref(),
+            Some("apply success at 2026-05-24T00:01:00Z")
+        );
     }
 
     #[test]

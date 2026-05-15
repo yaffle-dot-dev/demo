@@ -95,6 +95,65 @@ pub struct CloudCliLoginResult {
     pub converted_from_anonymous: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudCliCapabilities {
+    #[serde(alias = "principalType")]
+    pub principal_type: String,
+    #[serde(alias = "repoFullName")]
+    pub repo_full_name: String,
+    #[serde(alias = "executionMode")]
+    pub execution_mode: String,
+    #[serde(alias = "principalTier")]
+    pub principal_tier: String,
+    #[serde(alias = "remoteConverge")]
+    pub remote_converge: CloudRemoteConvergeCapability,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudRemoteConvergeCapability {
+    pub available: bool,
+    #[serde(alias = "reasonCode")]
+    pub reason_code: Option<String>,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudCliInventory {
+    #[serde(alias = "repoFullName")]
+    pub repo_full_name: String,
+    pub environments: Vec<CloudCliInventoryEnvironment>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudCliInventoryEnvironment {
+    pub repo: String,
+    #[serde(alias = "environmentKind")]
+    pub environment_kind: String,
+    #[serde(alias = "environmentName")]
+    pub environment_name: String,
+    #[serde(alias = "sourceKind")]
+    pub source_kind: Option<String>,
+    pub status: String,
+    #[serde(alias = "ref")]
+    pub git_ref: String,
+    #[serde(alias = "headSha")]
+    pub head_sha: String,
+    #[serde(alias = "updatedAt")]
+    pub updated_at: String,
+    #[serde(alias = "workspaceCount")]
+    pub workspace_count: usize,
+    #[serde(alias = "prNumber")]
+    pub pr_number: Option<u64>,
+    #[serde(alias = "actorLogin")]
+    pub actor_login: Option<String>,
+    #[serde(alias = "lastRunType")]
+    pub last_run_type: Option<String>,
+    #[serde(alias = "lastRunStatus")]
+    pub last_run_status: Option<String>,
+    #[serde(alias = "lastRunCompletedAt")]
+    pub last_run_completed_at: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct CloudRemoteConvergeRequest {
     pub repo_full_name: String,
@@ -360,6 +419,16 @@ struct AnonymousSessionResponseEnvelope {
 #[derive(Debug, Deserialize)]
 struct CloudCliLoginResponseEnvelope {
     data: CloudCliLoginResult,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudCliCapabilitiesResponseEnvelope {
+    data: CloudCliCapabilities,
+}
+
+#[derive(Debug, Deserialize)]
+struct CloudCliInventoryResponseEnvelope {
+    data: CloudCliInventory,
 }
 
 #[derive(Debug, Deserialize)]
@@ -812,6 +881,52 @@ pub fn exchange_cloud_cli_login_code(
         .map_err(|error| LocalFirstError::Http(error.to_string()))?;
     persist_principal(&login.principal)?;
     Ok(login)
+}
+
+pub fn get_cloud_cli_capabilities(
+    principal: &StoredPrincipalCredential,
+    repo_full_name: &str,
+) -> Result<CloudCliCapabilities, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .get(runtime.endpoint_url("/api/cloud/capabilities"))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .query(&[("repoFullName", repo_full_name)])
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<CloudCliCapabilitiesResponseEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
+}
+
+pub fn get_cloud_cli_inventory(
+    principal: &StoredPrincipalCredential,
+    repo_full_name: &str,
+) -> Result<CloudCliInventory, LocalFirstError> {
+    let runtime = LocalFirstRuntime::from_env()?;
+    let response = runtime
+        .client
+        .get(runtime.endpoint_url("/api/cloud/inventory"))
+        .headers(runtime.authorized_headers(&principal.token)?)
+        .query(&[("repoFullName", repo_full_name)])
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Api(read_api_error(response)?));
+    }
+
+    response
+        .json::<CloudCliInventoryResponseEnvelope>()
+        .map(|value| value.data)
+        .map_err(|error| LocalFirstError::Http(error.to_string()))
 }
 
 pub fn start_cloud_remote_converge(

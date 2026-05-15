@@ -116,7 +116,7 @@
             src = pnpmDepsSource;
             pnpm = pkgs.pnpm;
             fetcherVersion = 3;
-            hash = "sha256-i+f/bnNw/O8R20goYuupt9sfJV2Xg7sAO1TFdnTscs8=";
+            hash = "sha256-D310NuSc8tyjV6P5x2VheKyFyr/L6Yw/N02WNnQbxp0=";
           };
 
           mkPnpmWorkspaceBuild = {

@@ -7,12 +7,17 @@ import type { PullRequestContext, PushContext, WebhookContext } from "@yaffle/sh
 import { createRunGroup, findRunGroupById } from "../db/queries/run-groups.ts"
 import { findRunById, listRunsForDeployments } from "../db/queries/tf-runs.ts"
 import { findDeploymentsByRunGroup } from "../db/queries/workspace-deployments.ts"
+import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
-import { getLifecycleStateForRunGroup, listLifecycleEventsForItems } from "../db/queries/lifecycle.ts"
+import {
+  getLifecycleStateForRunGroup,
+  listLifecycleEventsForItems,
+} from "../db/queries/lifecycle.ts"
 import { findOrgById, findOrgMembership } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { findUserById } from "../db/queries/users.ts"
 import { parseYaffleToml, type YaffleTomlConfig } from "../lib/config-toml.ts"
+import { parseEnvironmentGroupProjectionPayload } from "../lib/projections/environment-groups.ts"
 import {
   findPushTriggerEnvironment,
   getWorkspacesForEnvironment,
@@ -27,7 +32,10 @@ import {
   deriveWorkspaceLifecycleState,
 } from "../lib/lifecycle-conditions.ts"
 import { logger } from "../lib/telemetry.ts"
-import { buildWorkspaceVariablesByPath, type WorkspaceVariablesByPath } from "../lib/workspace-variables.ts"
+import {
+  buildWorkspaceVariablesByPath,
+  type WorkspaceVariablesByPath,
+} from "../lib/workspace-variables.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
 import { createScanJob } from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "../lib/job-token.ts"
@@ -61,13 +69,23 @@ const manualConvergeSchema = z.object({
   workspacePaths: z.array(z.string().min(1)).default([]),
 })
 
+const capabilitiesQuerySchema = z.object({
+  repoFullName: z.string().min(1),
+})
+
+const inventoryQuerySchema = z.object({
+  repoFullName: z.string().min(1),
+})
+
 const uuidParam = z.string().uuid()
 
-export function createCloudConvergeRoute(deps: {
-  loadConfig?: ConfigLoader
-  loadInstallationToken?: InstallationTokenLoader
-  scanDispatcher?: ScanDispatcher
-} = {}): Hono<{ Variables: Variables }> {
+export function createCloudConvergeRoute(
+  deps: {
+    loadConfig?: ConfigLoader
+    loadInstallationToken?: InstallationTokenLoader
+    scanDispatcher?: ScanDispatcher
+  } = {},
+): Hono<{ Variables: Variables }> {
   const route = new Hono<{ Variables: Variables }>()
   const loadConfig = deps.loadConfig ?? loadConfigFromGithub
   const loadInstallationToken = deps.loadInstallationToken ?? getInstallationToken
@@ -75,14 +93,202 @@ export function createCloudConvergeRoute(deps: {
 
   route.use("/converge", enforceFeatureToken)
   route.use("/converge/*", enforceFeatureToken)
+  route.use("/capabilities", enforceFeatureToken)
+  route.use("/inventory", enforceFeatureToken)
   route.use("/converge", principalAuth())
   route.use("/converge/*", principalAuth())
+  route.use("/capabilities", principalAuth())
+  route.use("/inventory", principalAuth())
+
+  route.get("/capabilities", async (c) => {
+    const principal = c.get("principalAuth")
+    const parsed = capabilitiesQuerySchema.safeParse(
+      Object.fromEntries(new URL(c.req.url).searchParams),
+    )
+    if (!parsed.success) {
+      return c.json(
+        {
+          error: {
+            code: "BAD_REQUEST",
+            message: parsed.error.errors[0]?.message ?? "invalid request",
+          },
+        },
+        400,
+      )
+    }
+
+    const values = parsed.data
+    if (principal.type !== "account" || !principal.userId) {
+      return c.json({
+        data: remoteConvergeCapabilityUnavailable({
+          principalType: principal.type,
+          repoFullName: values.repoFullName,
+          principalTier: "anonymous",
+          reasonCode: "ACCOUNT_REQUIRED",
+          message: "remote execution requires an account-backed Yaffle Cloud login",
+        }),
+      })
+    }
+
+    const repo = await findRepoByFullName(values.repoFullName)
+    if (!repo?.orgId || !repo.installationId) {
+      return c.json({
+        data: remoteConvergeCapabilityUnavailable({
+          principalType: principal.type,
+          repoFullName: values.repoFullName,
+          principalTier: "free_local",
+          reasonCode: "REPO_NOT_CONNECTED",
+          message: "remote execution is not available for this repository",
+        }),
+      })
+    }
+
+    const org = await findOrgById(repo.orgId)
+    if (!org) {
+      return c.json({
+        data: remoteConvergeCapabilityUnavailable({
+          principalType: principal.type,
+          repoFullName: values.repoFullName,
+          principalTier: "free_local",
+          reasonCode: "ORG_NOT_FOUND",
+          message: "remote execution is not available for this repository",
+        }),
+      })
+    }
+
+    const membership = await findOrgMembership(org.id, principal.userId)
+    if (!membership || !hasMinRole(membership.role, "approver")) {
+      return c.json({
+        data: remoteConvergeCapabilityUnavailable({
+          principalType: principal.type,
+          repoFullName: values.repoFullName,
+          principalTier: "free_local",
+          reasonCode: "FORBIDDEN",
+          message: "remote execution requires approver access for this repository",
+        }),
+      })
+    }
+
+    if (!isPaidCloudOrg(org.planTier, org.subscriptionStatus)) {
+      return c.json({
+        data: remoteConvergeCapabilityUnavailable({
+          principalType: principal.type,
+          repoFullName: values.repoFullName,
+          principalTier: "free_local",
+          reasonCode: "PAID_CLOUD_REQUIRED",
+          message: "remote execution requires an active paid-cloud plan for this repository",
+        }),
+      })
+    }
+
+    return c.json({
+      data: {
+        principalType: principal.type,
+        repoFullName: values.repoFullName,
+        executionMode: "remote",
+        principalTier: "paid_cloud",
+        remoteConverge: {
+          available: true,
+          reasonCode: null,
+          message: "remote runner execution is available for this repository",
+        },
+      },
+    })
+  })
+
+  route.get("/inventory", async (c) => {
+    const principal = c.get("principalAuth")
+    if (principal.type !== "account" || !principal.userId) {
+      return c.json(
+        {
+          error: {
+            code: "ACCOUNT_REQUIRED",
+            message: "cloud inventory requires an account-backed CLI session",
+          },
+        },
+        403,
+      )
+    }
+
+    const parsed = inventoryQuerySchema.safeParse(
+      Object.fromEntries(new URL(c.req.url).searchParams),
+    )
+    if (!parsed.success) {
+      return c.json(
+        {
+          error: {
+            code: "BAD_REQUEST",
+            message: parsed.error.errors[0]?.message ?? "invalid request",
+          },
+        },
+        400,
+      )
+    }
+
+    const { repoFullName } = parsed.data
+    const repo = await findRepoByFullName(repoFullName)
+    if (!repo?.orgId) {
+      return c.json(
+        { error: { code: "REPO_NOT_FOUND", message: `repository not found: ${repoFullName}` } },
+        404,
+      )
+    }
+
+    const membership = await findOrgMembership(repo.orgId, principal.userId)
+    if (!membership || !hasMinRole(membership.role, "viewer")) {
+      return c.json({ error: { code: "FORBIDDEN", message: "cloud inventory access denied" } }, 403)
+    }
+
+    const rows = await listEnvironmentGroupProjections({
+      orgId: repo.orgId,
+      repo: repo.name,
+    })
+    const environments = rows.flatMap((row) => {
+      const payload = parseEnvironmentGroupProjectionPayload(row.payload)
+      if (!payload) {
+        return []
+      }
+      const latestRun = latestWorkspaceRun(payload.workspaces)
+
+      return [
+        {
+          repo: payload.repo,
+          environmentKind: payload.environmentKind,
+          environmentName: payload.environmentName,
+          sourceKind: payload.sourceKind,
+          status: payload.status,
+          ref: payload.ref,
+          headSha: payload.headSha,
+          updatedAt: payload.updatedAt,
+          workspaceCount: payload.workspaces.length,
+          prNumber: payload.sourceMetadata?.prNumber ?? null,
+          actorLogin:
+            payload.sourceMetadata?.authorLogin ?? latestWorkspaceAuthor(payload.workspaces),
+          lastRunType: latestRun?.lastRunType ?? null,
+          lastRunStatus: latestRun?.lastRunStatus ?? null,
+          lastRunCompletedAt: latestRun?.lastRunCompletedAt ?? null,
+        },
+      ]
+    })
+
+    return c.json({
+      data: {
+        repoFullName,
+        environments,
+      },
+    })
+  })
 
   route.post("/converge", async (c) => {
     const principal = c.get("principalAuth")
     if (principal.type !== "account" || !principal.userId) {
       return c.json(
-        { error: { code: "PAID_CLOUD_REQUIRED", message: "remote converge requires a paid cloud account session" } },
+        {
+          error: {
+            code: "PAID_CLOUD_REQUIRED",
+            message: "remote converge requires a paid cloud account session",
+          },
+        },
         403,
       )
     }
@@ -91,7 +297,12 @@ export function createCloudConvergeRoute(deps: {
     const parsed = manualConvergeSchema.safeParse(body)
     if (!parsed.success) {
       return c.json(
-        { error: { code: "BAD_REQUEST", message: parsed.error.errors[0]?.message ?? "invalid request" } },
+        {
+          error: {
+            code: "BAD_REQUEST",
+            message: parsed.error.errors[0]?.message ?? "invalid request",
+          },
+        },
         400,
       )
     }
@@ -111,11 +322,24 @@ export function createCloudConvergeRoute(deps: {
     }
     const repo = await findRepoByFullName(values.repoFullName)
     if (!repo?.orgId) {
-      return c.json({ error: { code: "REPO_NOT_FOUND", message: `repository not found: ${values.repoFullName}` } }, 404)
+      return c.json(
+        {
+          error: {
+            code: "REPO_NOT_FOUND",
+            message: `repository not found: ${values.repoFullName}`,
+          },
+        },
+        404,
+      )
     }
     if (!repo.installationId) {
       return c.json(
-        { error: { code: "REPO_NOT_CONNECTED", message: `repository ${values.repoFullName} is not connected to a GitHub App installation` } },
+        {
+          error: {
+            code: "REPO_NOT_CONNECTED",
+            message: `repository ${values.repoFullName} is not connected to a GitHub App installation`,
+          },
+        },
         409,
       )
     }
@@ -128,13 +352,20 @@ export function createCloudConvergeRoute(deps: {
     const membership = await findOrgMembership(org.id, principal.userId)
     if (!membership || !hasMinRole(membership.role, "approver")) {
       return c.json(
-        { error: { code: "FORBIDDEN", message: "remote converge requires approver role or higher" } },
+        {
+          error: { code: "FORBIDDEN", message: "remote converge requires approver role or higher" },
+        },
         403,
       )
     }
     if (!isPaidCloudOrg(org.planTier, org.subscriptionStatus)) {
       return c.json(
-        { error: { code: "PAID_CLOUD_REQUIRED", message: "remote converge requires an active paid-cloud plan" } },
+        {
+          error: {
+            code: "PAID_CLOUD_REQUIRED",
+            message: "remote converge requires an active paid-cloud plan",
+          },
+        },
         403,
       )
     }
@@ -158,7 +389,12 @@ export function createCloudConvergeRoute(deps: {
 
     if (!environmentMatchesRef(config, ctx, values.environmentName)) {
       return c.json(
-        { error: { code: "TARGET_MISMATCH", message: `ref '${values.ref}' does not match environment '${values.environmentName}'` } },
+        {
+          error: {
+            code: "TARGET_MISMATCH",
+            message: `ref '${values.ref}' does not match environment '${values.environmentName}'`,
+          },
+        },
         400,
       )
     }
@@ -170,11 +406,10 @@ export function createCloudConvergeRoute(deps: {
     )
     const eligibleWorkspacePaths = new Set(eligibleWorkspacePathsInOrder)
     const requestedWorkspacePaths = [...new Set(values.workspacePaths)]
-    const selectedWorkspacePaths = requestedWorkspacePaths.length > 0
-      ? requestedWorkspacePaths
-      : eligibleWorkspacePathsInOrder
-    const invalidWorkspacePaths = requestedWorkspacePaths.filter((workspacePath) =>
-      !eligibleWorkspacePaths.has(workspacePath)
+    const selectedWorkspacePaths =
+      requestedWorkspacePaths.length > 0 ? requestedWorkspacePaths : eligibleWorkspacePathsInOrder
+    const invalidWorkspacePaths = requestedWorkspacePaths.filter(
+      (workspacePath) => !eligibleWorkspacePaths.has(workspacePath),
     )
     if (invalidWorkspacePaths.length > 0) {
       return c.json(
@@ -258,7 +493,12 @@ export function createCloudConvergeRoute(deps: {
     }
     if (principal.type !== "account" || !principal.userId) {
       return c.json(
-        { error: { code: "PAID_CLOUD_REQUIRED", message: "remote converge requires a paid cloud account session" } },
+        {
+          error: {
+            code: "PAID_CLOUD_REQUIRED",
+            message: "remote converge requires a paid cloud account session",
+          },
+        },
         403,
       )
     }
@@ -283,66 +523,73 @@ export function createCloudConvergeRoute(deps: {
 
     const membership = await findOrgMembership(org.id, principal.userId)
     if (!membership || !hasMinRole(membership.role, "viewer")) {
-      return c.json(
-        { error: { code: "FORBIDDEN", message: "run group access denied" } },
-        403,
-      )
+      return c.json({ error: { code: "FORBIDDEN", message: "run group access denied" } }, 403)
     }
 
     const deployments = await findDeploymentsByRunGroup(runGroup.id)
     const latestRuns = await listRunsForDeployments(deployments.map((deployment) => deployment.id))
     const lifecycleState = await getLifecycleStateForRunGroup(runGroup.id)
-    const lifecycleEvents = await listLifecycleEventsForItems(lifecycleState?.items.map((item) => item.id) ?? [])
+    const lifecycleEvents = await listLifecycleEventsForItems(
+      lifecycleState?.items.map((item) => item.id) ?? [],
+    )
     const lifecycleItems = lifecycleState?.items ?? []
 
-    const serializedDeployments = await Promise.all(deployments.map(async (deployment) => {
-      const latestRun = latestRuns.get(deployment.id)?.[0] ?? null
-      const workspaceLifecycleItems = lifecycleItems.filter((item) => item.workspacePath === deployment.workspacePath)
-      const workspaceLifecycleState = deriveWorkspaceLifecycleState(
-        workspaceLifecycleItems.map((item) => ({
-          workspacePath: item.workspacePath,
-          phase: item.phase,
-          state: item.state,
-          scopes: item.scopes,
-        })),
-      )
-      const base = {
-        id: deployment.id,
-        workspacePath: deployment.workspacePath,
-        status: deployment.status,
-        lifecycle: workspaceLifecycleItems.length > 0
-          ? {
-              deploymentStatus: workspaceLifecycleState.deploymentStatus,
-              conditions: serializeLifecycleConditions(workspaceLifecycleState.conditions),
-            }
-          : null,
-        latestRun: latestRun
-          ? {
-              id: latestRun.id,
-              runType: latestRun.runType,
-              status: latestRun.status,
-              planSummary: latestRun.planSummary,
-              errorMessage: latestRun.errorMessage,
-              logOutput: null as string | null,
-              createdAt: latestRun.createdAt.toISOString(),
-              startedAt: latestRun.startedAt?.toISOString() ?? null,
-              completedAt: latestRun.completedAt?.toISOString() ?? null,
-            }
-          : null,
-      }
+    const serializedDeployments = await Promise.all(
+      deployments.map(async (deployment) => {
+        const latestRun = latestRuns.get(deployment.id)?.[0] ?? null
+        const workspaceLifecycleItems = lifecycleItems.filter(
+          (item) => item.workspacePath === deployment.workspacePath,
+        )
+        const workspaceLifecycleState = deriveWorkspaceLifecycleState(
+          workspaceLifecycleItems.map((item) => ({
+            workspacePath: item.workspacePath,
+            phase: item.phase,
+            state: item.state,
+            scopes: item.scopes,
+          })),
+        )
+        const base = {
+          id: deployment.id,
+          workspacePath: deployment.workspacePath,
+          status: deployment.status,
+          lifecycle:
+            workspaceLifecycleItems.length > 0
+              ? {
+                  deploymentStatus: workspaceLifecycleState.deploymentStatus,
+                  conditions: serializeLifecycleConditions(workspaceLifecycleState.conditions),
+                }
+              : null,
+          latestRun: latestRun
+            ? {
+                id: latestRun.id,
+                runType: latestRun.runType,
+                status: latestRun.status,
+                planSummary: latestRun.planSummary,
+                errorMessage: latestRun.errorMessage,
+                logOutput: null as string | null,
+                createdAt: latestRun.createdAt.toISOString(),
+                startedAt: latestRun.startedAt?.toISOString() ?? null,
+                completedAt: latestRun.completedAt?.toISOString() ?? null,
+              }
+            : null,
+        }
 
-      if (!base.latestRun || !["failed", "system_error", "cancelled"].includes(base.latestRun.status)) {
-        return base
-      }
-      const fullRun = await findRunById(base.latestRun.id)
-      return {
-        ...base,
-        latestRun: {
-          ...base.latestRun,
-          logOutput: fullRun?.logOutput ?? null,
-        },
-      }
-    }))
+        if (
+          !base.latestRun ||
+          !["failed", "system_error", "cancelled"].includes(base.latestRun.status)
+        ) {
+          return base
+        }
+        const fullRun = await findRunById(base.latestRun.id)
+        return {
+          ...base,
+          latestRun: {
+            ...base.latestRun,
+            logOutput: fullRun?.logOutput ?? null,
+          },
+        }
+      }),
+    )
 
     const runGroupStatus = deriveCloudConvergeRunGroupStatus(
       runGroup.status,
@@ -383,14 +630,16 @@ export function createCloudConvergeRoute(deps: {
                 executionMode: lifecycleState.run.executionMode,
                 startedAt: lifecycleState.run.startedAt.toISOString(),
                 finishedAt: lifecycleState.run.finishedAt?.toISOString() ?? null,
-                conditions: serializeLifecycleConditions(deriveLifecycleConditions(
-                  lifecycleItems.map((item) => ({
-                    workspacePath: item.workspacePath,
-                    phase: item.phase,
-                    state: item.state,
-                    scopes: item.scopes,
-                  })),
-                )),
+                conditions: serializeLifecycleConditions(
+                  deriveLifecycleConditions(
+                    lifecycleItems.map((item) => ({
+                      workspacePath: item.workspacePath,
+                      phase: item.phase,
+                      state: item.state,
+                      scopes: item.scopes,
+                    })),
+                  ),
+                ),
               },
               items: lifecycleState.items.map((item) => ({
                 id: item.id,
@@ -469,6 +718,69 @@ function isPaidCloudOrg(planTier: string, subscriptionStatus: string): boolean {
   return planTier !== "free"
 }
 
+function remoteConvergeCapabilityUnavailable(input: {
+  principalType: "anonymous_session" | "account"
+  repoFullName: string
+  principalTier: "anonymous" | "free_local" | "paid_cloud"
+  reasonCode: string
+  message: string
+}): {
+  principalType: "anonymous_session" | "account"
+  repoFullName: string
+  executionMode: "local"
+  principalTier: "anonymous" | "free_local" | "paid_cloud"
+  remoteConverge: {
+    available: false
+    reasonCode: string
+    message: string
+  }
+} {
+  return {
+    principalType: input.principalType,
+    repoFullName: input.repoFullName,
+    executionMode: "local",
+    principalTier: input.principalTier,
+    remoteConverge: {
+      available: false,
+      reasonCode: input.reasonCode,
+      message: input.message,
+    },
+  }
+}
+
+function latestWorkspaceRun<
+  T extends {
+    lastRunType: string | null
+    lastRunStatus: string | null
+    lastRunCompletedAt: string | null
+  },
+>(workspaces: T[]): T | null {
+  const withRuns = workspaces.filter(
+    (workspace) => workspace.lastRunType && workspace.lastRunStatus,
+  )
+  if (withRuns.length === 0) {
+    return null
+  }
+
+  return (
+    withRuns.sort((left, right) => {
+      const leftTime = left.lastRunCompletedAt
+        ? Date.parse(left.lastRunCompletedAt)
+        : Number.NEGATIVE_INFINITY
+      const rightTime = right.lastRunCompletedAt
+        ? Date.parse(right.lastRunCompletedAt)
+        : Number.NEGATIVE_INFINITY
+      return rightTime - leftTime
+    })[0] ?? null
+  )
+}
+
+function latestWorkspaceAuthor<T extends { authorLogin: string | null }>(
+  workspaces: T[],
+): string | null {
+  return workspaces.find((workspace) => workspace.authorLogin)?.authorLogin ?? null
+}
+
 function buildManualWebhookContext(input: {
   repoFullName: string
   installationId: number
@@ -520,7 +832,11 @@ function buildManualWebhookContext(input: {
   } satisfies PushContext
 }
 
-function environmentMatchesRef(config: YaffleTomlConfig, ctx: WebhookContext, environmentName: string): boolean {
+function environmentMatchesRef(
+  config: YaffleTomlConfig,
+  ctx: WebhookContext,
+  environmentName: string,
+): boolean {
   if (ctx.kind === "pull_request") {
     return matchesPullRequestTrigger(config, ctx.branch)
   }
@@ -542,9 +858,10 @@ function deriveCloudConvergeRunGroupStatus(
   lifecycleItems: Array<{ workspacePath: string; phase: string; state: string; scopes: string[] }>,
 ): string {
   if (
-    deployments.some((deployment) =>
-      ["failed", "system_error"].includes(deployment.status)
-        || ["failed", "system_error", "cancelled"].includes(deployment.latestRunStatus ?? ""),
+    deployments.some(
+      (deployment) =>
+        ["failed", "system_error"].includes(deployment.status) ||
+        ["failed", "system_error", "cancelled"].includes(deployment.latestRunStatus ?? ""),
     )
   ) {
     return "failed"
@@ -570,7 +887,14 @@ function serializeLifecycleConditions(
   name: string
   met: boolean
   summary: string
-  vector: { pending: number; running: number; succeeded: number; degraded: number; blocked: number; failed: number }
+  vector: {
+    pending: number
+    running: number
+    succeeded: number
+    degraded: number
+    blocked: number
+    failed: number
+  }
 }> {
   return Object.values(conditions)
 }
