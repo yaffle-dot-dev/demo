@@ -125,7 +125,7 @@ export function createCloudConvergeRoute(
           repoFullName: values.repoFullName,
           principalTier: "anonymous",
           reasonCode: "ACCOUNT_REQUIRED",
-          message: "remote execution requires an account-backed Yaffle Cloud login",
+          message: "sign in to use Yaffle Cloud for this repository",
         }),
       })
     }
@@ -138,7 +138,7 @@ export function createCloudConvergeRoute(
           repoFullName: values.repoFullName,
           principalTier: "free_local",
           reasonCode: "REPO_NOT_CONNECTED",
-          message: "remote execution is not available for this repository",
+          message: "connect this repository to Yaffle Cloud to see hosted environments here",
         }),
       })
     }
@@ -151,7 +151,7 @@ export function createCloudConvergeRoute(
           repoFullName: values.repoFullName,
           principalTier: "free_local",
           reasonCode: "ORG_NOT_FOUND",
-          message: "remote execution is not available for this repository",
+          message: "connect this repository to Yaffle Cloud to see hosted environments here",
         }),
       })
     }
@@ -164,7 +164,7 @@ export function createCloudConvergeRoute(
           repoFullName: values.repoFullName,
           principalTier: "free_local",
           reasonCode: "FORBIDDEN",
-          message: "remote execution requires approver access for this repository",
+          message: "ask an org admin for access to this repository",
         }),
       })
     }
@@ -176,7 +176,8 @@ export function createCloudConvergeRoute(
           repoFullName: values.repoFullName,
           principalTier: "free_local",
           reasonCode: "PAID_CLOUD_REQUIRED",
-          message: "remote execution requires an active paid-cloud plan for this repository",
+          message: "upgrade to paid cloud",
+          upgradeUrl: `/${org.slug}/settings/billing`,
         }),
       })
     }
@@ -190,7 +191,8 @@ export function createCloudConvergeRoute(
         remoteConverge: {
           available: true,
           reasonCode: null,
-          message: "remote runner execution is available for this repository",
+          message: "paid cloud is active for this repository",
+          upgradeUrl: null,
         },
       },
     })
@@ -248,7 +250,6 @@ export function createCloudConvergeRoute(
       if (!payload) {
         return []
       }
-      const latestRun = latestWorkspaceRun(payload.workspaces)
 
       return [
         {
@@ -261,12 +262,10 @@ export function createCloudConvergeRoute(
           headSha: payload.headSha,
           updatedAt: payload.updatedAt,
           workspaceCount: payload.workspaces.length,
+          statusVector: workspaceStatusVector(payload.workspaces),
           prNumber: payload.sourceMetadata?.prNumber ?? null,
           actorLogin:
             payload.sourceMetadata?.authorLogin ?? latestWorkspaceAuthor(payload.workspaces),
-          lastRunType: latestRun?.lastRunType ?? null,
-          lastRunStatus: latestRun?.lastRunStatus ?? null,
-          lastRunCompletedAt: latestRun?.lastRunCompletedAt ?? null,
         },
       ]
     })
@@ -286,7 +285,7 @@ export function createCloudConvergeRoute(
         {
           error: {
             code: "PAID_CLOUD_REQUIRED",
-            message: "remote converge requires a paid cloud account session",
+            message: "paid cloud converge requires an account session",
           },
         },
         403,
@@ -353,7 +352,10 @@ export function createCloudConvergeRoute(
     if (!membership || !hasMinRole(membership.role, "approver")) {
       return c.json(
         {
-          error: { code: "FORBIDDEN", message: "remote converge requires approver role or higher" },
+          error: {
+            code: "FORBIDDEN",
+            message: "paid cloud converge requires approver role or higher",
+          },
         },
         403,
       )
@@ -363,7 +365,7 @@ export function createCloudConvergeRoute(
         {
           error: {
             code: "PAID_CLOUD_REQUIRED",
-            message: "remote converge requires an active paid-cloud plan",
+            message: "paid cloud converge requires an active plan",
           },
         },
         403,
@@ -496,7 +498,7 @@ export function createCloudConvergeRoute(
         {
           error: {
             code: "PAID_CLOUD_REQUIRED",
-            message: "remote converge requires a paid cloud account session",
+            message: "paid cloud converge requires an account session",
           },
         },
         403,
@@ -724,6 +726,7 @@ function remoteConvergeCapabilityUnavailable(input: {
   principalTier: "anonymous" | "free_local" | "paid_cloud"
   reasonCode: string
   message: string
+  upgradeUrl?: string | null
 }): {
   principalType: "anonymous_session" | "account"
   repoFullName: string
@@ -733,6 +736,7 @@ function remoteConvergeCapabilityUnavailable(input: {
     available: false
     reasonCode: string
     message: string
+    upgradeUrl: string | null
   }
 } {
   return {
@@ -744,35 +748,22 @@ function remoteConvergeCapabilityUnavailable(input: {
       available: false,
       reasonCode: input.reasonCode,
       message: input.message,
+      upgradeUrl: input.upgradeUrl ?? null,
     },
   }
 }
 
-function latestWorkspaceRun<
-  T extends {
-    lastRunType: string | null
-    lastRunStatus: string | null
-    lastRunCompletedAt: string | null
-  },
->(workspaces: T[]): T | null {
-  const withRuns = workspaces.filter(
-    (workspace) => workspace.lastRunType && workspace.lastRunStatus,
-  )
-  if (withRuns.length === 0) {
-    return null
+function workspaceStatusVector<T extends { status: string }>(
+  workspaces: T[],
+): Array<{ status: string; count: number }> {
+  const counts = new Map<string, number>()
+  for (const workspace of workspaces) {
+    counts.set(workspace.status, (counts.get(workspace.status) ?? 0) + 1)
   }
 
-  return (
-    withRuns.sort((left, right) => {
-      const leftTime = left.lastRunCompletedAt
-        ? Date.parse(left.lastRunCompletedAt)
-        : Number.NEGATIVE_INFINITY
-      const rightTime = right.lastRunCompletedAt
-        ? Date.parse(right.lastRunCompletedAt)
-        : Number.NEGATIVE_INFINITY
-      return rightTime - leftTime
-    })[0] ?? null
-  )
+  return [...counts.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([status, count]) => ({ status, count }))
 }
 
 function latestWorkspaceAuthor<T extends { authorLogin: string | null }>(

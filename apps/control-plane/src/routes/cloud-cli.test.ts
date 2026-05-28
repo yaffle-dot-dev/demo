@@ -35,6 +35,7 @@ const TEST_FEATURE_TOKEN = "test-feature-token"
 
 let app: Hono
 let originalGetSession: typeof auth.api.getSession
+let originalBetterAuthSecret: string | undefined
 
 async function ensureTestUserRecord(): Promise<void> {
   const existingUser = await db.select().from(user).where(eq(user.id, TEST_USER_ID)).limit(1)
@@ -55,15 +56,19 @@ function featureHeaders(): Record<string, string> {
 }
 
 beforeAll(async () => {
-  originalGetSession = auth.api.getSession
+  originalGetSession = auth.api.getSession.bind(auth.api) as typeof auth.api.getSession
+  originalBetterAuthSecret = process.env.BETTER_AUTH_SECRET
   await ensureTestUserRecord()
 })
 
 beforeEach(async () => {
+  process.env.BETTER_AUTH_SECRET = "cloud-cli-test-secret-at-least-32-characters"
   process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN = TEST_FEATURE_TOKEN
   resetRateLimitStore()
   await cleanupTestData()
-  await db.delete(cloudCliAuthorizationCodes).where(eq(cloudCliAuthorizationCodes.userId, TEST_USER_ID))
+  await db
+    .delete(cloudCliAuthorizationCodes)
+    .where(eq(cloudCliAuthorizationCodes.userId, TEST_USER_ID))
 
   auth.api.getSession = (async () => ({
     session: {
@@ -94,10 +99,17 @@ beforeEach(async () => {
 
 afterEach(async () => {
   auth.api.getSession = originalGetSession
+  if (originalBetterAuthSecret) {
+    process.env.BETTER_AUTH_SECRET = originalBetterAuthSecret
+  } else {
+    delete process.env.BETTER_AUTH_SECRET
+  }
   delete process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN
   resetRateLimitStore()
   await cleanupTestData()
-  await db.delete(cloudCliAuthorizationCodes).where(eq(cloudCliAuthorizationCodes.userId, TEST_USER_ID))
+  await db
+    .delete(cloudCliAuthorizationCodes)
+    .where(eq(cloudCliAuthorizationCodes.userId, TEST_USER_ID))
 })
 
 afterAll(() => {
@@ -105,6 +117,105 @@ afterAll(() => {
 })
 
 describe("cloudCliRoute", () => {
+  test("authorizes CLI login without putting the feature token in the browser URL", async () => {
+    const codeVerifier = "b".repeat(43)
+    const codeChallenge = createHash("sha256").update(codeVerifier).digest("base64url")
+
+    const requestRes = await app.fetch(
+      new Request("http://localhost/api/cloud/cli/authorize-requests", {
+        method: "POST",
+        headers: {
+          ...featureHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_id: "yaffle-cli",
+          redirect_port: 10000,
+          response_type: "code",
+          code_challenge: codeChallenge,
+          code_challenge_method: "S256",
+          state: "cloud-login-state",
+        }),
+      }),
+    )
+
+    expect(requestRes.status).toBe(200)
+    const requestBody = (await requestRes.json()) as { data: { authorizeUrl: string } }
+    expect(requestBody.data.authorizeUrl).toContain("/api/cloud/cli/authorize?request=")
+    expect(requestBody.data.authorizeUrl).not.toContain("localhost:10000")
+    expect(requestBody.data.authorizeUrl).not.toContain("redirect_uri")
+    expect(requestBody.data.authorizeUrl).not.toContain("feature_token")
+
+    const authorizeRes = await app.fetch(new Request(requestBody.data.authorizeUrl))
+
+    expect(authorizeRes.status).toBe(200)
+    const authorizeHtml = await authorizeRes.text()
+    expect(authorizeHtml).toContain("Yaffle Cloud login approved")
+    expect(authorizeHtml).not.toContain("feature_token")
+  })
+
+  test("requires feature-token header when creating a browser authorize request", async () => {
+    const requestRes = await app.fetch(
+      new Request("http://localhost/api/cloud/cli/authorize-requests", {
+        method: "POST",
+        headers: {
+          "feature-token": "wrong-feature-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+    )
+
+    expect(requestRes.status).toBe(403)
+    const requestBody = (await requestRes.json()) as { error: { code: string } }
+    expect(requestBody.error.code).toBe("INVALID_FEATURE_TOKEN")
+  })
+
+  test("strips legacy feature tokens before redirecting unauthenticated users to login", async () => {
+    auth.api.getSession = (async () => null) as typeof auth.api.getSession
+
+    const redirectUri = "http://localhost:10000/callback"
+    const authorizeParams = new URLSearchParams({
+      client_id: "yaffle-cli",
+      redirect_uri: redirectUri,
+      response_type: "code",
+      code_challenge: "e".repeat(43),
+      code_challenge_method: "S256",
+      state: "cloud-login-state",
+      feature_token: "legacy-token-must-not-propagate",
+    })
+
+    const authorizeRes = await app.fetch(
+      new Request(`http://localhost/api/cloud/cli/authorize?${authorizeParams.toString()}`),
+    )
+
+    expect(authorizeRes.status).toBe(200)
+    const authorizeHtml = await authorizeRes.text()
+    expect(authorizeHtml).toContain("Redirecting to GitHub")
+    expect(authorizeHtml).not.toContain("legacy-token-must-not-propagate")
+    expect(authorizeHtml).not.toContain("feature_token")
+    expect(authorizeHtml).not.toContain("localhost:10000")
+    expect(authorizeHtml).not.toContain("redirect_uri")
+    expect(authorizeHtml).toContain("/api/cloud/cli/authorize")
+  })
+
+  test("keeps the feature-token gate on authorization-code exchange", async () => {
+    const tokenRes = await app.fetch(
+      new Request("http://localhost/api/cloud/cli/token", {
+        method: "POST",
+        headers: {
+          "feature-token": "wrong-feature-token",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      }),
+    )
+
+    expect(tokenRes.status).toBe(403)
+    const tokenBody = (await tokenRes.json()) as { error: { code: string } }
+    expect(tokenBody.error.code).toBe("INVALID_FEATURE_TOKEN")
+  })
+
   test("issues an account principal token and can use it for local-first execution tokens", async () => {
     const redirectUri = "http://localhost:10000/callback"
     const codeVerifier = "c".repeat(43)
@@ -142,14 +253,14 @@ describe("cloudCliRoute", () => {
           grant_type: "authorization_code",
           code,
           code_verifier: codeVerifier,
-          redirect_uri: redirectUri,
+          redirect_port: 10000,
           client_id: "yaffle-cli",
         }),
       }),
     )
 
     expect(tokenRes.status).toBe(200)
-    const tokenBody = await tokenRes.json() as {
+    const tokenBody = (await tokenRes.json()) as {
       data: {
         principalId: string
         principalType: string
@@ -249,7 +360,7 @@ describe("cloudCliRoute", () => {
           grant_type: "authorization_code",
           code,
           code_verifier: codeVerifier,
-          redirect_uri: redirectUri,
+          redirect_port: 10000,
           client_id: "yaffle-cli",
           current_principal_token: anonymousToken,
         }),
@@ -257,7 +368,7 @@ describe("cloudCliRoute", () => {
     )
     expect(tokenRes.status).toBe(200)
 
-    const tokenBody = await tokenRes.json() as {
+    const tokenBody = (await tokenRes.json()) as {
       data: {
         principalId: string
         convertedFromAnonymous: boolean

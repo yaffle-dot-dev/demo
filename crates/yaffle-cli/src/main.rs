@@ -24,8 +24,9 @@ use yaffle_engine::{
     build_cloud_cli_authorize_url, clear_local_cloud_auth, compute_local_repo_fingerprint,
     exchange_cloud_cli_login_code, execute, execute_with_progress, get_cloud_cli_capabilities,
     get_cloud_cli_inventory, get_cloud_remote_converge_status, load_local_cloud_auth_status,
-    local_first_feature_token_configured, prepare_tf_login_exports, start_cloud_remote_converge,
-    CloudCliInventory, CloudCliLoginResult, CloudRemoteConvergeHandle, CloudRemoteConvergeRequest,
+    local_first_feature_token_configured, module_api_base_url, prepare_tf_login_exports,
+    start_cloud_remote_converge, CloudCliInventory, CloudCliInventoryStatusCount,
+    CloudCliLoginResult, CloudRemoteConvergeHandle, CloudRemoteConvergeRequest,
     CloudRemoteConvergeStatus, CloudRemoteLatestRunSummary, ConvergeWorkspacePhase,
     EngineProgressEvent, EngineRequest, LocalCloudAuthStatus, StoredPrincipalCredential,
     StoredPrincipalType, TofuLogStream,
@@ -1997,6 +1998,8 @@ struct TuiCapability {
     label: String,
     detail: String,
     repo_full_name: Option<String>,
+    action_label: Option<String>,
+    action_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2004,6 +2007,7 @@ struct LocalEnvironmentEntry {
     name: String,
     kind: String,
     workspace_count: usize,
+    status_vector: Vec<EnvironmentStatusCount>,
     local_state_detected: bool,
     repo: Option<String>,
     origin: Option<String>,
@@ -2011,7 +2015,13 @@ struct LocalEnvironmentEntry {
     head_sha: Option<String>,
     updated_at: Option<String>,
     actor: Option<String>,
-    last_run: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvironmentStatusCount {
+    status: String,
+    count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2940,6 +2950,10 @@ struct TuiCapabilitySnapshot {
     detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     repo_full_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2952,6 +2966,10 @@ struct CloudStatusSnapshot {
     identity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     expires_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    action_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -2968,6 +2986,7 @@ struct EnvironmentListItemSnapshot {
     name: String,
     kind: String,
     workspace_count: usize,
+    status_vector: Vec<EnvironmentStatusCount>,
     local_state_detected: bool,
     selected: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2982,8 +3001,6 @@ struct EnvironmentListItemSnapshot {
     updated_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     actor: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    last_run: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3065,6 +3082,8 @@ fn render_tui_capability_snapshot(capability: &TuiCapability) -> TuiCapabilitySn
         label: capability.label.clone(),
         detail: capability.detail.clone(),
         repo_full_name: capability.repo_full_name.clone(),
+        action_label: capability.action_label.clone(),
+        action_url: capability.action_url.clone(),
     }
 }
 
@@ -3076,6 +3095,8 @@ fn render_cloud_status_snapshot(capability: &TuiCapability) -> CloudStatusSnapsh
             detail: "Could not read local Yaffle Cloud auth state.".to_string(),
             identity: None,
             expires_at: None,
+            action_label: None,
+            action_url: None,
         };
     };
 
@@ -3086,6 +3107,8 @@ fn render_cloud_status_snapshot(capability: &TuiCapability) -> CloudStatusSnapsh
             detail: capability.detail.clone(),
             identity: None,
             expires_at: None,
+            action_label: capability.action_label.clone(),
+            action_url: capability.action_url.clone(),
         };
     };
 
@@ -3106,6 +3129,8 @@ fn render_cloud_status_snapshot(capability: &TuiCapability) -> CloudStatusSnapsh
                 .to_string(),
             identity,
             expires_at,
+            action_label: None,
+            action_url: None,
         };
     }
 
@@ -3119,28 +3144,29 @@ fn render_cloud_status_snapshot(capability: &TuiCapability) -> CloudStatusSnapsh
             detail: capability.detail.clone(),
             identity,
             expires_at,
+            action_label: capability.action_label.clone(),
+            action_url: capability.action_url.clone(),
         },
         StoredPrincipalType::AnonymousSession => CloudStatusSnapshot {
-            kind: "anonymous",
+            kind: "none",
             label: capability.label.clone(),
             detail: capability.detail.clone(),
             identity: None,
             expires_at,
+            action_label: capability.action_label.clone(),
+            action_url: capability.action_url.clone(),
         },
     }
 }
 
 fn render_environment_browser_snapshot(app: &LocalAppState) -> EnvironmentBrowserSnapshot {
     EnvironmentBrowserSnapshot {
-        header_lines: vec![
-            Line::from(vec![Span::styled(
-                "Yaffle",
-                Style::default()
-                    .fg(YAFFLE_GREEN)
-                    .add_modifier(Modifier::BOLD),
-            )]),
-            Line::from("Choose an environment to inspect or converge."),
-        ],
+        header_lines: vec![Line::from(vec![Span::styled(
+            "Yaffle",
+            Style::default()
+                .fg(YAFFLE_GREEN)
+                .add_modifier(Modifier::BOLD),
+        )])],
         environments: app
             .environments
             .iter()
@@ -3149,6 +3175,7 @@ fn render_environment_browser_snapshot(app: &LocalAppState) -> EnvironmentBrowse
                 name: environment.name.clone(),
                 kind: environment.kind.clone(),
                 workspace_count: environment.workspace_count,
+                status_vector: environment.status_vector.clone(),
                 local_state_detected: environment.local_state_detected,
                 selected: index == app.selected_env_index,
                 repo: environment.repo.clone(),
@@ -3157,7 +3184,6 @@ fn render_environment_browser_snapshot(app: &LocalAppState) -> EnvironmentBrowse
                 head_sha: environment.head_sha.clone(),
                 updated_at: environment.updated_at.clone(),
                 actor: environment.actor.clone(),
-                last_run: environment.last_run.clone(),
             })
             .collect(),
         footer: "j/k move • enter open • q/ctrl+c quit",
@@ -4514,82 +4540,118 @@ fn resolve_tui_capability(repo_root: &Path) -> TuiCapability {
     let Ok(status) = load_local_cloud_auth_status() else {
         return TuiCapability {
             mode: TuiCapabilityMode::AnonymousLocal,
-            label: "Local execution".to_string(),
-            detail: "Could not read local Cloud auth; converges will run locally.".to_string(),
+            label: "Local only".to_string(),
+            detail: "Runs use this machine.".to_string(),
             repo_full_name: None,
+            action_label: None,
+            action_url: None,
         };
     };
 
     let Some(principal) = status.stored_principal else {
         return TuiCapability {
             mode: TuiCapabilityMode::AnonymousLocal,
-            label: "Local execution".to_string(),
-            detail: "Not signed in; local converge can use anonymous hosted outputs when needed."
-                .to_string(),
+            label: "Local only".to_string(),
+            detail: "Yaffle Cloud is not connected.".to_string(),
             repo_full_name: None,
+            action_label: Some("Sign in / register".to_string()),
+            action_url: cloud_web_url("/"),
         };
     };
 
     if status.expired {
         return TuiCapability {
             mode: TuiCapabilityMode::AnonymousLocal,
-            label: "Cloud session expired".to_string(),
-            detail: "Run `yaffle cloud login` to refresh account-backed capabilities.".to_string(),
+            label: "Local only".to_string(),
+            detail: "Cloud session expired. Run `yaffle cloud login` to reconnect.".to_string(),
             repo_full_name: None,
+            action_label: Some("Sign in / register".to_string()),
+            action_url: cloud_web_url("/"),
         };
     }
 
     if principal.principal_type == StoredPrincipalType::AnonymousSession {
         return TuiCapability {
             mode: TuiCapabilityMode::AnonymousLocal,
-            label: "Anonymous local-first".to_string(),
-            detail: "Local execution with a temporary machine-local guest session.".to_string(),
+            label: "Local only".to_string(),
+            detail: "Temporary local session.".to_string(),
             repo_full_name: None,
+            action_label: Some("Sign in / register".to_string()),
+            action_url: cloud_web_url("/"),
         };
     }
 
     let Some(repo_full_name) = try_infer_repo_full_name_for_tui(repo_root) else {
         return TuiCapability {
             mode: TuiCapabilityMode::AccountLocal,
-            label: "Account local-first".to_string(),
-            detail: "Signed in; local execution is active because this repo has no GitHub origin."
-                .to_string(),
+            label: "Free cloud".to_string(),
+            detail: "Cloud account connected.".to_string(),
             repo_full_name: None,
+            action_label: None,
+            action_url: None,
         };
     };
 
     if !local_first_feature_token_configured() {
         return TuiCapability {
             mode: TuiCapabilityMode::AccountLocal,
-            label: "Account local-first".to_string(),
-            detail:
-                "Signed in; remote capability cannot be checked without the Cloud feature token."
-                    .to_string(),
+            label: "Free cloud".to_string(),
+            detail: "Cloud account connected.".to_string(),
             repo_full_name: Some(repo_full_name),
+            action_label: None,
+            action_url: None,
         };
     }
 
     match get_cloud_cli_capabilities(&principal, &repo_full_name) {
         Ok(capabilities) if capabilities.remote_converge.available => TuiCapability {
             mode: TuiCapabilityMode::AccountRemote,
-            label: "Remote-capable account".to_string(),
+            label: "Paid cloud".to_string(),
             detail: capabilities.remote_converge.message,
             repo_full_name: Some(repo_full_name),
+            action_label: None,
+            action_url: None,
         },
         Ok(capabilities) => TuiCapability {
             mode: TuiCapabilityMode::AccountLocal,
-            label: "Account local-first".to_string(),
+            label: "Free cloud".to_string(),
             detail: capabilities.remote_converge.message,
             repo_full_name: Some(repo_full_name),
+            action_label: capabilities
+                .remote_converge
+                .upgrade_url
+                .as_ref()
+                .map(|_| "Upgrade".to_string()),
+            action_url: capabilities
+                .remote_converge
+                .upgrade_url
+                .as_deref()
+                .and_then(cloud_web_url),
         },
         Err(_) => TuiCapability {
             mode: TuiCapabilityMode::AccountLocal,
-            label: "Account local-first".to_string(),
-            detail: "Signed in; remote capability is not advertised by this backend yet, so this TUI will use local execution."
-                .to_string(),
+            label: "Free cloud".to_string(),
+            detail: "Cloud account connected.".to_string(),
             repo_full_name: Some(repo_full_name),
+            action_label: None,
+            action_url: None,
         },
     }
+}
+
+fn cloud_web_url(path: &str) -> Option<String> {
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return Some(path.to_string());
+    }
+
+    let base_url = module_api_base_url().ok()?;
+    let separator = if path.starts_with('/') { "" } else { "/" };
+    Some(format!(
+        "{}{}{}",
+        base_url.trim_end_matches('/'),
+        separator,
+        path
+    ))
 }
 
 fn try_infer_repo_full_name_for_tui(working_dir: &Path) -> Option<String> {
@@ -4643,6 +4705,7 @@ fn cloud_inventory_to_environment_entries(
                 _ => "named".to_string(),
             },
             workspace_count: environment.workspace_count,
+            status_vector: environment_status_vector(&environment.status_vector),
             local_state_detected: local_state_envs.contains(&environment.environment_name),
             repo: Some(environment.repo.clone()),
             origin: Some(cloud_environment_origin(environment)),
@@ -4650,7 +4713,6 @@ fn cloud_inventory_to_environment_entries(
             head_sha: Some(environment.head_sha.clone()),
             updated_at: Some(environment.updated_at.clone()),
             actor: environment.actor_login.clone(),
-            last_run: cloud_environment_last_run(environment),
         })
         .collect::<Vec<_>>();
 
@@ -4682,15 +4744,16 @@ fn cloud_environment_origin(environment: &yaffle_engine::CloudCliInventoryEnviro
     }
 }
 
-fn cloud_environment_last_run(
-    environment: &yaffle_engine::CloudCliInventoryEnvironment,
-) -> Option<String> {
-    let run_type = environment.last_run_type.as_deref()?;
-    let run_status = environment.last_run_status.as_deref()?;
-    match environment.last_run_completed_at.as_deref() {
-        Some(completed_at) => Some(format!("{run_type} {run_status} at {completed_at}")),
-        None => Some(format!("{run_type} {run_status}")),
-    }
+fn environment_status_vector(
+    status_vector: &[CloudCliInventoryStatusCount],
+) -> Vec<EnvironmentStatusCount> {
+    status_vector
+        .iter()
+        .map(|item| EnvironmentStatusCount {
+            status: item.status.clone(),
+            count: item.count,
+        })
+        .collect()
 }
 
 fn discover_local_state_environment_names(repo_root: &Path) -> std::collections::BTreeSet<String> {
@@ -4722,6 +4785,7 @@ fn discover_local_environments(
             name: environment.name.clone(),
             kind: "named".to_string(),
             workspace_count: count_workspaces_for_environment(config, &environment.name),
+            status_vector: Vec::new(),
             local_state_detected: local_state_envs.contains(&environment.name),
             repo: None,
             origin: None,
@@ -4729,7 +4793,6 @@ fn discover_local_environments(
             head_sha: None,
             updated_at: None,
             actor: None,
-            last_run: None,
         })
         .collect::<Vec<_>>();
 
@@ -4743,6 +4806,7 @@ fn discover_local_environments(
                 EnvironmentKind::Named => "named".to_string(),
                 EnvironmentKind::Transient => "transient".to_string(),
             },
+            status_vector: Vec::new(),
             local_state_detected: true,
             name: environment,
             repo: None,
@@ -4751,7 +4815,6 @@ fn discover_local_environments(
             head_sha: None,
             updated_at: None,
             actor: None,
-            last_run: None,
         });
     }
 
@@ -5836,11 +5899,18 @@ mod tests {
                     head_sha: "abcdef1234567890".to_string(),
                     updated_at: "2026-05-24T00:00:00Z".to_string(),
                     workspace_count: 3,
+                    status_vector: vec![
+                        yaffle_engine::CloudCliInventoryStatusCount {
+                            status: "ready".to_string(),
+                            count: 2,
+                        },
+                        yaffle_engine::CloudCliInventoryStatusCount {
+                            status: "planning".to_string(),
+                            count: 1,
+                        },
+                    ],
                     pr_number: Some(42),
                     actor_login: Some("alex".to_string()),
-                    last_run_type: Some("apply".to_string()),
-                    last_run_status: Some("success".to_string()),
-                    last_run_completed_at: Some("2026-05-24T00:01:00Z".to_string()),
                 },
                 yaffle_engine::CloudCliInventoryEnvironment {
                     repo: "yaffle".to_string(),
@@ -5852,11 +5922,12 @@ mod tests {
                     head_sha: "1234567890abcdef".to_string(),
                     updated_at: "2026-05-24T00:00:00Z".to_string(),
                     workspace_count: 2,
+                    status_vector: vec![yaffle_engine::CloudCliInventoryStatusCount {
+                        status: "ready".to_string(),
+                        count: 2,
+                    }],
                     pr_number: None,
                     actor_login: None,
-                    last_run_type: None,
-                    last_run_status: None,
-                    last_run_completed_at: None,
                 },
             ],
         };
@@ -5876,8 +5947,17 @@ mod tests {
         assert_eq!(entries[1].origin.as_deref(), Some("PR #42"));
         assert_eq!(entries[1].actor.as_deref(), Some("alex"));
         assert_eq!(
-            entries[1].last_run.as_deref(),
-            Some("apply success at 2026-05-24T00:01:00Z")
+            entries[1].status_vector,
+            vec![
+                EnvironmentStatusCount {
+                    status: "ready".to_string(),
+                    count: 2,
+                },
+                EnvironmentStatusCount {
+                    status: "planning".to_string(),
+                    count: 1,
+                },
+            ]
         );
     }
 

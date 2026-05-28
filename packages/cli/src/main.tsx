@@ -1,5 +1,7 @@
 #!/usr/bin/env bun
 
+import { spawn } from "node:child_process"
+
 import {
   createCliRenderer,
   type CliRenderer,
@@ -46,6 +48,7 @@ type EnvironmentListItemSnapshot = {
   name: string
   kind: string
   workspaceCount: number
+  statusVector: EnvironmentStatusCount[]
   localStateDetected: boolean
   selected: boolean
   repo?: string
@@ -54,7 +57,11 @@ type EnvironmentListItemSnapshot = {
   headSha?: string
   updatedAt?: string
   actor?: string
-  lastRun?: string
+}
+
+type EnvironmentStatusCount = {
+  status: string
+  count: number
 }
 
 type EnvironmentBrowserSnapshot = {
@@ -125,6 +132,8 @@ type TuiCapabilitySnapshot = {
   label: string
   detail: string
   repoFullName?: string
+  actionLabel?: string
+  actionUrl?: string
 }
 
 type CloudStatusSnapshot = {
@@ -133,6 +142,8 @@ type CloudStatusSnapshot = {
   detail: string
   identity?: string
   expiresAt?: string
+  actionLabel?: string
+  actionUrl?: string
 }
 
 type KeyResponse = {
@@ -480,9 +491,13 @@ function environmentMetadata(environment: EnvironmentListItemSnapshot): string[]
     environment.updatedAt ? relativeTime(environment.updatedAt) : null,
     environment.actor ? `@${environment.actor}` : null,
   ].filter(Boolean).join(" · ")
-  const secondLine = environment.lastRun ? `last run: ${formatLastRun(environment.lastRun)}` : ""
+  const secondLine = environment.statusVector.length > 0 ? `workspaces: ${formatStatusVector(environment.statusVector)}` : ""
 
   return [firstLine, secondLine].filter((line) => line.length > 0)
+}
+
+function formatStatusVector(statusVector: EnvironmentStatusCount[]): string {
+  return statusVector.map((item) => `${item.count} ${item.status}`).join(" · ")
 }
 
 function shortSha(value: string): string {
@@ -511,15 +526,6 @@ function relativeTime(value: string): string {
   }
 
   return seconds >= 0 ? `${absSeconds}s ago` : `in ${absSeconds}s`
-}
-
-function formatLastRun(value: string): string {
-  const match = value.match(/^(.*) at (.*)$/)
-  if (!match) {
-    return value
-  }
-
-  return `${match[1]} ${relativeTime(match[2])}`
 }
 
 function DetailScreen({
@@ -801,10 +807,17 @@ function StyledSpanView({ span }: { span: StyledSpan }) {
 function CloudStatus({ cloud, compact = false }: { cloud: CloudStatusSnapshot; compact?: boolean }) {
   const tone = cloudTone(cloud.kind)
   const color = toneColor(tone)
-  const detail = cloud.identity ? `${cloud.identity} • ${cloud.detail}` : cloud.detail
+  const actionText = cloud.actionLabel && cloud.actionUrl ? linkText(cloud.actionLabel, cloud.actionUrl) : null
+  const detailText = cloud.identity ? `${cloud.identity} • ${cloud.detail}` : cloud.detail
 
   if (compact) {
-    return <text fg={color}>Cloud: {cloud.label}</text>
+    return (
+      <box flexDirection="row" gap={1}>
+        <text fg={color}>Cloud: {cloud.label}</text>
+        {cloud.actionUrl && actionText ? <text fg={PALETTE.dim}>•</text> : null}
+        {cloud.actionUrl && actionText ? <ActionLink href={cloud.actionUrl} label={actionText} /> : null}
+      </box>
+    )
   }
 
   return (
@@ -816,9 +829,68 @@ function CloudStatus({ cloud, compact = false }: { cloud: CloudStatusSnapshot; c
       <text fg={color}>
         <strong>{cloud.label}</strong>
       </text>
-      <text fg={PALETTE.muted}>{detail}</text>
+      <text fg={PALETTE.muted}>{detailText}</text>
+      {cloud.actionUrl && actionText ? <ActionLink href={cloud.actionUrl} label={actionText} /> : null}
     </box>
   )
+}
+
+function ActionLink({ href, label }: { href: string; label: string }) {
+  return (
+    <box
+      focusable
+      onMouseDown={(event) => {
+        event.preventDefault()
+        openExternalUrl(href)
+      }}
+    >
+      <text fg={PALETTE.cream}>
+        <u>
+          <a href={href}>{label}</a>
+        </u>
+      </text>
+    </box>
+  )
+}
+
+function linkText(label: string, href: string): string {
+  try {
+    const url = new URL(href)
+    const host = url.host.replace(/^www\./, "")
+    return `${label} at ${host}`
+  } catch {
+    return label
+  }
+}
+
+function openExternalUrl(href: string): void {
+  let url: URL
+  try {
+    url = new URL(href)
+  } catch {
+    return
+  }
+
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    return
+  }
+
+  const target = url.toString()
+  const [command, args] = process.platform === "darwin"
+    ? ["open", [target]]
+    : process.platform === "win32"
+      ? ["cmd", ["/c", "start", "", target]]
+      : ["xdg-open", [target]]
+
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: "ignore",
+    })
+    child.unref()
+  } catch {
+    // Terminals that expose OSC-8 hyperlinks can still open the nested <a> target.
+  }
 }
 
 function HelpOverlay({ view }: { view: ShellSnapshot["view"] }) {
@@ -850,7 +922,8 @@ function HelpOverlay({ view }: { view: ShellSnapshot["view"] }) {
       <Shortcut keyName="r" label="reload selected detail tab" />
       <Shortcut keyName="b" label="back" />
       <Shortcut keyName="esc" label="close help" />
-      <Shortcut keyName="?/q" label="toggle help / quit" />
+      <Shortcut keyName="?" label="toggle help" />
+      <Shortcut keyName="q" label="quit" />
     </box>
   )
 }

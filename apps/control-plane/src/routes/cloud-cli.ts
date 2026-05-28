@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
 
 import { Hono } from "hono"
 import { z } from "zod"
@@ -8,7 +8,11 @@ import {
   createCloudCliAuthorizationCode,
   takeCloudCliAuthorizationCode,
 } from "../db/queries/cloud-cli-authorization-codes.ts"
-import { findAnonymousSessionById, ensureAccountPrincipal, migrateAnonymousPrincipalToAccount } from "../db/queries/principals.ts"
+import {
+  findAnonymousSessionById,
+  ensureAccountPrincipal,
+  migrateAnonymousPrincipalToAccount,
+} from "../db/queries/principals.ts"
 import { findUserById } from "../db/queries/users.ts"
 import {
   DEFAULT_ACCOUNT_PRINCIPAL_TOKEN_TTL_DAYS,
@@ -41,25 +45,53 @@ const CLOUD_CLI_TOKEN_RATE_LIMIT = {
 } as const
 
 const CLOUD_CLI_TOKEN_MAX_BYTES = 16 * 1024
+const CLOUD_CLI_AUTHORIZE_REQUEST_MAX_BYTES = 8 * 1024
+const CLOUD_CLI_AUTHORIZE_REQUEST_TTL_MS = 5 * 60 * 1000
 
-const authorizeQuerySchema = z.object({
+const callbackPortSchema = z.number().int().min(10000).max(10010)
+
+const authorizeRequestSchema = z
+  .object({
+    client_id: z.literal("yaffle-cli"),
+    redirect_port: callbackPortSchema,
+    response_type: z.literal("code"),
+    code_challenge: z.string().min(43).max(128),
+    code_challenge_method: z.literal("S256"),
+    state: z.string().optional(),
+  })
+  .strict()
+
+const legacyAuthorizeQuerySchema = z.object({
   client_id: z.literal("yaffle-cli"),
   redirect_uri: z.string().url(),
   response_type: z.literal("code"),
   code_challenge: z.string().min(43).max(128),
   code_challenge_method: z.literal("S256"),
   state: z.string().optional(),
-  feature_token: z.string().min(1),
 })
 
-const tokenBodySchema = z.object({
-  grant_type: z.literal("authorization_code"),
-  code: z.string(),
-  code_verifier: z.string().min(43).max(128),
-  redirect_uri: z.string().url(),
-  client_id: z.literal("yaffle-cli"),
-  current_principal_token: z.string().min(1).nullish(),
+const signedAuthorizeRequestSchema = authorizeRequestSchema.extend({
+  exp: z.number().int(),
 })
+
+const browserAuthorizeQuerySchema = z.object({
+  request: z.string().min(1),
+})
+
+const tokenBodySchema = z
+  .object({
+    grant_type: z.literal("authorization_code"),
+    code: z.string(),
+    code_verifier: z.string().min(43).max(128),
+    redirect_port: callbackPortSchema,
+    client_id: z.literal("yaffle-cli"),
+    current_principal_token: z.string().min(1).nullish(),
+  })
+  .strict()
+
+type JsonBody = null | boolean | number | string | JsonBody[] | { [key: string]: JsonBody }
+type AuthorizeRequest = z.infer<typeof authorizeRequestSchema>
+type LegacyAuthorizeQuery = z.infer<typeof legacyAuthorizeQuerySchema>
 
 function renderLoginRedirectPage(currentUrl: string): string {
   return `<!DOCTYPE html>
@@ -193,14 +225,189 @@ function validateFeatureToken(providedToken: string): Response | null {
   return null
 }
 
-cloudCliRoute.get("/cli/authorize", async (c) => {
+function callbackRedirectUri(redirectPort: number): string {
+  return `http://localhost:${redirectPort}/callback`
+}
+
+function validateLoopbackRedirectUri(redirectUri: string): Response | null {
+  let redirectUrl: URL
+  try {
+    redirectUrl = new URL(redirectUri)
+  } catch {
+    return Response.json(
+      { error: "invalid_request", error_description: "redirect_uri must be a valid URL" },
+      { status: 400 },
+    )
+  }
+
+  if (redirectUrl.protocol !== "http:") {
+    return Response.json(
+      { error: "invalid_request", error_description: "redirect_uri must use http" },
+      { status: 400 },
+    )
+  }
+
+  if (redirectUrl.hostname !== "localhost" && redirectUrl.hostname !== "127.0.0.1") {
+    return Response.json(
+      { error: "invalid_request", error_description: "redirect_uri must be localhost" },
+      { status: 400 },
+    )
+  }
+
+  const port = Number.parseInt(redirectUrl.port || "80", 10)
+  if (port < 10000 || port > 10010) {
+    return Response.json(
+      { error: "invalid_request", error_description: "redirect_uri port must be 10000-10010" },
+      { status: 400 },
+    )
+  }
+
+  if (redirectUrl.pathname !== "/callback") {
+    return Response.json(
+      { error: "invalid_request", error_description: "redirect_uri path must be /callback" },
+      { status: 400 },
+    )
+  }
+
+  return null
+}
+
+function redirectPortFromLegacyAuthorizeQuery(query: LegacyAuthorizeQuery): number | Response {
+  const redirectError = validateLoopbackRedirectUri(query.redirect_uri)
+  if (redirectError) {
+    return redirectError
+  }
+
+  return Number.parseInt(new URL(query.redirect_uri).port, 10)
+}
+
+function authorizeSigningSecret(): string | null {
+  return process.env.BETTER_AUTH_SECRET?.trim() || null
+}
+
+function signAuthorizeRequest(input: AuthorizeRequest): string | null {
+  const secret = authorizeSigningSecret()
+  if (!secret) return null
+
+  const payload = Buffer.from(
+    JSON.stringify({
+      ...input,
+      exp: Date.now() + CLOUD_CLI_AUTHORIZE_REQUEST_TTL_MS,
+    }),
+  ).toString("base64url")
+  const signature = createHmac("sha256", secret).update(payload).digest("base64url")
+  return `${payload}.${signature}`
+}
+
+function invalidAuthorizeRequestResponse(description = "Invalid CLI authorize request"): Response {
+  return Response.json(
+    { error: "invalid_request", error_description: description },
+    { status: 400 },
+  )
+}
+
+function verifyAuthorizeRequest(token: string): AuthorizeRequest | Response {
+  const secret = authorizeSigningSecret()
+  if (!secret) {
+    return Response.json(
+      { error: "server_error", error_description: "CLI authorize signing is not configured" },
+      { status: 500 },
+    )
+  }
+
+  const parts = token.split(".")
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return invalidAuthorizeRequestResponse()
+  }
+
+  const [payload, signature] = parts
+  const expectedSignature = createHmac("sha256", secret).update(payload).digest("base64url")
+  const provided = Buffer.from(signature)
+  const expected = Buffer.from(expectedSignature)
+  if (provided.length !== expected.length || !timingSafeEqual(provided, expected)) {
+    return invalidAuthorizeRequestResponse()
+  }
+
+  let decoded: unknown
+  try {
+    decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"))
+  } catch {
+    return invalidAuthorizeRequestResponse()
+  }
+
+  const parsed = signedAuthorizeRequestSchema.safeParse(decoded)
+  if (!parsed.success || parsed.data.exp <= Date.now()) {
+    return invalidAuthorizeRequestResponse("Expired CLI authorize request")
+  }
+
+  return {
+    client_id: parsed.data.client_id,
+    redirect_port: parsed.data.redirect_port,
+    response_type: parsed.data.response_type,
+    code_challenge: parsed.data.code_challenge,
+    code_challenge_method: parsed.data.code_challenge_method,
+    state: parsed.data.state,
+  }
+}
+
+function browserAuthorizePath(input: AuthorizeRequest): string | null {
+  const token = signAuthorizeRequest(input)
+  if (!token) return null
+
+  const params = new URLSearchParams({ request: token })
+  return `/api/cloud/cli/authorize?${params.toString()}`
+}
+
+function resolveAuthorizeRequest(requestUrl: string): AuthorizeRequest | Response {
+  const queryParams = Object.fromEntries(new URL(requestUrl).searchParams)
+  const browserQuery = browserAuthorizeQuerySchema.safeParse(queryParams)
+  if (browserQuery.success) {
+    return verifyAuthorizeRequest(browserQuery.data.request)
+  }
+
+  const legacyQuery = legacyAuthorizeQuerySchema.safeParse(queryParams)
+  if (!legacyQuery.success) {
+    return Response.json(
+      {
+        error: "invalid_request",
+        error_description: legacyQuery.error.errors[0]?.message ?? "Invalid parameters",
+      },
+      { status: 400 },
+    )
+  }
+
+  const redirectPort = redirectPortFromLegacyAuthorizeQuery(legacyQuery.data)
+  if (redirectPort instanceof Response) {
+    return redirectPort
+  }
+
+  return {
+    client_id: legacyQuery.data.client_id,
+    redirect_port: redirectPort,
+    response_type: legacyQuery.data.response_type,
+    code_challenge: legacyQuery.data.code_challenge,
+    code_challenge_method: legacyQuery.data.code_challenge_method,
+    state: legacyQuery.data.state,
+  }
+}
+
+cloudCliRoute.post("/cli/authorize-requests", async (c) => {
   const rateLimitResponse = enforceRateLimit(c, CLOUD_CLI_AUTHORIZE_RATE_LIMIT)
   if (rateLimitResponse) {
     return rateLimitResponse
   }
 
-  const queryParams = Object.fromEntries(new URL(c.req.url).searchParams)
-  const parsed = authorizeQuerySchema.safeParse(queryParams)
+  const featureTokenError = validateFeatureToken(c.req.header("feature-token")?.trim() ?? "")
+  if (featureTokenError) {
+    return featureTokenError
+  }
+
+  const requestBody = await readJsonBody(c.req.raw, CLOUD_CLI_AUTHORIZE_REQUEST_MAX_BYTES)
+  if (requestBody instanceof Response) {
+    return requestBody
+  }
+
+  const parsed = authorizeRequestSchema.safeParse(requestBody)
   if (!parsed.success) {
     return c.json(
       {
@@ -211,34 +418,48 @@ cloudCliRoute.get("/cli/authorize", async (c) => {
     )
   }
 
-  const query = parsed.data
-  const featureTokenError = validateFeatureToken(query.feature_token)
-  if (featureTokenError) {
-    return featureTokenError
-  }
-
-  const redirectUrl = new URL(query.redirect_uri)
-  if (redirectUrl.hostname !== "localhost" && redirectUrl.hostname !== "127.0.0.1") {
+  const path = browserAuthorizePath(parsed.data)
+  if (!path) {
     return c.json(
-      { error: "invalid_request", error_description: "redirect_uri must be localhost" },
-      400,
+      { error: "server_error", error_description: "CLI authorize signing is not configured" },
+      500,
     )
   }
 
-  const port = Number.parseInt(redirectUrl.port || "80", 10)
-  if (port < 10000 || port > 10010) {
-    return c.json(
-      { error: "invalid_request", error_description: "redirect_uri port must be 10000-10010" },
-      400,
-    )
+  return c.json({
+    data: {
+      authorizeUrl: buildPublicUrl(c.req.url, path),
+      expiresAt: new Date(Date.now() + CLOUD_CLI_AUTHORIZE_REQUEST_TTL_MS).toISOString(),
+    },
+  })
+})
+
+cloudCliRoute.get("/cli/authorize", async (c) => {
+  const rateLimitResponse = enforceRateLimit(c, CLOUD_CLI_AUTHORIZE_RATE_LIMIT)
+  if (rateLimitResponse) {
+    return rateLimitResponse
   }
+
+  const resolved = resolveAuthorizeRequest(c.req.url)
+  if (resolved instanceof Response) {
+    return resolved
+  }
+
+  const query = resolved
+  const redirectUri = callbackRedirectUri(query.redirect_port)
 
   const session = await auth.api.getSession({
     headers: c.req.raw.headers,
   })
   if (!session?.user) {
-    const currentRequestUrl = new URL(c.req.url)
-    const currentUrl = buildPublicUrl(c.req.url, `${currentRequestUrl.pathname}${currentRequestUrl.search}`)
+    const callbackPath = browserAuthorizePath(query)
+    if (!callbackPath) {
+      return c.json(
+        { error: "server_error", error_description: "CLI authorize signing is not configured" },
+        500,
+      )
+    }
+    const currentUrl = buildPublicUrl(c.req.url, callbackPath)
     return c.html(renderLoginRedirectPage(currentUrl))
   }
 
@@ -248,16 +469,16 @@ cloudCliRoute.get("/cli/authorize", async (c) => {
     userId: session.user.id,
     codeChallenge: query.code_challenge,
     codeChallengeMethod: query.code_challenge_method,
-    redirectUri: query.redirect_uri,
+    redirectUri,
     expiresAt: new Date(Date.now() + 5 * 60 * 1000),
   })
 
   log.info("Cloud CLI authorization code issued", {
     userId: session.user.id,
-    redirectUri: query.redirect_uri,
+    redirectPort: query.redirect_port,
   })
 
-  const callbackUrl = new URL(query.redirect_uri)
+  const callbackUrl = new URL(redirectUri)
   callbackUrl.searchParams.set("code", code)
   if (query.state) {
     callbackUrl.searchParams.set("state", query.state)
@@ -296,24 +517,17 @@ cloudCliRoute.post("/cli/token", async (c) => {
   const body = parsed.data
   const pending = await takeCloudCliAuthorizationCode(body.code)
   if (!pending || pending.expiresAt.getTime() <= Date.now()) {
-    return c.json(
-      { error: "invalid_grant", error_description: "Invalid or expired code" },
-      400,
-    )
+    return c.json({ error: "invalid_grant", error_description: "Invalid or expired code" }, 400)
   }
-  if (pending.redirectUri !== body.redirect_uri) {
-    return c.json(
-      { error: "invalid_grant", error_description: "redirect_uri mismatch" },
-      400,
-    )
+
+  const redirectUri = callbackRedirectUri(body.redirect_port)
+  if (pending.redirectUri !== redirectUri) {
+    return c.json({ error: "invalid_grant", error_description: "redirect_uri mismatch" }, 400)
   }
 
   const verifierHash = createHash("sha256").update(body.code_verifier).digest("base64url")
   if (verifierHash !== pending.codeChallenge) {
-    return c.json(
-      { error: "invalid_grant", error_description: "PKCE validation failed" },
-      400,
-    )
+    return c.json({ error: "invalid_grant", error_description: "PKCE validation failed" }, 400)
   }
 
   const authUser = await findUserById(pending.userId)
@@ -384,10 +598,13 @@ cloudCliRoute.post("/cli/token", async (c) => {
   })
 })
 
-async function readJsonBody(request: Request): Promise<unknown | Response> {
+async function readJsonBody(
+  request: Request,
+  maxBytes = CLOUD_CLI_TOKEN_MAX_BYTES,
+): Promise<JsonBody | Response> {
   try {
-    const body = await readRequestBodyText(request, CLOUD_CLI_TOKEN_MAX_BYTES)
-    return body ? JSON.parse(body) : {}
+    const body = await readRequestBodyText(request, maxBytes)
+    return body ? (JSON.parse(body) as JsonBody) : {}
   } catch (error) {
     if (error instanceof RequestBodyTooLargeError) {
       return new Response(

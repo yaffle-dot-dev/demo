@@ -305,9 +305,30 @@
 
   let lifecyclePhasePresence = $state<Record<string, string[]>>({})
 
+  function lifecyclePhasePresenceEqual(
+    left: Record<string, string[]>,
+    right: Record<string, string[]>,
+  ): boolean {
+    const leftKeys = Object.keys(left)
+    const rightKeys = Object.keys(right)
+    if (leftKeys.length !== rightKeys.length) return false
+
+    for (const key of leftKeys) {
+      const leftPhases = left[key] ?? []
+      const rightPhases = right[key] ?? []
+      if (leftPhases.length !== rightPhases.length) return false
+
+      const rightPhaseSet = new Set(rightPhases)
+      if (!leftPhases.every((phase) => rightPhaseSet.has(phase))) return false
+    }
+
+    return true
+  }
+
   $effect(() => {
+    const currentPresence = untrack(() => lifecyclePhasePresence)
     const next = new Map(
-      Object.entries(lifecyclePhasePresence).map(([workspacePath, phases]) => [
+      Object.entries(currentPresence).map(([workspacePath, phases]) => [
         workspacePath,
         new Set(phases),
       ]),
@@ -327,9 +348,12 @@
       }
     }
 
-    lifecyclePhasePresence = Object.fromEntries(
+    const nextPresence = Object.fromEntries(
       [...next.entries()].map(([workspacePath, phases]) => [workspacePath, [...phases]]),
     )
+    if (!lifecyclePhasePresenceEqual(currentPresence, nextPresence)) {
+      lifecyclePhasePresence = nextPresence
+    }
   })
 
   const lifecycleStatusStale = $derived(

@@ -7,6 +7,7 @@ use std::sync::{LazyLock, Mutex};
 
 use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -96,6 +97,19 @@ pub struct CloudCliLoginResult {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CloudCliAuthorizeRequestResult {
+    #[serde(alias = "authorizeUrl")]
+    authorize_url: String,
+    #[serde(default, alias = "expiresAt")]
+    expires_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct CloudCliAuthorizeRequestEnvelope {
+    data: CloudCliAuthorizeRequestResult,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CloudCliCapabilities {
     #[serde(alias = "principalType")]
     pub principal_type: String,
@@ -115,6 +129,8 @@ pub struct CloudRemoteConvergeCapability {
     #[serde(alias = "reasonCode")]
     pub reason_code: Option<String>,
     pub message: String,
+    #[serde(alias = "upgradeUrl")]
+    pub upgrade_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,16 +158,18 @@ pub struct CloudCliInventoryEnvironment {
     pub updated_at: String,
     #[serde(alias = "workspaceCount")]
     pub workspace_count: usize,
+    #[serde(default, alias = "statusVector")]
+    pub status_vector: Vec<CloudCliInventoryStatusCount>,
     #[serde(alias = "prNumber")]
     pub pr_number: Option<u64>,
     #[serde(alias = "actorLogin")]
     pub actor_login: Option<String>,
-    #[serde(alias = "lastRunType")]
-    pub last_run_type: Option<String>,
-    #[serde(alias = "lastRunStatus")]
-    pub last_run_status: Option<String>,
-    #[serde(alias = "lastRunCompletedAt")]
-    pub last_run_completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudCliInventoryStatusCount {
+    pub status: String,
+    pub count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -809,23 +827,71 @@ pub fn module_api_base_url() -> Result<String, LocalFirstError> {
     Ok(format!("https://{host}"))
 }
 
+fn loopback_redirect_port(redirect_uri: &str) -> Result<u16, LocalFirstError> {
+    let url = Url::parse(redirect_uri).map_err(|error| {
+        LocalFirstError::Config(format!("invalid cloud login callback URL: {error}"))
+    })?;
+
+    if url.scheme() != "http" {
+        return Err(LocalFirstError::Config(
+            "cloud login callback URL must use http".to_string(),
+        ));
+    }
+
+    let host = url.host_str().unwrap_or_default();
+    if host != "localhost" && host != "127.0.0.1" {
+        return Err(LocalFirstError::Config(
+            "cloud login callback URL must use localhost".to_string(),
+        ));
+    }
+
+    if url.path() != "/callback" {
+        return Err(LocalFirstError::Config(
+            "cloud login callback URL path must be /callback".to_string(),
+        ));
+    }
+
+    let port = url.port().ok_or_else(|| {
+        LocalFirstError::Config("cloud login callback URL must include a port".to_string())
+    })?;
+    if !(10000..=10010).contains(&port) {
+        return Err(LocalFirstError::Config(
+            "cloud login callback port must be 10000-10010".to_string(),
+        ));
+    }
+
+    Ok(port)
+}
+
 pub fn build_cloud_cli_authorize_url(
     redirect_uri: &str,
     code_challenge: &str,
     state: &str,
 ) -> Result<String, LocalFirstError> {
+    let redirect_port = loopback_redirect_port(redirect_uri)?;
     let runtime = LocalFirstRuntime::from_env()?;
-    let mut url = reqwest::Url::parse(&runtime.endpoint_url("/api/cloud/cli/authorize"))
-        .map_err(|error| LocalFirstError::Config(error.to_string()))?;
-    url.query_pairs_mut()
-        .append_pair("client_id", "yaffle-cli")
-        .append_pair("redirect_uri", redirect_uri)
-        .append_pair("response_type", "code")
-        .append_pair("code_challenge", code_challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("state", state)
-        .append_pair("feature_token", &runtime.feature_token);
-    Ok(url.to_string())
+    let response = runtime
+        .client
+        .post(runtime.endpoint_url("/api/cloud/cli/authorize-requests"))
+        .headers(runtime.feature_headers()?)
+        .json(&serde_json::json!({
+            "client_id": "yaffle-cli",
+            "redirect_port": redirect_port,
+            "response_type": "code",
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "state": state,
+        }))
+        .send()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(LocalFirstError::Http(read_api_error(response)?));
+    }
+
+    let parsed = response
+        .json::<CloudCliAuthorizeRequestEnvelope>()
+        .map_err(|error| LocalFirstError::Http(error.to_string()))?;
+    Ok(parsed.data.authorize_url)
 }
 
 pub fn exchange_cloud_cli_login_code(
@@ -834,6 +900,7 @@ pub fn exchange_cloud_cli_login_code(
     redirect_uri: &str,
     current_principal: Option<&StoredPrincipalCredential>,
 ) -> Result<CloudCliLoginResult, LocalFirstError> {
+    let redirect_port = loopback_redirect_port(redirect_uri)?;
     let runtime = LocalFirstRuntime::from_env()?;
     let mut body = serde_json::Map::from_iter([
         (
@@ -849,8 +916,8 @@ pub fn exchange_cloud_cli_login_code(
             serde_json::Value::String(code_verifier.to_string()),
         ),
         (
-            "redirect_uri".to_string(),
-            serde_json::Value::String(redirect_uri.to_string()),
+            "redirect_port".to_string(),
+            serde_json::Value::Number(serde_json::Number::from(redirect_port)),
         ),
         (
             "client_id".to_string(),
@@ -1274,6 +1341,76 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn cloud_cli_authorize_url_does_not_put_feature_token_in_browser_url() {
+        let _guard = LOCAL_FIRST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let server = TestServer::start();
+        let previous_host = env::var_os("YAFFLE_MODULE_API_HOST");
+        let previous_feature_token = env::var_os(LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR);
+
+        env::set_var(
+            "YAFFLE_MODULE_API_HOST",
+            format!("http://{}", server.authority()),
+        );
+        env::set_var(LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR, "test-feature-token");
+
+        let url = build_cloud_cli_authorize_url(
+            "http://localhost:10000/callback",
+            &"c".repeat(43),
+            "state-test",
+        )
+        .expect("authorize URL should build");
+
+        restore_env("YAFFLE_MODULE_API_HOST", previous_host);
+        restore_env(LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR, previous_feature_token);
+
+        assert_eq!(
+            url,
+            "https://yaffle.dev/api/cloud/cli/authorize?request=opaque-test"
+        );
+        assert!(!url.contains("localhost"));
+        assert!(!url.contains("redirect_uri"));
+        assert!(!url.contains("feature_token"));
+        assert!(!url.contains("test-feature-token"));
+    }
+
+    #[test]
+    fn cloud_cli_token_exchange_sends_redirect_port() {
+        let _guard = LOCAL_FIRST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let temp_home = TempDir::new().expect("temp dir should exist");
+        let server = TestServer::start();
+        let previous_home = env::var_os("HOME");
+        let previous_host = env::var_os("YAFFLE_MODULE_API_HOST");
+        let previous_feature_token = env::var_os(LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR);
+
+        env::set_var("HOME", temp_home.path());
+        env::set_var(
+            "YAFFLE_MODULE_API_HOST",
+            format!("http://{}", server.authority()),
+        );
+        env::set_var(LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR, "test-feature-token");
+
+        let login = exchange_cloud_cli_login_code(
+            "code-test",
+            &"v".repeat(43),
+            "http://localhost:10000/callback",
+            None,
+        )
+        .expect("login code should exchange");
+
+        restore_env("HOME", previous_home);
+        restore_env("YAFFLE_MODULE_API_HOST", previous_host);
+        restore_env(LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR, previous_feature_token);
+
+        assert_eq!(login.principal.principal_id, "principal-account-test");
+        assert_eq!(login.principal.token, "account-token-test");
+        assert!(!login.converted_from_anonymous);
+    }
+
     fn restore_env(name: &str, value: Option<std::ffi::OsString>) {
         if let Some(value) = value {
             env::set_var(name, value);
@@ -1319,6 +1456,23 @@ mod tests {
                         assert!(request.contains("authorization: Bearer principal-token-test"));
                         assert!(request.contains("feature-token: test-feature-token"));
                         let body = r#"{"data":{"id":"module-test","repo_binding_id":"binding-test","workspace_path":"infra/shared","environment_name":"pr-42","version_serial":1,"version":"1.0.1","created_at":"2030-04-28T00:00:00Z"}}"#;
+                        write_response(&mut stream, body);
+                    } else if request.starts_with("POST /api/cloud/cli/authorize-requests HTTP/1.1")
+                    {
+                        assert!(request.contains("feature-token: test-feature-token"));
+                        assert!(request.contains(r#""redirect_port":10000"#));
+                        assert!(!request.contains("localhost"));
+                        assert!(!request.contains("redirect_uri"));
+                        assert!(request.contains(r#""code_challenge":"#));
+                        let body = r#"{"data":{"authorizeUrl":"https://yaffle.dev/api/cloud/cli/authorize?request=opaque-test","expiresAt":"2030-04-28T00:05:00Z"}}"#;
+                        write_response(&mut stream, body);
+                    } else if request.starts_with("POST /api/cloud/cli/token HTTP/1.1") {
+                        assert!(request.contains("feature-token: test-feature-token"));
+                        assert!(request.contains(r#""redirect_port":10000"#));
+                        assert!(!request.contains("localhost"));
+                        assert!(!request.contains("redirect_uri"));
+                        assert!(request.contains(r#""code":"code-test""#));
+                        let body = r#"{"data":{"principalId":"principal-account-test","principalType":"account","token":"account-token-test","issuedAt":"2026-04-28T00:00:00Z","expiresAt":"2030-04-28T00:00:00Z","userId":"user-test","userEmail":"test@example.com","userName":"Test User","convertedFromAnonymous":false}}"#;
                         write_response(&mut stream, body);
                     } else {
                         panic!("unexpected request: {request}");

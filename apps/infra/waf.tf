@@ -558,6 +558,77 @@ resource "aws_wafv2_web_acl" "cloudfront" {
   }
 
   rule {
+    name     = "allow-local-first-cloud-cli-auth-posts"
+    priority = 15
+
+    action {
+      allow {}
+    }
+
+    statement {
+      and_statement {
+        statement {
+          or_statement {
+            statement {
+              byte_match_statement {
+                search_string         = "/api/cloud/cli/authorize-requests"
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+
+            statement {
+              byte_match_statement {
+                search_string         = "/api/cloud/cli/token"
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+
+        statement {
+          byte_match_statement {
+            search_string         = "POST"
+            positional_constraint = "EXACTLY"
+
+            field_to_match {
+              method {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "allowLocalFirstCloudCliAuthPosts"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
     name     = "aws-managed-ip-reputation"
     priority = 16
 
