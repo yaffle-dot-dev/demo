@@ -39,22 +39,6 @@ use yaffle_graph::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct Color(&'static str);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Modifier(u8);
-
-impl Modifier {
-    const BOLD: Self = Self(1);
-    const UNDERLINED: Self = Self(1 << 1);
-}
-
-impl std::ops::BitOr for Modifier {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self::Output {
-        Self(self.0 | rhs.0)
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 struct Style {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,12 +70,6 @@ impl Style {
 
     fn fg(mut self, color: Color) -> Self {
         self.fg = Some(color);
-        self
-    }
-
-    fn add_modifier(mut self, modifier: Modifier) -> Self {
-        self.bold = self.bold || modifier.0 & Modifier::BOLD.0 != 0;
-        self.underlined = self.underlined || modifier.0 & Modifier::UNDERLINED.0 != 0;
         self
     }
 }
@@ -146,13 +124,7 @@ impl From<&str> for Line {
 }
 
 const CLOUD_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
-const YAFFLE_BORDER: Color = Color("#3d3d32");
-const YAFFLE_BORDER_ACCENT: Color = Color("#4e5f29");
-const YAFFLE_TEXT: Color = Color("#fafaf8");
-const YAFFLE_TEXT_MUTED: Color = Color("#b5b5a8");
-const YAFFLE_GREEN: Color = Color("#8bc431");
 const YAFFLE_GREEN_SOFT: Color = Color("#6da323");
-const YAFFLE_CREAM: Color = Color("#fce047");
 const YAFFLE_RED: Color = Color("#fa2d2d");
 
 type CliResult = Result<(), CliFailure>;
@@ -1410,6 +1382,38 @@ fn handle_opentui_request(
             )
             .map_err(opentui_response_error)
         }
+        ("POST", "/graph") => {
+            let event =
+                serde_json::from_slice::<OpenTuiGraphEvent>(&request.body).map_err(|error| {
+                    command_error(
+                        false,
+                        None,
+                        None,
+                        None,
+                        "tui_event_failed",
+                        format!("OpenTUI sent an invalid graph event: {error}"),
+                    )
+                })?;
+            {
+                let mut app = app_state.lock().map_err(|_| {
+                    command_error(
+                        false,
+                        None,
+                        None,
+                        None,
+                        "tui_state_failed",
+                        "Yaffle OpenTUI state lock was poisoned.",
+                    )
+                })?;
+                app.handle_graph_event(event);
+            }
+            write_json_response(
+                stream,
+                200,
+                &serde_json::json!({ "data": { "action": null } }),
+            )
+            .map_err(opentui_response_error)
+        }
         ("POST", "/shutdown") => {
             shutdown.store(true, Ordering::SeqCst);
             write_json_response(
@@ -1564,6 +1568,20 @@ struct OpenTuiKeyEvent {
     ctrl: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenTuiGraphEvent {
+    node_id: String,
+    action: OpenTuiGraphAction,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OpenTuiGraphAction {
+    Select,
+    Toggle,
+}
+
 impl OpenTuiKeyEvent {
     fn to_tui_key(&self) -> Option<TuiKey> {
         if self.ctrl && self.name == "c" {
@@ -1629,12 +1647,6 @@ struct ConvergeTuiState {
 struct WorkspaceLogLine {
     stream: TofuLogStream,
     text: String,
-}
-
-#[derive(Debug, Clone)]
-struct DagCell {
-    ch: char,
-    style: Style,
 }
 
 impl ConvergeTuiState {
@@ -2047,11 +2059,6 @@ enum DetailTab {
     Runs,
 }
 
-const ENVIRONMENT_DAG_BOX_WIDTH: usize = 24;
-const ENVIRONMENT_DAG_COLUMN_GAP: usize = 8;
-const ENVIRONMENT_DAG_ROW_GAP: usize = 2;
-const ENVIRONMENT_DAG_ROW_HEIGHT: usize = 4;
-
 #[derive(Debug)]
 struct LocalEnvironmentDetailState {
     environment_name: String,
@@ -2122,7 +2129,7 @@ impl LocalAppState {
             selected_env_index: 0,
             view: ShellView::EnvironmentList,
             detail: None,
-            footer_message: "Enter opens an environment. q quits.".to_string(),
+            footer_message: "Environment browser".to_string(),
         })
     }
 
@@ -2154,8 +2161,7 @@ impl LocalAppState {
         }
         self.detail = Some(detail);
         self.view = ShellView::EnvironmentDetail;
-        self.footer_message =
-            "tab switches panels • c converges selection • b goes back • q quits".to_string();
+        self.footer_message = "Environment detail".to_string();
         Ok(())
     }
 
@@ -2299,6 +2305,30 @@ impl LocalAppState {
         }
     }
 
+    fn handle_graph_event(&mut self, event: OpenTuiGraphEvent) {
+        if self.view != ShellView::EnvironmentDetail {
+            return;
+        }
+        let Some(detail) = self.detail.as_mut() else {
+            return;
+        };
+        let Some(workspace_path) = detail
+            .dag_nodes
+            .iter()
+            .find(|node| node.id == event.node_id)
+            .map(|node| node.workspace_path.clone())
+        else {
+            return;
+        };
+
+        detail.focus = ShellFocus::Graph;
+        detail.select_workspace_by_path(&workspace_path);
+
+        if matches!(event.action, OpenTuiGraphAction::Toggle) && !detail.active_run_is_running() {
+            detail.toggle_workspace_target(&workspace_path);
+        }
+    }
+
     fn handle_environment_list_key(
         &mut self,
         key: TuiKey,
@@ -2326,9 +2356,7 @@ impl LocalAppState {
                         load_environment_detail(&self.repo_root, &self.config, &entry.name)?;
                     self.detail = Some(detail);
                     self.view = ShellView::EnvironmentDetail;
-                    self.footer_message =
-                        "tab switches panels • c converges selection • b goes back • q quits"
-                            .to_string();
+                    self.footer_message = "Environment detail".to_string();
                 }
             }
             _ => {}
@@ -2362,7 +2390,7 @@ impl LocalAppState {
                 }
                 self.view = ShellView::EnvironmentList;
                 self.detail = None;
-                self.footer_message = "Enter opens an environment. q quits.".to_string();
+                self.footer_message = "Environment browser".to_string();
             }
             TuiKey::Tab => {
                 detail.focus = match detail.focus {
@@ -2520,6 +2548,19 @@ impl LocalEnvironmentDetailState {
             .map(|node| node.workspace_path.as_str())
     }
 
+    fn active_run_is_running(&self) -> bool {
+        self.active_run
+            .as_ref()
+            .map(|run| run.running)
+            .unwrap_or(false)
+    }
+
+    fn toggle_workspace_target(&mut self, workspace_path: &str) {
+        if !self.selected_workspaces.insert(workspace_path.to_string()) {
+            self.selected_workspaces.remove(workspace_path);
+        }
+    }
+
     fn select_workspace_by_path(&mut self, workspace_path: &str) {
         if let Some((level_index, row_index)) =
             self.levels
@@ -2576,18 +2617,11 @@ impl LocalEnvironmentDetailState {
                 }
             }
             TuiKey::Space => {
-                if self
-                    .active_run
-                    .as_ref()
-                    .map(|run| run.running)
-                    .unwrap_or(false)
-                {
+                if self.active_run_is_running() {
                     return;
                 }
                 if let Some(workspace) = self.selected_workspace_path().map(ToOwned::to_owned) {
-                    if !self.selected_workspaces.insert(workspace.clone()) {
-                        self.selected_workspaces.remove(&workspace);
-                    }
+                    self.toggle_workspace_target(&workspace);
                 }
             }
             _ => {}
@@ -2975,7 +3009,6 @@ struct CloudStatusSnapshot {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct EnvironmentBrowserSnapshot {
-    header_lines: Vec<Line>,
     environments: Vec<EnvironmentListItemSnapshot>,
     footer: &'static str,
 }
@@ -3009,14 +3042,13 @@ struct EnvironmentDetailSnapshot {
     environment_name: String,
     selected_node: String,
     detail_spotlight: bool,
-    graph_focus: EnvironmentGraphFocusSnapshot,
+    graph: EnvironmentGraphSnapshot,
     selected_workspace: Option<SelectedWorkspaceSnapshot>,
     target_summary: String,
     mode_line: String,
     governance_line: String,
     focus: &'static str,
     running: bool,
-    graph_lines: Vec<Line>,
     tabs: Vec<DetailTabSnapshot>,
     detail_header_lines: Vec<Line>,
     detail_body_lines: Vec<Line>,
@@ -3026,14 +3058,26 @@ struct EnvironmentDetailSnapshot {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct EnvironmentGraphFocusSnapshot {
-    node_id: String,
-    level: usize,
-    row: usize,
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
+struct EnvironmentGraphSnapshot {
+    selected_node_id: String,
+    levels: Vec<Vec<String>>,
+    nodes: Vec<EnvironmentGraphNodeSnapshot>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EnvironmentGraphNodeSnapshot {
+    id: String,
+    workspace_path: String,
+    label: String,
+    dependencies: Vec<String>,
+    selected: bool,
+    targeted: bool,
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activation: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    verification: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -3161,12 +3205,6 @@ fn render_cloud_status_snapshot(capability: &TuiCapability) -> CloudStatusSnapsh
 
 fn render_environment_browser_snapshot(app: &LocalAppState) -> EnvironmentBrowserSnapshot {
     EnvironmentBrowserSnapshot {
-        header_lines: vec![Line::from(vec![Span::styled(
-            "Yaffle",
-            Style::default()
-                .fg(YAFFLE_GREEN)
-                .add_modifier(Modifier::BOLD),
-        )])],
         environments: app
             .environments
             .iter()
@@ -3186,7 +3224,7 @@ fn render_environment_browser_snapshot(app: &LocalAppState) -> EnvironmentBrowse
                 actor: environment.actor.clone(),
             })
             .collect(),
-        footer: "j/k move • enter open • q/ctrl+c quit",
+        footer: "Environment browser",
     }
 }
 
@@ -3207,7 +3245,7 @@ fn render_environment_detail_snapshot(
         environment_name: detail.environment_name.clone(),
         selected_node: selected,
         detail_spotlight: detail.detail_spotlight,
-        graph_focus: render_environment_graph_focus_snapshot(detail),
+        graph: render_environment_graph_snapshot(detail),
         selected_workspace: render_selected_workspace_snapshot(detail),
         target_summary: summarize_selected_workspaces(detail),
         mode_line: render_detail_mode_line(detail, capability, running_summary),
@@ -3219,7 +3257,6 @@ fn render_environment_detail_snapshot(
             ShellFocus::Detail => "detail",
         },
         running,
-        graph_lines: render_environment_dag(detail),
         tabs: render_detail_tabs(detail.tab),
         detail_header_lines: detail_content.header_lines,
         detail_body_lines: detail_content.body_lines,
@@ -3258,17 +3295,69 @@ fn render_detail_mode_line(
     }
 }
 
-fn render_environment_graph_focus_snapshot(
+fn render_environment_graph_snapshot(
     detail: &LocalEnvironmentDetailState,
-) -> EnvironmentGraphFocusSnapshot {
-    EnvironmentGraphFocusSnapshot {
-        node_id: detail.selected_node_id().unwrap_or_default().to_string(),
-        level: detail.selected_level,
-        row: detail.selected_row,
-        x: detail.selected_level * (ENVIRONMENT_DAG_BOX_WIDTH + ENVIRONMENT_DAG_COLUMN_GAP) + 2,
-        y: detail.selected_row * (ENVIRONMENT_DAG_ROW_HEIGHT + ENVIRONMENT_DAG_ROW_GAP) + 1,
-        width: ENVIRONMENT_DAG_BOX_WIDTH,
-        height: ENVIRONMENT_DAG_ROW_HEIGHT,
+) -> EnvironmentGraphSnapshot {
+    let selected_node_id = detail.selected_node_id().unwrap_or_default().to_string();
+    EnvironmentGraphSnapshot {
+        selected_node_id: selected_node_id.clone(),
+        levels: detail.levels.clone(),
+        nodes: detail
+            .dag_nodes
+            .iter()
+            .map(|node| EnvironmentGraphNodeSnapshot {
+                id: node.id.clone(),
+                workspace_path: node.workspace_path.clone(),
+                label: node.label.clone(),
+                dependencies: node.dependencies.clone(),
+                selected: node.id == selected_node_id,
+                targeted: detail.selected_workspaces.contains(&node.workspace_path),
+                status: environment_graph_node_status(detail, node),
+                activation: workspace_lifecycle_phase_state(
+                    detail,
+                    &node.workspace_path,
+                    "activation",
+                ),
+                verification: workspace_lifecycle_phase_state(
+                    detail,
+                    &node.workspace_path,
+                    "verification",
+                ),
+            })
+            .collect(),
+    }
+}
+
+fn environment_graph_node_status(
+    detail: &LocalEnvironmentDetailState,
+    node: &EnvironmentDagNode,
+) -> &'static str {
+    match &node.kind {
+        EnvironmentDagNodeKind::Workspace => {
+            if let Some((run_state, _phase)) =
+                detail.active_run_status_for_workspace(&node.workspace_path)
+            {
+                return match run_state {
+                    WorkspaceRunState::Running => "running",
+                    WorkspaceRunState::Succeeded => "converged",
+                    WorkspaceRunState::Failed => "failed",
+                    WorkspaceRunState::Pending => "waiting",
+                };
+            }
+
+            let snapshot = detail.status_response.as_ref().and_then(|response| {
+                response
+                    .workspaces
+                    .iter()
+                    .find(|item| item.workspace_path == node.workspace_path)
+            });
+            match snapshot.and_then(|item| item.materialization.as_deref()) {
+                Some("present") => "present",
+                Some("partially_present") => "partial",
+                Some("absent") => "absent",
+                _ => "unknown",
+            }
+        }
     }
 }
 
@@ -3341,7 +3430,7 @@ fn render_detail_tabs(selected: DetailTab) -> Vec<DetailTabSnapshot> {
 
 fn environment_detail_footer(detail: &LocalEnvironmentDetailState) -> &'static str {
     if detail.detail_spotlight {
-        return "detail spotlight • z/esc exit • h/l switch tabs • j/k scroll • tab graph/detail • q/ctrl+c quit";
+        return "Detail spotlight";
     }
 
     match detail.focus {
@@ -3352,9 +3441,9 @@ fn environment_detail_footer(detail: &LocalEnvironmentDetailState) -> &'static s
                 .map(|run| run.running)
                 .unwrap_or(false)
             {
-                "graph focus • h/l move levels • j/k move nodes • space disabled while running • z spotlight • tab detail • b locked • q/ctrl+c quit"
+                "Graph focus • selection locked while running"
             } else {
-                "graph focus • h/l move levels • j/k move nodes • space select • c converge • z spotlight • tab detail • b back • q/ctrl+c quit"
+                "Graph focus • workspace targets selectable"
             }
         }
         ShellFocus::Detail => {
@@ -3364,9 +3453,9 @@ fn environment_detail_footer(detail: &LocalEnvironmentDetailState) -> &'static s
                 .map(|run| run.running)
                 .unwrap_or(false)
             {
-                "detail focus • h/l switch tabs • j/k scroll • r reload data • z spotlight • tab graph • c disabled • b locked • q/ctrl+c quit"
+                "Detail focus • run in progress"
             } else {
-                "detail focus • h/l switch tabs • j/k scroll • r reload data • z spotlight • tab graph • c converge • b back • q/ctrl+c quit"
+                "Detail focus • workspace data available"
             }
         }
     }
@@ -3996,208 +4085,6 @@ fn format_lifecycle_event_summary(event: &Value) -> String {
     }
 }
 
-fn render_environment_dag(detail: &LocalEnvironmentDetailState) -> Vec<Line> {
-    let width =
-        detail.levels.len().max(1) * (ENVIRONMENT_DAG_BOX_WIDTH + ENVIRONMENT_DAG_COLUMN_GAP) + 4;
-    let max_rows = detail.levels.iter().map(Vec::len).max().unwrap_or(1);
-    let height = max_rows * (ENVIRONMENT_DAG_ROW_HEIGHT + ENVIRONMENT_DAG_ROW_GAP) + 3;
-    let mut canvas = vec![
-        vec![
-            DagCell {
-                ch: ' ',
-                style: Style::default().fg(YAFFLE_TEXT_MUTED),
-            };
-            width
-        ];
-        height
-    ];
-
-    let mut positions = BTreeMap::new();
-    for (level_index, level) in detail.levels.iter().enumerate() {
-        let x = level_index * (ENVIRONMENT_DAG_BOX_WIDTH + ENVIRONMENT_DAG_COLUMN_GAP) + 2;
-        for (row_index, node_id) in level.iter().enumerate() {
-            let y = row_index * (ENVIRONMENT_DAG_ROW_HEIGHT + ENVIRONMENT_DAG_ROW_GAP) + 1;
-            positions.insert(node_id.clone(), (x, y));
-            let Some(node) = detail.dag_nodes.iter().find(|node| node.id == *node_id) else {
-                continue;
-            };
-            draw_environment_dag_node(
-                &mut canvas,
-                x,
-                y,
-                ENVIRONMENT_DAG_BOX_WIDTH,
-                node,
-                detail,
-                level_index,
-                row_index,
-            );
-        }
-    }
-
-    for node in &detail.dag_nodes {
-        let Some((target_x, target_y)) = positions.get(&node.id).copied() else {
-            continue;
-        };
-        for dependency in &node.dependencies {
-            let Some((source_x, source_y)) = positions.get(dependency).copied() else {
-                continue;
-            };
-
-            let source_mid_x = source_x + ENVIRONMENT_DAG_BOX_WIDTH;
-            let source_mid_y = source_y + 1;
-            let target_mid_x = target_x.saturating_sub(2);
-            let target_mid_y = target_y + 1;
-            let bend_x = target_mid_x.saturating_sub(2);
-
-            draw_horizontal(&mut canvas, source_mid_x, bend_x, source_mid_y);
-            draw_vertical(&mut canvas, bend_x, source_mid_y, target_mid_y);
-            draw_horizontal(&mut canvas, bend_x, target_mid_x, target_mid_y);
-            if target_mid_x < width {
-                canvas[target_mid_y][target_mid_x] = DagCell {
-                    ch: '▶',
-                    style: Style::default().fg(YAFFLE_BORDER_ACCENT),
-                };
-            }
-        }
-    }
-
-    canvas
-        .into_iter()
-        .map(|row| {
-            let trimmed_len = row
-                .iter()
-                .rposition(|cell| cell.ch != ' ')
-                .map(|index| index + 1)
-                .unwrap_or(0);
-            let mut spans = Vec::new();
-            let mut current_text = String::new();
-            let mut current_style: Option<Style> = None;
-
-            for cell in row.into_iter().take(trimmed_len) {
-                if current_style == Some(cell.style) {
-                    current_text.push(cell.ch);
-                } else {
-                    if let Some(style) = current_style.take() {
-                        spans.push(Span::styled(current_text.clone(), style));
-                        current_text.clear();
-                    }
-                    current_style = Some(cell.style);
-                    current_text.push(cell.ch);
-                }
-            }
-
-            if let Some(style) = current_style {
-                spans.push(Span::styled(current_text, style));
-            }
-
-            Line::from(spans)
-        })
-        .collect()
-}
-
-fn draw_environment_dag_node(
-    canvas: &mut [Vec<DagCell>],
-    x: usize,
-    y: usize,
-    width: usize,
-    node: &EnvironmentDagNode,
-    detail: &LocalEnvironmentDetailState,
-    level_index: usize,
-    row_index: usize,
-) {
-    let selected_cursor = detail.selected_level == level_index && detail.selected_row == row_index;
-    let selected_for_converge = detail.selected_workspaces.contains(&node.workspace_path);
-    let border_style = if selected_cursor {
-        Style::default()
-            .fg(YAFFLE_CREAM)
-            .add_modifier(Modifier::BOLD)
-    } else if selected_for_converge {
-        Style::default()
-            .fg(YAFFLE_GREEN)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(YAFFLE_BORDER_ACCENT)
-    };
-    let text_style = if selected_cursor {
-        Style::default()
-            .fg(YAFFLE_CREAM)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(YAFFLE_TEXT)
-    };
-    let status_char = dag_node_status_char(detail, node);
-
-    write_styled_string(
-        canvas,
-        x,
-        y,
-        &format!("┌{}┐", "─".repeat(width.saturating_sub(2))),
-        border_style,
-    );
-    let label =
-        truncate_workspace_label(&environment_dag_node_label(node), width.saturating_sub(6));
-    write_styled_string(canvas, x, y + 1, "│", border_style);
-    let lead_char = if selected_for_converge { '■' } else { '□' };
-    write_styled_string(canvas, x + 1, y + 1, &lead_char.to_string(), border_style);
-    write_styled_string(canvas, x + 2, y + 1, &status_char.to_string(), text_style);
-    write_styled_string(canvas, x + 3, y + 1, " ", text_style);
-    write_styled_string(
-        canvas,
-        x + 4,
-        y + 1,
-        &format!("{label:<width$}", width = width.saturating_sub(6)),
-        text_style,
-    );
-    write_styled_string(canvas, x + width - 1, y + 1, "│", border_style);
-    let lifecycle_lights = workspace_lifecycle_lights(detail, &node.workspace_path);
-    write_styled_string(canvas, x, y + 2, "│", border_style);
-    write_styled_string(
-        canvas,
-        x + 2,
-        y + 2,
-        &lifecycle_lights,
-        Style::default().fg(YAFFLE_TEXT_MUTED),
-    );
-    write_styled_string(canvas, x + width - 1, y + 2, "│", border_style);
-    write_styled_string(
-        canvas,
-        x,
-        y + 3,
-        &format!("└{}┘", "─".repeat(width.saturating_sub(2))),
-        border_style,
-    );
-}
-
-fn dag_node_status_char(detail: &LocalEnvironmentDetailState, node: &EnvironmentDagNode) -> char {
-    match &node.kind {
-        EnvironmentDagNodeKind::Workspace => {
-            if let Some((run_state, _phase)) =
-                detail.active_run_status_for_workspace(&node.workspace_path)
-            {
-                match run_state {
-                    WorkspaceRunState::Running => '▶',
-                    WorkspaceRunState::Succeeded => '●',
-                    WorkspaceRunState::Failed => '✕',
-                    WorkspaceRunState::Pending => '○',
-                }
-            } else {
-                let snapshot = detail.status_response.as_ref().and_then(|response| {
-                    response
-                        .workspaces
-                        .iter()
-                        .find(|item| item.workspace_path == node.workspace_path)
-                });
-                match snapshot.and_then(|item| item.materialization.as_deref()) {
-                    Some("present") => '●',
-                    Some("partially_present") => '◐',
-                    Some("absent") => '○',
-                    _ => '·',
-                }
-            }
-        }
-    }
-}
-
 fn workspace_lifecycle_phase_summary(
     detail: &LocalEnvironmentDetailState,
     workspace_path: &str,
@@ -4250,20 +4137,6 @@ fn workspace_lifecycle_phase_summary(
     format!("mixed {total}")
 }
 
-fn workspace_lifecycle_lights(
-    detail: &LocalEnvironmentDetailState,
-    workspace_path: &str,
-) -> String {
-    let mut lights = Vec::new();
-    if let Some(state) = workspace_lifecycle_phase_state(detail, workspace_path, "activation") {
-        lights.push(format!("↗ {}", lifecycle_status_light_char(&state)));
-    }
-    if let Some(state) = workspace_lifecycle_phase_state(detail, workspace_path, "verification") {
-        lights.push(format!("✓ {}", lifecycle_status_light_char(&state)));
-    }
-    lights.join("  ")
-}
-
 fn workspace_lifecycle_phase_state(
     detail: &LocalEnvironmentDetailState,
     workspace_path: &str,
@@ -4280,16 +4153,6 @@ fn workspace_lifecycle_phase_state(
             .unwrap_or("pending")
             .to_string(),
     )
-}
-
-fn lifecycle_status_light_char(state: &str) -> char {
-    match state {
-        "succeeded" => '●',
-        "degraded" => '◐',
-        "blocked" | "failed" => '✕',
-        "running" => '◉',
-        _ => '○',
-    }
 }
 
 fn workspace_scope_condition_summary(
@@ -4360,77 +4223,6 @@ fn lifecycle_items_for_workspace<'a>(
         .into_iter()
         .flatten()
         .collect()
-}
-
-fn environment_dag_node_label(node: &EnvironmentDagNode) -> String {
-    match &node.kind {
-        EnvironmentDagNodeKind::Workspace => node.label.clone(),
-    }
-}
-
-fn draw_horizontal(canvas: &mut [Vec<DagCell>], start_x: usize, end_x: usize, y: usize) {
-    let (from, to) = if start_x <= end_x {
-        (start_x, end_x)
-    } else {
-        (end_x, start_x)
-    };
-    for x in from..=to {
-        overlay_char(canvas, x, y, '─', Style::default().fg(YAFFLE_BORDER));
-    }
-}
-
-fn draw_vertical(canvas: &mut [Vec<DagCell>], x: usize, start_y: usize, end_y: usize) {
-    let (from, to) = if start_y <= end_y {
-        (start_y, end_y)
-    } else {
-        (end_y, start_y)
-    };
-    for y in from..=to {
-        overlay_char(canvas, x, y, '│', Style::default().fg(YAFFLE_BORDER));
-    }
-}
-
-fn overlay_char(canvas: &mut [Vec<DagCell>], x: usize, y: usize, value: char, style: Style) {
-    if y >= canvas.len() || x >= canvas[y].len() {
-        return;
-    }
-    let current = canvas[y][x].ch;
-    canvas[y][x] = match (current, value) {
-        ('│', '─') | ('─', '│') => DagCell { ch: '┼', style },
-        (' ', value) => DagCell { ch: value, style },
-        (current, _) => DagCell {
-            ch: current,
-            style: canvas[y][x].style,
-        },
-    };
-}
-
-fn write_styled_string(canvas: &mut [Vec<DagCell>], x: usize, y: usize, text: &str, style: Style) {
-    if y >= canvas.len() {
-        return;
-    }
-    for (offset, character) in text.chars().enumerate() {
-        let target_x = x + offset;
-        if target_x >= canvas[y].len() {
-            break;
-        }
-        canvas[y][target_x] = DagCell {
-            ch: character,
-            style,
-        };
-    }
-}
-
-fn truncate_workspace_label(label: &str, max_len: usize) -> String {
-    if label.chars().count() <= max_len {
-        return label.to_string();
-    }
-
-    let truncated = label
-        .chars()
-        .take(max_len.saturating_sub(1))
-        .collect::<String>();
-    format!("{truncated}…")
 }
 
 fn load_environment_detail(
