@@ -14,6 +14,6 @@ module "core" {
   vpc_cidr    = "10.0.0.0/16"
 
   # Production settings
-  ha_nat             = true
+  ha_nat             = false
   container_insights = "enhanced"
 }
