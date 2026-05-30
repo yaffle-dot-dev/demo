@@ -12,10 +12,7 @@ import {
   generateToken,
   deleteApiTokensByUserId,
 } from "../../db/queries/api-tokens.ts"
-import {
-  deleteWorkspace,
-  findWorkspaceByName,
-} from "../../db/queries/workspaces.ts"
+import { deleteWorkspace, findWorkspaceByName } from "../../db/queries/workspaces.ts"
 import { findOrgBySlug, createOrg } from "../../db/queries/organizations.ts"
 import { ensureMembership } from "../../db/queries/users.ts"
 import { db } from "../../lib/db.ts"
@@ -103,12 +100,7 @@ async function mintApiToken(
 /**
  * Helper to make authenticated requests with a bearer token.
  */
-function authRequest(
-  method: string,
-  path: string,
-  token: string,
-  body?: unknown,
-): Request {
+function authRequest(method: string, path: string, token: string, body?: unknown): Request {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
   }
@@ -197,7 +189,12 @@ beforeAll(async () => {
   // Create a test API token for the test user
   testUserToken = await mintApiToken(TEST_USER_ID, "TFC integration test token", testOrgId, "admin")
   viewerUserToken = await mintApiToken(TEST_VIEWER_USER_ID, "TFC viewer token", testOrgId, "viewer")
-  otherOrgUserToken = await mintApiToken(TEST_OTHER_USER_ID, "TFC other org token", otherOrgId, "admin")
+  otherOrgUserToken = await mintApiToken(
+    TEST_OTHER_USER_ID,
+    "TFC other org token",
+    otherOrgId,
+    "admin",
+  )
 })
 
 afterAll(async () => {
@@ -425,7 +422,7 @@ describe("OAuth and Public URL Security", () => {
     }
   })
 
-  test("state version URLs use configured public API origin instead of runner or forwarded hosts", async () => {
+  test("state version URLs preserve the request origin and ignore forwarded hosts", async () => {
     const statePayload = JSON.stringify({
       version: 4,
       terraform_version: "1.7.0",
@@ -436,10 +433,8 @@ describe("OAuth and Public URL Security", () => {
     })
 
     const originalRunnerTfcApiHost = process.env.YAFFLE_RUNNER_TFC_API_HOST
-    const originalPublicApiUrl = process.env.YAFFLE_PUBLIC_API_URL
 
     process.env.YAFFLE_RUNNER_TFC_API_HOST = "cp.internal.yaffle.dev"
-    process.env.YAFFLE_PUBLIC_API_URL = "https://public-api.yaffle.test"
 
     try {
       const createRes = await app.fetch(
@@ -466,18 +461,23 @@ describe("OAuth and Public URL Security", () => {
         ),
       )
 
-      const request = authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
-        testUserToken,
+      const request = new Request(
+        `https://api.yaffle.test/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
         {
-          data: {
-            type: "state-versions",
-            attributes: {
-              serial: 1,
-              md5: md5(statePayload),
-            },
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${testUserToken}`,
+            "Content-Type": "application/json",
           },
+          body: JSON.stringify({
+            data: {
+              type: "state-versions",
+              attributes: {
+                serial: 1,
+                md5: md5(statePayload),
+              },
+            },
+          }),
         },
       )
       request.headers.set("x-forwarded-host", "evil.example.com")
@@ -488,9 +488,8 @@ describe("OAuth and Public URL Security", () => {
       expect(res.status).toBe(201)
       const body = await res.json()
       expect(body.data.attributes["hosted-state-upload-url"]).toStartWith(
-        "https://public-api.yaffle.test/",
+        "https://api.yaffle.test/",
       )
-      expect(body.data.attributes["hosted-state-upload-url"]).not.toContain("cp.internal.yaffle.dev")
       expect(body.data.attributes["hosted-state-upload-url"]).not.toContain("evil.example.com")
 
       const uploadPath = new URL(body.data.attributes["hosted-state-upload-url"]).pathname
@@ -508,17 +507,21 @@ describe("OAuth and Public URL Security", () => {
       expect(uploadRes.status).toBe(200)
 
       const currentStateRes = await app.fetch(
-        authRequest(
-          "GET",
-          `/tfc/api/v2/workspaces/${testWorkspaceId}/current-state-version`,
-          testUserToken,
+        new Request(
+          `https://api.yaffle.test/tfc/api/v2/workspaces/${testWorkspaceId}/current-state-version`,
+          {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${testUserToken}`,
+            },
+          },
         ),
       )
 
       expect(currentStateRes.status).toBe(200)
       const currentStateBody = await currentStateRes.json()
       expect(currentStateBody.data.attributes["hosted-state-download-url"]).toStartWith(
-        "https://public-api.yaffle.test/",
+        "https://api.yaffle.test/",
       )
       expect(currentStateBody.data.attributes["hosted-state-download-url"]).not.toContain(
         "cp.internal.yaffle.dev",
@@ -528,7 +531,6 @@ describe("OAuth and Public URL Security", () => {
       )
     } finally {
       restoreEnv("YAFFLE_RUNNER_TFC_API_HOST", originalRunnerTfcApiHost)
-      restoreEnv("YAFFLE_PUBLIC_API_URL", originalPublicApiUrl)
     }
   })
 })
@@ -562,11 +564,7 @@ describe("Authentication", () => {
 
   test("accepts requests with valid user token", async () => {
     const res = await app.fetch(
-      authRequest(
-        "GET",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-      ),
+      authRequest("GET", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken),
     )
 
     expect(res.status).toBe(200)
@@ -581,11 +579,7 @@ describe("Authentication", () => {
     })
 
     const res = await app.fetch(
-      authRequest(
-        "GET",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        token,
-      ),
+      authRequest("GET", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, token),
     )
 
     expect(res.status).toBe(401)
@@ -596,31 +590,22 @@ describe("Authentication", () => {
   test("accepts requests with valid run token (JWT)", async () => {
     // First create a workspace to get an ID
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: {
-              name: TEST_WORKSPACE_NAME,
-              environment: "preview",
-            },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: TEST_WORKSPACE_NAME,
+            environment: "preview",
           },
         },
-      ),
+      }),
     )
     expect(createRes.status).toBe(201)
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     // Generate a run token for this workspace
-    const runToken = await generateRunToken(
-      "test-run-123",
-      testWorkspaceId!,
-      testOrgId,
-    )
+    const runToken = await generateRunToken("test-run-123", testWorkspaceId!, testOrgId)
 
     // Use the run token to access the workspace
     const res = await app.fetch(
@@ -643,28 +628,19 @@ describe("Authentication", () => {
     })
 
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     expect(createRes.status).toBe(201)
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const createStateVersionRes = await app.fetch(
@@ -701,11 +677,7 @@ describe("Authentication", () => {
 
     const runToken = await generateRunToken("test-run-download", testWorkspaceId!, testOrgId)
     const res = await app.fetch(
-      authRequest(
-        "GET",
-        `/tfc/api/v2/state-versions/${stateVersionId}/download`,
-        runToken,
-      ),
+      authRequest("GET", `/tfc/api/v2/state-versions/${stateVersionId}/download`, runToken),
     )
 
     expect([200, 302]).toContain(res.status)
@@ -719,22 +691,17 @@ describe("Authentication", () => {
 describe("Workspace CRUD", () => {
   test("creates a workspace", async () => {
     const res = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: {
-              name: TEST_WORKSPACE_NAME,
-              environment: "preview",
-              "pr-number": 42,
-              "workspace-path": "infra",
-            },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: TEST_WORKSPACE_NAME,
+            environment: "preview",
+            "pr-number": 42,
+            "workspace-path": "infra",
           },
         },
-      ),
+      }),
     )
 
     expect(res.status).toBe(201)
@@ -751,32 +718,22 @@ describe("Workspace CRUD", () => {
   test("rejects duplicate workspace name", async () => {
     // Create first workspace
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
 
     // Try to create duplicate
     const res = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
 
     expect(res.status).toBe(409)
@@ -785,17 +742,12 @@ describe("Workspace CRUD", () => {
   test("gets workspace by name", async () => {
     // Create workspace first
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -818,17 +770,12 @@ describe("Workspace CRUD", () => {
   test("workspace response includes all required TFC fields for cloud backend", async () => {
     // Create workspace first
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -869,17 +816,12 @@ describe("Workspace CRUD", () => {
     // This test verifies the exact JSON structure that go-tfe/jsonapi expects
     // Create workspace first
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -894,38 +836,38 @@ describe("Workspace CRUD", () => {
     )
 
     expect(res.status).toBe(200)
-    
+
     // Check Content-Type header
     const contentType = res.headers.get("Content-Type")
     expect(contentType).toBe("application/vnd.api+json")
-    
+
     // Check TFP-API-Version header
     const apiVersion = res.headers.get("TFP-API-Version")
     expect(apiVersion).toBeDefined()
-    
+
     const body = await res.json()
-    
+
     // Verify top-level structure
     expect(body).toHaveProperty("data")
     expect(body.data).toHaveProperty("id")
     expect(body.data).toHaveProperty("type", "workspaces")
     expect(body.data).toHaveProperty("attributes")
-    
+
     // Verify attributes structure (these are what go-tfe parses)
     const attrs = body.data.attributes
-    
+
     // execution-mode must be a string at the attribute level
     expect(typeof attrs["execution-mode"]).toBe("string")
     expect(attrs["execution-mode"]).toBe("local")
-    
+
     // operations must be a boolean
     expect(typeof attrs.operations).toBe("boolean")
     expect(attrs.operations).toBe(true)
-    
+
     // permissions must be an object (go-tfe will recursively unmarshal this)
     expect(typeof attrs.permissions).toBe("object")
     expect(attrs.permissions).not.toBeNull()
-    
+
     // Verify permissions nested structure
     expect(typeof attrs.permissions["can-queue-run"]).toBe("boolean")
     expect(typeof attrs.permissions["can-destroy"]).toBe("boolean")
@@ -933,7 +875,7 @@ describe("Workspace CRUD", () => {
     expect(typeof attrs.permissions["can-unlock"]).toBe("boolean")
     expect(typeof attrs.permissions["can-force-unlock"]).toBe("boolean")
     expect(typeof attrs.permissions["can-queue-apply"]).toBe("boolean")
-    
+
     // Verify relationships exist (required by go-tfe)
     expect(body.data).toHaveProperty("relationships")
     expect(body.data.relationships).toHaveProperty("organization")
@@ -944,17 +886,12 @@ describe("Workspace CRUD", () => {
   test("gets workspace by ID", async () => {
     // Create workspace first
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -972,28 +909,19 @@ describe("Workspace CRUD", () => {
   test("lists workspaces in organization", async () => {
     // Create a workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     // List workspaces
     const res = await app.fetch(
-      authRequest(
-        "GET",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-      ),
+      authRequest("GET", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken),
     )
 
     expect(res.status).toBe(200)
@@ -1011,29 +939,21 @@ describe("Workspace Locking", () => {
   test("locks a workspace with user token", async () => {
     // Create workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     // Lock workspace
     const res = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-        { reason: "Running terraform apply" },
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken, {
+        reason: "Running terraform apply",
+      }),
     )
 
     expect(res.status).toBe(200)
@@ -1046,17 +966,12 @@ describe("Workspace Locking", () => {
   test("locks a workspace with run token", async () => {
     // Create workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -1066,11 +981,7 @@ describe("Workspace Locking", () => {
 
     // Lock with run token
     const res = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        runToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
 
     expect(res.status).toBe(200)
@@ -1082,37 +993,24 @@ describe("Workspace Locking", () => {
   test("rejects lock on already locked workspace", async () => {
     // Create and lock workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     // First lock
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     // Second lock attempt
     const res = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     expect(res.status).toBe(409)
@@ -1123,28 +1021,19 @@ describe("Workspace Locking", () => {
 
   test("force-unlock by lock ID supports relock flow", async () => {
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     const runToken = await generateRunToken("lock-id-flow", testWorkspaceId!, testOrgId)
     const lockRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        runToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
     expect(lockRes.status).toBe(200)
 
@@ -1154,11 +1043,7 @@ describe("Workspace Locking", () => {
     expect(lockId).toBe(`${TEST_ORG_SLUG}/${TEST_WORKSPACE_NAME}`)
 
     const conflictRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
     expect(conflictRes.status).toBe(409)
 
@@ -1179,11 +1064,7 @@ describe("Workspace Locking", () => {
     expect(forceUnlockBody.data.attributes["lock-id"]).toBeNull()
 
     const relockRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        runToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
 
     expect(relockRes.status).toBe(200)
@@ -1195,28 +1076,19 @@ describe("Workspace Locking", () => {
   test("unlocks a workspace (same owner)", async () => {
     // Create workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     // Lock
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     // Unlock
@@ -1236,17 +1108,12 @@ describe("Workspace Locking", () => {
   test("rejects unlock from different owner", async () => {
     // Create workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -1254,11 +1121,7 @@ describe("Workspace Locking", () => {
     // Lock with run token
     const runToken = await generateRunToken("run-owner", testWorkspaceId!, testOrgId)
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        runToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
 
     // Try to unlock with different run token
@@ -1279,17 +1142,12 @@ describe("Workspace Locking", () => {
   test("force-unlocks a workspace (requires user token)", async () => {
     // Create workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -1297,11 +1155,7 @@ describe("Workspace Locking", () => {
     // Lock with run token
     const runToken = await generateRunToken("stuck-run", testWorkspaceId!, testOrgId)
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        runToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
 
     // Force unlock with user token
@@ -1340,17 +1194,12 @@ describe("Tenant Isolation", () => {
 
   test("rejects fetching a workspace by ID from another organization", async () => {
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -1366,28 +1215,19 @@ describe("Tenant Isolation", () => {
 
   test("rejects force-unlock from non-admin user in same organization", async () => {
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     const runToken = await generateRunToken("tenant-isolation-lock", testWorkspaceId!, testOrgId)
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        runToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
 
     const res = await app.fetch(
@@ -1416,27 +1256,18 @@ describe("Tenant Isolation", () => {
     })
 
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const createStateVersionRes = await app.fetch(
@@ -1495,27 +1326,18 @@ describe("Tenant Isolation", () => {
     })
 
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_CROSS_TENANT_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const createStateVersionRes = await app.fetch(
@@ -1550,11 +1372,7 @@ describe("Tenant Isolation", () => {
     )
 
     const res = await app.fetch(
-      authRequest(
-        "GET",
-        `/tfc/api/v2/state-versions/${stateVersionId}`,
-        otherOrgUserToken,
-      ),
+      authRequest("GET", `/tfc/api/v2/state-versions/${stateVersionId}`, otherOrgUserToken),
     )
 
     expect(res.status).toBe(403)
@@ -1582,28 +1400,19 @@ describe("State Versions", () => {
   test("creates state version (two-phase upload)", async () => {
     // Create workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     // Lock workspace (required for state upload)
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     // Phase 1: Create state version (get upload URL)
@@ -1654,11 +1463,7 @@ describe("State Versions", () => {
 
     // Verify state version is now finalized
     const getSvRes = await app.fetch(
-      authRequest(
-        "GET",
-        `/tfc/api/v2/state-versions/${stateVersionId}`,
-        testUserToken,
-      ),
+      authRequest("GET", `/tfc/api/v2/state-versions/${stateVersionId}`, testUserToken),
     )
 
     expect(getSvRes.status).toBe(200)
@@ -1670,17 +1475,12 @@ describe("State Versions", () => {
   test("rejects state upload when workspace not locked", async () => {
     // Create workspace (not locked)
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
@@ -1710,27 +1510,18 @@ describe("State Versions", () => {
 
   test("rejects expired pending state upload URLs", async () => {
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const createSvRes = await app.fetch(
@@ -1776,11 +1567,7 @@ describe("State Versions", () => {
     expect(body.errors[0].title).toBe("State upload URL expired")
 
     const getSvRes = await app.fetch(
-      authRequest(
-        "GET",
-        `/tfc/api/v2/state-versions/${stateVersionId}`,
-        testUserToken,
-      ),
+      authRequest("GET", `/tfc/api/v2/state-versions/${stateVersionId}`, testUserToken),
     )
     expect(getSvRes.status).toBe(200)
     const current = await getSvRes.json()
@@ -1789,27 +1576,18 @@ describe("State Versions", () => {
 
   test("rejects oversized state uploads", async () => {
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const createSvRes = await app.fetch(
@@ -1853,47 +1631,33 @@ describe("State Versions", () => {
   test("rejects state upload with wrong lock owner", async () => {
     // Create workspace
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     // Lock with user token
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     // Try to upload state with different run token
     const runToken = await generateRunToken("other-run", testWorkspaceId!, testOrgId)
     const res = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`,
-        runToken,
-        {
-          data: {
-            type: "state-versions",
-            attributes: {
-              serial: 1,
-              md5: md5(testState),
-            },
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`, runToken, {
+        data: {
+          type: "state-versions",
+          attributes: {
+            serial: 1,
+            md5: md5(testState),
           },
         },
-      ),
+      }),
     )
 
     expect(res.status).toBe(409)
@@ -1902,27 +1666,18 @@ describe("State Versions", () => {
   test("rejects serial number going backwards", async () => {
     // Create workspace and lock
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     // Create first state version with serial 5
@@ -1979,27 +1734,18 @@ describe("State Versions", () => {
   test("gets current state version", async () => {
     // Create workspace, lock, and upload state
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const stateMd5 = md5(testState)
@@ -2047,52 +1793,40 @@ describe("State Versions", () => {
 
   test("keeps current-state-version outputs available after a failed upload attempt", async () => {
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: {
-              name: TEST_OUTPUTS_WORKSPACE_NAME,
-            },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: TEST_OUTPUTS_WORKSPACE_NAME,
           },
         },
-      ),
+      }),
     )
     expect(createRes.status).toBe(201)
     const createBody = await createRes.json()
     const workspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${workspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/actions/lock`, testUserToken),
     )
 
     const finalizedStateRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${workspaceId}/state-versions`,
-        testUserToken,
-        {
-          data: {
-            type: "state-versions",
-            attributes: {
-              serial: 1,
-              md5: md5(testState),
-              lineage: "12345678-1234-1234-1234-123456789012",
-            },
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/state-versions`, testUserToken, {
+        data: {
+          type: "state-versions",
+          attributes: {
+            serial: 1,
+            md5: md5(testState),
+            lineage: "12345678-1234-1234-1234-123456789012",
           },
         },
-      ),
+      }),
     )
     expect(finalizedStateRes.status).toBe(201)
     const finalizedStateBody = await finalizedStateRes.json()
-    const finalizedUploadPath = new URL(finalizedStateBody.data.attributes["hosted-state-upload-url"]).pathname
+    const finalizedUploadPath = new URL(
+      finalizedStateBody.data.attributes["hosted-state-upload-url"],
+    ).pathname
 
     const finalizedUploadRes = await app.fetch(
       new Request(`http://localhost${finalizedUploadPath}`, {
@@ -2107,26 +1841,22 @@ describe("State Versions", () => {
     expect(finalizedUploadRes.status).toBe(200)
 
     const pendingStateRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${workspaceId}/state-versions`,
-        testUserToken,
-        {
-          data: {
-            type: "state-versions",
-            attributes: {
-              serial: 2,
-              md5: md5(testState),
-              lineage: "12345678-1234-1234-1234-123456789012",
-            },
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/state-versions`, testUserToken, {
+        data: {
+          type: "state-versions",
+          attributes: {
+            serial: 2,
+            md5: md5(testState),
+            lineage: "12345678-1234-1234-1234-123456789012",
           },
         },
-      ),
+      }),
     )
     expect(pendingStateRes.status).toBe(201)
     const pendingStateBody = await pendingStateRes.json()
     const pendingStateId = pendingStateBody.data.id
-    const pendingUploadPath = new URL(pendingStateBody.data.attributes["hosted-state-upload-url"]).pathname
+    const pendingUploadPath = new URL(pendingStateBody.data.attributes["hosted-state-upload-url"])
+      .pathname
 
     await db
       .update(stateVersions)
@@ -2163,27 +1893,18 @@ describe("State Versions", () => {
   test("downloads state content", async () => {
     // Create workspace, lock, and upload state
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: TEST_WORKSPACE_NAME },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
         },
-      ),
+      }),
     )
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const stateMd5 = md5(testState)
@@ -2217,11 +1938,7 @@ describe("State Versions", () => {
 
     // Download state
     const res = await app.fetch(
-      authRequest(
-        "GET",
-        `/tfc/api/v2/state-versions/${stateVersionId}/download`,
-        testUserToken,
-      ),
+      authRequest("GET", `/tfc/api/v2/state-versions/${stateVersionId}/download`, testUserToken),
     )
 
     // May redirect or return content directly
@@ -2261,23 +1978,18 @@ describe("Module Registry", () => {
     prNumber?: number
   }): Promise<string> {
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: {
-              name: options.name,
-              repo: TEST_REPO,
-              environment: options.environment,
-              "workspace-path": options.workspacePath,
-              ...(options.prNumber ? { "pr-number": options.prNumber } : {}),
-            },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: options.name,
+            repo: TEST_REPO,
+            environment: options.environment,
+            "workspace-path": options.workspacePath,
+            ...(options.prNumber ? { "pr-number": options.prNumber } : {}),
           },
         },
-      ),
+      }),
     )
 
     expect(createRes.status).toBe(201)
@@ -2287,30 +1999,21 @@ describe("Module Registry", () => {
 
   async function uploadModuleState(workspaceId: string, state: string = testState): Promise<void> {
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${workspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/actions/lock`, testUserToken),
     )
 
     const stateMd5 = md5(state)
     const svRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${workspaceId}/state-versions`,
-        testUserToken,
-        {
-          data: {
-            type: "state-versions",
-            attributes: {
-              serial: 1,
-              md5: stateMd5,
-              lineage: "12345678-1234-1234-1234-123456789012",
-            },
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/state-versions`, testUserToken, {
+        data: {
+          type: "state-versions",
+          attributes: {
+            serial: 1,
+            md5: stateMd5,
+            lineage: "12345678-1234-1234-1234-123456789012",
           },
         },
-      ),
+      }),
     )
 
     expect(svRes.status).toBe(201)
@@ -2342,22 +2045,17 @@ describe("Module Registry", () => {
   test("lists module versions for a workspace", async () => {
     // Create workspace with a workspace_path and repo
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: {
-              name: TEST_WORKSPACE_NAME,
-              repo: TEST_REPO,
-              environment: "main",
-              "workspace-path": "core-infrastructure/vpc",
-            },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: TEST_WORKSPACE_NAME,
+            repo: TEST_REPO,
+            environment: "main",
+            "workspace-path": "core-infrastructure/vpc",
           },
         },
-      ),
+      }),
     )
     expect(createRes.status).toBe(201)
     const createBody = await createRes.json()
@@ -2365,11 +2063,7 @@ describe("Module Registry", () => {
 
     // Lock and upload state
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const stateMd5 = md5(testState)
@@ -2478,22 +2172,17 @@ describe("Module Registry", () => {
   test("download returns X-Terraform-Get header", async () => {
     // Create workspace with a workspace_path and repo
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: {
-              name: TEST_WORKSPACE_NAME,
-              repo: TEST_REPO,
-              environment: "main",
-              "workspace-path": "infra/networking",
-            },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: TEST_WORKSPACE_NAME,
+            repo: TEST_REPO,
+            environment: "main",
+            "workspace-path": "infra/networking",
           },
         },
-      ),
+      }),
     )
     expect(createRes.status).toBe(201)
     const createBody = await createRes.json()
@@ -2501,11 +2190,7 @@ describe("Module Registry", () => {
 
     // Lock and upload state
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const stateMd5 = md5(testState)
@@ -2552,7 +2237,9 @@ describe("Module Registry", () => {
     expect(res.status).toBe(204)
     // The X-Terraform-Get header should include a signed token, so just check the path prefix
     const terraformGet = res.headers.get("X-Terraform-Get")
-    expect(terraformGet).toContain(`/tfc/registry/v1/modules/${TEST_NAMESPACE}/infra--networking/yaffle/1.0.1/archive.tar.gz`)
+    expect(terraformGet).toContain(
+      `/tfc/registry/v1/modules/${TEST_NAMESPACE}/infra--networking/yaffle/1.0.1/archive.tar.gz`,
+    )
   })
 
   test("download falls back to non-preview state when preview workspace has no finalized state", async () => {
@@ -2596,22 +2283,17 @@ describe("Module Registry", () => {
   test("archive returns valid tar.gz with generated module", async () => {
     // Create workspace with a workspace_path and repo
     const createRes = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: {
-              name: TEST_WORKSPACE_NAME,
-              repo: TEST_REPO,
-              environment: "main",
-              "workspace-path": "test/outputs",
-            },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: TEST_WORKSPACE_NAME,
+            repo: TEST_REPO,
+            environment: "main",
+            "workspace-path": "test/outputs",
           },
         },
-      ),
+      }),
     )
     expect(createRes.status).toBe(201)
     const createBody = await createRes.json()
@@ -2619,11 +2301,7 @@ describe("Module Registry", () => {
 
     // Lock and upload state
     await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`,
-        testUserToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
     )
 
     const stateMd5 = md5(testState)
@@ -2696,33 +2374,23 @@ describe("Run Token Scopes", () => {
   test("run token can only access its workspace", async () => {
     // Create two workspaces
     const ws1Res = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: `${TEST_WORKSPACE_NAME}-1` },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: `${TEST_WORKSPACE_NAME}-1` },
         },
-      ),
+      }),
     )
     const ws1 = await ws1Res.json()
     const ws1Id = ws1.data.id
 
     const ws2Res = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`,
-        testUserToken,
-        {
-          data: {
-            type: "workspaces",
-            attributes: { name: `${TEST_WORKSPACE_NAME}-2` },
-          },
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: `${TEST_WORKSPACE_NAME}-2` },
         },
-      ),
+      }),
     )
     const ws2 = await ws2Res.json()
     const ws2Id = ws2.data.id
@@ -2734,18 +2402,12 @@ describe("Run Token Scopes", () => {
     const runToken = await generateRunToken("run-ws1", ws1Id, testOrgId)
 
     // Can access workspace 1
-    const res1 = await app.fetch(
-      authRequest("GET", `/tfc/api/v2/workspaces/${ws1Id}`, runToken),
-    )
+    const res1 = await app.fetch(authRequest("GET", `/tfc/api/v2/workspaces/${ws1Id}`, runToken))
     expect(res1.status).toBe(200)
 
     // Cannot lock workspace 2
     const res2 = await app.fetch(
-      authRequest(
-        "POST",
-        `/tfc/api/v2/workspaces/${ws2Id}/actions/lock`,
-        runToken,
-      ),
+      authRequest("POST", `/tfc/api/v2/workspaces/${ws2Id}/actions/lock`, runToken),
     )
     expect(res2.status).toBe(403)
 

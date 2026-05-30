@@ -24,6 +24,21 @@ resource "aws_lb" "main" {
   }
 }
 
+resource "aws_lb" "internal" {
+  name               = "yaffle-int-alb-${local.name_suffix}"
+  internal           = true
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.internal_alb.id]
+  subnets            = local.private_subnet_ids
+
+  enable_deletion_protection = !local.is_preview
+
+  tags = {
+    Name                    = "yaffle-int-alb-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.load_balancer
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Target Group
 # -----------------------------------------------------------------------------
@@ -47,6 +62,29 @@ resource "aws_lb_target_group" "control_plane" {
 
   tags = {
     Name                    = "yaffle-cp-tg-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.load_balancer
+  }
+}
+
+resource "aws_lb_target_group" "control_plane_internal" {
+  name        = "yaffle-cp-int-tg-${local.name_suffix}"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = local.vpc_id
+  target_type = "ip"
+
+  health_check {
+    enabled             = true
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+    path                = "/api/ready"
+    matcher             = "200"
+  }
+
+  tags = {
+    Name                    = "yaffle-cp-int-tg-${local.name_suffix}"
     "yaffle:resource-class" = local.control_plane_resource_classes.load_balancer
   }
 }
@@ -83,6 +121,19 @@ resource "aws_lb_listener" "https" {
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.control_plane.arn
+  }
+}
+
+resource "aws_lb_listener" "internal_https" {
+  load_balancer_arn = aws_lb.internal.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = local.acm_certificate_arn
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.control_plane_internal.arn
   }
 }
 

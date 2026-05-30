@@ -44,6 +44,37 @@ resource "aws_security_group" "alb" {
 }
 
 # -----------------------------------------------------------------------------
+# Internal ALB Security Group
+# -----------------------------------------------------------------------------
+
+resource "aws_security_group" "internal_alb" {
+  name        = "yaffle-internal-alb-sg-${local.name_suffix}"
+  description = "Security group for internal control plane ALB"
+  vpc_id      = local.vpc_id
+
+  ingress {
+    description = "HTTPS from VPC workloads"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = [local.vpc_cidr_block]
+  }
+
+  egress {
+    description = "All outbound"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name                    = "yaffle-internal-alb-sg-${local.name_suffix}"
+    "yaffle:resource-class" = local.control_plane_resource_classes.network
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Control Plane Security Group
 # -----------------------------------------------------------------------------
 
@@ -58,6 +89,14 @@ resource "aws_security_group" "control_plane" {
     to_port         = 3000
     protocol        = "tcp"
     security_groups = [aws_security_group.alb.id]
+  }
+
+  ingress {
+    description     = "HTTP from internal ALB"
+    from_port       = 3000
+    to_port         = 3000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.internal_alb.id]
   }
 
   egress {

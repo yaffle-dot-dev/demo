@@ -12,6 +12,7 @@ import { spawn } from "node:child_process"
 import type { Readable } from "node:stream"
 
 import type { ExecutionContext } from "./api-client.ts"
+import { log } from "./runner-log.ts"
 import { ResourceSpanParser, type ResourceSpanEvent } from "./span-parser.ts"
 
 export interface TerraformResult {
@@ -77,13 +78,13 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
     await configureVariables(workDir, context)
 
     // Run tofu init
-      const initResult = await runCommand(
-        workDir,
-        ["tofu", "init", "-input=false"],
-        wrappedOnOutput,
-        combinedEnv,
-        onProcess,
-      )
+    const initResult = await runCommand(
+      workDir,
+      ["tofu", "init", "-input=false"],
+      wrappedOnOutput,
+      combinedEnv,
+      onProcess,
+    )
     if (!initResult.success) {
       return {
         success: false,
@@ -217,7 +218,8 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       hasChanges: context.command === "plan" ? result.exitCode === 2 : undefined,
       planSummary,
       planJson,
-      planFilePath: context.command === "plan" && result.success ? join(workDir, "tfplan") : undefined,
+      planFilePath:
+        context.command === "plan" && result.success ? join(workDir, "tfplan") : undefined,
       outputs,
       errorMessage: result.success ? undefined : result.output,
       durationMs: Date.now() - startTime,
@@ -242,8 +244,17 @@ async function configureBackend(
   context: ExecutionContext,
 ): Promise<Record<string, string>> {
   if (!context.backendConfig) {
+    log("Terraform backend config absent; using local backend")
     return {}
   }
+
+  log("Configuring Terraform cloud backend", {
+    backendHost: context.backendConfig.hostname,
+    organization: context.backendConfig.organization,
+    workspaceName: context.backendConfig.workspaceName,
+    credentialHostCount: context.backendConfig.credentialHosts?.length ?? 0,
+    hasTfcToken: Boolean(context.tfcToken),
+  })
 
   const backendContent = `terraform {
   cloud {
@@ -268,6 +279,15 @@ async function configureBackend(
       context.backendConfig.hostname,
       ...(context.backendConfig.credentialHosts ?? []),
     ].filter((host, index, hosts) => host.length > 0 && hosts.indexOf(host) === index)
+
+    log("Writing Terraform cloud credentials", {
+      backendHost: context.backendConfig.hostname,
+      credentialHosts,
+      tfCliConfigFile: true,
+      noProxy: process.env.NO_PROXY ?? process.env.no_proxy ?? "",
+      hasHttpProxy: Boolean(process.env.HTTP_PROXY || process.env.http_proxy),
+      hasHttpsProxy: Boolean(process.env.HTTPS_PROXY || process.env.https_proxy),
+    })
 
     const credentialsPath = join(credsDir, "credentials.tfrc.json")
     const credsContent = JSON.stringify({
@@ -296,10 +316,7 @@ async function configureBackend(
 /**
  * Configure terraform variables file.
  */
-async function configureVariables(
-  workDir: string,
-  context: ExecutionContext,
-): Promise<void> {
+async function configureVariables(workDir: string, context: ExecutionContext): Promise<void> {
   if (Object.keys(context.variables).length === 0) {
     return
   }
@@ -328,6 +345,7 @@ async function runCommand(
   successExitCodes: number[] = [0],
   timeoutMs = 20 * 60 * 1000,
 ): Promise<CommandResult> {
+  const startMs = Date.now()
   const proc = spawn(args[0]!, args.slice(1), {
     cwd: workDir,
     env: {
@@ -339,6 +357,13 @@ async function runCommand(
       TF_CLI_ARGS: "-no-color",
     },
     stdio: ["ignore", "pipe", "pipe"],
+  })
+  log("Started command", {
+    command: args.join(" "),
+    hasTfCliConfigFile: Boolean(extraEnv.TF_CLI_CONFIG_FILE),
+    noProxy: extraEnv.NO_PROXY ?? process.env.NO_PROXY ?? process.env.no_proxy ?? "",
+    hasHttpProxy: Boolean(process.env.HTTP_PROXY || process.env.http_proxy),
+    hasHttpsProxy: Boolean(process.env.HTTPS_PROXY || process.env.https_proxy),
   })
   onProcess?.(proc)
 
@@ -352,6 +377,13 @@ async function runCommand(
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null
 
   if (timeoutMs > 0) {
+    const progressInterval = setInterval(() => {
+      log("Command still running", {
+        command: args.join(" "),
+        elapsedMs: Date.now() - startMs,
+      })
+    }, 30_000)
+
     timeoutHandle = setTimeout(() => {
       timedOut = true
       output += `\n[yaffle-runner] command timed out after ${Math.floor(timeoutMs / 1000)}s\n`
@@ -369,13 +401,15 @@ async function runCommand(
         }
       }, 5000)
     }, timeoutMs)
+
+    timeoutHandle.unref?.()
+    progressInterval.unref?.()
+
+    proc.on("close", () => clearInterval(progressInterval))
   }
 
   // Stream stdout
-  const readStream = async (
-    stream: Readable,
-    source: "stdout" | "stderr",
-  ): Promise<void> => {
+  const readStream = async (stream: Readable, source: "stdout" | "stderr"): Promise<void> => {
     stream.setEncoding("utf8")
     for await (const value of stream) {
       const chunk = typeof value === "string" ? value : value.toString("utf8")
@@ -390,10 +424,7 @@ async function runCommand(
     }
   }
 
-  await Promise.all([
-    readStream(proc.stdout, "stdout"),
-    readStream(proc.stderr, "stderr"),
-  ])
+  await Promise.all([readStream(proc.stdout, "stdout"), readStream(proc.stderr, "stderr")])
 
   const exitCode = await new Promise<number>((resolvePromise, reject) => {
     proc.on("error", reject)
@@ -419,7 +450,9 @@ async function runCommand(
  * Parse plan summary from terraform plan output.
  */
 function parsePlanSummary(output: string): string {
-  const planMatch = output.match(/Plan:\s*(\d+)\s*to add,\s*(\d+)\s*to change,\s*(\d+)\s*to destroy/i)
+  const planMatch = output.match(
+    /Plan:\s*(\d+)\s*to add,\s*(\d+)\s*to change,\s*(\d+)\s*to destroy/i,
+  )
   if (planMatch) {
     const [, add, change, destroy] = planMatch
     return `+${add}, ~${change}, -${destroy}`

@@ -63,6 +63,7 @@ locals {
   _core = local.is_preview ? module.nonprod[0] : module.main[0]
 
   vpc_id             = local._core.vpc_id
+  vpc_cidr_block     = local._core.vpc_cidr_block
   public_subnet_ids  = local._core.public_subnet_ids
   private_subnet_ids = local._core.private_subnet_ids
   ecs_cluster_arn    = local._core.ecs_cluster_arn

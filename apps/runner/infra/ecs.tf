@@ -102,7 +102,7 @@ resource "aws_ecs_task_definition" "runner" {
           ], var.tailscale_enabled ? [
           { name = "HTTP_PROXY", value = "http://127.0.0.1:1055" },
           { name = "HTTPS_PROXY", value = "http://127.0.0.1:1055" },
-          { name = "NO_PROXY", value = "127.0.0.1,localhost,169.254.169.254,169.254.170.2" },
+          { name = "NO_PROXY", value = "*" },
         ] : [])
 
         logConfiguration = {

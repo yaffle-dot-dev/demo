@@ -14,7 +14,7 @@ module "shared" {
 
 data "aws_ssm_parameter" "tailscale_layer_arn" {
   count = var.tailscale_enabled && local.tailscale_layer_ssm_parameter_arn != null ? 1 : 0
-  name  = split(":parameter", local.tailscale_layer_ssm_parameter_arn)[1]
+  name  = local.tailscale_layer_ssm_parameter_arn != null ? split(":parameter", local.tailscale_layer_ssm_parameter_arn)[1] : "/unused"
 }
 
 # -----------------------------------------------------------------------------
