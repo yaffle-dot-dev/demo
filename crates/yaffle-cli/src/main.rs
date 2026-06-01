@@ -596,6 +596,96 @@ fn run_remote_converge_for_tui(
     }
 }
 
+fn follow_existing_remote_converge_for_tui(
+    run_group_id: String,
+    tx: mpsc::Sender<ConvergeTuiEvent>,
+) -> Result<CloudRemoteConvergeStatus, String> {
+    let principal = load_account_cloud_principal_for_tui()?;
+
+    poll_remote_converge_for_tui(&principal, &run_group_id, tx)
+}
+
+fn follow_remote_converge_from_inventory_for_tui(
+    repo_full_name: String,
+    environment_name: String,
+    environment_kind: String,
+    tx: mpsc::Sender<ConvergeTuiEvent>,
+) -> Result<CloudRemoteConvergeStatus, String> {
+    let principal = load_account_cloud_principal_for_tui()?;
+
+    loop {
+        let inventory = get_cloud_cli_inventory(&principal, &repo_full_name)
+            .map_err(|error| error.friendly_message())?;
+        if let Some(run_group_id) =
+            active_run_group_id_from_inventory(&inventory, &environment_name, &environment_kind)
+        {
+            return poll_remote_converge_for_tui(&principal, &run_group_id, tx);
+        }
+
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn poll_remote_converge_for_tui(
+    principal: &StoredPrincipalCredential,
+    run_group_id: &str,
+    tx: mpsc::Sender<ConvergeTuiEvent>,
+) -> Result<CloudRemoteConvergeStatus, String> {
+    loop {
+        let snapshot = get_cloud_remote_converge_status(principal, run_group_id)
+            .map_err(|error| error.friendly_message())?;
+        let _ = tx.send(ConvergeTuiEvent::RemoteStatus(snapshot.clone()));
+
+        if remote_status_terminal(&snapshot.run_group.status) {
+            return Ok(snapshot);
+        }
+
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn active_run_group_id_from_inventory(
+    inventory: &CloudCliInventory,
+    environment_name: &str,
+    environment_kind: &str,
+) -> Option<String> {
+    inventory
+        .environments
+        .iter()
+        .find(|environment| {
+            environment.environment_name == environment_name
+                && environment.environment_kind == environment_kind
+        })
+        .and_then(|environment| environment.active_run_group_id.clone())
+}
+
+fn load_account_cloud_principal_for_tui() -> Result<StoredPrincipalCredential, String> {
+    let status = load_local_cloud_auth_status()
+        .map_err(|error| format!("Failed to read Yaffle Cloud auth state: {error}"))?;
+    if status.expired {
+        return Err(
+            "Your Yaffle Cloud account session has expired. Run `yaffle cloud login` again."
+                .to_string(),
+        );
+    }
+
+    let Some(principal) = status.stored_principal else {
+        return Err("Yaffle Cloud run attachment requires `yaffle cloud login`.".to_string());
+    };
+
+    if principal.principal_type != StoredPrincipalType::Account {
+        return Err("Yaffle Cloud run attachment requires an account-backed session.".to_string());
+    }
+
+    if !local_first_feature_token_configured() {
+        return Err(
+            "Yaffle Cloud run attachment requires `YAFFLE_LOCAL_FIRST_FEATURE_TOKEN`.".to_string(),
+        );
+    }
+
+    Ok(principal)
+}
+
 fn maybe_print_remote_snapshot(
     previous: Option<&CloudRemoteConvergeStatus>,
     current: &CloudRemoteConvergeStatus,
@@ -1898,6 +1988,140 @@ fn phase_label(phase: &ConvergeWorkspacePhase) -> &'static str {
     }
 }
 
+fn selected_remote_run<'a>(
+    detail: &'a LocalEnvironmentDetailState,
+    run_type: &str,
+) -> Option<&'a CloudRemoteLatestRunSummary> {
+    let deployment = selected_remote_deployment(detail)?;
+
+    deployment
+        .runs
+        .iter()
+        .find(|run| run.run_type == run_type)
+        .or_else(|| {
+            deployment
+                .latest_run
+                .as_ref()
+                .filter(|run| run.run_type == run_type)
+        })
+}
+
+fn selected_remote_deployment(
+    detail: &LocalEnvironmentDetailState,
+) -> Option<&yaffle_engine::CloudRemoteDeploymentStatus> {
+    let selected = detail.selected_workspace_path()?;
+    detail
+        .active_run
+        .as_ref()?
+        .last_remote_status
+        .as_ref()?
+        .deployments
+        .iter()
+        .find(|deployment| deployment.workspace_path == selected)
+}
+
+fn selected_remote_latest_run(
+    detail: &LocalEnvironmentDetailState,
+) -> Option<&CloudRemoteLatestRunSummary> {
+    let selected = detail.selected_workspace_path()?;
+    detail
+        .active_run
+        .as_ref()?
+        .last_remote_status
+        .as_ref()?
+        .deployments
+        .iter()
+        .find(|deployment| deployment.workspace_path == selected)
+        .and_then(|deployment| deployment.latest_run.as_ref())
+}
+
+fn append_log_output_lines(body_lines: &mut Vec<Line>, output: &str, limit: usize) {
+    let lines = output.lines().collect::<Vec<_>>();
+    let start = lines.len().saturating_sub(limit);
+
+    if start > 0 {
+        body_lines.push(Line::from(format!(
+            "... {} earlier log line(s) omitted",
+            start
+        )));
+    }
+
+    for line in lines.iter().skip(start) {
+        body_lines.push(Line::from((*line).to_string()));
+    }
+}
+
+fn render_active_run_stream_lines(
+    detail: &LocalEnvironmentDetailState,
+    tab_run_type: &str,
+) -> Option<Vec<Line>> {
+    let run = detail.active_run.as_ref()?;
+    let (progress, _running) = detail.running_summary()?;
+    let mut body_lines = Vec::new();
+
+    if run.execution_location == TuiExecutionLocation::Remote {
+        let latest_run = selected_remote_latest_run(detail);
+        let Some(tab_run) = selected_remote_run(detail, tab_run_type) else {
+            body_lines.push(Line::from(progress.detail.clone()));
+            if let Some(latest_run) = latest_run {
+                body_lines.push(Line::from(format!(
+                    "Latest cloud run is {} {}.",
+                    latest_run.run_type, latest_run.status
+                )));
+            } else {
+                body_lines.push(Line::from("Waiting for Yaffle Cloud run metadata."));
+            }
+            return Some(body_lines);
+        };
+
+        if tab_run_type == "plan" {
+            if let Some(summary) = tab_run.plan_summary.as_deref() {
+                body_lines.push(Line::from(format!("Plan summary: {summary}")));
+                body_lines.push(Line::from(""));
+            }
+        }
+
+        if let Some(message) = tab_run.error_message.as_deref() {
+            body_lines.push(Line::from(message.to_string()));
+            body_lines.push(Line::from(""));
+        }
+
+        if let Some(output) = tab_run
+            .log_output
+            .as_deref()
+            .filter(|output| !output.trim().is_empty())
+        {
+            append_log_output_lines(&mut body_lines, output, 200);
+        } else if body_lines.is_empty() {
+            body_lines.push(Line::from(format!(
+                "Waiting for {} output from Yaffle Cloud.",
+                tab_run_type
+            )));
+        }
+
+        return Some(body_lines);
+    }
+
+    body_lines.push(Line::from(progress.detail.clone()));
+    if let Some(message) = &progress.failure_message {
+        body_lines.push(Line::from(""));
+        body_lines.push(Line::from(message.clone()));
+    }
+
+    let logs = detail.selected_workspace_log_lines();
+    if logs.is_empty() {
+        body_lines.push(Line::from(""));
+        body_lines.push(Line::from("Waiting for OpenTofu output."));
+    } else {
+        body_lines.push(Line::from(""));
+        for log in logs {
+            body_lines.push(render_workspace_log_line(log));
+        }
+    }
+
+    Some(body_lines)
+}
+
 fn remote_workspace_state(status: &str) -> WorkspaceRunState {
     match status {
         "success" | "skipped" => WorkspaceRunState::Succeeded,
@@ -1963,6 +2187,7 @@ enum TuiCapabilityMode {
     AnonymousLocal,
     AccountLocal,
     AccountRemote,
+    AccountUnavailable,
 }
 
 impl TuiCapabilityMode {
@@ -1971,13 +2196,14 @@ impl TuiCapabilityMode {
             Self::AnonymousLocal => "anonymousLocal",
             Self::AccountLocal => "accountLocal",
             Self::AccountRemote => "accountRemote",
+            Self::AccountUnavailable => "accountUnavailable",
         }
     }
 
     fn execution_location(self) -> TuiExecutionLocation {
         match self {
             Self::AnonymousLocal | Self::AccountLocal => TuiExecutionLocation::Local,
-            Self::AccountRemote => TuiExecutionLocation::Remote,
+            Self::AccountRemote | Self::AccountUnavailable => TuiExecutionLocation::Remote,
         }
     }
 }
@@ -2024,6 +2250,7 @@ struct LocalEnvironmentEntry {
     repo: Option<String>,
     origin: Option<String>,
     status: Option<String>,
+    active_run_group_id: Option<String>,
     head_sha: Option<String>,
     updated_at: Option<String>,
     actor: Option<String>,
@@ -2062,6 +2289,7 @@ enum DetailTab {
 #[derive(Debug)]
 struct LocalEnvironmentDetailState {
     environment_name: String,
+    execution_location: TuiExecutionLocation,
     graph: ResolvedWorkspaceGraph,
     dag_nodes: Vec<EnvironmentDagNode>,
     levels: Vec<Vec<String>>,
@@ -2119,7 +2347,7 @@ impl LocalAppState {
     fn load(working_dir: &Path) -> Result<Self, CliFailure> {
         let (repo_root, config) = load_local_config_context(working_dir)?;
         let capability = resolve_tui_capability(&repo_root);
-        let environments = discover_tui_environments(&repo_root, &config, &capability);
+        let environments = discover_tui_environments(&repo_root, &config, &capability)?;
 
         Ok(Self {
             repo_root,
@@ -2155,7 +2383,12 @@ impl LocalAppState {
                 )
             })?;
 
-        let mut detail = load_environment_detail(&self.repo_root, &self.config, environment_name)?;
+        let mut detail = load_environment_detail(
+            &self.repo_root,
+            &self.config,
+            environment_name,
+            self.capability.mode.execution_location(),
+        )?;
         for workspace in &request.selection.workspaces {
             detail.selected_workspaces.insert(workspace.clone());
         }
@@ -2168,6 +2401,17 @@ impl LocalAppState {
     fn start_converge_in_place(&mut self, request: EngineRequest) -> Result<(), CliFailure> {
         if self.capability.mode == TuiCapabilityMode::AccountRemote {
             return self.start_remote_converge_in_place(request);
+        }
+
+        if self.capability.mode == TuiCapabilityMode::AccountUnavailable {
+            return Err(command_error(
+                false,
+                Some(EngineOperation::Converge),
+                request.target.clone(),
+                Some(request.selection.clone()),
+                "cloud_execution_unavailable",
+                "Cloud execution is unavailable. Yaffle will not fall back to local execution while this account is in cloud mode.",
+            ));
         }
 
         self.start_local_converge_in_place(request)
@@ -2351,9 +2595,30 @@ impl LocalAppState {
                 }
             }
             TuiKey::Enter => {
-                if let Some(entry) = self.environments.get(self.selected_env_index) {
-                    let detail =
-                        load_environment_detail(&self.repo_root, &self.config, &entry.name)?;
+                if let Some(entry) = self.environments.get(self.selected_env_index).cloned() {
+                    let environment_name = entry.name.clone();
+                    let active_run_group_id = entry.active_run_group_id.clone();
+                    let detail = load_environment_detail(
+                        &self.repo_root,
+                        &self.config,
+                        &environment_name,
+                        self.capability.mode.execution_location(),
+                    )?;
+                    let mut detail = detail;
+                    if self.capability.mode == TuiCapabilityMode::AccountRemote {
+                        if let Some(run_group_id) = active_run_group_id {
+                            attach_existing_remote_converge(&mut detail, run_group_id);
+                        } else if environment_entry_is_in_progress(&entry) {
+                            if let Some(repo_full_name) = self.capability.repo_full_name.clone() {
+                                attach_pending_remote_converge(
+                                    &mut detail,
+                                    repo_full_name,
+                                    environment_name,
+                                    entry.kind.clone(),
+                                );
+                            }
+                        }
+                    }
                     self.detail = Some(detail);
                     self.view = ShellView::EnvironmentDetail;
                     self.footer_message = "Environment detail".to_string();
@@ -2419,6 +2684,85 @@ impl LocalAppState {
 
         Ok(None)
     }
+}
+
+fn attach_existing_remote_converge(detail: &mut LocalEnvironmentDetailState, run_group_id: String) {
+    detail.focus = ShellFocus::Graph;
+    detail.tab = DetailTab::Plan;
+    detail.selected_workspaces.clear();
+    detail.follow_running_workspace = true;
+
+    let (tx, rx) = mpsc::channel::<ConvergeTuiEvent>();
+    let run_group_id_for_worker = run_group_id.clone();
+    thread::spawn(move || {
+        let result = follow_existing_remote_converge_for_tui(run_group_id_for_worker, tx.clone());
+        let _ = tx.send(ConvergeTuiEvent::RemoteFinished(result));
+    });
+
+    let mut progress = ConvergeTuiState::new(detail.environment_name.clone());
+    progress.summary = "Remote converge in progress".to_string();
+    progress.detail = format!("Joining Yaffle Cloud run group {run_group_id}.");
+    detail.active_run = Some(ActiveConvergeRun {
+        execution_location: TuiExecutionLocation::Remote,
+        progress,
+        rx,
+        running: true,
+        last_response: None,
+        last_error: None,
+        last_remote_status: None,
+    });
+    detail.status_response = None;
+    detail.status_error = None;
+    detail.status_loading = false;
+    detail.status_rx = None;
+    detail.outputs_response = None;
+    detail.outputs_error = None;
+    detail.outputs_loading = false;
+    detail.outputs_rx = None;
+}
+
+fn attach_pending_remote_converge(
+    detail: &mut LocalEnvironmentDetailState,
+    repo_full_name: String,
+    environment_name: String,
+    environment_kind: String,
+) {
+    detail.focus = ShellFocus::Graph;
+    detail.tab = DetailTab::Plan;
+    detail.selected_workspaces.clear();
+    detail.follow_running_workspace = true;
+
+    let (tx, rx) = mpsc::channel::<ConvergeTuiEvent>();
+    thread::spawn(move || {
+        let result = follow_remote_converge_from_inventory_for_tui(
+            repo_full_name,
+            environment_name,
+            environment_kind,
+            tx.clone(),
+        );
+        let _ = tx.send(ConvergeTuiEvent::RemoteFinished(result));
+    });
+
+    let mut progress = ConvergeTuiState::new(detail.environment_name.clone());
+    progress.summary = "Remote converge in progress".to_string();
+    progress.detail = "Locating the active Yaffle Cloud run for this environment.".to_string();
+    detail.active_run = Some(ActiveConvergeRun {
+        execution_location: TuiExecutionLocation::Remote,
+        progress,
+        rx,
+        running: true,
+        last_response: None,
+        last_error: None,
+        last_remote_status: None,
+    });
+    detail.status_response = None;
+    detail.status_error = None;
+    detail.status_loading = false;
+    detail.status_rx = None;
+    detail.outputs_response = None;
+    detail.outputs_error = None;
+    detail.outputs_loading = false;
+    detail.outputs_rx = None;
 }
 
 impl LocalEnvironmentDetailState {
@@ -2689,6 +3033,10 @@ impl LocalEnvironmentDetailState {
     }
 
     fn load_selected_tab_if_needed(&mut self, repo_root: &Path) {
+        if self.execution_location == TuiExecutionLocation::Remote {
+            return;
+        }
+
         match self.tab {
             DetailTab::Apply => self.start_status_load_if_needed(repo_root),
             DetailTab::Outputs => self.start_outputs_load_if_needed(repo_root),
@@ -2808,6 +3156,10 @@ impl LocalEnvironmentDetailState {
     }
 
     fn reload_selected_tab(&mut self, repo_root: &Path) -> Result<(), CliFailure> {
+        if self.execution_location == TuiExecutionLocation::Remote {
+            return Ok(());
+        }
+
         match self.tab {
             DetailTab::Apply => {
                 self.status_response = None;
@@ -2846,6 +3198,10 @@ impl LocalEnvironmentDetailState {
     }
 
     fn start_status_load_if_needed(&mut self, repo_root: &Path) {
+        if self.execution_location == TuiExecutionLocation::Remote {
+            return;
+        }
+
         if self.status_response.is_some() || self.status_error.is_some() || self.status_loading {
             return;
         }
@@ -2905,6 +3261,10 @@ impl LocalEnvironmentDetailState {
     }
 
     fn start_outputs_load_if_needed(&mut self, repo_root: &Path) {
+        if self.execution_location == TuiExecutionLocation::Remote {
+            return;
+        }
+
         if self.outputs_response.is_some() || self.outputs_error.is_some() || self.outputs_loading {
             return;
         }
@@ -3049,6 +3409,7 @@ struct EnvironmentDetailSnapshot {
     governance_line: String,
     focus: &'static str,
     running: bool,
+    run_footer: String,
     tabs: Vec<DetailTabSnapshot>,
     detail_header_lines: Vec<Line>,
     detail_body_lines: Vec<Line>,
@@ -3084,6 +3445,7 @@ struct EnvironmentGraphNodeSnapshot {
 #[serde(rename_all = "camelCase")]
 struct SelectedWorkspaceSnapshot {
     path: String,
+    status: String,
     run_state: String,
     current_phase: String,
     materialization: String,
@@ -3182,6 +3544,7 @@ fn render_cloud_status_snapshot(capability: &TuiCapability) -> CloudStatusSnapsh
         StoredPrincipalType::Account => CloudStatusSnapshot {
             kind: match capability.mode {
                 TuiCapabilityMode::AccountRemote => "paid",
+                TuiCapabilityMode::AccountUnavailable => "unavailable",
                 _ => "free",
             },
             label: capability.label.clone(),
@@ -3257,6 +3620,7 @@ fn render_environment_detail_snapshot(
             ShellFocus::Detail => "detail",
         },
         running,
+        run_footer: environment_detail_run_footer(detail),
         tabs: render_detail_tabs(detail.tab),
         detail_header_lines: detail_content.header_lines,
         detail_body_lines: detail_content.body_lines,
@@ -3292,6 +3656,85 @@ fn render_detail_mode_line(
             progress.summary
         ),
         None => format!("{} • review", execution_location.label()),
+    }
+}
+
+fn environment_detail_run_footer(detail: &LocalEnvironmentDetailState) -> String {
+    let Some(run) = detail.active_run.as_ref() else {
+        return String::new();
+    };
+
+    if !run.running {
+        return run.progress.summary.clone();
+    }
+
+    let status_counts = run
+        .progress
+        .workspaces
+        .iter()
+        .map(|workspace| workspace_status_footer_label(workspace))
+        .fold(
+            std::collections::BTreeMap::<&'static str, usize>::new(),
+            |mut counts, status| {
+                *counts.entry(status).or_default() += 1;
+                counts
+            },
+        );
+
+    if status_counts.is_empty() {
+        return run.progress.detail.clone();
+    }
+
+    let order = [
+        "applying",
+        "planning",
+        "activating",
+        "recording",
+        "collecting outputs",
+        "publishing outputs",
+        "running",
+        "pending",
+        "converged",
+        "failed",
+    ];
+    let mut parts = Vec::new();
+    for status in order {
+        if let Some(count) = status_counts.get(status) {
+            parts.push(format!("{count} {status}"));
+        }
+    }
+    for (status, count) in status_counts {
+        if !order.contains(&status) {
+            parts.push(format!("{count} {status}"));
+        }
+    }
+
+    let prefix = match run.execution_location {
+        TuiExecutionLocation::Remote => "cloud converge",
+        TuiExecutionLocation::Local => "local converge",
+    };
+    format!("{prefix}: {}", parts.join(" · "))
+}
+
+fn workspace_status_footer_label(workspace: &WorkspaceConvergeView) -> &'static str {
+    if workspace.state == WorkspaceRunState::Failed {
+        return "failed";
+    }
+
+    match workspace.phase.as_ref() {
+        Some(ConvergeWorkspacePhase::PreparingAuth) => "pending",
+        Some(ConvergeWorkspacePhase::InitializingTofu) => "planning",
+        Some(ConvergeWorkspacePhase::ApplyingTofu) => "applying",
+        Some(ConvergeWorkspacePhase::RecordingState) => "recording",
+        Some(ConvergeWorkspacePhase::CollectingOutputs) => "collecting outputs",
+        Some(ConvergeWorkspacePhase::PublishingOutputs) => "publishing outputs",
+        Some(ConvergeWorkspacePhase::Completed) => "converged",
+        None => match workspace.state {
+            WorkspaceRunState::Pending => "pending",
+            WorkspaceRunState::Running => "running",
+            WorkspaceRunState::Succeeded => "converged",
+            WorkspaceRunState::Failed => "failed",
+        },
     }
 }
 
@@ -3375,6 +3818,7 @@ fn render_selected_workspace_snapshot(
 
     Some(SelectedWorkspaceSnapshot {
         path: workspace_path.clone(),
+        status: selected_workspace_status_label(active).to_string(),
         run_state: active
             .map(|(state, _)| workspace_run_state_label(state).to_string())
             .unwrap_or_else(|| "not running".to_string()),
@@ -3406,6 +3850,34 @@ fn workspace_run_state_label(state: WorkspaceRunState) -> &'static str {
         WorkspaceRunState::Running => "running",
         WorkspaceRunState::Succeeded => "converged",
         WorkspaceRunState::Failed => "failed",
+    }
+}
+
+fn selected_workspace_status_label(
+    active: Option<(WorkspaceRunState, Option<&ConvergeWorkspacePhase>)>,
+) -> &'static str {
+    let Some((state, phase)) = active else {
+        return "idle";
+    };
+
+    if state == WorkspaceRunState::Failed {
+        return "failed";
+    }
+
+    match phase {
+        Some(ConvergeWorkspacePhase::PreparingAuth) => "pending",
+        Some(ConvergeWorkspacePhase::InitializingTofu) => "planning",
+        Some(ConvergeWorkspacePhase::ApplyingTofu) => "applying",
+        Some(ConvergeWorkspacePhase::RecordingState) => "recording",
+        Some(ConvergeWorkspacePhase::CollectingOutputs) => "collecting outputs",
+        Some(ConvergeWorkspacePhase::PublishingOutputs) => "publishing outputs",
+        Some(ConvergeWorkspacePhase::Completed) => "converged",
+        None => match state {
+            WorkspaceRunState::Pending => "pending",
+            WorkspaceRunState::Running => "running",
+            WorkspaceRunState::Succeeded => "converged",
+            WorkspaceRunState::Failed => "failed",
+        },
     }
 }
 
@@ -3463,6 +3935,10 @@ fn environment_detail_footer(detail: &LocalEnvironmentDetailState) -> &'static s
 
 fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> DetailPanelContent {
     let selected = detail.selected_node_title();
+    if let Some(remote_panel) = render_remote_environment_detail_panel(detail) {
+        return remote_panel;
+    }
+
     match detail.tab {
         DetailTab::Overview => {
             let header_lines = vec![
@@ -3527,6 +4003,13 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
             }
         }
         DetailTab::Plan => {
+            if let Some(body_lines) = render_active_run_stream_lines(detail, "plan") {
+                return DetailPanelContent {
+                    header_lines: Vec::new(),
+                    body_lines,
+                };
+            }
+
             let target_summary = summarize_selected_workspaces(detail);
             let header_lines = vec![
                 Line::from(format!("Selected node: {selected}")),
@@ -3581,50 +4064,11 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
                     };
                 }
             }
-            if let Some((progress, running)) = detail.running_summary() {
-                let workspace_run_state =
-                    detail.selected_workspace_path().and_then(|workspace_path| {
-                        detail.active_run_status_for_workspace(workspace_path)
-                    });
-                header_lines.push(Line::from(format!(
-                    "Environment run: {}",
-                    if running { "running" } else { "finished" }
-                )));
-                if let Some((workspace_state, workspace_phase)) = workspace_run_state {
-                    header_lines.push(Line::from(format!(
-                        "Workspace state: {}",
-                        match workspace_state {
-                            WorkspaceRunState::Pending => "waiting",
-                            WorkspaceRunState::Running => "running",
-                            WorkspaceRunState::Succeeded => "converged",
-                            WorkspaceRunState::Failed => "failed",
-                        }
-                    )));
-                    header_lines.push(Line::from(format!(
-                        "Current phase: {}",
-                        workspace_phase.map(phase_label).unwrap_or("not started")
-                    )));
-                }
-                let mut body_lines = vec![Line::from(progress.detail.clone())];
-                if let Some(message) = &progress.failure_message {
-                    body_lines.push(Line::from(""));
-                    body_lines.push(Line::from(message.clone()));
-                }
-                if !detail.selected_workspace_log_lines().is_empty() {
-                    body_lines.push(Line::from(""));
-                    body_lines.push(Line::from("Recent activity:"));
-                    for log in detail
-                        .selected_workspace_log_lines()
-                        .iter()
-                        .rev()
-                        .take(8)
-                        .rev()
-                    {
-                        body_lines.push(render_workspace_log_line(log));
-                    }
-                }
+            if let Some((progress, _running)) = detail.running_summary() {
+                let body_lines = render_active_run_stream_lines(detail, "apply")
+                    .unwrap_or_else(|| vec![Line::from(progress.detail.clone())]);
                 return DetailPanelContent {
-                    header_lines,
+                    header_lines: Vec::new(),
                     body_lines,
                 };
             }
@@ -3822,6 +4266,41 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
             ];
             let mut body_lines = Vec::new();
             if let Some(run) = detail.active_run.as_ref() {
+                if let Some(deployment) = selected_remote_deployment(detail) {
+                    body_lines.push(Line::from(format!(
+                        "Cloud deployment: {}",
+                        deployment.status
+                    )));
+                    if deployment.runs.is_empty() {
+                        body_lines.push(Line::from("Waiting for cloud run records."));
+                    } else {
+                        body_lines.push(Line::from(""));
+                        for remote_run in &deployment.runs {
+                            let summary = remote_run
+                                .plan_summary
+                                .as_deref()
+                                .or(remote_run.error_message.as_deref())
+                                .map(|value| format!(" • {value}"))
+                                .unwrap_or_default();
+                            body_lines.push(Line::from(format!(
+                                "{}: {}{}",
+                                remote_run.run_type, remote_run.status, summary
+                            )));
+                        }
+                    }
+                    return DetailPanelContent {
+                        header_lines: Vec::new(),
+                        body_lines,
+                    };
+                }
+                if run.execution_location == TuiExecutionLocation::Remote {
+                    body_lines.push(Line::from(run.progress.detail.clone()));
+                    body_lines.push(Line::from("Waiting for cloud run records."));
+                    return DetailPanelContent {
+                        header_lines: Vec::new(),
+                        body_lines,
+                    };
+                }
                 if let Some((state, phase)) =
                     detail.active_run_status_for_workspace(selected_workspace_path)
                 {
@@ -3858,6 +4337,104 @@ fn render_environment_detail_panel(detail: &LocalEnvironmentDetailState) -> Deta
             }
         }
     }
+}
+
+fn render_remote_environment_detail_panel(
+    detail: &LocalEnvironmentDetailState,
+) -> Option<DetailPanelContent> {
+    if detail.execution_location != TuiExecutionLocation::Remote {
+        return None;
+    }
+
+    let body_lines = match detail.tab {
+        DetailTab::Plan => render_active_run_stream_lines(detail, "plan")
+            .unwrap_or_else(|| remote_no_active_run_lines("plan")),
+        DetailTab::Apply => render_active_run_stream_lines(detail, "apply")
+            .unwrap_or_else(|| remote_no_active_run_lines("apply")),
+        DetailTab::Runs => render_remote_runs_lines(detail),
+        DetailTab::Overview => render_remote_overview_lines(detail),
+        DetailTab::Outputs => vec![Line::from(
+            "Cloud outputs are recorded by Yaffle Cloud. Local output loading is disabled in cloud execution mode.",
+        )],
+        DetailTab::Activation | DetailTab::Verification => vec![Line::from(
+            "Lifecycle state is managed by Yaffle Cloud. Local status loading is disabled in cloud execution mode.",
+        )],
+    };
+
+    Some(DetailPanelContent {
+        header_lines: Vec::new(),
+        body_lines,
+    })
+}
+
+fn render_remote_overview_lines(detail: &LocalEnvironmentDetailState) -> Vec<Line> {
+    let mut body_lines = Vec::new();
+    if let Some(deployment) = selected_remote_deployment(detail) {
+        body_lines.push(Line::from(format!(
+            "Cloud deployment: {}",
+            deployment.status
+        )));
+        if let Some(latest_run) = deployment.latest_run.as_ref() {
+            body_lines.push(Line::from(format!(
+                "Latest run: {} {}",
+                latest_run.run_type, latest_run.status
+            )));
+        }
+        return body_lines;
+    }
+
+    if let Some(run) = detail.active_run.as_ref() {
+        body_lines.push(Line::from(run.progress.detail.clone()));
+        body_lines.push(Line::from("Waiting for cloud run records."));
+        return body_lines;
+    }
+
+    remote_no_active_run_lines("overview")
+}
+
+fn render_remote_runs_lines(detail: &LocalEnvironmentDetailState) -> Vec<Line> {
+    let mut body_lines = Vec::new();
+    if let Some(deployment) = selected_remote_deployment(detail) {
+        body_lines.push(Line::from(format!(
+            "Cloud deployment: {}",
+            deployment.status
+        )));
+        if deployment.runs.is_empty() {
+            body_lines.push(Line::from("Waiting for cloud run records."));
+        } else {
+            body_lines.push(Line::from(""));
+            for remote_run in &deployment.runs {
+                let summary = remote_run
+                    .plan_summary
+                    .as_deref()
+                    .or(remote_run.error_message.as_deref())
+                    .map(|value| format!(" • {value}"))
+                    .unwrap_or_default();
+                body_lines.push(Line::from(format!(
+                    "{}: {}{}",
+                    remote_run.run_type, remote_run.status, summary
+                )));
+            }
+        }
+        return body_lines;
+    }
+
+    if let Some(run) = detail.active_run.as_ref() {
+        body_lines.push(Line::from(run.progress.detail.clone()));
+        body_lines.push(Line::from("Waiting for cloud run records."));
+        return body_lines;
+    }
+
+    remote_no_active_run_lines("runs")
+}
+
+fn remote_no_active_run_lines(tab: &str) -> Vec<Line> {
+    vec![
+        Line::from("No active Yaffle Cloud run is attached for this environment."),
+        Line::from(format!(
+            "The {tab} tab will show cloud data when a remote converge is running."
+        )),
+    ]
 }
 
 fn summarize_selected_workspaces(detail: &LocalEnvironmentDetailState) -> String {
@@ -4229,6 +4806,7 @@ fn load_environment_detail(
     repo_root: &Path,
     config: &yaffle_config::YaffleConfig,
     environment_name: &str,
+    execution_location: TuiExecutionLocation,
 ) -> Result<LocalEnvironmentDetailState, CliFailure> {
     let current_namespace = infer_repo_namespace(repo_root);
     let graph = resolve_workspace_graph(
@@ -4263,6 +4841,7 @@ fn load_environment_detail(
 
     Ok(LocalEnvironmentDetailState {
         environment_name: environment_name.to_string(),
+        execution_location,
         graph,
         dag_nodes,
         levels,
@@ -4375,9 +4954,9 @@ fn resolve_tui_capability(repo_root: &Path) -> TuiCapability {
 
     let Some(repo_full_name) = try_infer_repo_full_name_for_tui(repo_root) else {
         return TuiCapability {
-            mode: TuiCapabilityMode::AccountLocal,
-            label: "Free cloud".to_string(),
-            detail: "Cloud account connected.".to_string(),
+            mode: TuiCapabilityMode::AccountUnavailable,
+            label: "Cloud unavailable".to_string(),
+            detail: "Cloud account connected, but this repository could not be resolved. Local fallback is disabled.".to_string(),
             repo_full_name: None,
             action_label: None,
             action_url: None,
@@ -4386,9 +4965,9 @@ fn resolve_tui_capability(repo_root: &Path) -> TuiCapability {
 
     if !local_first_feature_token_configured() {
         return TuiCapability {
-            mode: TuiCapabilityMode::AccountLocal,
-            label: "Free cloud".to_string(),
-            detail: "Cloud account connected.".to_string(),
+            mode: TuiCapabilityMode::AccountUnavailable,
+            label: "Cloud unavailable".to_string(),
+            detail: "Cloud account connected, but CLI cloud APIs are not configured. Local fallback is disabled.".to_string(),
             repo_full_name: Some(repo_full_name),
             action_label: None,
             action_url: None,
@@ -4420,10 +4999,13 @@ fn resolve_tui_capability(repo_root: &Path) -> TuiCapability {
                 .as_deref()
                 .and_then(cloud_web_url),
         },
-        Err(_) => TuiCapability {
-            mode: TuiCapabilityMode::AccountLocal,
-            label: "Free cloud".to_string(),
-            detail: "Cloud account connected.".to_string(),
+        Err(error) => TuiCapability {
+            mode: TuiCapabilityMode::AccountUnavailable,
+            label: "Cloud unavailable".to_string(),
+            detail: format!(
+                "Cloud account connected, but capabilities could not be loaded. Local fallback is disabled: {}",
+                error.friendly_message(),
+            ),
             repo_full_name: Some(repo_full_name),
             action_label: None,
             action_url: None,
@@ -4464,22 +5046,52 @@ fn discover_tui_environments(
     repo_root: &Path,
     config: &yaffle_config::YaffleConfig,
     capability: &TuiCapability,
-) -> Vec<LocalEnvironmentEntry> {
+) -> Result<Vec<LocalEnvironmentEntry>, CliFailure> {
     if capability.mode == TuiCapabilityMode::AccountRemote {
-        if let Some(repo_full_name) = capability.repo_full_name.as_deref() {
-            if let Ok(status) = load_local_cloud_auth_status() {
-                if let Some(principal) = status.stored_principal {
-                    if !status.expired && principal.principal_type == StoredPrincipalType::Account {
-                        if let Ok(inventory) = get_cloud_cli_inventory(&principal, repo_full_name) {
-                            return cloud_inventory_to_environment_entries(repo_root, &inventory);
-                        }
-                    }
-                }
-            }
-        }
+        return discover_cloud_environments(repo_root, capability);
     }
 
-    discover_local_environments(repo_root, config)
+    if capability.mode == TuiCapabilityMode::AccountUnavailable {
+        return Ok(Vec::new());
+    }
+
+    Ok(discover_local_environments(repo_root, config))
+}
+
+fn discover_cloud_environments(
+    repo_root: &Path,
+    capability: &TuiCapability,
+) -> Result<Vec<LocalEnvironmentEntry>, CliFailure> {
+    let repo_full_name = capability.repo_full_name.as_deref().ok_or_else(|| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "cloud_repo_unavailable",
+            "Cloud execution is active, but this repository could not be resolved for Yaffle Cloud.",
+        )
+    })?;
+    let principal = load_account_cloud_principal_for_tui().map_err(|message| {
+        command_error(false, None, None, None, "cloud_auth_unavailable", message)
+    })?;
+    let inventory = get_cloud_cli_inventory(&principal, repo_full_name).map_err(|error| {
+        command_error(
+            false,
+            None,
+            None,
+            None,
+            "cloud_inventory_unavailable",
+            format!(
+                "Could not load Yaffle Cloud inventory for {repo_full_name}. Local execution fallback is disabled in cloud mode: {}",
+                error.friendly_message(),
+            ),
+        )
+    })?;
+
+    Ok(cloud_inventory_to_environment_entries(
+        repo_root, &inventory,
+    ))
 }
 
 fn cloud_inventory_to_environment_entries(
@@ -4501,7 +5113,11 @@ fn cloud_inventory_to_environment_entries(
             local_state_detected: local_state_envs.contains(&environment.environment_name),
             repo: Some(environment.repo.clone()),
             origin: Some(cloud_environment_origin(environment)),
-            status: Some(environment.status.clone()),
+            status: Some(environment_inventory_status(
+                &environment.status,
+                &environment.status_vector,
+            )),
+            active_run_group_id: environment.active_run_group_id.clone(),
             head_sha: Some(environment.head_sha.clone()),
             updated_at: Some(environment.updated_at.clone()),
             actor: environment.actor_login.clone(),
@@ -4548,6 +5164,39 @@ fn environment_status_vector(
         .collect()
 }
 
+fn environment_inventory_status(
+    status: &str,
+    status_vector: &[CloudCliInventoryStatusCount],
+) -> String {
+    if is_environment_active_status(status)
+        || status_vector
+            .iter()
+            .any(|item| is_environment_active_status(&item.status))
+    {
+        return "in progress".to_string();
+    }
+
+    status.replace('_', " ")
+}
+
+fn environment_entry_is_in_progress(entry: &LocalEnvironmentEntry) -> bool {
+    entry
+        .status
+        .as_deref()
+        .is_some_and(|status| is_environment_active_status(status))
+        || entry
+            .status_vector
+            .iter()
+            .any(|item| is_environment_active_status(&item.status))
+}
+
+fn is_environment_active_status(status: &str) -> bool {
+    matches!(
+        status.replace(' ', "_").as_str(),
+        "in_progress" | "planning" | "applying" | "activating" | "destroying" | "running"
+    )
+}
+
 fn discover_local_state_environment_names(repo_root: &Path) -> std::collections::BTreeSet<String> {
     let mut local_state_envs = std::collections::BTreeSet::new();
     let state_root = repo_root.join(".yaffle").join("state");
@@ -4582,6 +5231,7 @@ fn discover_local_environments(
             repo: None,
             origin: None,
             status: None,
+            active_run_group_id: None,
             head_sha: None,
             updated_at: None,
             actor: None,
@@ -4604,6 +5254,7 @@ fn discover_local_environments(
             repo: None,
             origin: None,
             status: None,
+            active_run_group_id: None,
             head_sha: None,
             updated_at: None,
             actor: None,
@@ -5641,6 +6292,10 @@ mod tests {
             "accountRemote"
         );
         assert_eq!(
+            TuiCapabilityMode::AccountUnavailable.as_snapshot_value(),
+            "accountUnavailable"
+        );
+        assert_eq!(
             TuiCapabilityMode::AnonymousLocal
                 .execution_location()
                 .as_snapshot_value(),
@@ -5654,6 +6309,12 @@ mod tests {
         );
         assert_eq!(
             TuiCapabilityMode::AccountRemote
+                .execution_location()
+                .as_snapshot_value(),
+            "remote"
+        );
+        assert_eq!(
+            TuiCapabilityMode::AccountUnavailable
                 .execution_location()
                 .as_snapshot_value(),
             "remote"
@@ -5701,6 +6362,7 @@ mod tests {
                             count: 1,
                         },
                     ],
+                    active_run_group_id: Some("run-group-active".to_string()),
                     pr_number: Some(42),
                     actor_login: Some("alex".to_string()),
                 },
@@ -5718,6 +6380,7 @@ mod tests {
                         status: "ready".to_string(),
                         count: 2,
                     }],
+                    active_run_group_id: None,
                     pr_number: None,
                     actor_login: None,
                 },
@@ -5736,6 +6399,11 @@ mod tests {
         assert_eq!(entries[1].name, "pr-42");
         assert_eq!(entries[1].kind, "transient");
         assert_eq!(entries[1].workspace_count, 3);
+        assert_eq!(entries[1].status.as_deref(), Some("in progress"));
+        assert_eq!(
+            entries[1].active_run_group_id.as_deref(),
+            Some("run-group-active")
+        );
         assert_eq!(entries[1].origin.as_deref(), Some("PR #42"));
         assert_eq!(entries[1].actor.as_deref(), Some("alex"));
         assert_eq!(

@@ -160,6 +160,8 @@ pub struct CloudCliInventoryEnvironment {
     pub workspace_count: usize,
     #[serde(default, alias = "statusVector")]
     pub status_vector: Vec<CloudCliInventoryStatusCount>,
+    #[serde(alias = "activeRunGroupId")]
+    pub active_run_group_id: Option<String>,
     #[serde(alias = "prNumber")]
     pub pr_number: Option<u64>,
     #[serde(alias = "actorLogin")]
@@ -254,6 +256,8 @@ pub struct CloudRemoteDeploymentStatus {
     pub status: String,
     #[serde(alias = "latestRun")]
     pub latest_run: Option<CloudRemoteLatestRunSummary>,
+    #[serde(default)]
+    pub runs: Vec<CloudRemoteLatestRunSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

@@ -6,7 +6,10 @@ import type { PullRequestContext, PushContext, WebhookContext } from "@yaffle/sh
 
 import { createRunGroup, findRunGroupById } from "../db/queries/run-groups.ts"
 import { findRunById, listRunsForDeployments } from "../db/queries/tf-runs.ts"
-import { findDeploymentsByRunGroup } from "../db/queries/workspace-deployments.ts"
+import {
+  findDeploymentsByRunGroup,
+  listLatestDeploymentsForOrg,
+} from "../db/queries/workspace-deployments.ts"
 import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
 import {
@@ -17,7 +20,10 @@ import { findOrgById, findOrgMembership } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { findUserById } from "../db/queries/users.ts"
 import { parseYaffleToml, type YaffleTomlConfig } from "../lib/config-toml.ts"
-import { parseEnvironmentGroupProjectionPayload } from "../lib/projections/environment-groups.ts"
+import {
+  parseEnvironmentGroupProjectionPayload,
+  type EnvironmentGroupProjectionPayload,
+} from "../lib/projections/environment-groups.ts"
 import {
   findPushTriggerEnvironment,
   getWorkspacesForEnvironment,
@@ -241,34 +247,44 @@ export function createCloudConvergeRoute(
       return c.json({ error: { code: "FORBIDDEN", message: "cloud inventory access denied" } }, 403)
     }
 
-    const rows = await listEnvironmentGroupProjections({
-      orgId: repo.orgId,
-      repo: repo.name,
-    })
-    const environments = rows.flatMap((row) => {
+    const [rows, latestDeployments] = await Promise.all([
+      listEnvironmentGroupProjections({
+        orgId: repo.orgId,
+        repo: repo.name,
+      }),
+      listLatestDeploymentsForOrg(repo.orgId),
+    ])
+    const activeRunGroupIds = activeRunGroupIdsFromDeployments(
+      latestDeployments.filter((deployment) => deployment.repo === repo.name),
+    )
+    const environments = (await Promise.all(rows.map(async (row) => {
       const payload = parseEnvironmentGroupProjectionPayload(row.payload)
       if (!payload) {
-        return []
+        return null
       }
+      const activeRunGroupId = activeRunGroupIds.get(environmentGroupKey({
+        repo: payload.repo,
+        environmentKind: payload.environmentKind,
+        environmentName: payload.environmentName,
+      })) ?? await activeRunGroupIdFromPayload(payload)
 
-      return [
-        {
-          repo: payload.repo,
-          environmentKind: payload.environmentKind,
-          environmentName: payload.environmentName,
-          sourceKind: payload.sourceKind,
-          status: payload.status,
-          ref: payload.ref,
-          headSha: payload.headSha,
-          updatedAt: payload.updatedAt,
-          workspaceCount: payload.workspaces.length,
-          statusVector: workspaceStatusVector(payload.workspaces),
-          prNumber: payload.sourceMetadata?.prNumber ?? null,
-          actorLogin:
-            payload.sourceMetadata?.authorLogin ?? latestWorkspaceAuthor(payload.workspaces),
-        },
-      ]
-    })
+      return {
+        repo: payload.repo,
+        environmentKind: payload.environmentKind,
+        environmentName: payload.environmentName,
+        sourceKind: payload.sourceKind,
+        status: environmentInventoryStatus(payload.status, payload.workspaces),
+        activeRunGroupId,
+        ref: payload.ref,
+        headSha: payload.headSha,
+        updatedAt: payload.updatedAt,
+        workspaceCount: payload.workspaces.length,
+        statusVector: workspaceStatusVector(payload.workspaces),
+        prNumber: payload.sourceMetadata?.prNumber ?? null,
+        actorLogin:
+          payload.sourceMetadata?.authorLogin ?? latestWorkspaceAuthor(payload.workspaces),
+      }
+    }))).filter((environment): environment is NonNullable<typeof environment> => environment !== null)
 
     return c.json({
       data: {
@@ -538,7 +554,23 @@ export function createCloudConvergeRoute(
 
     const serializedDeployments = await Promise.all(
       deployments.map(async (deployment) => {
-        const latestRun = latestRuns.get(deployment.id)?.[0] ?? null
+        const serializedRuns = await Promise.all(
+          (latestRuns.get(deployment.id) ?? []).slice(0, 5).map(async (run) => {
+            const fullRun = await findRunById(run.id)
+            return {
+              id: run.id,
+              runType: run.runType,
+              status: run.status,
+              planSummary: run.planSummary,
+              errorMessage: run.errorMessage,
+              logOutput: fullRun?.logOutput ?? null,
+              createdAt: run.createdAt.toISOString(),
+              startedAt: run.startedAt?.toISOString() ?? null,
+              completedAt: run.completedAt?.toISOString() ?? null,
+            }
+          }),
+        )
+        const latestRun = serializedRuns[0] ?? null
         const workspaceLifecycleItems = lifecycleItems.filter(
           (item) => item.workspacePath === deployment.workspacePath,
         )
@@ -550,7 +582,7 @@ export function createCloudConvergeRoute(
             scopes: item.scopes,
           })),
         )
-        const base = {
+        return {
           id: deployment.id,
           workspacePath: deployment.workspacePath,
           status: deployment.status,
@@ -561,34 +593,8 @@ export function createCloudConvergeRoute(
                   conditions: serializeLifecycleConditions(workspaceLifecycleState.conditions),
                 }
               : null,
-          latestRun: latestRun
-            ? {
-                id: latestRun.id,
-                runType: latestRun.runType,
-                status: latestRun.status,
-                planSummary: latestRun.planSummary,
-                errorMessage: latestRun.errorMessage,
-                logOutput: null as string | null,
-                createdAt: latestRun.createdAt.toISOString(),
-                startedAt: latestRun.startedAt?.toISOString() ?? null,
-                completedAt: latestRun.completedAt?.toISOString() ?? null,
-              }
-            : null,
-        }
-
-        if (
-          !base.latestRun ||
-          !["failed", "system_error", "cancelled"].includes(base.latestRun.status)
-        ) {
-          return base
-        }
-        const fullRun = await findRunById(base.latestRun.id)
-        return {
-          ...base,
-          latestRun: {
-            ...base.latestRun,
-            logOutput: fullRun?.logOutput ?? null,
-          },
+          latestRun,
+          runs: serializedRuns,
         }
       }),
     )
@@ -764,6 +770,80 @@ function workspaceStatusVector<T extends { status: string }>(
   return [...counts.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([status, count]) => ({ status, count }))
+}
+
+function environmentInventoryStatus<T extends { status: string }>(
+  status: string,
+  workspaces: T[],
+): string {
+  const activeStatuses = new Set(["planning", "applying", "activating", "destroying", "running"])
+  if (status === "in_progress" || activeStatuses.has(status)) {
+    return "in_progress"
+  }
+  if (workspaces.some((workspace) => activeStatuses.has(workspace.status))) {
+    return "in_progress"
+  }
+
+  return status
+}
+
+function activeRunGroupIdsFromDeployments(
+  deployments: Array<{
+    repo: string
+    environmentKind: string
+    environmentName: string
+    status: string
+    runGroupId: string | null
+    statusChangedAt: Date
+  }>,
+): Map<string, string> {
+  const activeStatuses = new Set(["planning", "applying", "activating", "destroying", "running"])
+  const activeByEnvironment = new Map<string, { runGroupId: string; statusChangedAt: Date }>()
+
+  for (const deployment of deployments) {
+    if (!deployment.runGroupId || !activeStatuses.has(deployment.status)) {
+      continue
+    }
+
+    const key = environmentGroupKey(deployment)
+    const existing = activeByEnvironment.get(key)
+    if (!existing || deployment.statusChangedAt > existing.statusChangedAt) {
+      activeByEnvironment.set(key, {
+        runGroupId: deployment.runGroupId,
+        statusChangedAt: deployment.statusChangedAt,
+      })
+    }
+  }
+
+  return new Map([...activeByEnvironment.entries()].map(([key, value]) => [key, value.runGroupId]))
+}
+
+function environmentGroupKey(input: {
+  repo: string
+  environmentKind: string
+  environmentName: string
+}): string {
+  return `${input.repo}:${input.environmentKind}:${input.environmentName}`
+}
+
+async function activeRunGroupIdFromPayload(
+  payload: EnvironmentGroupProjectionPayload,
+): Promise<string | null> {
+  if (typeof payload.activeRunGroupId === "string" && payload.activeRunGroupId.length > 0) {
+    return payload.activeRunGroupId
+  }
+
+  const activeStatuses = new Set(["planning", "applying", "activating", "destroying", "running"])
+  const activeWorkspace = payload.workspaces
+    .filter((workspace) => activeStatuses.has(workspace.status) || activeStatuses.has(workspace.lastRunStatus ?? ""))
+    .sort((left, right) => right.headUpdatedAt.localeCompare(left.headUpdatedAt))[0]
+
+  if (!activeWorkspace?.lastRunId) {
+    return null
+  }
+
+  const run = await findRunById(activeWorkspace.lastRunId)
+  return run?.runGroupId ?? null
 }
 
 function latestWorkspaceAuthor<T extends { authorLogin: string | null }>(

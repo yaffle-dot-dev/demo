@@ -114,6 +114,7 @@ type EnvironmentDetailSnapshot = {
   governanceLine: string
   focus: "graph" | "detail"
   running: boolean
+  runFooter: string
   tabs: DetailTabSnapshot[]
   detailHeaderLines: StyledLine[]
   detailBodyLines: StyledLine[]
@@ -123,6 +124,7 @@ type EnvironmentDetailSnapshot = {
 
 type SelectedWorkspaceSnapshot = {
   path: string
+  status: string
   runState: string
   currentPhase: string
   materialization: string
@@ -143,7 +145,7 @@ type ShellSnapshot = {
 }
 
 type TuiCapabilitySnapshot = {
-  mode: "anonymousLocal" | "accountLocal" | "accountRemote"
+  mode: "anonymousLocal" | "accountLocal" | "accountRemote" | "accountUnavailable"
   executionLocation: "local" | "remote"
   label: string
   detail: string
@@ -630,7 +632,7 @@ function DetailScreen({
       <DetailPanel detail={detail} spotlight={detail.detailSpotlight} />
 
       {detail.running ? (
-        <Footer left={<ConvergeSpinner pulse={pulse} />} />
+        <Footer left={<RunFooterStatus pulse={pulse} text={detail.runFooter} />} right="? shortcuts" />
       ) : (
         <Footer left={selectedWorkspaceStatus(targetedWorkspaceCount)} right="? shortcuts" />
       )}
@@ -1686,10 +1688,27 @@ function DetailPanel({
   detail: EnvironmentDetailSnapshot
   spotlight?: boolean
 }) {
+  const contentScrollRef = useRef<ScrollBoxRenderable | null>(null)
   const visibleBody = useMemo(
     () => detail.detailBodyLines.slice(detail.detailScroll),
     [detail.detailBodyLines, detail.detailScroll],
   )
+  const selectedTab = detail.tabs.find((tab) => tab.selected)?.id ?? "overview"
+
+  useEffect(() => {
+    if (detail.running && detail.detailScroll === 0) {
+      contentScrollRef.current?.scrollTo({
+        x: 0,
+        y: Math.max(0, visibleBody.length),
+      })
+    }
+  }, [
+    detail.detailScroll,
+    detail.running,
+    detail.selectedWorkspace?.path,
+    selectedTab,
+    visibleBody.length,
+  ])
 
   return (
     <box
@@ -1704,27 +1723,32 @@ function DetailPanel({
     >
       <WorkspaceSummary workspace={detail.selectedWorkspace} />
 
-      <WorkspaceChecks workspace={detail.selectedWorkspace} />
-
       <TabRail tabs={detail.tabs} />
 
-      <box backgroundColor={PALETTE.surfaceRaised} flexDirection="column">
-        <TextLines lines={detail.detailHeaderLines} />
-      </box>
-
-      <scrollbox
+      <box
         flexGrow={1}
-        scrollY
-        rootOptions={{ backgroundColor: PALETTE.surfaceRaised }}
-        viewportOptions={{ backgroundColor: PALETTE.surfaceRaised }}
-        contentOptions={{ backgroundColor: PALETTE.surfaceRaised }}
-        scrollbarOptions={{ showArrows: false }}
+        border
+        borderStyle="rounded"
+        borderColor={PALETTE.border}
+        backgroundColor={PALETTE.surface}
+        paddingX={1}
+        flexDirection="column"
       >
-        {detail.detailScroll > 0 ? (
-          <text fg={PALETTE.muted}>↑ scrolled {detail.detailScroll} line(s)</text>
-        ) : null}
-        <TextLines lines={visibleBody} />
-      </scrollbox>
+        <scrollbox
+          ref={contentScrollRef}
+          flexGrow={1}
+          scrollY
+          rootOptions={{ backgroundColor: PALETTE.surface }}
+          viewportOptions={{ backgroundColor: PALETTE.surface }}
+          contentOptions={{ backgroundColor: PALETTE.surface }}
+          scrollbarOptions={{ showArrows: false }}
+        >
+          {detail.detailScroll > 0 ? (
+            <text fg={PALETTE.muted}>↑ scrolled {detail.detailScroll} line(s)</text>
+          ) : null}
+          <TextLines lines={visibleBody} />
+        </scrollbox>
+      </box>
     </box>
   )
 }
@@ -1742,42 +1766,38 @@ function WorkspaceSummary({
     )
   }
 
-  const runTone = statusTone(workspace.runState)
+  const runTone = statusTone(workspace.status)
 
   return (
     <box
-      backgroundColor={PALETTE.surface}
-      padding={1}
       flexDirection="row"
       justifyContent="space-between"
+      alignItems="center"
       gap={2}
     >
-      <box flexDirection="column" flexGrow={1}>
-        <text fg={PALETTE.text}>{workspace.path}</text>
-        <text fg={PALETTE.muted}>run: {workspace.runState} · phase: {workspace.currentPhase}</text>
-      </box>
-      <text fg={toneColor(runTone)}>{workspace.materialization} · {workspace.freshness}</text>
+      <text fg={PALETTE.text}>
+        <strong>{workspace.path}</strong>
+      </text>
+      <text fg={toneColor(runTone)}>status: {workspace.status}</text>
     </box>
   )
 }
 
-function WorkspaceChecks({ workspace }: { workspace: SelectedWorkspaceSnapshot | null }) {
-  if (!workspace) {
-    return null
-  }
-
-  return (
-    <text fg={PALETTE.muted}>
-      readiness: {workspace.readiness} · acceptability: {workspace.acceptability} · activation: {workspace.activation} · verification: {workspace.verification}
-    </text>
-  )
-}
-
 function TabRail({ tabs }: { tabs: DetailTabSnapshot[] }) {
-  const labels = tabs.map((tab) => (tab.selected ? `[${tab.label}]` : tab.label)).join("  ")
-
   return (
-    <text fg={PALETTE.muted}>{labels}</text>
+    <box flexDirection="row" gap={1}>
+      {tabs.map((tab) => (
+        <box
+          key={tab.id}
+          backgroundColor={tab.selected ? PALETTE.surface : PALETTE.surfaceRaised}
+          paddingX={1}
+        >
+          <text fg={tab.selected ? PALETTE.cream : PALETTE.muted}>
+            {tab.selected ? <strong>{tab.label.toLowerCase()}</strong> : tab.label.toLowerCase()}
+          </text>
+        </box>
+      ))}
+    </box>
   )
 }
 
@@ -1973,9 +1993,18 @@ function selectedWorkspaceStatus(count: number): string {
 
 function ConvergeSpinner({ pulse }: { pulse: number }) {
   return (
-    <text fg={PALETTE.amber}>
+    <text fg={PALETTE.green}>
       <strong>{spinnerFrame(pulse)}</strong>
     </text>
+  )
+}
+
+function RunFooterStatus({ pulse, text }: { pulse: number; text: string }) {
+  return (
+    <box flexDirection="row" gap={1}>
+      <ConvergeSpinner pulse={pulse} />
+      <text fg={PALETTE.muted}>{text || "joining active cloud run..."}</text>
+    </box>
   )
 }
 
@@ -2035,10 +2064,25 @@ function cloudTone(kind: CloudStatusSnapshot["kind"]): Tone {
 
 function statusTone(value: string): Tone {
   const normalized = value.toLowerCase()
+  if (normalized === "in progress" || normalized === "in_progress") {
+    return "green"
+  }
   if (normalized.includes("failed") || normalized.includes("blocked") || normalized.includes("unmet")) {
     return "red"
   }
-  if (normalized.includes("running") || normalized.includes("pending") || normalized.includes("progress")) {
+  const activeTerms = [
+    "running",
+    "pending",
+    "progress",
+    "planning",
+    "applying",
+    "activating",
+    "recording",
+    "collecting",
+    "publishing",
+    "syncing",
+  ]
+  if (activeTerms.some((term) => normalized.includes(term))) {
     return "amber"
   }
   if (normalized.includes("succeeded") || normalized.includes("success") || normalized.includes("ready") || normalized.includes("met") || normalized.includes("present")) {

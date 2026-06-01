@@ -33,6 +33,7 @@ export interface EnvironmentGroupProjectionSourceMetadata {
 
 export interface EnvironmentGroupProjectionWorkspacePayload {
   deploymentId: string
+  runGroupId: string | null
   workspacePath: string
   status: string
   stateKey: string
@@ -61,6 +62,7 @@ export interface EnvironmentGroupProjectionPayload {
   repo: string
   environmentKind: string
   environmentName: string
+  activeRunGroupId?: string | null
   sourceKind: string | null
   sourceMetadata: EnvironmentGroupProjectionSourceMetadata | null
   ref: string
@@ -96,15 +98,27 @@ function aggregateStatus(workspaces: Array<{ status: string }>): string {
     statuses.has("applying")
     || statuses.has("activating")
     || statuses.has("planning")
-    || statuses.has("pending")
-    || statuses.has("awaiting_approval")
+    || statuses.has("destroying")
   ) {
-    return "applying"
+    return "in_progress"
   }
-  if (statuses.has("destroying")) return "destroying"
   if (statuses.has("ready")) return "ready"
   if (statuses.has("destroyed")) return "destroyed"
   return "pending"
+}
+
+function activeRunGroupIdForWorkspaces(
+  workspaces: Array<{ status: string; runGroupId: string | null; headUpdatedAt: string }>,
+): string | null {
+  const activeWorkspaces = workspaces
+    .filter((workspace) => workspace.runGroupId && isActiveWorkspaceStatus(workspace.status))
+    .sort((left, right) => right.headUpdatedAt.localeCompare(left.headUpdatedAt))
+
+  return activeWorkspaces[0]?.runGroupId ?? null
+}
+
+function isActiveWorkspaceStatus(status: string): boolean {
+  return ["planning", "applying", "activating", "destroying", "running"].includes(status)
 }
 
 function getSourceMetadataForDeployment(
@@ -210,6 +224,7 @@ export async function buildEnvironmentGroupProjectionRows(params: {
 
       const workspacePayload: EnvironmentGroupProjectionWorkspacePayload = {
         deploymentId: deployment.id,
+        runGroupId: deployment.runGroupId ?? null,
         workspacePath: deployment.workspacePath,
         status: deployment.status,
         stateKey: deployment.stateKey,
@@ -244,7 +259,8 @@ export async function buildEnvironmentGroupProjectionRows(params: {
           sourceMetadata,
           ref: deployment.ref,
           headSha: deployment.headSha,
-          status: deployment.status,
+          status: aggregateStatus([workspacePayload]),
+          activeRunGroupId: activeRunGroupIdForWorkspaces([workspacePayload]),
           updatedAt: deployment.statusChangedAt.toISOString(),
           dependencyGraph,
           workspaces: [workspacePayload],
@@ -254,6 +270,7 @@ export async function buildEnvironmentGroupProjectionRows(params: {
 
       existing.workspaces.push(workspacePayload)
       existing.status = aggregateStatus(existing.workspaces)
+      existing.activeRunGroupId = activeRunGroupIdForWorkspaces(existing.workspaces)
       const candidateUpdatedAt = deployment.statusChangedAt.toISOString()
       if (candidateUpdatedAt > existing.updatedAt) {
         existing.updatedAt = candidateUpdatedAt
