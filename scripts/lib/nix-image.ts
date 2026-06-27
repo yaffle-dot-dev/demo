@@ -1,4 +1,12 @@
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
 import { exec } from "./exec"
+
+const SKOPEO_REGISTRIES_CONF = `unqualified-search-registries = ["docker.io"]
+short-name-mode = "disabled"
+`
 
 function getLastNonEmptyLine(output: string): string {
   const lines = output
@@ -34,10 +42,33 @@ export async function pushImageArchive(
   destination: string,
 ): Promise<void> {
   console.log(`Pushing ${archivePath} -> ${destination}`)
-  await exec([
-    "skopeo", "copy",
-    "--insecure-policy",
-    `docker-archive:${archivePath}`,
-    `docker://${destination}`,
-  ])
+
+  const originalHome = process.env.HOME
+  if (!originalHome) {
+    throw new Error("HOME must be set to locate container registry credentials")
+  }
+
+  const tempHome = await mkdtemp(join(tmpdir(), "yaffle-skopeo-"))
+  const containersConfigDir = join(tempHome, ".config", "containers")
+  const registriesConfigPath = join(containersConfigDir, "registries.conf")
+  await mkdir(containersConfigDir, { recursive: true })
+  await writeFile(registriesConfigPath, SKOPEO_REGISTRIES_CONF)
+
+  try {
+    await exec([
+      "skopeo",
+      "--registries-conf", registriesConfigPath,
+      "copy",
+      "--insecure-policy",
+      "--authfile", join(originalHome, ".docker", "config.json"),
+      `docker-archive:${archivePath}`,
+      `docker://${destination}`,
+    ], {
+      env: {
+        HOME: tempHome,
+      },
+    })
+  } finally {
+    await rm(tempHome, { recursive: true, force: true })
+  }
 }

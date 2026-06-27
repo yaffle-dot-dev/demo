@@ -116,7 +116,7 @@
             src = pnpmDepsSource;
             pnpm = pkgs.pnpm;
             fetcherVersion = 3;
-            hash = "sha256-D310NuSc8tyjV6P5x2VheKyFyr/L6Yw/N02WNnQbxp0=";
+            hash = "sha256-ApxFab2Rq41WomzKFu233hIvPrkEbUCsWTSrkXp7iJY=";
           };
 
           mkPnpmWorkspaceBuild = {
@@ -133,7 +133,7 @@
               inherit pnpmDeps pnpmWorkspaces;
 
               nativeBuildInputs = [
-                pkgs.nodejs_25
+                pkgs.nodejs_26
                 pkgs.pnpm
                 pkgs.pnpmConfigHook
                 pkgs.cacert
@@ -301,7 +301,7 @@
               armPkgs.git
               armPkgs.gnutar
               armPkgs.gzip
-              armPkgs.nodejs_25
+              armPkgs.nodejs_26
             ];
             pathsToLink = [ "/app" "/bin" "/etc" "/tmp" ];
           };
@@ -311,7 +311,7 @@
             paths = [
               webImageRoot
               pkgs.dockerTools.caCertificates
-              armPkgs.nodejs_25
+              armPkgs.nodejs_26
             ];
             pathsToLink = [ "/app" "/bin" "/etc" "/tmp" ];
           };
@@ -324,7 +324,7 @@
               pkgs.dockerTools.caCertificates
               armPkgs.gnutar
               armPkgs.gzip
-              armPkgs.nodejs_25
+              armPkgs.nodejs_26
             ];
             pathsToLink = [ "/app" "/bin" "/etc" "/tmp" "/usr" ];
           };
@@ -425,7 +425,7 @@
             pkgs.awscli2
             pkgs.gh
             pkgs.git
-            pkgs.nodejs_25
+            pkgs.nodejs_26
             pkgs.opentofu
             pkgs.pnpm
             repoVp
@@ -524,7 +524,7 @@
               awscli2
               gh
               git
-              nodejs_25
+              nodejs_26
               opentofu
               pnpm
               repoVp
@@ -536,7 +536,7 @@
           default = pkgs.mkShell {
             packages = with pkgs; [
               # JavaScript / TypeScript
-              nodejs_25
+              nodejs_26
               pnpm
 
               # Rust
