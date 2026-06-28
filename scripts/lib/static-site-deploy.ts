@@ -94,20 +94,20 @@ export async function loadOutputsForTarget(
   target: DeployTarget,
   wait: boolean,
 ): Promise<Record<string, unknown>> {
+  const waitOptions = wait ? { waitFor: "outputs" as const, waitTimeout: 600 } : {}
+
   if (target.type === "pr") {
     return fetchOutputs({
       workspace,
       prNumber: target.prNumber,
-      wait,
-      waitTimeout: 600,
+      ...waitOptions,
     })
   }
 
   return fetchOutputs({
     workspace,
     environment: target.name,
-    wait,
-    waitTimeout: 600,
+    ...waitOptions,
   })
 }
 

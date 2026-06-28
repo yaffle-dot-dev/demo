@@ -33,7 +33,6 @@ export default defineDeployable({
     const outputs = await fetchOutputs({
       workspace: "apps/infra",
       environment: target.environment.name,
-      wait: false,
     })
     const marketingUrl = typeof outputs.marketing_url === "string" ? outputs.marketing_url.trim() : ""
 

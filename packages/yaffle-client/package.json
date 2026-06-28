@@ -9,13 +9,15 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "vp exec tsc --noEmit"
+    "typecheck": "vp exec tsc --noEmit",
+    "test": "vp test"
   },
   "dependencies": {
     "eventsource": "^4.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
+    "@yaffle/test": "workspace:*",
     "typescript": "^5.3.3"
   }
 }

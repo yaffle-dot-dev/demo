@@ -119,7 +119,6 @@ async function resolveControlPlaneSecretOverrides(
   const controlPlaneOutputs = await fetchOutputs({
     workspace: "apps/control-plane/infra",
     environment,
-    wait: false,
   })
 
   const providerDiscoveryAgentTokenSecretArn = typeof controlPlaneOutputs.provider_discovery_agent_token_secret_arn === "string"
@@ -139,7 +138,6 @@ async function resolveControlPlaneSecretOverrides(
   const providerDiscoveryOutputs = await fetchOutputs({
     workspace: "apps/provider-discovery-agent/infra",
     environment,
-    wait: false,
   })
 
   return {
@@ -178,7 +176,6 @@ export async function resolveControlPlaneDeploymentTarget(): Promise<{ cluster: 
   const outputs = await fetchOutputs({
     workspace: "apps/control-plane/infra",
     environment,
-    wait: false,
   })
 
   const cluster = typeof outputs.ecs_cluster_name === "string"

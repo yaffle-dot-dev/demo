@@ -398,18 +398,17 @@ export async function loadProviderDiscoveryInfrastructure(
   process.chdir(REPO_ROOT)
 
   try {
+    const waitOptions = wait ? { waitFor: "outputs" as const, waitTimeout: 600 } : {}
     const outputs = target.type === "pr"
       ? await fetchOutputs({
         workspace: PROVIDER_DISCOVERY_INFRA_WORKSPACE,
         prNumber: target.prNumber,
-        wait,
-        waitTimeout: 600,
+        ...waitOptions,
       })
       : await fetchOutputs({
         workspace: PROVIDER_DISCOVERY_INFRA_WORKSPACE,
         environment: target.name,
-        wait,
-        waitTimeout: 600,
+        ...waitOptions,
       })
 
     return {

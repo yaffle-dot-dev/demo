@@ -17,7 +17,6 @@ async function main() {
   const outputs = await fetchOutputs({
     workspace: "apps/runner/infra",
     environment: "main",
-    wait: false,
   })
 
   const functionName = process.env.YAFFLE_SCANNER_FUNCTION

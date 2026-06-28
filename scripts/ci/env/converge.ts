@@ -53,14 +53,26 @@ async function loadChangedFiles(target: CiTarget, forceAll: boolean): Promise<{ 
   }
 }
 
-async function waitForWorkspaces(workspaces: string[], target: CiTarget): Promise<void> {
+export type WorkspaceWaitCondition = "outputs" | "usable"
+
+export function lifecycleWorkspaceWaitCondition(
+  phase: DeployableLifecyclePhase,
+): WorkspaceWaitCondition {
+  return phase === "activation" ? "outputs" : "usable"
+}
+
+async function waitForWorkspaces(
+  workspaces: string[],
+  target: CiTarget,
+  waitFor: WorkspaceWaitCondition,
+): Promise<void> {
   await parallel(workspaces.map((workspace) => ({
     name: `workspace:${workspace}`,
     fn: async () => {
       await fetchOutputs({
         workspace,
         environment: target.environment.name,
-        wait: true,
+        waitFor,
         waitTimeout: 600,
       })
     },
@@ -253,7 +265,7 @@ async function convergeDeployable(
   const workspaces = getSelectedWorkspaces([deployable])
 
   console.log(`[deployable:${deployable.name}] workspaces: ${workspaces.join(", ")}`)
-  await waitForWorkspaces(workspaces, target)
+  await waitForWorkspaces(workspaces, target, "outputs")
 
   const secretChecks = await checkDeployableSecrets({
     deployables: [deployable],
@@ -280,7 +292,11 @@ export async function runDeployableLifecyclePhase(
       deployables: [options.deployable],
       target: options.target,
     })
-    await waitForWorkspaces(workspaces, options.target)
+    await waitForWorkspaces(
+      workspaces,
+      options.target,
+      lifecycleWorkspaceWaitCondition(options.phase),
+    )
 
     if (options.phase === "activation") {
       await prepareDeployables([options.deployable], options.target, dryRun)

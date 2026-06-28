@@ -156,7 +156,6 @@ export default defineDeployable({
     const outputs = await fetchOutputs({
       workspace: "apps/provider-discovery-agent/infra",
       environment: target.environment.name,
-      wait: false,
     })
     const workerUrl = typeof outputs.worker_url === "string" ? outputs.worker_url.trim() : ""
 

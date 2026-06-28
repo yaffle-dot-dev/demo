@@ -82,7 +82,6 @@ async function resolveTrafficControllerDeploymentTarget(environment: string): Pr
   const outputs = await fetchOutputs({
     workspace: TRAFFIC_CONTROLLER_INFRA_WORKSPACE,
     environment,
-    wait: false,
   })
 
   const apiFunctionName = overrideApiFunctionName

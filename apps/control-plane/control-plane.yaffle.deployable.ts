@@ -122,7 +122,6 @@ export default defineDeployable({
     const outputs = await fetchOutputs({
       workspace: "apps/control-plane/infra",
       environment: target.environment.name,
-      wait: false,
     })
     const apiUrl = typeof outputs.api_url === "string" ? outputs.api_url.trim() : ""
 

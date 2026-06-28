@@ -76,8 +76,8 @@ export async function resolveWebDeploymentTarget(): Promise<{ cluster: string; s
   }
 
   const [webOutputs, cpOutputs] = await Promise.all([
-    fetchOutputs({ workspace: "apps/web/infra", environment, wait: false }),
-    fetchOutputs({ workspace: "apps/control-plane/infra", environment, wait: false }),
+    fetchOutputs({ workspace: "apps/web/infra", environment }),
+    fetchOutputs({ workspace: "apps/control-plane/infra", environment }),
   ])
 
   const cluster = typeof cpOutputs.ecs_cluster_name === "string"

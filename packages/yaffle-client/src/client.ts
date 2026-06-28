@@ -35,6 +35,8 @@ export interface Logger {
   error: (msg: string) => void
 }
 
+export type OutputWaitCondition = "outputs" | "usable"
+
 const defaultLogger: Logger = {
   info: (msg) => console.log(msg),
   warn: (msg) => console.warn(msg),
@@ -300,14 +302,14 @@ export class YaffleClient {
   }
 
   /**
-   * Get outputs for a target, optionally waiting for it to be ready
+   * Get outputs for a target, optionally waiting for outputs or usable readiness.
    */
   async getOutputs(options: {
     org: string
     repo: string
     target: Target
     workspace: string
-    wait?: boolean
+    waitFor?: OutputWaitCondition
     waitTimeout?: number
   }): Promise<{
     previewId: string
@@ -315,7 +317,7 @@ export class YaffleClient {
     outputs: Record<string, TerraformOutput> | null
     latestRun: Run | null
   }> {
-    const { org, repo, target, workspace, wait = false, waitTimeout = 300 } = options
+    const { org, repo, target, workspace, waitFor, waitTimeout = 300 } = options
 
     const targetLabel =
       target.type === "pr" ? `PR #${target.prNumber}` : `env: ${target.name}`
@@ -327,20 +329,33 @@ export class YaffleClient {
 
     this.log.info(`Found preview ${preview.id} with status: ${preview.status}`)
 
-    let outputs: Record<string, TerraformOutput> | null = null
+    let outputs: Record<string, TerraformOutput> | null = initialDetails.outputs
     let status: PreviewStatus = preview.status
     let latestRun: Run | null = this.getLatestRun(initialDetails.runs)
 
-    if (wait && preview.status !== "ready") {
-      this.log.info(`Waiting for preview to be ready (timeout: ${waitTimeout}s)...`)
+    if (waitFor && (preview.status === "failed" || preview.status === "destroyed")) {
+      throw this.buildFailedWorkspaceError({
+        targetLabel,
+        workspace,
+        previewStatus: preview.status,
+        latestRun,
+      })
+    }
+
+    if (waitFor === "outputs" && outputs === null) {
+      this.log.info(`Waiting for workspace outputs (timeout: ${waitTimeout}s)...`)
       try {
-        const result = await this.waitForPreview(preview.id, waitTimeout)
-        status = result.preview?.status ?? "failed"
+        const result = await this.waitForPreviewOutputs(preview.id, waitTimeout)
+        status = result.preview?.status ?? status
         outputs = result.outputs
       } catch {
         const details = await this.getWorkspaceDetails(org, repo, target, workspace)
         latestRun = this.getLatestRun(details.runs)
-        if (details.preview.status === "ready") {
+        if (
+          details.outputs !== null
+          && details.preview.status !== "failed"
+          && details.preview.status !== "destroyed"
+        ) {
           status = details.preview.status
           outputs = details.outputs
         } else {
@@ -354,7 +369,29 @@ export class YaffleClient {
       }
     }
 
-    if (status === "ready" || preview.status === "ready") {
+    if (waitFor === "usable" && status !== "ready") {
+      this.log.info(`Waiting for workspace to be usable (timeout: ${waitTimeout}s)...`)
+      try {
+        const result = await this.waitForPreview(preview.id, waitTimeout)
+        status = result.preview?.status ?? "failed"
+        outputs = result.outputs
+      } catch {
+        const details = await this.getWorkspaceDetails(org, repo, target, workspace)
+        latestRun = this.getLatestRun(details.runs)
+        if (details.preview.status !== "ready") {
+          throw this.buildFailedWorkspaceError({
+            targetLabel,
+            workspace,
+            previewStatus: details.preview.status,
+            latestRun,
+          })
+        }
+        status = details.preview.status
+        outputs = details.outputs
+      }
+    }
+
+    if (waitFor === "usable" && status === "ready") {
       const details = await this.getWorkspaceDetails(org, repo, target, workspace)
       status = details.preview.status
       latestRun = this.getLatestRun(details.runs)
@@ -377,6 +414,82 @@ export class YaffleClient {
       outputs,
       latestRun,
     }
+  }
+
+  async waitForPreviewOutputs(
+    previewId: string,
+    timeoutSeconds: number = 300
+  ): Promise<StreamUpdate> {
+    const credentials = await this.auth.getCredentials()
+
+    return new Promise((resolve, reject) => {
+      const timeoutMs = timeoutSeconds * 1000
+      const url = `${this.apiUrl}/api/previews/${previewId}/stream?token=${encodeURIComponent(credentials.accessToken)}`
+
+      this.log.info(`Waiting for preview ${previewId} outputs...`)
+
+      const es = new EventSource(url)
+      let resolved = false
+
+      const timeout = setTimeout(() => {
+        if (!resolved) {
+          resolved = true
+          es.close()
+          reject(new Error(`Timeout waiting for preview outputs after ${timeoutSeconds}s`))
+        }
+      }, timeoutMs)
+
+      es.addEventListener("update", (event: MessageEvent) => {
+        if (resolved) return
+
+        try {
+          const data = JSON.parse(event.data) as StreamUpdate
+
+          if (!data.preview) {
+            this.log.warn("Received update with no preview data")
+            return
+          }
+
+          this.log.info(`Preview status: ${data.preview.status}`)
+
+          if (data.outputs !== null) {
+            resolved = true
+            clearTimeout(timeout)
+            es.close()
+            resolve(data)
+          } else if (data.preview.status === "failed") {
+            resolved = true
+            clearTimeout(timeout)
+            es.close()
+            reject(new Error("Preview failed"))
+          } else if (data.preview.status === "destroyed") {
+            resolved = true
+            clearTimeout(timeout)
+            es.close()
+            reject(new Error("Preview was destroyed"))
+          }
+        } catch (err) {
+          this.log.warn(`Failed to parse SSE event: ${err}`)
+        }
+      })
+
+      es.onerror = (err: Event) => {
+        if (resolved) return
+        this.log.warn(`SSE connection error: ${err.type}`)
+
+        setTimeout(() => {
+          if (!resolved && es.readyState === 2) {
+            resolved = true
+            clearTimeout(timeout)
+            reject(new Error("SSE connection closed unexpectedly"))
+          }
+        }, 5000)
+      }
+
+      es.onopen = () => {
+        this.log.info("Connected to preview stream")
+      }
+    })
   }
 
   /**

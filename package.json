@@ -25,7 +25,7 @@
     "smoke:browser": "vp run @yaffle/web#smoke",
     "smoke:local-first": "vp exec tsx scripts/smoke/local-first.ts",
     "test": "vp run --filter './apps/*' --filter './packages/*' -r test && vp run test:scripts",
-    "test:scripts": "vp test run scripts/**/*.test.ts",
+    "test:scripts": "vp test run scripts",
     "db:generate": "vp run @yaffle/control-plane#db:generate",
     "db:migrate": "vp run @yaffle/control-plane#db:migrate",
     "build-images": "vp exec tsx scripts/build-images.ts",
@@ -55,6 +55,7 @@
     "esbuild": "^0.28.0",
     "tar-stream": "^3.1.8",
     "testcontainers": "^11.7.2",
+    "typescript": "^5.9.3",
     "tsx": "^4.21.0",
     "vite-plus": "^0.1.20",
     "vitest": "^4.1.5"

@@ -49,7 +49,6 @@ export async function resolveRunnerTaskDefinition(): Promise<{ family: string; a
   const outputs = await fetchOutputs({
     workspace: "apps/runner/infra",
     environment,
-    wait: false,
   })
 
   const family = typeof outputs.task_definition_family === "string"

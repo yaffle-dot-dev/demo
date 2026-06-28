@@ -14,6 +14,7 @@ import {
   type Target,
   type TerraformOutput,
   YaffleClient,
+  type OutputWaitCondition,
 } from "../../packages/yaffle-client/src/index"
 import { exec } from "./exec"
 
@@ -53,7 +54,7 @@ export interface FetchOutputsOptions {
   workspace: string
   environment?: string
   prNumber?: number
-  wait?: boolean
+  waitFor?: OutputWaitCondition
   waitTimeout?: number
 }
 
@@ -65,7 +66,7 @@ export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<st
   const cacheKey = JSON.stringify({
     workspace: opts.workspace,
     target,
-    wait: opts.wait ?? false,
+    waitFor: opts.waitFor,
     waitTimeout: opts.waitTimeout ?? 600,
   })
 
@@ -93,7 +94,7 @@ export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<st
         repo,
         target,
         workspace: opts.workspace,
-        wait: opts.wait ?? false,
+        waitFor: opts.waitFor,
         waitTimeout: opts.waitTimeout ?? 600,
       })
     } catch (err) {

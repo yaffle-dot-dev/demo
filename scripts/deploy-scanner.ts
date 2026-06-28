@@ -56,7 +56,6 @@ async function resolveScannerDeploymentTarget(): Promise<{ functionName: string;
   const outputs = await fetchOutputs({
     workspace: "apps/runner/infra",
     environment,
-    wait: false,
   })
 
   const functionName = overrideFunctionName

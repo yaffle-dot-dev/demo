@@ -24,13 +24,13 @@
  *   repo: "myrepo",
  *   target: { type: "pr", prNumber: 123 },
  *   workspace: "apps/infra",
- *   wait: true,
+ *   waitFor: "outputs",
  * })
  * ```
  */
 
 export { YaffleClient } from "./client.js"
-export type { YaffleClientOptions, Logger } from "./client.js"
+export type { YaffleClientOptions, Logger, OutputWaitCondition } from "./client.js"
 
 export { TokenAuth, DeviceFlowAuth, GitHubOIDCAuth } from "./auth.js"
 export type { AuthProvider } from "./auth.js"

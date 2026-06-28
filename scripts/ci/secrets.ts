@@ -164,7 +164,6 @@ async function getWorkspaceOutputs(
     cached = fetchOutputs({
       workspace,
       environment: target.environment.name,
-      wait: false,
     })
     cache.set(cacheKey, cached)
   }
