@@ -43,7 +43,7 @@ describe("lifecycleRoute", () => {
         headers: featureHeaders(),
       }),
     )
-    const sessionBody = await sessionRes.json() as { data: { token: string } }
+    const sessionBody = (await sessionRes.json()) as { data: { token: string } }
 
     const authHeaders = {
       ...featureHeaders(),
@@ -64,7 +64,7 @@ describe("lifecycleRoute", () => {
       }),
     )
     expect(runRes.status).toBe(201)
-    const runBody = await runRes.json() as { data: { id: string } }
+    const runBody = (await runRes.json()) as { data: { id: string } }
 
     const itemRes = await app.fetch(
       new Request("http://localhost/api/lifecycle/items", {
@@ -81,12 +81,16 @@ describe("lifecycleRoute", () => {
           destinationUrl: "http://localhost:8787/hooks/preview-ready",
           destinationClass: "private_local",
           dispatchMode: "local",
+          metadata: {
+            provider: "nix-ci",
+            dispatchId: "dispatch-1",
+          },
           callbackTtlMinutes: 60,
         }),
       }),
     )
     expect(itemRes.status).toBe(201)
-    const itemBody = await itemRes.json() as { data: { id: string; onCompletionUrl: string } }
+    const itemBody = (await itemRes.json()) as { data: { id: string; onCompletionUrl: string } }
 
     const stateBeforeRes = await app.fetch(
       new Request(
@@ -97,10 +101,42 @@ describe("lifecycleRoute", () => {
       ),
     )
     expect(stateBeforeRes.status).toBe(200)
-    const stateBeforeBody = await stateBeforeRes.json() as {
+    const stateBeforeBody = (await stateBeforeRes.json()) as {
       data: { items: Array<{ state: string }> }
     }
     expect(stateBeforeBody.data.items[0]?.state).toBe("pending")
+
+    const runningCallbackRes = await app.fetch(
+      new Request(itemBody.data.onCompletionUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          status: "running",
+          externalUrl: "https://ci.example.com/runs/123",
+          metadata: {
+            buildNumber: 123,
+          },
+        }),
+      }),
+    )
+    expect(runningCallbackRes.status).toBe(200)
+
+    const itemRunningRes = await app.fetch(
+      new Request(`http://localhost/api/lifecycle/items/${itemBody.data.id}`, {
+        headers: authHeaders,
+      }),
+    )
+    expect(itemRunningRes.status).toBe(200)
+    const itemRunningBody = (await itemRunningRes.json()) as {
+      data: { state: string; metadata: Record<string, unknown> }
+    }
+    expect(itemRunningBody.data.state).toBe("running")
+    expect(itemRunningBody.data.metadata.provider).toBe("nix-ci")
+    expect(itemRunningBody.data.metadata.dispatchId).toBe("dispatch-1")
+    expect(itemRunningBody.data.metadata.buildNumber).toBe(123)
+    expect(itemRunningBody.data.metadata.externalUrl).toBe("https://ci.example.com/runs/123")
 
     const callbackRes = await app.fetch(
       new Request(itemBody.data.onCompletionUrl, {
@@ -122,11 +158,28 @@ describe("lifecycleRoute", () => {
       }),
     )
     expect(itemAfterRes.status).toBe(200)
-    const itemAfterBody = await itemAfterRes.json() as {
-      data: { state: string; summary: string }
+    const itemAfterBody = (await itemAfterRes.json()) as {
+      data: { state: string; summary: string; metadata: Record<string, unknown> }
     }
     expect(itemAfterBody.data.state).toBe("succeeded")
     expect(itemAfterBody.data.summary).toBe("preview is ready")
+    expect(itemAfterBody.data.metadata.provider).toBe("nix-ci")
+    expect(itemAfterBody.data.metadata.dispatchId).toBe("dispatch-1")
+    expect(itemAfterBody.data.metadata.buildNumber).toBe(123)
+    expect(itemAfterBody.data.metadata.externalUrl).toBe("https://ci.example.com/runs/123")
+
+    const reusedCallbackRes = await app.fetch(
+      new Request(itemBody.data.onCompletionUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          status: "succeeded",
+        }),
+      }),
+    )
+    expect(reusedCallbackRes.status).toBe(404)
   })
 
   test("blocks lifecycle items that violate protected environment governance", async () => {
@@ -154,7 +207,7 @@ describe("lifecycleRoute", () => {
         headers: featureHeaders(),
       }),
     )
-    const sessionBody = await sessionRes.json() as { data: { token: string } }
+    const sessionBody = (await sessionRes.json()) as { data: { token: string } }
 
     const authHeaders = {
       ...featureHeaders(),
@@ -174,7 +227,7 @@ describe("lifecycleRoute", () => {
         }),
       }),
     )
-    const runBody = await runRes.json() as { data: { id: string } }
+    const runBody = (await runRes.json()) as { data: { id: string } }
 
     const itemRes = await app.fetch(
       new Request("http://localhost/api/lifecycle/items", {
@@ -196,7 +249,7 @@ describe("lifecycleRoute", () => {
       }),
     )
     expect(itemRes.status).toBe(201)
-    const itemBody = await itemRes.json() as {
+    const itemBody = (await itemRes.json()) as {
       data: { state: string; onCompletionUrl: string | null }
     }
     expect(itemBody.data.state).toBe("blocked")
@@ -208,7 +261,7 @@ describe("lifecycleRoute", () => {
         { headers: authHeaders },
       ),
     )
-    const stateBody = await stateRes.json() as {
+    const stateBody = (await stateRes.json()) as {
       data: { items: Array<{ state: string; reason: string }> }
     }
     expect(stateBody.data.items[0]?.state).toBe("blocked")
@@ -217,10 +270,13 @@ describe("lifecycleRoute", () => {
 
   test("dispatches a connection-backed lifecycle hook through the control plane", async () => {
     const org = await createTestOrg({ slug: "lifecycle-dispatch-org" })
-    await db.update(organizations).set({
-      kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/test",
-      iamRoleArn: "arn:aws:iam::123456789012:role/yaffle-org-broker-test",
-    }).where(eq(organizations.id, org.id))
+    await db
+      .update(organizations)
+      .set({
+        kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/test",
+        iamRoleArn: "arn:aws:iam::123456789012:role/yaffle-org-broker-test",
+      })
+      .where(eq(organizations.id, org.id))
     await db.insert(repositories).values({
       orgId: org.id,
       githubId: 111222333,
@@ -263,7 +319,7 @@ describe("lifecycleRoute", () => {
         headers: featureHeaders(),
       }),
     )
-    const sessionBody = await sessionRes.json() as { data: { token: string } }
+    const sessionBody = (await sessionRes.json()) as { data: { token: string } }
 
     const authHeaders = {
       ...featureHeaders(),
@@ -283,7 +339,7 @@ describe("lifecycleRoute", () => {
         }),
       }),
     )
-    const runBody = await runRes.json() as { data: { id: string } }
+    const runBody = (await runRes.json()) as { data: { id: string } }
 
     const itemRes = await app.fetch(
       new Request("http://localhost/api/lifecycle/items", {
@@ -304,7 +360,7 @@ describe("lifecycleRoute", () => {
         }),
       }),
     )
-    const itemBody = await itemRes.json() as { data: { id: string; onCompletionUrl: string } }
+    const itemBody = (await itemRes.json()) as { data: { id: string; onCompletionUrl: string } }
 
     const originalFetch = globalThis.fetch as typeof globalThis.fetch & { preconnect?: unknown }
     const seen: Array<{ authorization: string | null; signature: string | null }> = []
@@ -364,7 +420,7 @@ describe("lifecycleRoute", () => {
         headers: authHeaders,
       }),
     )
-    const itemAfterBody = await itemAfterRes.json() as {
+    const itemAfterBody = (await itemAfterRes.json()) as {
       data: { state: string; events: Array<{ eventType: string }> }
     }
     expect(itemAfterBody.data.state).toBe("running")

@@ -22,7 +22,10 @@ import {
 import { findConnectionsByName } from "../db/queries/connections.ts"
 import { findEnvironmentPolicy } from "../db/queries/environment-policies.ts"
 import { findDeploymentByRunGroupAndWorkspacePath } from "../db/queries/workspace-deployments.ts"
-import { ensurePrincipalRepoBinding, findPrincipalRepoBindingById } from "../db/queries/principals.ts"
+import {
+  ensurePrincipalRepoBinding,
+  findPrincipalRepoBindingById,
+} from "../db/queries/principals.ts"
 import { findOrgMembership, findOrgById } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { getConnectionSecret } from "../lib/connection-secrets.ts"
@@ -35,7 +38,11 @@ import { assumeOrgBrokerRole } from "../lib/org-broker-auth.ts"
 import { buildPublicUrl } from "../lib/public-origin.ts"
 import { getConnectionScopeConfig, scopeListAllows } from "../lib/connection-scope.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
-import { enforceRateLimit, readRequestBodyText, RequestBodyTooLargeError } from "../lib/request-protection.ts"
+import {
+  enforceRateLimit,
+  readRequestBodyText,
+  RequestBodyTooLargeError,
+} from "../lib/request-protection.ts"
 
 type PrincipalVariables = {
   principalAuth: PrincipalAuthContext
@@ -55,6 +62,18 @@ const lifecycleCallbackRateLimit = {
   limit: 240,
   windowMs: 60_000,
 } as const
+
+const httpUrlSchema = z
+  .string()
+  .url()
+  .refine((value) => {
+    try {
+      const protocol = new URL(value).protocol
+      return protocol === "http:" || protocol === "https:"
+    } catch {
+      return false
+    }
+  }, "must be an http(s) URL")
 
 const createRunSchema = z.object({
   canonicalRepoNamespace: z.string().min(1),
@@ -78,7 +97,12 @@ const createItemSchema = z.object({
   dispatchMode: z.enum(["local", "cloud"]),
   summary: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
-  callbackTtlMinutes: z.number().int().positive().max(24 * 60).default(60),
+  callbackTtlMinutes: z
+    .number()
+    .int()
+    .positive()
+    .max(24 * 60)
+    .default(60),
 })
 
 const genericLifecycleDispatchSchema = z.object({
@@ -86,10 +110,12 @@ const genericLifecycleDispatchSchema = z.object({
   request: z.object({
     url: z.string().url(),
     method: z.literal("POST"),
-    auth: z.object({
-      scheme: z.enum(["bearer", "hmac_sha256"]),
-      connection: z.string().min(1),
-    }).optional(),
+    auth: z
+      .object({
+        scheme: z.enum(["bearer", "hmac_sha256"]),
+        connection: z.string().min(1),
+      })
+      .optional(),
   }),
 })
 
@@ -113,18 +139,20 @@ const dispatchRequestSchema = z.object({
     genericLifecycleDispatchSchema,
     githubRepositoryDispatchSchema,
   ]),
-  payload: z.object({
-    repo_namespace: z.string().min(1),
-    environment: z.string().min(1),
-    workspace_path: z.string().min(1),
-    item_key: z.string().min(1),
-    phase: z.enum(["activation", "verification"]),
-    outputs: z.record(z.unknown()),
-    on_completion: z.string().url().nullable().optional(),
-    git_sha: z.string().optional(),
-    git_base_sha: z.string().optional(),
-    git_branch: z.string().optional(),
-  }).passthrough(),
+  payload: z
+    .object({
+      repo_namespace: z.string().min(1),
+      environment: z.string().min(1),
+      workspace_path: z.string().min(1),
+      item_key: z.string().min(1),
+      phase: z.enum(["activation", "verification"]),
+      outputs: z.record(z.unknown()),
+      on_completion: z.string().url().nullable().optional(),
+      git_sha: z.string().optional(),
+      git_base_sha: z.string().optional(),
+      git_branch: z.string().optional(),
+    })
+    .passthrough(),
 })
 
 type LifecycleDispatchRequest = z.infer<typeof dispatchRequestSchema>
@@ -139,6 +167,7 @@ const callbackBodySchema = z.object({
   status: z.enum(["running", "succeeded", "degraded", "failed"]),
   summary: z.string().optional(),
   reason: z.string().optional(),
+  externalUrl: httpUrlSchema.optional(),
   metadata: z.record(z.unknown()).optional(),
 })
 
@@ -163,13 +192,35 @@ const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
   return next()
 }
 
-function enforceRouteRateLimit(options: { bucket: string; limit: number; windowMs: number }): MiddlewareHandler {
+function enforceRouteRateLimit(options: {
+  bucket: string
+  limit: number
+  windowMs: number
+}): MiddlewareHandler {
   return async (c, next) => {
     const response = enforceRateLimit(c, options)
     if (response) {
       return response
     }
     return next()
+  }
+}
+
+function recordFromJson(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function mergeCallbackMetadata(
+  existingMetadata: unknown,
+  callbackMetadata: Record<string, unknown> | undefined,
+  externalUrl: string | undefined,
+): Record<string, unknown> {
+  return {
+    ...recordFromJson(existingMetadata),
+    ...(callbackMetadata ?? {}),
+    ...(externalUrl ? { externalUrl } : {}),
   }
 }
 
@@ -197,7 +248,15 @@ lifecycleRoute.post("/admission", async (c) => {
   }
   const parsed = admissionSchema.safeParse(requestBody)
   if (!parsed.success) {
-    return c.json({ error: { code: "INVALID_REQUEST", message: parsed.error.errors[0]?.message ?? "invalid request" } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: parsed.error.errors[0]?.message ?? "invalid request",
+        },
+      },
+      400,
+    )
   }
 
   const body = parsed.data
@@ -217,7 +276,15 @@ lifecycleRoute.post("/runs", async (c) => {
   }
   const parsed = createRunSchema.safeParse(requestBody)
   if (!parsed.success) {
-    return c.json({ error: { code: "INVALID_REQUEST", message: parsed.error.errors[0]?.message ?? "invalid request" } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: parsed.error.errors[0]?.message ?? "invalid request",
+        },
+      },
+      400,
+    )
   }
 
   const body = parsed.data
@@ -233,16 +300,19 @@ lifecycleRoute.post("/runs", async (c) => {
     executionMode: body.executionMode,
   })
 
-  return c.json({
-    data: {
-      id: run.id,
-      repoBindingId: run.repoBindingId,
-      environmentName: run.environmentName,
-      executionMode: run.executionMode,
-      status: run.status,
-      startedAt: run.startedAt.toISOString(),
+  return c.json(
+    {
+      data: {
+        id: run.id,
+        repoBindingId: run.repoBindingId,
+        environmentName: run.environmentName,
+        executionMode: run.executionMode,
+        status: run.status,
+        startedAt: run.startedAt.toISOString(),
+      },
     },
-  }, 201)
+    201,
+  )
 })
 
 lifecycleRoute.post("/items", async (c) => {
@@ -253,7 +323,15 @@ lifecycleRoute.post("/items", async (c) => {
   }
   const parsed = createItemSchema.safeParse(requestBody)
   if (!parsed.success) {
-    return c.json({ error: { code: "INVALID_REQUEST", message: parsed.error.errors[0]?.message ?? "invalid request" } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: parsed.error.errors[0]?.message ?? "invalid request",
+        },
+      },
+      400,
+    )
   }
 
   const body = parsed.data
@@ -267,11 +345,15 @@ lifecycleRoute.post("/items", async (c) => {
     return c.json({ error: { code: "NOT_FOUND", message: "repo binding not found" } }, 404)
   }
 
-  const governance = await evaluateLifecycleGovernance(principal, resolvedBinding.canonicalRepoNamespace, {
-    environmentName: run.environmentName,
-    destinationClass: body.destinationClass,
-    dispatchMode: body.dispatchMode,
-  })
+  const governance = await evaluateLifecycleGovernance(
+    principal,
+    resolvedBinding.canonicalRepoNamespace,
+    {
+      environmentName: run.environmentName,
+      destinationClass: body.destinationClass,
+      dispatchMode: body.dispatchMode,
+    },
+  )
 
   if (!governance.allowed) {
     const blockedItem = await createLifecycleItem({
@@ -302,13 +384,16 @@ lifecycleRoute.post("/items", async (c) => {
       },
     })
 
-    return c.json({
-      data: {
-        id: blockedItem.id,
-        state: blockedItem.state,
-        onCompletionUrl: null,
+    return c.json(
+      {
+        data: {
+          id: blockedItem.id,
+          state: blockedItem.state,
+          onCompletionUrl: null,
+        },
       },
-    }, 201)
+      201,
+    )
   }
 
   const item = await createLifecycleItem({
@@ -344,13 +429,16 @@ lifecycleRoute.post("/items", async (c) => {
     expiresAt: new Date(Date.now() + body.callbackTtlMinutes * 60 * 1000),
   })
 
-  return c.json({
-    data: {
-      id: item.id,
-      state: item.state,
-      onCompletionUrl: buildPublicUrl(c.req.url, `/api/lifecycle/completions/${callbackToken}`),
+  return c.json(
+    {
+      data: {
+        id: item.id,
+        state: item.state,
+        onCompletionUrl: buildPublicUrl(c.req.url, `/api/lifecycle/completions/${callbackToken}`),
+      },
     },
-  }, 201)
+    201,
+  )
 })
 
 lifecycleRoute.post("/dispatch", async (c) => {
@@ -361,7 +449,15 @@ lifecycleRoute.post("/dispatch", async (c) => {
   }
   const parsed = dispatchRequestSchema.safeParse(requestBody)
   if (!parsed.success) {
-    return c.json({ error: { code: "INVALID_REQUEST", message: parsed.error.errors[0]?.message ?? "invalid request" } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: parsed.error.errors[0]?.message ?? "invalid request",
+        },
+      },
+      400,
+    )
   }
 
   const body = parsed.data
@@ -375,8 +471,20 @@ lifecycleRoute.post("/dispatch", async (c) => {
     return c.json({ error: { code: "NOT_FOUND", message: "lifecycle item not found" } }, 404)
   }
 
-  if (item.workspacePath !== body.workspacePath || item.phase !== body.phase || item.key !== body.payload.item_key) {
-    return c.json({ error: { code: "CONFLICT", message: "lifecycle dispatch payload does not match the stored item" } }, 409)
+  if (
+    item.workspacePath !== body.workspacePath ||
+    item.phase !== body.phase ||
+    item.key !== body.payload.item_key
+  ) {
+    return c.json(
+      {
+        error: {
+          code: "CONFLICT",
+          message: "lifecycle dispatch payload does not match the stored item",
+        },
+      },
+      409,
+    )
   }
 
   try {
@@ -445,7 +553,15 @@ lifecycleRoute.get("/state", async (c) => {
   const localRepoFingerprint = c.req.query("localRepoFingerprint")
   const environmentName = c.req.query("environmentName")
   if (!canonicalRepoNamespace || !localRepoFingerprint || !environmentName) {
-    return c.json({ error: { code: "INVALID_REQUEST", message: "canonicalRepoNamespace, localRepoFingerprint, and environmentName are required" } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: "canonicalRepoNamespace, localRepoFingerprint, and environmentName are required",
+        },
+      },
+      400,
+    )
   }
 
   const binding = await ensurePrincipalRepoBinding({
@@ -473,23 +589,49 @@ lifecycleRoute.post("/completions/:token", async (c) => {
   }
   const parsed = callbackBodySchema.safeParse(requestBody)
   if (!parsed.success) {
-    return c.json({ error: { code: "INVALID_REQUEST", message: parsed.error.errors[0]?.message ?? "invalid request" } }, 400)
-  }
-
-  const consumed = await consumeLifecycleCompletionToken(c.req.param("token"))
-  if (!consumed) {
-    return c.json({ error: { code: "INVALID_TOKEN", message: "lifecycle completion token is invalid or expired" } }, 404)
+    return c.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: parsed.error.errors[0]?.message ?? "invalid request",
+        },
+      },
+      400,
+    )
   }
 
   const body = parsed.data
-  const item = await updateLifecycleItem(consumed.item.id, {
+  const consumed = await consumeLifecycleCompletionToken(c.req.param("token"), {
+    consume: body.status !== "running",
+  })
+  if (!consumed) {
+    return c.json(
+      {
+        error: {
+          code: "INVALID_TOKEN",
+          message: "lifecycle completion token is invalid or expired",
+        },
+      },
+      404,
+    )
+  }
+
+  const metadata = mergeCallbackMetadata(consumed.item.metadata, body.metadata, body.externalUrl)
+
+  const itemUpdate: Parameters<typeof updateLifecycleItem>[1] = {
     state: body.status,
-    summary: body.summary,
-    reason: body.reason,
-    metadata: body.metadata ?? {},
+    metadata,
     startedAt: consumed.item.startedAt ?? new Date(),
     finishedAt: ["succeeded", "degraded", "failed"].includes(body.status) ? new Date() : null,
-  })
+  }
+  if (body.summary !== undefined) {
+    itemUpdate.summary = body.summary
+  }
+  if (body.reason !== undefined) {
+    itemUpdate.reason = body.reason
+  }
+
+  const item = await updateLifecycleItem(consumed.item.id, itemUpdate)
   await createLifecycleEvent({
     itemId: consumed.item.id,
     eventType: "callback",
@@ -497,6 +639,7 @@ lifecycleRoute.post("/completions/:token", async (c) => {
       status: body.status,
       summary: body.summary,
       reason: body.reason,
+      externalUrl: body.externalUrl,
       metadata: body.metadata ?? {},
     },
   })
@@ -560,7 +703,9 @@ async function readJsonBody(request: Request): Promise<unknown | Response> {
       )
     }
     return new Response(
-      JSON.stringify({ error: { code: "INVALID_REQUEST", message: "request body must be valid JSON" } }),
+      JSON.stringify({
+        error: { code: "INVALID_REQUEST", message: "request body must be valid JSON" },
+      }),
       { status: 400, headers: { "Content-Type": "application/json" } },
     )
   }
@@ -585,7 +730,10 @@ async function evaluateLifecycleGovernance(
     return admission
   }
 
-  const policyContext = await resolveEnvironmentPolicyContext(canonicalRepoNamespace, values.environmentName)
+  const policyContext = await resolveEnvironmentPolicyContext(
+    canonicalRepoNamespace,
+    values.environmentName,
+  )
   if (!policyContext.policy) {
     return { allowed: true }
   }
@@ -617,7 +765,10 @@ async function evaluateEnvironmentAdmission(
   }
 
   const principalTier = await resolvePrincipalTier(principal, policyContext.orgId)
-  if (principalTierRank(principalTier) < principalTierRank(policyContext.policy.minimumPrincipalTier as PrincipalTier)) {
+  if (
+    principalTierRank(principalTier) <
+    principalTierRank(policyContext.policy.minimumPrincipalTier as PrincipalTier)
+  ) {
     return {
       allowed: false,
       reason: `Environment '${values.environmentName}' requires principal tier '${policyContext.policy.minimumPrincipalTier}', but this run is '${principalTier}'.`,
@@ -637,7 +788,11 @@ async function evaluateEnvironmentAdmission(
 async function resolveEnvironmentPolicyContext(
   canonicalRepoNamespace: string,
   environmentName: string,
-): Promise<{ repoFullName: string | null; orgId: string | null; policy: Awaited<ReturnType<typeof findEnvironmentPolicy>> }> {
+): Promise<{
+  repoFullName: string | null
+  orgId: string | null
+  policy: Awaited<ReturnType<typeof findEnvironmentPolicy>>
+}> {
   const repoFullName = repo_full_name_from_namespace(canonicalRepoNamespace)
   if (!repoFullName) {
     return { repoFullName: null, orgId: null, policy: undefined }
@@ -679,9 +834,7 @@ async function resolvePrincipalTier(
   return "free_local"
 }
 
-async function dispatchLifecycleHook(
-  body: LifecycleDispatchRequest,
-): Promise<void> {
+async function dispatchLifecycleHook(body: LifecycleDispatchRequest): Promise<void> {
   switch (body.dispatch.kind) {
     case "github_repository_dispatch":
       await dispatchGitHubRepositoryDispatch(body as GitHubRepositoryDispatchRequest)
@@ -713,9 +866,7 @@ async function dispatchGitHubRepositoryDispatch(
   })
 }
 
-async function dispatchGenericLifecycleHook(
-  body: GenericLifecycleDispatchRequest,
-): Promise<void> {
+async function dispatchGenericLifecycleHook(body: GenericLifecycleDispatchRequest): Promise<void> {
   const request = body.dispatch.request
   const payloadBytes = Buffer.from(JSON.stringify(body.payload))
   const headers = new Headers({
@@ -761,39 +912,52 @@ async function resolveLifecycleConnectionSecret(
 
   const matches = (await findConnectionsByName(repo.orgId, connectionName)).filter((connection) => {
     const scope = getConnectionScopeConfig(connection)
-    return scopeListAllows(scope.environmentScope, environmentName)
-      && scopeListAllows(scope.workspaceScope, workspacePath)
+    return (
+      scopeListAllows(scope.environmentScope, environmentName) &&
+      scopeListAllows(scope.workspaceScope, workspacePath)
+    )
   })
 
   if (matches.length === 0) {
-    throw new Error(`No connection named '${connectionName}' matches ${environmentName} / ${workspacePath}`)
+    throw new Error(
+      `No connection named '${connectionName}' matches ${environmentName} / ${workspacePath}`,
+    )
   }
   if (matches.length > 1) {
-    throw new Error(`Multiple connections named '${connectionName}' match ${environmentName} / ${workspacePath}`)
+    throw new Error(
+      `Multiple connections named '${connectionName}' match ${environmentName} / ${workspacePath}`,
+    )
   }
 
   const connection = matches[0]
   if (connection.credentialProviderType !== "envvar" || !connection.secretPath) {
-    throw new Error(`Connection '${connection.name}' must be an envvar-backed connection for lifecycle auth`)
+    throw new Error(
+      `Connection '${connection.name}' must be an envvar-backed connection for lifecycle auth`,
+    )
   }
 
   const org = await findOrgById(connection.orgId)
   if (!org?.iamRoleArn) {
-    throw new Error(`Organization for connection '${connection.name}' is missing broker role configuration`)
+    throw new Error(
+      `Organization for connection '${connection.name}' is missing broker role configuration`,
+    )
   }
 
   const brokerCredentials = await assumeOrgBrokerRole(connection.orgId, org.iamRoleArn)
-  const secret = await getConnectionSecret(connection.secretPath, {
+  const secret = (await getConnectionSecret(connection.secretPath, {
     credentials: brokerCredentials,
-  }) as {
+  })) as {
     envVars?: Array<{ key?: string; value?: string }>
   }
-  const envVars = (secret.envVars ?? []).filter((entry): entry is { key: string; value: string } =>
-    typeof entry.key === "string" && entry.key.length > 0 && typeof entry.value === "string",
+  const envVars = (secret.envVars ?? []).filter(
+    (entry): entry is { key: string; value: string } =>
+      typeof entry.key === "string" && entry.key.length > 0 && typeof entry.value === "string",
   )
 
   if (envVars.length !== 1) {
-    throw new Error(`Connection '${connection.name}' must contain exactly one env var secret for lifecycle auth`)
+    throw new Error(
+      `Connection '${connection.name}' must contain exactly one env var secret for lifecycle auth`,
+    )
   }
 
   return envVars[0].value
@@ -814,9 +978,10 @@ function applyLifecycleConnectionAuth(
   headers.set("X-Yaffle-Signature", `sha256=${signature}`)
 }
 
-function resolveGitHubDispatchTarget(
-  body: GitHubRepositoryDispatchRequest,
-): { owner: string; repo: string } {
+function resolveGitHubDispatchTarget(body: GitHubRepositoryDispatchRequest): {
+  owner: string
+  repo: string
+} {
   const explicitOwner = body.dispatch.github.owner?.trim()
   const explicitRepo = body.dispatch.github.repo?.trim()
   if (explicitOwner && explicitRepo) {

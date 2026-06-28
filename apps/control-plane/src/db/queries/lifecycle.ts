@@ -50,7 +50,9 @@ export async function findLifecycleRunById(runId: string): Promise<LifecycleRun 
   })
 }
 
-export async function findLifecycleRunByRunGroupId(runGroupId: string): Promise<LifecycleRun | undefined> {
+export async function findLifecycleRunByRunGroupId(
+  runGroupId: string,
+): Promise<LifecycleRun | undefined> {
   return withDbSpan("select", "lifecycle_runs", async () => {
     const rows = await db
       .select()
@@ -122,11 +124,17 @@ export async function issueLifecycleCompletionToken(values: {
   })
 }
 
-export async function consumeLifecycleCompletionToken(token: string): Promise<{
-  token: typeof lifecycleCompletionTokens.$inferSelect
-  item: LifecycleItem
-  run: LifecycleRun
-} | undefined> {
+export async function consumeLifecycleCompletionToken(
+  token: string,
+  options: { consume?: boolean } = {},
+): Promise<
+  | {
+      token: typeof lifecycleCompletionTokens.$inferSelect
+      item: LifecycleItem
+      run: LifecycleRun
+    }
+  | undefined
+> {
   return withDbSpan("update", "lifecycle_completion_tokens", async () => {
     return db.transaction(async (tx) => {
       const rows = await tx
@@ -142,10 +150,12 @@ export async function consumeLifecycleCompletionToken(token: string): Promise<{
         return undefined
       }
 
-      await tx
-        .update(lifecycleCompletionTokens)
-        .set({ usedAt: new Date() })
-        .where(eq(lifecycleCompletionTokens.tokenHash, row.token.tokenHash))
+      if (options.consume ?? true) {
+        await tx
+          .update(lifecycleCompletionTokens)
+          .set({ usedAt: new Date() })
+          .where(eq(lifecycleCompletionTokens.tokenHash, row.token.tokenHash))
+      }
 
       return row
     })
@@ -154,7 +164,11 @@ export async function consumeLifecycleCompletionToken(token: string): Promise<{
 
 export async function findLifecycleItemById(itemId: string): Promise<LifecycleItem | undefined> {
   return withDbSpan("select", "lifecycle_items", async () => {
-    const rows = await db.select().from(lifecycleItems).where(eq(lifecycleItems.id, itemId)).limit(1)
+    const rows = await db
+      .select()
+      .from(lifecycleItems)
+      .where(eq(lifecycleItems.id, itemId))
+      .limit(1)
     return rows[0]
   })
 }
@@ -231,10 +245,13 @@ export async function getLatestLifecycleStateForRepoEnvironment(values: {
   })
 }
 
-export async function getLifecycleStateForRunGroup(runGroupId: string): Promise<{
-  run: LifecycleRun
-  items: LifecycleItem[]
-} | undefined> {
+export async function getLifecycleStateForRunGroup(runGroupId: string): Promise<
+  | {
+      run: LifecycleRun
+      items: LifecycleItem[]
+    }
+  | undefined
+> {
   return withDbSpan("select", "lifecycle_runs", async () => {
     const run = await findLifecycleRunByRunGroupId(runGroupId)
     if (!run) {

@@ -1365,10 +1365,19 @@
     return lifecyclePhaseStatus(items)
   }
 
+  function safeHttpUrl(value: unknown): string | null {
+    if (typeof value !== "string") return null
+
+    try {
+      const url = new URL(value)
+      return url.protocol === "http:" || url.protocol === "https:" ? url.toString() : null
+    } catch {
+      return null
+    }
+  }
+
   function lifecycleExternalUrl(item: LifecycleItemSummary): string | null {
-    if (item.destinationUrl) return item.destinationUrl
-    const metadataUrl = item.metadata.url ?? item.metadata.destinationUrl ?? item.metadata.externalUrl
-    return typeof metadataUrl === "string" ? metadataUrl : null
+    return safeHttpUrl(item.metadata.externalUrl)
   }
 
   function lifecycleLogLines(item: LifecycleItemSummary): Array<{ label: string; detail?: string; href?: string | null; at?: string | null }> {

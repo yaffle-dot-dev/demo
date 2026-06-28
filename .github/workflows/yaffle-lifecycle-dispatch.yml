@@ -121,9 +121,9 @@ jobs:
           COMPLETION_SUMMARY: ${{ steps.lifecycle.outputs.summary || 'lifecycle workflow did not report a result' }}
         run: |
           nix develop -L .#ci --command node --input-type=module -e '
-            const metadata = {}
+            let externalUrl
             if (process.env.GITHUB_SERVER_URL && process.env.GITHUB_REPOSITORY && process.env.GITHUB_RUN_ID) {
-              metadata.externalUrl = [
+              externalUrl = [
                 process.env.GITHUB_SERVER_URL,
                 process.env.GITHUB_REPOSITORY,
                 "actions",
@@ -131,6 +131,7 @@ jobs:
                 process.env.GITHUB_RUN_ID,
               ].join("/")
             }
+            const metadata = externalUrl ? { externalUrl } : {}
 
             const response = await fetch(process.env.ON_COMPLETION_URL, {
               method: "POST",
@@ -138,6 +139,7 @@ jobs:
               body: JSON.stringify({
                 status: process.env.COMPLETION_STATUS,
                 summary: process.env.COMPLETION_SUMMARY,
+                externalUrl,
                 metadata,
               }),
             })
