@@ -782,6 +782,14 @@ describe("PR environment name helpers", () => {
     expect(buildPrEnvironmentName(99999)).toBe("pr-99999")
   })
 
+  test("buildPrEnvironmentName rejects noncanonical numbers", () => {
+    expect(() => buildPrEnvironmentName(0)).toThrow("PR number must be a positive safe integer")
+    expect(() => buildPrEnvironmentName(-1)).toThrow("PR number must be a positive safe integer")
+    expect(() => buildPrEnvironmentName(Number.MAX_SAFE_INTEGER + 1)).toThrow(
+      "PR number must be a positive safe integer",
+    )
+  })
+
   test("parsePrEnvironmentName", () => {
     expect(parsePrEnvironmentName("pr-1")).toBe(1)
     expect(parsePrEnvironmentName("pr-123")).toBe(123)
@@ -793,6 +801,9 @@ describe("PR environment name helpers", () => {
     expect(parsePrEnvironmentName("staging")).toBeUndefined()
     expect(parsePrEnvironmentName("pr-")).toBeUndefined()
     expect(parsePrEnvironmentName("pr-abc")).toBeUndefined()
+    expect(parsePrEnvironmentName("pr-0")).toBeUndefined()
+    expect(parsePrEnvironmentName("pr-01")).toBeUndefined()
+    expect(parsePrEnvironmentName("pr-999999999999999999999")).toBeUndefined()
     expect(parsePrEnvironmentName("")).toBeUndefined()
   })
 })

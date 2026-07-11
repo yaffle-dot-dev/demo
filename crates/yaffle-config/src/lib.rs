@@ -868,6 +868,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_public_demo_config() {
+        let input = include_str!("../../../demo/yaffle.toml");
+        let config = parse_yaffle_toml(input).expect("public demo yaffle.toml should parse");
+
+        assert_eq!(config.version, 1);
+        assert!(!config.workspaces.is_empty());
+        assert!(config.cloud.triggers.github.is_some());
+    }
+
+    #[test]
     fn parses_cloud_namespaced_triggers() {
         let input = r#"
 version = 1

@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro"
 import { Image } from "astro:assets"
 import yaffleBird from "../images/yaffle-bird.png"
 
-function requiredEnv(name) {
+function requiredEnv(name: string): string {
   const value = import.meta.env[name]
 
   if (typeof value !== "string" || value.trim() === "") {
@@ -13,7 +13,7 @@ function requiredEnv(name) {
   return value.trim()
 }
 
-function requiredNumberEnv(name) {
+function requiredNumberEnv(name: string): number {
   const value = Number(requiredEnv(name))
 
   if (!Number.isFinite(value)) {
@@ -299,12 +299,12 @@ function intervalLabel(interval: string): string {
             <h3 class="text-xl font-semibold text-text">Merge safely</h3>
           </div>
           <p class="text-text-muted mb-4">
-            When you merge, Yaffle applies the exact same plan to production. No drift, no surprises. The preview environment is automatically cleaned up.
+            When you merge, Yaffle cleans up the preview. Let Yaffle manage a named production environment, or keep your existing CI in charge. Both workflows are supported.
           </p>
           <ul class="space-y-2 text-sm text-text-muted">
             <li class="flex items-center gap-2">
               <svg class="w-4 h-4 text-yaffle-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-              Same plan, same state
+              Production ownership is your choice
             </li>
             <li class="flex items-center gap-2">
               <svg class="w-4 h-4 text-yaffle-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
@@ -312,7 +312,7 @@ function intervalLabel(interval: string): string {
             </li>
             <li class="flex items-center gap-2">
               <svg class="w-4 h-4 text-yaffle-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-              Full audit trail
+              Run history tied to the source revision
             </li>
           </ul>
         </div>
@@ -383,7 +383,7 @@ href="/docs/"
         Pay for what you use. Cancel anytime.
       </p>
       
-      <div class="grid md:grid-cols-4 gap-5 items-stretch">
+      <div class="grid md:grid-cols-3 gap-5 items-stretch">
         <!-- Free -->
         <div class="p-5 rounded-xl bg-surface-raised border border-border flex flex-col">
           <h3 class="text-lg font-semibold text-text mb-1">Free</h3>
@@ -470,7 +470,7 @@ href="/docs/"
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              SSO / SCIM
+              Shared team workflows
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
@@ -478,7 +478,7 @@ href="/docs/"
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
-              Audit logs
+              Named environment history
             </li>
             <li class="flex items-center gap-2">
               <span class="text-yaffle-400">&#10003;</span>
@@ -492,42 +492,6 @@ href="/docs/"
           </span>
         </div>
         
-        <!-- Enterprise -->
-        <div class="p-5 rounded-xl bg-surface-raised border border-border flex flex-col">
-          <h3 class="text-lg font-semibold text-text mb-1">Enterprise</h3>
-          <p class="text-text-dim text-sm mb-4">Self-hosted & custom</p>
-          <div class="text-3xl font-bold text-text mb-4">
-            Custom
-          </div>
-          <ul class="space-y-2 text-sm text-text-muted mb-6 flex-1">
-            <li class="flex items-center gap-2">
-              <span class="text-yaffle-400">&#10003;</span>
-              Self-hosted option
-            </li>
-            <li class="flex items-center gap-2">
-              <span class="text-yaffle-400">&#10003;</span>
-              Custom SLAs
-            </li>
-            <li class="flex items-center gap-2">
-              <span class="text-yaffle-400">&#10003;</span>
-              Dedicated support
-            </li>
-            <li class="flex items-center gap-2">
-              <span class="text-yaffle-400">&#10003;</span>
-              Advanced compliance
-            </li>
-            <li class="flex items-center gap-2">
-              <span class="text-yaffle-400">&#10003;</span>
-              Volume discounts
-            </li>
-          </ul>
-          <a 
-            href="mailto:sales@yaffle.dev" 
-            class="block w-full text-center px-4 py-2 rounded-lg border border-border text-text-muted text-sm font-medium hover:border-yaffle-600 hover:text-text transition-colors mt-auto"
-          >
-            Contact sales
-          </a>
-        </div>
       </div>
       
       <p class="text-center text-sm text-text-dim mt-6">
@@ -546,7 +510,7 @@ href="/docs/"
         <div class="p-5 rounded-xl bg-surface-raised border border-border">
           <h3 class="text-lg font-semibold text-text mb-2">Outgrown Atlantis?</h3>
           <p class="text-sm text-text-muted">
-            All the PR automation you love, none of the operational overhead. RBAC, drift detection, and preview environments built in.
+            Keep Atlantis or customer CI on production while Yaffle runs isolated preview environments, or move named environments when it suits your team.
           </p>
         </div>
         <div class="p-5 rounded-xl bg-surface-raised border border-border">

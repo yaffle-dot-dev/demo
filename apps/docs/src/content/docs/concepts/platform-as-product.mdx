@@ -33,7 +33,7 @@ graph TB
     end
 
     subgraph Yaffle Registry
-        outputs[Live Outputs]
+        outputs[Versioned Output Snapshots]
     end
 
     subgraph Product Teams
@@ -71,10 +71,13 @@ resource "aws_ecs_service" "api" {
 }
 ```
 
-That `connection_string` isn't a template—it's the actual endpoint of a running RDS instance that the platform team manages.
+Under the beta snapshot contract, that `connection_string` is a value from an identified
+snapshot of a running RDS instance that the platform team manages.
 
 <Aside type="tip">
-The Yaffle module registry doesn't serve static module code. It serves the **outputs** of workspaces that have already been applied. Downstream teams consume live infrastructure, not blueprints.
+The beta module contract serves immutable, versioned **output snapshots** from workspaces
+that have already been applied. Downstream pinning and external publication are beta
+implementation work, not current module-registry guarantees.
 </Aside>
 
 ## The contract is outputs
@@ -111,19 +114,21 @@ They just need the connection string and a way to authenticate.
 The cross-repo contract is producer-owned in `yaffle.toml`:
 
 ```toml
+version = 1
+
 [[workspaces]]
 path = "platform/database"
 environments = ["*"]
 
-outputs.connection_string = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
-outputs.secret_arn = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
+outputs.connection_string = { visibility = "public", consumers = ["acme:applications:apps/*"] }
+outputs.secret_arn = { visibility = "public", consumers = ["acme:applications:apps/*"] }
 ```
 
 That gives the platform team a clean product boundary:
 
 - same-repo platform workspaces can still consume all outputs
-- cross-repo product teams only see the curated `public` outputs
-- cross-org consumers can also be allowlisted when needed
+- cross-repo product teams in the same Yaffle org only see the curated `public` outputs
+- cross-org output sharing is unsupported in beta and planned as a post-beta enterprise capability
 
 ## Environment isolation
 
@@ -131,6 +136,7 @@ Each named environment runs its own copy of the platform infrastructure:
 
 ```toml
 # platform team's yaffle.toml
+version = 1
 
 [[environments]]
 name = "dev"
@@ -148,7 +154,8 @@ environments = ["*"]
 
 When the platform applies to `staging`, the database workspace creates/updates a staging RDS instance. The outputs for `staging` reflect that specific instance.
 
-When a product team's workspace runs in `staging`, they automatically get staging outputs:
+The beta contract requires a product team's `staging` workspace to resolve an identified,
+authorized snapshot of the staging outputs:
 
 ```hcl
 # This resolves to the staging RDS endpoint when running in staging,
@@ -158,7 +165,10 @@ module "platform_database" {
 }
 ```
 
-No environment switching. No variable juggling. The right infrastructure for the right environment, automatically.
+The selected snapshot is immutable and records a snapshot ID, publication version,
+producer identity, source revision, opaque state identity and serial, publication time,
+values, and sensitivity metadata. Downstream work will make a later platform run publish
+a new version rather than changing a consumer's pinned values.
 
 ## Preview environments for safe iteration
 
@@ -168,7 +178,11 @@ When a platform engineer opens a PR to change the database configuration:
 2. The database workspace applies to preview infrastructure—a separate RDS instance
 3. **Downstream teams are unaffected**—they still consume stable named environment outputs
 4. Platform team validates changes against real infrastructure
-5. On merge, changes promote to the target environment
+5. On merge, the configured owner may independently deploy the target environment
+
+The named environment may be Yaffle-managed or externally owned by customer CI. The beta
+contract gives external owners the same publication shape; Yaffle never plans, applies,
+locks, or destroys that producer.
 
 <Mermaid chart={`
 graph LR
@@ -238,7 +252,7 @@ Product teams stay unblocked because:
 
 1. **No tickets to file**—consume outputs directly
 2. **No surprises**—named environment outputs only change on explicit applies
-3. **No configuration drift**—everyone gets the same VPC, same subnets, same security groups
+3. **Pinned provenance**—every consumer reads an identified output snapshot from the same producer revision and state serial
 
 ## Repository structure
 
@@ -258,6 +272,7 @@ platform-infra/
 
 ```toml
 # yaffle.toml
+version = 1
 
 [[environments]]
 name = "dev"
@@ -281,11 +296,13 @@ path = "cache"
 environments = ["*"]
 
 # Triggers
-[[triggers.github.push]]
+[cloud]
+
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "staging"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 ```
 

@@ -14,6 +14,7 @@ Yaffle provides a GitHub Action to fetch OpenTofu outputs from your preview envi
   id: infra
   with:
     workspace: infra
+    environment: pr-${{ github.event.pull_request.number }}
     wait: true
 
 - name: Deploy to preview
@@ -31,6 +32,12 @@ Yaffle provides a GitHub Action to fetch OpenTofu outputs from your preview envi
 3. Once ready, it fetches the OpenTofu outputs
 4. Outputs are set as step outputs for use in subsequent steps
 
+The beta contract requires immutable snapshots with producer, source revision, opaque
+state identity and serial, publication time, values, and sensitivity metadata. Snapshot
+authorization and sensitive-value filtering are not enforced by the current Action yet.
+Treat its step outputs as trusted workflow data and do not forward them across a trust
+boundary.
+
 <Aside type="tip">
 When `wait: true`, the action uses Server-Sent Events (SSE) for efficient real-time updates. No polling, instant response when ready.
 </Aside>
@@ -42,9 +49,12 @@ When `wait: true`, the action uses Server-Sent Events (SSE) for efficient real-t
 | `workspace` | Workspace path | `.` |
 | `wait` | Wait for preview to be ready | `false` |
 | `wait-timeout` | Timeout in seconds | `300` |
+| `environment` | Environment name, such as `pr-42` or `main` | Auto-detected |
 | `pr-number` | PR number (auto-detected) | Current PR |
 | `org` | Organization name | Repository owner |
 | `repo` | Repository name | Current repository |
+| `head-sha` | Commit SHA used to select the environment revision | Workflow SHA |
+| `token` | Yaffle API token (`yfl_...`) | `YAFFLE_API_TOKEN` environment variable |
 
 ## Outputs
 
@@ -147,14 +157,16 @@ For outputs that are objects or lists:
   id: infra
 
 - name: Parse complex outputs
+  env:
+    # Select a known non-sensitive output instead of logging outputs-json.
+    PRIVATE_SUBNET_IDS: ${{ steps.infra.outputs.private_subnet_ids }}
   run: |
-    # Get all outputs as JSON
-    echo '${{ steps.infra.outputs.outputs-json }}' | jq '.'
-    
-    # Extract specific nested values
-    SUBNET_IDS=$(echo '${{ steps.infra.outputs.outputs-json }}' | jq -r '.private_subnet_ids.value | join(",")')
+    SUBNET_IDS=$(jq -r 'join(",")' <<< "$PRIVATE_SUBNET_IDS")
     echo "Subnets: $SUBNET_IDS"
 ```
+
+Never print the complete `outputs-json` map. Until snapshot filtering is available, it
+may contain structured sensitive values that GitHub cannot reliably mask.
 
 ## Full workflow example
 

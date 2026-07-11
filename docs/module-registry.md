@@ -1,11 +1,21 @@
-# Yaffle Module Registry
+# Yaffle Module Registry Implementation
 
-Infrastructure as a Product - A TFC-compatible module registry that auto-generates
-typed modules from workspace outputs.
+This is an internal implementation specification for the TFC-compatible module registry.
+For user-facing behavior and configuration, see:
+
+- <https://yaffle.dev/docs/concepts/workspaces/>
+- <https://yaffle.dev/docs/concepts/platform-as-product/>
+- <https://yaffle.dev/docs/reference/configuration/#outputs>
+
+Do not duplicate public setup or configuration guidance here.
 
 Important: the current local-first contract is defined in
 `docs/decisions/0002-local-first-principals-and-hosted-output-modules.md`.
 When this document conflicts with that ADR, the ADR wins.
+
+Cross-org allowlist resolution exists in the current registry implementation. It is not
+part of the beta support contract; cross-org sharing is planned as a post-beta enterprise
+capability and requires an explicit tenant-policy/entitlement decision before launch.
 
 For the current Rust engine path:
 
@@ -18,27 +28,11 @@ For the current Rust engine path:
 - raw `tofu` is supported through
   `eval "$(yaffle tf login --env <env> --workspace <workspace>)"`
 
-## Overview
+## Implementation Purpose
 
-Platform teams publish infrastructure, app teams consume it like any Terraform module:
-
-```hcl
-module "vpc" {
-  source = "yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle"
-}
-
-resource "aws_security_group" "api" {
-  vpc_id = module.vpc.vpc_id  # Typed! Autocomplete works!
-}
-```
-
-### Key Benefits
-
-- **Type safety**: Generated modules have typed outputs, IDE autocomplete works
-- **No magic strings**: Reference infrastructure by module, not hardcoded IDs
-- **Preview-aware**: Modules resolve to production or preview state as appropriate
-- **Explicit platform API surface**: Producers choose which outputs are same-repo only vs cross-repo shareable
-- **Standard Terraform**: Uses native module syntax, no custom providers
+The registry generates typed Terraform modules from authorized workspace outputs and
+serves them through TFC-compatible discovery, version, and download routes. The details
+below specify protocol behavior, storage, resolution, and authorization for maintainers.
 
 ---
 
@@ -83,130 +77,17 @@ resource "aws_security_group" "api" {
 
 ---
 
-## User Experience
+## Public Contract References
 
-### For Platform Teams (Publishers)
+The public publisher and consumer workflows live in the docs site linked above. This
+implementation depends on these internal invariants:
 
-Same-repo modules work automatically from normal Terraform outputs. To share a
-workspace across repos, the producer explicitly exports a curated output surface
-in `yaffle.toml`.
-
-Terraform stays normal:
-
-```hcl
-# core-infrastructure/vpc/main.tf
-resource "aws_vpc" "main" {
-  cidr_block = var.cidr_block
-  # ...
-}
-
-resource "aws_subnet" "private" {
-  count  = length(var.availability_zones)
-  vpc_id = aws_vpc.main.id
-  # ...
-}
-
-# core-infrastructure/vpc/outputs.tf
-output "vpc_id" {
-  description = "The VPC ID"
-  value       = aws_vpc.main.id
-}
-
-output "private_subnet_ids" {
-  description = "Private subnet IDs"
-  value       = aws_subnet.private[*].id
-}
-
-output "cidr_block" {
-  description = "VPC CIDR block"
-  value       = aws_vpc.main.cidr_block
-}
-```
-
-When this workspace's state is uploaded, Yaffle automatically makes it available
-as a module at `yaffle.dev/<org>--<repo>/core-infrastructure--vpc/yaffle`.
-
-To expose outputs across repos in the same Yaffle org, add export rules:
-
-```toml
-version = 1
-
-[[environments]]
-name = "main"
-
-[[workspaces]]
-path = "platform/eks"
-environments = ["main"]
-
-[[workspaces.exports]]
-outputs = ["cluster_endpoint", "cluster_ca"]
-visibility = "public"
-consumers = ["acme/applications/apps/*"]
-
-[[workspaces.exports]]
-outputs = ["cluster_security_group_id", "oidc_provider_arn"]
-visibility = "internal"
-```
-
-Interpretation:
-
-- `internal` outputs are available only to downstream workspaces in the same repo
-- `public` outputs are available only to explicitly allowlisted workspaces in the same Yaffle org
-- cross-org module sharing is not supported
-
-### For App Teams (Consumers)
-
-Reference infrastructure as modules:
-
-```hcl
-# apps/api/infra/main.tf
-module "vpc" {
-  source = "yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle"
-}
-
-module "eks" {
-  source = "yaffle.dev/acme--platform/core-infrastructure--eks/yaffle"
-}
-
-resource "aws_security_group" "api" {
-  name   = "api-sg"
-  vpc_id = module.vpc.vpc_id  # Typed! IDE autocomplete works!
-
-  ingress {
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    security_groups = [module.eks.node_security_group_id]
-  }
-}
-
-resource "kubernetes_deployment" "api" {
-  # ...
-  spec {
-    template {
-      spec {
-        container {
-          env {
-            name  = "VPC_CIDR"
-            value = module.vpc.cidr_block
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-Benefits:
-- `module.vpc.` triggers autocomplete in IDE
-- Invalid output references caught by `terraform validate`
-- No hardcoded VPC IDs, subnet IDs, etc.
-
-If the producer uses export rules:
-
-- same-repo consumers still see all outputs
-- cross-repo consumers only see the producer's `public` outputs
-- local/user-token access to export-controlled modules is not yet the polished path; the supported launch flow is Yaffle-managed runs using workspace-scoped run tokens
+- authored Terraform module sources remain standard `yaffle.dev` module addresses
+- same-repo consumers may receive the full producer output surface
+- cross-repo consumers receive only outputs selected by producer policy
+- workspace-scoped run tokens provide consumer identity
+- immutable snapshot publication, pinning, and redaction are downstream beta work
+- cross-org sharing is unsupported in beta and planned as a post-beta enterprise capability
 
 ---
 
@@ -247,7 +128,7 @@ the current repo's orchestration graph or just a normal external module.
 |----------------|------------------------------------|---------------------|-----------------|
 | Intra-repo | Same namespace | Preview-aware, last-known-good state | Yes |
 | Cross-repo (same org) | Different repo in same org | Normal registry dependency | No |
-| Cross-org | Different Yaffle org | Not supported | No |
+| Cross-org | Different Yaffle org | Existing allowlist path; unsupported in beta, planned enterprise | No |
 
 Examples:
 
@@ -311,7 +192,7 @@ Cross-repo sharing is controlled by the producer workspace.
 | Visibility | Who can read it | Included in same-repo module | Included in cross-repo module |
 |------------|-----------------|------------------------------|-------------------------------|
 | `internal` | Same-repo downstream workspaces | Yes | No |
-| `public` | Allowlisted workspaces in the same Yaffle org | Yes | Yes, if allowlisted |
+| `public` | Beta: allowlisted workspaces in the same Yaffle org | Yes | Yes, if allowlisted |
 
 ### Authorization Rules
 
@@ -320,7 +201,9 @@ Cross-repo sharing is controlled by the producer workspace.
 - consumer identity comes from the Yaffle run token's workspace context
 - if the consumer workspace cannot be resolved, access is denied by default
 - if the producer config cannot be loaded, access is denied by default
-- cross-org module sharing is explicitly denied
+- the beta support policy excludes cross-org sharing
+- the current resolver can match cross-org selectors; that path requires an explicit
+  enterprise entitlement, tenant-policy design, and security review before it becomes supported
 
 ### Sensitive Outputs
 
@@ -465,7 +348,7 @@ In practice this means:
 
 ### Preview Context
 
-Pass preview context via query parameter:
+The current query parameter is a GitHub pull-request compatibility adapter:
 
 ```hcl
 module "vpc" {
@@ -474,6 +357,11 @@ module "vpc" {
 ```
 
 Or Yaffle injects this when generating the runner's Terraform config.
+
+This is not the generic transient-environment interface. Before another transient source
+is added, registry resolution must accept a canonical environment name and query by that
+identity instead of `prNumber`. Source metadata such as a GitHub PR number remains an
+adapter concern and must not become the environment discriminator.
 
 ---
 

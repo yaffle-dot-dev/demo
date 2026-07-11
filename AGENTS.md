@@ -19,8 +19,9 @@ Yaffle's value proposition is safe, incremental infrastructure delivery from 0 t
    up ephemeral infrastructure, runs plans, and shows you exactly what will change.
    See it working before you commit to it.
 
-3. **Merge means deploy.** When the PR merges, Yaffle applies to production. The
-   same plan you reviewed, the same state, no surprises.
+3. **Merge deploys Yaffle itself.** For this repository, merging to `main` triggers
+   Yaffle's named production environment. This dogfooding choice is not a product
+   requirement for customers, who may keep production in existing CI.
 
 4. **Build incrementally.** Small PRs, small changes, frequent deploys. Don't let
    infrastructure changes pile up into a terrifying mega-deploy.
@@ -39,6 +40,27 @@ Yaffle's value proposition is safe, incremental infrastructure delivery from 0 t
 - PRs trigger preview plans via Yaffle
 - Merges to `main` trigger production applies
 - If Yaffle can't deploy Yaffle, we're not shipping
+
+## Environment Contract
+
+- `pr-{number}` is the only public name for a GitHub pull-request environment.
+- Ownership classes are `transient_managed`, `named_managed`, `named_external`,
+  and `static_external`.
+- Managed runtime `EnvironmentKind` (`named` or `transient`) is a separate concept
+  from ownership class.
+- Trigger/source metadata is also separate. A transient environment is not inherently a
+  pull request; only GitHub pull-request sources use the `pr-{number}` convention.
+- Production is optional. Yaffle-managed named production and customer-CI-owned
+  production are equally supported steady states.
+- Shared output snapshots are immutable and versioned. They record a stable snapshot
+  ID and publication version, authenticated producer identity, source revision, opaque
+  state identity and serial, publication time, and structurally redacted values with
+  sensitivity metadata.
+- Do not claim exact-plan promotion, current drift detection, zero-config setup,
+  SSO/SCIM, self-hosting, compliance certifications, custom SLAs, or unsupported
+  enterprise features.
+- Cross-org module sharing is unsupported in beta and planned as a post-beta enterprise
+  capability. Do not present the existing allowlist path as beta-supported.
 
 ## Project Overview
 

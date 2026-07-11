@@ -182,10 +182,10 @@
       </div>
       <ul class="space-y-2 text-sm text-text-muted">
         <li>Everything in Pro</li>
-        <li>SSO / SCIM</li>
-        <li>Bring-your-own-account runners</li>
-        <li>Audit logs</li>
-        <li>Priority support</li>
+        <li>Shared team workflows</li>
+        <li>Organization member management</li>
+        <li>Named environment history</li>
+        <li>Usage and billing dashboard</li>
       </ul>
       {#if planTier === "team"}
         <div class="text-sm text-yaffle-400 font-medium text-center py-2">Current plan</div>

@@ -21,7 +21,7 @@ variable "deployer_role_arns" {
 
 variable "environment" {
   type        = string
-  description = "Environment name - branch name (e.g., 'main') or preview (e.g., 'prvw-42')"
+  description = "Environment name - branch name (e.g., 'main') or transient environment (e.g., 'pr-42')"
 }
 
 variable "environment_kind" {
@@ -55,7 +55,7 @@ module "naming_replica" {
 
 locals {
   # Naming: yaffle-{resource}-{suffix}
-  # suffix = {environment}-{region_short} (e.g., "main-use1", "prvw-42-use1")
+  # suffix = {environment}-{region_short} (e.g., "main-use1", "pr-42-use1")
   name_suffix         = module.naming.suffix
   replica_name_suffix = module.naming_replica.suffix
 }

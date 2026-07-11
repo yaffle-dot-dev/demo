@@ -7,6 +7,10 @@ Fetch Terraform outputs from Yaffle environments. See [CI/CD Integration](/docs/
 
 ```yaml
 - uses: yaffle-dot-dev/outputs-action@v1
+  id: infra
+  with:
+    environment: pr-${{ github.event.pull_request.number }}
+    workspace: infra
 ```
 
 ## Inputs
@@ -20,14 +24,19 @@ Fetch Terraform outputs from Yaffle environments. See [CI/CD Integration](/docs/
 | `pr-number` | PR number (sets environment to `pr-{n}`) | Current PR |
 | `org` | Organization/owner name | Repository owner |
 | `repo` | Repository name | Current repository |
-| `token` | GitHub token for authentication | `github.token` |
+| `head-sha` | Commit SHA used to select the environment revision | Workflow SHA |
+| `token` | Yaffle API token (`yfl_...`) | `YAFFLE_API_TOKEN` environment variable |
 
 ### Environment auto-detection
 
 1. Explicit `environment` input
 2. `pr-number` input → `pr-{n}`
 3. PR context from `pull_request` events
-4. Branch name from `push` events
+4. PR issue context from events such as `issue_comment`
+5. Branch name from `push` events
+
+When inferred from pull-request context, the resolved environment is always
+`pr-{number}`. There are no alternate public preview prefixes.
 
 ## Outputs
 
@@ -37,3 +46,9 @@ Fetch Terraform outputs from Yaffle environments. See [CI/CD Integration](/docs/
 | `preview-status` | Status: `ready`, `planning`, `applying`, `failed` |
 | `outputs-json` | All outputs as JSON |
 | `<name>` | Each Terraform output as a separate action output |
+
+The beta output contract requires authorized, immutable snapshots and redacts sensitive
+values before publication. The current Action still exposes the environment API's raw
+output map. Scalar values may be masked in logs, but structured sensitive values are not
+reliably masked and all step outputs remain available to later workflow steps. Do not
+fetch sensitive values until snapshot authorization and filtering are available.

@@ -36,7 +36,7 @@ resource "stripe_price" "pro_monthly" {
 
 resource "stripe_product" "team" {
   name        = "Yaffle Team"
-  description = "Everything in Pro plus SSO, BYOA runners, audit logs, and priority support."
+  description = "Everything in Pro plus organization member management and shared team workflows."
   active      = true
 
   metadata = {

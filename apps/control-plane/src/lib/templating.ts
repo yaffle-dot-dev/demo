@@ -12,7 +12,7 @@
  * - workspace_path: Path to workspace (e.g., "infra/production")
  * - branch: Git branch name
  * - commit_sha: Full commit SHA
- * - pr_number: PR number (null for named environments)
+ * - pr_number: GitHub PR number (null for every other source)
  */
 
 import { Environment } from "minijinja-js"
@@ -23,7 +23,7 @@ import { Environment } from "minijinja-js"
 export interface TemplateContext {
   /** Environment name (e.g., "main", "staging", "pr-123") */
   environment: string
-  /** Whether this is a named or transient (PR) environment */
+  /** Whether this is a named or transient environment */
   environment_kind: "named" | "transient"
   /** GitHub organization/owner name */
   org: string
@@ -35,7 +35,7 @@ export interface TemplateContext {
   branch: string
   /** Full commit SHA */
   commit_sha: string
-  /** PR number or null for named environments */
+  /** GitHub PR number or null for every other source */
   pr_number: number | null
 }
 

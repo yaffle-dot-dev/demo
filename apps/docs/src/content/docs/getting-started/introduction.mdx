@@ -35,7 +35,7 @@ There's no way to see infrastructure running before production.
 Yaffle runs the full lifecycle. When you open a PR, it doesn't just plan—it applies to an isolated preview environment. You can hit real endpoints, connect real databases, run real tests.
 
 ```
-Write TF → PR → Plan → Apply preview → Test it → Merge → Apply production
+Write TF → PR → Plan → Apply preview → Test it → Merge → Clean up preview
 ```
 
 <Aside type="tip" title="Why 'Yaffle'?">
@@ -64,7 +64,8 @@ s3://yaffle-state/
 
 ### PR workflows
 
-Every push triggers a plan. Results show up as GitHub checks. Merge policies, approval gates, and audit logs are built in.
+Configured GitHub triggers start plans. Results show up as GitHub checks, and configured approval
+policies control applies.
 
 ### Preview environments
 
@@ -85,10 +86,13 @@ Yaffle is built for **platform engineering teams at growth-stage companies** who
 - Have outgrown Atlantis and its operational overhead
 - Find Terraform Cloud's pricing unpredictable (RUM billing, surprise increases)
 - Want preview environments without building custom CI pipelines
-- Need RBAC, drift detection, and audit logs without running their own infrastructure
+- Want a hosted execution and approval workflow without running another CI service
 - Are concerned about IBM's HashiCorp acquisition and want an open-source foundation
+
+Yaffle-managed production is optional. Teams can keep Atlantis, Terraform Cloud, or their own CI
+as the long-lived environment owner while Yaffle owns PR previews.
 
 ## Next
 
-- [Quick Start](/docs/getting-started/quickstart/) — Set up Yaffle in 5 minutes
-- [How it works](/docs/concepts/how-it-works/) — Architecture overview
+- [Quick Start](/docs/getting-started/quickstart/) — Configure your first preview
+- [How it works](/docs/getting-started/how-it-works/) — Architecture overview

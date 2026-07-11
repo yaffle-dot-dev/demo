@@ -123,7 +123,8 @@ Edges are `[downstream, upstream]` pairs. `apps/control-plane/infra` depends on
 
 Only **same-repo** Yaffle module references are stored in this graph. Cross-repo
 module sources are treated as external Terraform dependencies and do not become
-run-group edges. Cross-org module sharing is not supported.
+run-group edges. Cross-org sharing is unsupported in beta and planned as a post-beta
+enterprise capability; the existing registry allowlist path does not change DAG behavior.
 
 ### Previews (Tasks)
 
@@ -451,41 +452,6 @@ Engine instances send periodic heartbeats while running:
 
 The current configuration format lives in `yaffle.toml`. See
 `https://yaffle.dev/docs/reference/configuration/` for the full reference.
-
-```toml
-# yaffle.toml
-version = 1
-
-[[environments]]
-name = "main"
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/main"]
-environment = "main"
-
-[[cloud.triggers.github.pull_request]]
-branch_patterns = ["*"]
-
-[[workspaces]]
-path = "infra/shared"
-environments = ["main"]
-
-[[workspaces]]
-path = "apps/control-plane/infra"
-environments = ["*"]
-
-[[workspaces]]
-path = "apps/production/infra"
-environments = ["main"]
-
-[[cloud.approvals]]
-workspaces = ["apps/production/infra"]
-environments = ["main"]
-approvers = [
-  "github:team:acme/platform",
-  "github:team:acme/oncall-sre",
-]
-```
 
 Dependencies such as `apps/control-plane/infra` -> `infra/shared` are still
 auto-detected from Terraform/module references; `yaffle.toml` only declares

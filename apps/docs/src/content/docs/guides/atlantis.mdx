@@ -11,10 +11,10 @@ Atlantis pioneered Terraform PR automation. But after 1-2 years, most teams outg
 
 | Pain point | Atlantis | Yaffle |
 |------------|----------|--------|
-| **Operational overhead** | You run it: servers, updates, monitoring | Managed service, zero ops |
+| **Operational overhead** | You run it: servers, updates, monitoring | Hosted Yaffle service |
 | **Single-threaded** | One run at a time, bottleneck on busy repos | Parallel runs across workspaces |
 | **No RBAC** | Anyone with repo access can `atlantis apply` | Granular approval policies |
-| **No drift detection** | Manual checks or external tooling | Built-in (planned) |
+| **Drift detection** | Manual checks or external tooling | Use existing tooling; native detection is not a current feature |
 | **Plan-only previews** | Shows what would change, can't test it | Real infrastructure you can hit |
 | **State management** | You configure backends | Fully managed |
 | **Secrets** | Environment variables or external tools | AWS Secrets Manager integration |
@@ -27,7 +27,7 @@ Atlantis shows you a plan. Yaffle creates real infrastructure.
 
 ```
 Atlantis:  PR → terraform plan → read diff → merge → hope it works
-Yaffle:    PR → plan → apply preview → test it → merge → apply production
+Yaffle:    PR → plan → apply preview → test it → merge → clean up preview
 ```
 
 Your QA team can test against `pr-42.staging.example.com` before merge.
@@ -41,7 +41,14 @@ Stop patching Atlantis servers, debugging webhook issues, and scaling infrastruc
 Atlantis's access model is "if you can push, you can apply." Yaffle supports:
 
 ```toml
-[[approvals]]
+version = 1
+
+[[environments]]
+name = "production"
+
+[cloud]
+
+[[cloud.approvals]]
 workspaces = ["infra/production/*"]
 environments = ["production"]
 approvers = [
@@ -74,11 +81,13 @@ Yaffle runs [OpenTofu](https://opentofu.org), the open-source fork under MPL 2.0
    [[environments]]
    name = "staging"
 
-   [[triggers.github.push]]
+   [cloud]
+
+   [[cloud.triggers.github.push]]
    ref_patterns = ["refs/heads/main"]
    environment = "production"
 
-   [[triggers.github.pull_request]]
+   [[cloud.triggers.github.pull_request]]
    branch_patterns = ["*"]
 
    [[workspaces]]
@@ -136,7 +145,7 @@ environments = ["*"]
 | Atlantis command | Yaffle equivalent |
 |------------------|-------------------|
 | `atlantis plan` | Automatic on PR push |
-| `atlantis apply` | Automatic after plan (previews) or on merge (production) |
+| `atlantis apply` | Authorized preview apply; optional named-environment apply when Yaffle owns it |
 | `atlantis plan -d infra/network` | Plans all affected workspaces automatically |
 | `atlantis unlock` | Not needed—Yaffle manages locking |
 
@@ -144,14 +153,16 @@ environments = ["*"]
 
 **Atlantis:** Set in server environment or `atlantis.yaml`
 
-**Yaffle:** Use the `variables` field or Secrets Manager:
+**Yaffle:** Use `variables` for non-sensitive values. Configure provider credentials as
+scoped Connections in Yaffle rather than putting secret values in `yaffle.toml`:
 
 ```toml
+version = 1
+
 [[workspaces]]
 path = "infra"
 environments = ["*"]
 variables.region = "us-east-1"
-secrets.db_password = "arn:aws:secretsmanager:us-east-1:123:secret:db-pass"
 ```
 
 ## Running both during migration
@@ -172,7 +183,8 @@ projects:
       enabled: false  # Manual only during migration
 ```
 
-Once you're confident in Yaffle, remove Atlantis entirely.
+Remove Atlantis only for environments whose ownership you transfer to Yaffle. Atlantis
+or another customer CI system may remain the production owner indefinitely.
 
 ## FAQ
 

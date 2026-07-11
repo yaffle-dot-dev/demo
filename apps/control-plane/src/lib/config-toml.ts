@@ -827,7 +827,7 @@ function matchesPatternSet(
  *
  * @param config - Parsed config
  * @param environmentName - Environment name (e.g., "main", "pr-123")
- * @param isTransient - Whether this is a transient (PR) environment
+ * @param isTransient - Whether this is a transient environment, regardless of source
  * @returns Workspace paths that should run
  */
 export function getWorkspacesForEnvironment(
@@ -910,6 +910,10 @@ export function isApprovalRequired(
  * Build environment name for a PR.
  */
 export function buildPrEnvironmentName(prNumber: number): string {
+  if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+    throw new Error("PR number must be a positive safe integer")
+  }
+
   return `pr-${prNumber}`
 }
 
@@ -918,9 +922,10 @@ export function buildPrEnvironmentName(prNumber: number): string {
  * Returns undefined if not a valid PR environment name.
  */
 export function parsePrEnvironmentName(environmentName: string): number | undefined {
-  const match = environmentName.match(/^pr-(\d+)$/)
+  const match = environmentName.match(/^pr-([1-9]\d*)$/)
   if (!match) return undefined
-  return parseInt(match[1], 10)
+  const prNumber = Number.parseInt(match[1], 10)
+  return Number.isSafeInteger(prNumber) ? prNumber : undefined
 }
 
 /**

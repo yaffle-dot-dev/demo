@@ -184,7 +184,7 @@ export const workspaceDeployments = pgTable(
     environmentKind: text("environment_kind").notNull(), // 'named' | 'transient'
     environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
     // PR number as metadata (nullable, not a discriminator)
-    prNumber: integer("pr_number"), // NULL for named environments, PR number for transient
+    prNumber: integer("pr_number"), // GitHub PR number when that is the source; otherwise NULL
     workspacePath: text("workspace_path").notNull(),
     ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
     headSha: text("head_sha").notNull(),
@@ -238,7 +238,7 @@ export const runGroups = pgTable("run_groups", {
   environmentKind: text("environment_kind").notNull(), // 'named' | 'transient'
   environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
   // PR number as metadata (nullable, not a discriminator)
-  prNumber: integer("pr_number"), // NULL for named environments, PR number for transient
+  prNumber: integer("pr_number"), // GitHub PR number when that is the source; otherwise NULL
   ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
   headSha: text("head_sha").notNull(),
   selectedWorkspacePaths: jsonb("selected_workspace_paths").default(sql`'[]'::jsonb`).notNull(),

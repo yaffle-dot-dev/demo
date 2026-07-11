@@ -1,6 +1,6 @@
 # Yaffle GTM research: the Terraform preview gap is wide open
 
-**Terraform is the dominant IaC tool used by ~15,200 US companies, yet no product offers purpose-built, zero-config ephemeral environments per pull request.** This gap represents a serviceable addressable market of **$250–300M** within the US IaC and platform engineering ecosystem, growing at 24% CAGR. Timing is exceptional: IBM's $6.4B HashiCorp acquisition is driving evaluation cycles, Terraform Cloud's free tier was eliminated in March 2026, RUM-based pricing is universally despised, and platform engineering has hit mainstream adoption faster than Gartner predicted. Yaffle's beachhead is platform engineering teams at Series B–D startups (20–100 engineers) who have outgrown Atlantis but find Terraform Cloud too expensive, too limited, and increasingly risky under IBM ownership.
+**Terraform is the dominant IaC tool used by ~15,200 US companies, yet no product focuses on configuration-driven ephemeral environments per pull request.** This gap represents a serviceable addressable market of **$250–300M** within the US IaC and platform engineering ecosystem, growing at 24% CAGR. Timing is exceptional: IBM's $6.4B HashiCorp acquisition is driving evaluation cycles, Terraform Cloud's free tier was eliminated in March 2026, RUM-based pricing is universally despised, and platform engineering has hit mainstream adoption faster than Gartner predicted. Yaffle's beachhead is platform engineering teams at Series B–D startups (20–100 engineers) who have outgrown Atlantis but find Terraform Cloud too expensive, too limited, and increasingly risky under IBM ownership.
 
 ---
 
@@ -26,7 +26,7 @@ HashiCorp's own financials validate willingness to pay: **4,558 paying customers
 
 ### No one owns per-PR ephemeral environments for Terraform
 
-The competitive analysis across five direct competitors reveals a consistent pattern: every player offers speculative plans on PRs, but **none delivers a purpose-built, zero-config, per-PR ephemeral Terraform environment** as a core product.
+The competitive analysis across five direct competitors reveals a consistent pattern: every player offers speculative plans on PRs, but **none focuses on a purpose-built, configuration-driven, per-PR ephemeral Terraform environment** as its core product.
 
 **Terraform Cloud (IBM HCP Terraform)** is the dominant incumbent with ~$80M+ cloud ARR, but its approach to previews is limited. Speculative plans are plan-only — they show what would change but don't create actual infrastructure. Ephemeral workspaces exist on Standard tier ($0.47/resource/month) and above, but require manual API orchestration to tie to PR lifecycles. The product has significant exploitable weaknesses: **RUM pricing that customers describe as "unpredictable" with 500–600% increases**, concurrency limits (3 runs on Essentials, 5 on Standard), the elimination of the free tier, and deepening IBM-acquisition uncertainty. Terraform Cloud is shifting from quarterly to milestone releases, signaling slower innovation.
 
@@ -65,7 +65,7 @@ AI-powered IaC tools (Firefly, Pulumi Neo, HashiCorp MCP Server) are acceleratin
 
 Community signals validate this urgency. A Hacker News "Show HN" for Layerform (open-source ephemeral TF environments) articulated the exact problem: *"Many teams have a single (or too few) staging environments, which developers have to queue to use... they end up with a cluttered Slack channel in which engineers wait for their turn."* On Medium, a widely-shared engineering post captured the state management nightmare: *"Lose it? You're fucked. Corrupt it? Fucked. Have two people run Terraform at the same time? Also fucked."* Reddit and community forums consistently surface complaints about Atlantis bottlenecks, TFC pricing unpredictability, and the absence of safe preview workflows.
 
-The expansion path moves naturally to DevOps teams at growth-stage companies (5,000–8,000 US companies with similar pain), then into FinTech and regulated industries where preview environments directly satisfy compliance requirements (pre-merge validation creates audit trails for SOC 2, HIPAA, PCI-DSS). Enterprise represents the highest contract values ($100K–500K+) but requires 3–6 month sales cycles that are better pursued once product-market fit is established.
+The expansion path moves naturally to DevOps teams at growth-stage companies (5,000–8,000 US companies with similar pain), then potentially into regulated industries. Preview evidence may support a customer's controls, but Yaffle does not currently claim SOC 2, HIPAA, PCI-DSS, or other compliance certification. Upmarket sales should be considered only after the required product and certification work exists.
 
 ---
 
@@ -75,11 +75,11 @@ The expansion path moves naturally to DevOps teams at growth-stage companies (5,
 
 **Against Terraform Cloud:** "Predictable pricing, purpose-built preview environments, no IBM lock-in." TFC's speculative plans only show what would change — they don't create real infrastructure. Yaffle creates actual isolated environments that stakeholders can inspect and validate. TFC's RUM pricing scales unpredictably; Yaffle should offer per-PR or flat pricing.
 
-**Against Atlantis:** "All the PR workflow you love, none of the operational overhead." Position as the natural graduation path for teams outgrowing self-hosted Atlantis. Emphasize zero operational burden, built-in RBAC, drift detection, and the ephemeral environment capability Atlantis entirely lacks.
+**Against Atlantis:** "Keep your production owner; add real PR environments." Position Yaffle as a hosted preview path for teams using self-hosted Atlantis. Emphasize isolated ephemeral environments and explicit approval policy. Do not claim native drift detection.
 
-**Against Spacelift/env0:** "Purpose-built, not bolted on." Both competitors offer preview-like capabilities as features within larger platforms. Yaffle should be the product where preview environments are the core experience, not a secondary feature. Zero configuration versus env0's template setup or Spacelift's policy/stack orchestration.
+**Against Spacelift/env0:** "Purpose-built, not bolted on." Both competitors offer preview-like capabilities as features within larger platforms. Yaffle should be the product where preview environments are the core experience, not a secondary feature. Emphasize a focused `yaffle.toml` contract rather than claiming zero configuration.
 
-**Against DIY (GitHub Actions scripts):** "Stop maintaining your custom Terraform CI pipeline." Many teams have cobbled together bash scripts and GitHub Actions workflows. Position Yaffle as replacing 500+ lines of custom YAML with a single GitHub App installation.
+**Against DIY (GitHub Actions scripts):** "Stop maintaining your custom Terraform CI pipeline." Many teams have cobbled together bash scripts and GitHub Actions workflows. Position Yaffle around a GitHub App, `yaffle.toml`, cloud credentials, and explicit resource namespacing.
 
 The overarching positioning narrative is **"Vercel for Terraform"** — a reference that immediately communicates the value proposition to any developer who has used Vercel's preview deployments. Connect your GitHub repo, and every PR automatically gets an isolated Terraform workspace with a full plan, isolated state, and automatic cleanup on merge or close.
 
@@ -103,14 +103,16 @@ Every competitor's pricing model reveals what works and what doesn't. TFC's RUM 
 
 | Tier | Price | Includes |
 |------|-------|----------|
-| **Free** | $0 | 5 active preview workspaces, 2 team members, 50 plan runs/month, GitHub integration, state management |
-| **Team** | $299/month | 25 active preview workspaces, 10 team members, unlimited plan runs, RBAC, drift detection |
-| **Business** | $799/month | Unlimited preview workspaces, unlimited team members, SSO/SAML, audit logs, priority support |
-| **Enterprise** | Custom | Self-hosted option, advanced compliance, dedicated support, custom SLAs |
+| **Free** | $0/month | Limited concurrent and monthly previews, one named environment |
+| **Pro** | $99/month | Unlimited previews and named environments, approval workflows |
+| **Team** | $299/month | Team workflows, BYOA runners, named-environment history, priority support |
+
+SSO/SCIM, self-hosting, compliance certifications, and custom SLAs are not current
+offers and must not appear in pricing or sales claims.
 
 This pricing is anchored below Spacelift's Starter ($399/month), dramatically below TFC Standard at scale, and aligned with the market expectation that **a free tier must be genuinely useful** — not a trial credit that expires. The free tier serves as PLG acquisition while the Team tier captures the Series B–D beachhead at approachable ACV ($3,600/year).
 
-**Revenue model dynamics:** At 100 customers averaging $500/month (blended across tiers), Year 1 revenue reaches $600K. At 300 customers in Year 2, revenue approaches $1.8M. Enterprise deals at $50–150K ACV can accelerate this significantly. Industry benchmarks suggest **1–3% freemium conversion** for developer tools, meaning Yaffle needs ~10,000–30,000 free accounts to generate 100–300 paying customers.
+**Revenue model dynamics:** At 100 customers averaging $500/month (blended across tiers), Year 1 revenue reaches $600K. At 300 customers in Year 2, revenue approaches $1.8M. Any future upmarket offer requires separately implemented capabilities and support commitments. Industry benchmarks suggest **1–3% freemium conversion** for developer tools, meaning Yaffle needs ~10,000–30,000 free accounts to generate 100–300 paying customers.
 
 ### PLG-first with sales-assist above $10K ACV
 
@@ -189,7 +191,7 @@ The research points to a clear, high-conviction path. Yaffle enters a market wit
 
 **First, target platform teams at Series B–D startups** as the beachhead, then expand to growth-stage DevOps teams and FinTech. These segments combine high pain, fast procurement, and sufficient willingness to pay. The ~9,000–10,000 US companies using Terraform + GitHub represent a concrete, reachable market.
 
-**Second, position as "Vercel for Terraform"** — purpose-built, zero-config, per-PR ephemeral environments. This positioning instantly communicates value, differentiates from general-purpose IaC platforms, and creates a new category rather than competing in the crowded "Terraform Cloud alternative" space.
+**Second, position around whole-system PR previews** - purpose-built, configuration-driven, per-PR ephemeral environments. This communicates value without implying that cloud credentials, resource namespacing, or `yaffle.toml` are unnecessary.
 
 **Third, price per active preview workspace** with a genuinely useful free tier (5 workspaces, 2 users). Team tier at $299/month captures the beachhead. Avoid RUM pricing at all costs — the community backlash against TFC's model is an opportunity, not a template.
 

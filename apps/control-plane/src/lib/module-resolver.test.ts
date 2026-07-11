@@ -15,9 +15,14 @@ describe("parsePreviewContext", () => {
     expect(result).toEqual({ prNumber: 42 })
   })
 
-  test("parses PR-{n} (uppercase)", () => {
-    const result = parsePreviewContext("PR-123")
-    expect(result).toEqual({ prNumber: 123 })
+  test("rejects uppercase PR-{n} aliases", () => {
+    expect(parsePreviewContext("PR-123")).toBeNull()
+  })
+
+  test("rejects noncanonical PR numbers", () => {
+    expect(parsePreviewContext("pr-0")).toBeNull()
+    expect(parsePreviewContext("pr-01")).toBeNull()
+    expect(parsePreviewContext("pr-999999999999999999999")).toBeNull()
   })
 
   test("returns null for null input", () => {

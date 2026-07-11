@@ -15,11 +15,13 @@ version = 1
 [[environments]]
 name = "production"
 
-[[triggers.github.push]]
+[cloud]
+
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "production"
 
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 [[workspaces]]
@@ -40,17 +42,19 @@ name = "production"
 name = "staging"
 
 # Push to main → production
-[[triggers.github.push]]
+[cloud]
+
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "production"
 
 # Push to staging → staging
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/staging"]
 environment = "staging"
 
 # All PRs create transient previews
-[[triggers.github.pull_request]]
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 # Shared infra runs in both environments
@@ -70,16 +74,16 @@ path = "apps/api/infra"
 environments = ["*"]
 variables.domain = "{{ environment }}.yaffle.dev"
 
-# Publish a curated platform API to selected workspaces across repos or orgs
+# Publish a curated platform API to selected workspaces across repositories
 [[workspaces]]
 path = "platform/eks"
 environments = ["production", "staging"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
-outputs.cluster_ca = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:applications:apps/*"] }
+outputs.cluster_ca = { visibility = "public", consumers = ["acme:applications:apps/*"] }
 
 # Require approval for production changes
-[[approvals]]
+[[cloud.approvals]]
 workspaces = ["infra/production", "infra/shared"]
 environments = ["production"]
 approvers = [
@@ -105,6 +109,8 @@ version = 1
 Named environments your workspaces can target.
 
 ```toml
+version = 1
+
 [[environments]]
 name = "production"
 
@@ -114,7 +120,7 @@ name = "staging"
 
 PR previews are *transient* environments—they don't need to be declared.
 
-### `[[triggers.github.push]]`
+### `[[cloud.triggers.github.push]]`
 
 Run workspaces when a ref (branch or tag) is pushed.
 
@@ -125,18 +131,29 @@ Run workspaces when a ref (branch or tag) is pushed.
 | `environment` | Which environment to target |
 
 ```toml
+version = 1
+
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+
+[[environments]]
+name = "release"
+
 # Trigger on branch push
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "production"
 
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/staging/*"]
 exclude_ref_patterns = ["refs/heads/staging/archive/**"]
 environment = "staging"
 
 # Trigger on tag push
-[[triggers.github.push]]
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/tags/v*"]
 environment = "release"
 ```
@@ -145,7 +162,7 @@ environment = "release"
 
 Ref globs use `*` for a single path segment and `**` to match across `/`.
 
-### `[[triggers.github.pull_request]]`
+### `[[cloud.triggers.github.pull_request]]`
 
 Create transient previews for PRs.
 
@@ -155,7 +172,9 @@ Create transient previews for PRs.
 | `exclude_branch_patterns` | Optional exclude globs applied after includes |
 
 ```toml
-[[triggers.github.pull_request]]
+version = 1
+
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 exclude_branch_patterns = ["dependabot/**"]
 ```
@@ -174,6 +193,8 @@ OpenTofu directories Yaffle manages. (Terraform directories work too—OpenTofu 
 | `outputs` | Optional per-output visibility rules for cross-repo module consumers |
 
 ```toml
+version = 1
+
 [[workspaces]]
 path = "infra/api"
 environments = ["*"]
@@ -192,6 +213,12 @@ variables.region = "us-east-1"
 Variables are injected as `-var` flags. Use `{{ environment }}` to template the current environment name.
 
 ```toml
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
 variables.environment = "{{ environment }}"
 variables.domain = "{{ environment }}.example.com"
 ```
@@ -201,12 +228,20 @@ variables.domain = "{{ environment }}.example.com"
 Outputs are internal by default for same-repo consumers. Use `outputs.<name>` to make specific outputs public for allowlisted external consumers.
 
 ```toml
+version = 1
+
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+
 [[workspaces]]
 path = "platform/database"
 environments = ["production", "staging"]
 
-outputs.connection_string = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
-outputs.secret_arn = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
+outputs.connection_string = { visibility = "public", consumers = ["acme:applications:apps/*"] }
+outputs.secret_arn = { visibility = "public", consumers = ["acme:applications:apps/*"] }
 ```
 
 `outputs.<name>` fields:
@@ -219,7 +254,8 @@ outputs.secret_arn = { visibility = "public", consumers = ["acme:yaffle-dot-dev/
 Rules:
 
 - `internal` outputs are only available to downstream workspaces in the same repo
-- `public` outputs are available only to explicitly allowlisted workspaces in other repos or orgs
+- `public` outputs are available only to explicitly allowlisted workspaces in other repositories in the same Yaffle org during beta
+- cross-organization sharing is unsupported in beta and planned as a post-beta enterprise capability
 - same-repo consumers can still read the full module surface
 - consumer selectors match Yaffle org slug, repo slug, and workspace path
 
@@ -227,7 +263,7 @@ Rules:
 Public exports are for stable platform APIs. If a Terraform output is marked `sensitive = true`, don't export it publicly. Store the value in Secrets Manager or SSM, export the ARN or name instead, and grant consumers IAM access to read it directly.
 </Aside>
 
-### `[[approvals]]`
+### `[[cloud.approvals]]`
 
 Require approval before applying.
 
@@ -238,7 +274,12 @@ Require approval before applying.
 | `approvers` | Who can approve |
 
 ```toml
-[[approvals]]
+version = 1
+
+[[environments]]
+name = "production"
+
+[[cloud.approvals]]
 workspaces = ["infra/*"]
 environments = ["production"]
 approvers = [
@@ -280,11 +321,13 @@ Use `{{ }}` in variable values. Yaffle uses [MiniJinja](https://github.com/mitsu
 | `{{ workspace_path }}` | Workspace path | `infra/network` |
 | `{{ branch }}` | Git branch name | `main`, `feature/login` |
 | `{{ commit_sha }}` | Full commit SHA | `a1b2c3d4...` |
-| `{{ pr_number }}` | PR number (null for named envs) | `42` |
+| `{{ pr_number }}` | GitHub PR number (null for every other source) | `42` |
 
 ### Examples
 
 ```toml
+version = 1
+
 [[workspaces]]
 path = "infra"
 environments = ["*"]
@@ -298,6 +341,12 @@ variables.commit = "{{ commit_sha }}"
 MiniJinja filters are supported:
 
 ```toml
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
 variables.branch_slug = "{{ branch | replace('/', '-') }}"
 variables.env_upper = "{{ environment | upper }}"
 variables.fallback = "{{ pr_number | default('main') }}"
@@ -306,6 +355,12 @@ variables.fallback = "{{ pr_number | default('main') }}"
 ### Conditionals
 
 ```toml
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+
 variables.domain = "{% if environment_kind == 'transient' %}preview-{{ pr_number }}{% else %}{{ environment }}{% endif %}.example.com"
 ```
 

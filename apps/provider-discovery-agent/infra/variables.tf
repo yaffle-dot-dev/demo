@@ -1,6 +1,6 @@
 variable "environment" {
   type        = string
-  description = "Environment name - branch name (e.g., 'main') or preview (e.g., 'prvw-42')"
+  description = "Environment name - branch name (e.g., 'main') or transient environment (e.g., 'pr-42')"
 }
 
 variable "environment_kind" {

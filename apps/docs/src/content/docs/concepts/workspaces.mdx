@@ -11,6 +11,8 @@ import Mermaid from "../../../components/Mermaid.astro"
 A workspace is a directory containing OpenTofu (or Terraform) files. Yaffle runs `plan` and `apply` independently for each workspace.
 
 ```toml
+version = 1
+
 [[workspaces]]
 path = "infra/network"
 environments = ["*"]
@@ -36,6 +38,8 @@ repo/
 ```
 
 ```toml
+version = 1
+
 [[workspaces]]
 path = "infra/network"
 environments = ["*"]
@@ -111,17 +115,28 @@ Only same-repo Yaffle module references become DAG edges. Cross-repo modules are
 A workspace can expose two different output surfaces:
 
 - `internal` outputs are available only to downstream workspaces in the same repo
-- `public` outputs are available to explicitly allowlisted workspaces in other repos or orgs
+- `public` outputs are available to explicitly allowlisted workspaces in other repositories in the same Yaffle org during beta
 
 Outputs are internal by default. You only need to configure the outputs you want to make public.
 
+The beta shared-output contract uses immutable, versioned snapshots rather than a mutable
+live record. Each snapshot includes a stable snapshot ID and publication version,
+producer, source revision, opaque state identity and serial, publication time, values,
+and sensitivity metadata. Transport and consumer pinning are implemented by downstream
+beta work.
+
 ```toml
+version = 1
+
+[[environments]]
+name = "main"
+
 [[workspaces]]
 path = "platform/eks"
 environments = ["main"]
 
-outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
-outputs.cluster_ca = { visibility = "public", consumers = ["acme:yaffle-dot-dev/yaffle:apps/*"] }
+outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:applications:apps/*"] }
+outputs.cluster_ca = { visibility = "public", consumers = ["acme:applications:apps/*"] }
 ```
 
 This means:
@@ -134,6 +149,9 @@ This means:
 Use `public` outputs for stable platform APIs. Keep implementation details and sensitive internals out of that surface.
 </Aside>
 
+The contract requires sensitive values to be redacted before a snapshot exists. Publish
+a secret reference such as an ARN instead of the secret value itself.
+
 ## Intra-repo vs cross-repo modules
 
 Yaffle treats module sources differently depending on which repo they point at.
@@ -144,7 +162,7 @@ module "shared" {
   source = "yaffle.dev/acme--applications/infra--shared/yaffle"
 }
 
-# Different repo or org -> external module, not a DAG edge
+# Different repo in the same Yaffle org -> external module, not a DAG edge
 module "cluster" {
   source = "yaffle.dev/acme--platform/platform--eks/yaffle"
 }
@@ -154,7 +172,7 @@ Rules:
 
 - same-repo modules participate in dependency inference, ordering, and blast-radius analysis
 - cross-repo modules resolve through the registry but do not become DAG edges in the current repo
-- cross-org modules are valid external dependencies when the producer allowlists them
+- cross-org module sharing is unsupported in beta and planned as a post-beta enterprise capability
 
 ## Execution order
 
@@ -214,6 +232,8 @@ Preview environments require approval before `apply` runs. Configure auto-approv
 Set variables per workspace:
 
 ```toml
+version = 1
+
 [[workspaces]]
 path = "infra/compute"
 environments = ["*"]
@@ -224,6 +244,8 @@ variables.desired_count = 2
 Use template variables for environment-specific values:
 
 ```toml
+version = 1
+
 [[workspaces]]
 path = "infra/compute"
 environments = ["*"]
@@ -236,6 +258,14 @@ variables.domain = "{{ environment }}.example.com"
 Control which environments a workspace runs in:
 
 ```toml
+version = 1
+
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+
 # Runs in all environments (including previews)
 [[workspaces]]
 path = "infra/network"

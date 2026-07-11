@@ -97,7 +97,7 @@ session cookies and principal tokens are not interchangeable.
 A Yaffle organization is independent from GitHub organizations. The
 `github_installations` table links them. This enables:
 
-- Enterprise SSO without GitHub as identity source
+- A possible future identity provider other than GitHub (not currently offered)
 - Organizations spanning multiple GitHub orgs
 - Future support for GitLab, Bitbucket, etc.
 
@@ -223,7 +223,7 @@ Organizations have a `membership_mode` controlling how users join:
 |------|----------|
 | `github_self_join` | Users can join if they're members of a linked GitHub org (default) |
 | `invite_only` | Users must be explicitly invited by an admin |
-| `sso_only` | Users can only join via SSO/SCIM provisioning |
+| `sso_only` | Reserved for a future SSO/SCIM implementation; not currently supported |
 
 ### Membership Sources
 
@@ -234,7 +234,7 @@ The `source` field on `org_memberships` records how access was granted:
 | `admin_bootstrap` | User installed GitHub App, became first admin |
 | `github_self_join` | User joined via GitHub org membership verification |
 | `invite` | User was invited by an admin |
-| `scim` | User was provisioned via SCIM directory sync |
+| `scim` | Reserved source value; SCIM provisioning is not currently supported |
 
 ---
 

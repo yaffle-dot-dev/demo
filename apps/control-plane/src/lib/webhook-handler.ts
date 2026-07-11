@@ -787,7 +787,7 @@ async function handlePrOpenedOrUpdated(
     return
   }
 
-  // Get workspaces that apply to transient (PR) environments
+  // Get workspaces that apply to the GitHub PR's transient environment
   const environmentName = buildPrEnvironmentName(ctx.prNumber)
   const workspacePaths = getWorkspacesForEnvironment(config, environmentName, true)
 

@@ -1,6 +1,6 @@
 variable "environment" {
   type        = string
-  description = "Environment name (branch name, e.g. 'main', or preview like 'prvw-42')"
+  description = "Environment name (branch name, e.g. 'main', or transient environment like 'pr-42')"
 }
 
 variable "aws_region" {

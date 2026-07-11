@@ -1,6 +1,6 @@
 ---
 title: Starting with Previews
-description: Try Yaffle without migrating production state
+description: Use Yaffle previews while existing CI owns production
 ---
 
 import { Aside } from "@astrojs/starlight/components"
@@ -9,7 +9,9 @@ import { Aside } from "@astrojs/starlight/components"
 
 You're already running Terraform or OpenTofu in production—maybe with Atlantis, Terraform Cloud, or CI scripts. Migrating production state is a big commitment for a proof of concept.
 
-Yaffle doesn't require you to go all-in. You can use Yaffle exclusively for preview environments while keeping your existing production workflow. Get ephemeral PR environments today, migrate production when you're ready.
+Yaffle doesn't require you to go all-in. You can use Yaffle exclusively for preview
+environments while keeping your existing production workflow. This is an equal supported
+steady state, not merely a migration phase.
 
 ## What you get
 
@@ -38,6 +40,7 @@ The key: define workspaces but only trigger on pull requests.
 
 ```toml
 # yaffle.toml
+version = 1
 
 # No named environments—we're not managing production
 # Previews are created automatically for PRs
@@ -47,7 +50,9 @@ path = "infra"
 environments = ["*"]
 
 # Only trigger on PRs, not pushes
-[[triggers.github.pull_request]]
+[cloud]
+
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
 # No push triggers—production stays with your existing tool
@@ -109,11 +114,15 @@ projects:
 
 ```toml
 # yaffle.toml (new—manages previews only)
+version = 1
+
 [[workspaces]]
 path = "infra"
 environments = ["*"]
 
-[[triggers.github.pull_request]]
+[cloud]
+
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 ```
 
@@ -133,11 +142,15 @@ If you're using TFC with VCS-driven runs:
 
 ```toml
 # yaffle.toml (new—manages previews only)
+version = 1
+
 [[workspaces]]
 path = "infra"
 environments = ["*"]
 
-[[triggers.github.pull_request]]
+[cloud]
+
+[[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 ```
 
@@ -145,27 +158,31 @@ TFC runs speculative plans on PRs. Yaffle creates real preview infrastructure. D
 
 ## Limitations
 
-Using Yaffle for previews only has some limitations compared to full adoption:
+Using Yaffle for previews only has different integration requirements:
 
-| Feature | Previews only | Full Yaffle |
+| Feature | Customer-CI production | Yaffle-managed named environment |
 |---------|---------------|-------------|
 | Ephemeral PR environments | Yes | Yes |
 | Cross-workspace modules (within preview) | Yes | Yes |
-| Production applies | No (use existing tool) | Yes |
-| Named environment outputs | No | Yes |
-| Platform as product pattern | No | Yes |
+| Production applies | Existing owner | Yaffle-managed or existing owner |
+| Named environment outputs | External publication (planned) | Managed publication; external publication planned |
+| Platform as product pattern | Planned through external snapshots | Managed snapshots; external snapshots planned |
 
-The key limitation: you can't consume outputs from named environments. If your platform team runs shared infrastructure in a `production` environment and you want to reference their VPC outputs, that requires Yaffle to manage those named environments too.
+External named-environment snapshot publication is planned beta work, not a currently
+available integration. The frozen contract does not require Yaffle to own that producer's
+lifecycle when publication is implemented.
 
 Within a preview, cross-workspace references work fine—your `compute` workspace can consume outputs from your `network` workspace as long as both are part of the same PR.
 
-## Graduating to full Yaffle
+## Optional: let Yaffle manage named environments
 
-When you're ready to migrate production:
+If you want Yaffle, rather than customer CI, to own a named environment:
 
 ### 1. Add named environments
 
 ```toml
+version = 1
+
 [[environments]]
 name = "production"
 
@@ -176,7 +193,14 @@ name = "staging"
 ### 2. Add push triggers
 
 ```toml
-[[triggers.github.push]]
+version = 1
+
+[[environments]]
+name = "production"
+
+[cloud]
+
+[[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
 environment = "production"
 ```
@@ -187,15 +211,16 @@ Yaffle can import your existing state, or you can start fresh and `tofu import` 
 
 ### 4. Remove your old tool
 
-Once Yaffle is managing production, retire Atlantis/TFC/your CI scripts.
+Retire the old owner for that environment before enabling Yaffle applies. Never allow two
+systems to own the same state. You can keep customer CI as the owner indefinitely.
 
 ## Summary
 
 Starting with previews lets you:
 
-1. **Try Yaffle today** without migrating production state
+1. **Add Yaffle previews** without transferring production ownership
 2. **Get real value immediately**—ephemeral PR environments
 3. **Reduce risk**—previews are isolated, production is unchanged
-4. **Graduate when ready**—add named environments and push triggers later
+4. **Choose ownership per environment**—add Yaffle-managed named environments only when useful
 
-Start with previews, migrate production when you're confident. No big bang required.
+Use Yaffle-managed production or keep your existing CI. Both are first-class steady states.

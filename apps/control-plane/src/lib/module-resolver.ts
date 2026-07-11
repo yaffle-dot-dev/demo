@@ -28,14 +28,13 @@ export function parsePreviewContext(value: string | null): PreviewContext | null
     return null
   }
 
-  const match = value.match(/^pr-(\d+)$/i)
+  const match = value.match(/^pr-([1-9]\d*)$/)
   if (!match) {
     return null
   }
 
-  return {
-    prNumber: parseInt(match[1], 10),
-  }
+  const prNumber = Number.parseInt(match[1], 10)
+  return Number.isSafeInteger(prNumber) ? { prNumber } : null
 }
 
 /**

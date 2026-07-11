@@ -30,7 +30,7 @@ variable "environment_kind" {
 
 variable "environment" {
   type        = string
-  description = "Environment name (e.g. 'main', 'prvw-42')"
+  description = "Environment name (e.g. named 'main' or transient 'pr-42')"
 }
 
 variable "aws_region" {

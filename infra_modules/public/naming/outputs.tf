@@ -1,5 +1,5 @@
 output "suffix" {
-  description = "Resource name suffix: {environment}-{region_short} (e.g. 'main-use1', 'prvw-42-usw2')"
+  description = "Resource name suffix: {environment}-{region_short} (e.g. 'main-use1', 'pr-42-usw2')"
   value       = local.suffix
 }
 

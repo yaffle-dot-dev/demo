@@ -164,7 +164,7 @@ Once we're in the door with preview environments, we expand to the full vision:
 ### Phase 3: Platform as Product
 - Platform team publishes versioned offerings
 - Tiered stability (platinum/gold/bronze)
-- Typed contracts, clear SLAs
+- Typed contracts with explicit snapshot provenance
 - Product teams consume through self-service
 
 ### Phase 4: Safe Change Management for Everything
@@ -192,7 +192,7 @@ someone who hasn't felt the pain of Phase 1.
 
 | Competitor | Our Advantage |
 |------------|---------------|
-| "Shared staging environment" | Isolated, PR-specific, no drift |
+| "Shared staging environment" | Isolated, PR-specific state |
 | "Deploy and hope" | Test before production |
 | "Plan output is good enough" | Actually create the infra and test on it |
 | Internal tooling | We're a product, not a side project |
@@ -249,7 +249,7 @@ These are other ways we COULD position, but aren't the recommended wedge:
 | Dashboard/config previews | Phase 2 | Extend beyond infra |
 | Module registry | Phase 3 | Platform-as-product enabler |
 | Tiered workspaces | Phase 3 | Stability tiers for platform teams |
-| BYOA deployment | Phase 4 | Enterprise/compliance deals |
+| BYOA deployment | Phase 4 | Customer-account isolation |
 
 ### What We've Built - Validation Check
 

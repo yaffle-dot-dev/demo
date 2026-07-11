@@ -27,7 +27,7 @@ Yaffle never pushes code.
 | `pull_request.opened` | Plan + apply preview |
 | `pull_request.synchronize` | Plan + apply preview |
 | `pull_request.closed` | Destroy preview |
-| `pull_request.closed` (merged) | Apply production + destroy preview |
+| `pull_request.closed` (merged) | Destroy preview; a configured push trigger may apply a named environment |
 | `push` | Apply to matching environment |
 
 ## Check runs

@@ -60,7 +60,7 @@ describe("renderComment", () => {
       planSummary: "+1, ~0, -0",
       outputs: {
         cluster_arn: { value: "arn:aws:ecs:us-east-1:123:cluster/app", type: "string" },
-        env: { value: "preview-pr-42", type: "string" },
+        env: { value: "pr-42", type: "string" },
       },
       planCheckRun: planCheck,
       applyCheckRun: applyCheck,
@@ -77,7 +77,7 @@ describe("renderComment", () => {
     // Outputs section
     expect(result).toContain("<code>infra</code> outputs")
     expect(result).toContain("| `cluster_arn` | `arn:aws:ecs:us-east-1:123:cluster/app` |")
-    expect(result).toContain("| `env` | `preview-pr-42` |")
+    expect(result).toContain("| `env` | `pr-42` |")
   })
 
   test("renders multi-workspace with mixed states", () => {

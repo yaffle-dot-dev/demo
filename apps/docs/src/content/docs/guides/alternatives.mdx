@@ -12,9 +12,9 @@ import { Aside } from "@astrojs/starlight/components"
 | **Preview environments** | First-class | Plan only | Possible (complex) | Possible (extra cost) | No |
 | **OpenTofu native** | Yes | No (Terraform only) | Yes | Yes | Either |
 | **Pricing model** | Per workspace | Per resource/month | Per run/concurrency | Per environment | Free (self-hosted) |
-| **Self-hosted option** | Yes | Enterprise only | Yes | No | Yes (only option) |
+| **Self-hosted option** | Not currently offered | Enterprise only | Yes | No | Yes (only option) |
 | **Operational overhead** | None | None | None | None | High |
-| **Setup time** | ~5 minutes | ~30 minutes | ~30 minutes | ~30 minutes | Hours/days |
+| **Setup** | Repository config + cloud credentials | Workspace configuration | Stack configuration | Environment configuration | Operated by customer |
 
 ## vs Terraform Cloud / Enterprise
 
@@ -40,7 +40,7 @@ TFC's "speculative plans" show what would change but don't create infrastructure
 **Where Yaffle wins:**
 
 - **Purpose-built previews** — Spacelift can do preview-like workflows, but requires custom orchestration with push policies, the Spacelift Terraform provider, and stack dependencies. Yaffle has previews built-in.
-- **Simpler setup** — Spacelift's power comes with complexity; Yaffle is `yaffle.toml` and done
+- **Focused setup** — Yaffle uses `yaffle.toml`, plus explicit cloud credentials and resource namespacing
 - **Lower price point** — Spacelift starts at $399/mo; Yaffle Team is $299/mo
 
 **When Spacelift might be better:** If you need multi-IaC support across Terraform, CloudFormation, and Ansible in the same platform.
@@ -63,11 +63,10 @@ TFC's "speculative plans" show what would change but don't create infrastructure
 
 **Where Yaffle wins:**
 
-- **Zero ops** — Atlantis is self-hosted; you manage servers, updates, and scaling
+- **Hosted control plane** — Atlantis is self-hosted; Yaffle operates its hosted service
 - **Preview environments** — Atlantis only shows plans; no preview infrastructure
 - **RBAC** — Atlantis has no access control beyond "can you push?"
 - **Parallel runs** — Atlantis is single-threaded; Yaffle runs workspaces in parallel
-- **Drift detection** — Atlantis has none; Yaffle detects when infrastructure drifts
 
 **When Atlantis might be better:** If you want fully self-hosted, open-source, and can accept the operational overhead.
 
@@ -97,7 +96,11 @@ Yaffle is the only platform where **preview environments are the core product**,
 
 ```
 Other tools:  Plan → Merge → Apply → Hope it works
-Yaffle:       Plan → Apply preview → Test it → Merge → Apply production
+Yaffle:       Plan → Apply preview → Test it → Merge → Clean up preview
 ```
 
 You see your infrastructure running before it hits production. That's the difference.
+
+Production ownership is independent: Yaffle can manage a named environment, or customer
+CI can remain its owner. Yaffle does not claim exact-plan promotion between preview and
+production.

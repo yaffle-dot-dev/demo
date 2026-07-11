@@ -9,7 +9,7 @@ description: Plan, apply, destroy
 |------|---------|------|
 | `plan` | `tofu plan` | Always runs first |
 | `apply` | `tofu apply` | After successful plan |
-| `destroy` | `tofu destroy` | PR closed/merged |
+| `destroy` | `tofu destroy` | Transient source closes or an explicit destroy is requested |
 
 ## Execution
 
@@ -50,12 +50,6 @@ curl https://yaffle.dev/api/runs/{id}/logs
 
 ## Secrets
 
-Secrets are fetched from AWS Secrets Manager at runtime:
-
-```toml
-[[workspaces]]
-path = "infra"
-secrets.db_password = "arn:aws:secretsmanager:us-east-1:123:secret:db-password"
-```
-
-Available as `var.db_password` in OpenTofu. Never logged.
+Provider credentials are resolved from scoped Yaffle Connections at runtime and are not
+declared as secret values in `yaffle.toml`. They are injected only into the authorized
+run and are never logged.

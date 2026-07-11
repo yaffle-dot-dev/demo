@@ -1,13 +1,16 @@
 ---
 title: Quick Start
-description: Set up Yaffle in 5 minutes
+description: Configure your first Yaffle preview
 ---
 
 import { Steps, Aside } from "@astrojs/starlight/components"
 
-Get Yaffle running your OpenTofu in under 5 minutes.
+Configure Yaffle to run your existing OpenTofu in pull-request environments.
 
-Yaffle is fully compatible with existing Terraform configurations—no changes needed.
+Yaffle automatically isolates state and runner execution today. During beta, resources
+with globally unique provider names usually need to include the environment name so
+concurrent previews do not collide. Provider-aware isolation without configuration
+changes remains a product goal, not a constraint of the environment model.
 
 <Steps>
 1. ### Install the GitHub App
@@ -30,15 +33,17 @@ Yaffle is fully compatible with existing Terraform configurations—no changes n
    [[environments]]
    name = "staging"
 
-   [[triggers.github.push]]
+   [cloud]
+
+   [[cloud.triggers.github.push]]
    ref_patterns = ["refs/heads/main"]
    environment = "production"
 
-   [[triggers.github.push]]
+   [[cloud.triggers.github.push]]
    ref_patterns = ["refs/heads/staging"]
    environment = "staging"
 
-   [[triggers.github.pull_request]]
+   [[cloud.triggers.github.pull_request]]
    branch_patterns = ["*"]
 
    [[workspaces]]
@@ -47,12 +52,11 @@ Yaffle is fully compatible with existing Terraform configurations—no changes n
    variables.environment = "{{ environment }}"
    ```
 
-4. ### Push to main
+4. ### Choose who owns production
 
-   Yaffle will:
-   - Run `tofu plan`
-   - Post results to the commit
-   - Apply to production
+   Keep the push trigger above if Yaffle should manage the named `production` environment.
+   Otherwise remove both push triggers and named environments; your existing CI can remain the
+   production owner.
 
 5. ### Open a PR
 
@@ -97,7 +101,7 @@ Applied successfully.
 On PR:
 
 ```
-Yaffle / infra (preview: pr-42)
+Yaffle / infra (environment: pr-42)
 Plan: +1 ~0 -0
 
 + aws_s3_bucket.data
@@ -114,5 +118,5 @@ Use the [outputs action](/docs/guides/github/) to fetch Terraform outputs in you
 ## Next
 
 - [Configuration](/docs/reference/configuration/) — Full config reference
-- [How it works](/docs/concepts/how-it-works/) — Architecture overview
+- [How it works](/docs/getting-started/how-it-works/) — Architecture overview
 - [AWS setup](/docs/guides/aws/) — Credential configuration

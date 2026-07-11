@@ -55,17 +55,12 @@ async function unauthReq(path: string): Promise<Response> {
   return app.request(path)
 }
 
-let seedCounter = 0
-
 async function seedPreview(
   overrides: Partial<typeof previews.$inferInsert> = {},
 ): Promise<typeof previews.$inferSelect> {
-  // Generate unique suffix for constraint-bound fields to avoid conflicts in parallel tests
-  // The unique constraint is on (org_id, repo, environment_name, workspace_path)
-  const counter = ++seedCounter
   const prNumber = overrides.prNumber ?? 42
   const workspacePath = overrides.workspacePath ?? "infra"
-  const environmentName = overrides.environmentName ?? `pr-${prNumber}-${counter}`
+  const environmentName = overrides.environmentName ?? `pr-${prNumber}`
   
   const rows = await db
     .insert(previews)
@@ -239,7 +234,7 @@ describe("GET /api/previews/overview", () => {
     await seedPreview({
       createdAt,
       statusChangedAt,
-      environmentName: "pr-42-overview",
+      environmentName: "pr-42",
     })
 
     await rebuildEnvironmentGroupProjections({

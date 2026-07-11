@@ -129,7 +129,10 @@ environments = ["*"]
 variables.environment = "{{ environment }}"
 ```
 
-**PR opened → we run their TF with preview workspace → PR merged → we run with production workspace**
+**PR opened → we run their TF in `pr-{number}` → PR closed or merged → we destroy the preview**
+
+Production is optional. Customers may configure a Yaffle-managed named environment,
+or keep existing CI as the production owner. Both are supported steady states.
 
 ### Mode 2: Codegen (Later)
 
@@ -170,7 +173,7 @@ yaffle/
 1. Open PR with infra changes
 2. Yaffle (running locally initially) plans against preview workspace
 3. See plan in GitHub Check
-4. Merge → applies to production workspace
+4. Merge → destroys the preview; this repository's configured `main` trigger separately applies production
 
 **Bootstrap sequence:**
 1. Run TF locally to create initial infra
@@ -181,6 +184,24 @@ yaffle/
 ---
 
 ## State Model
+
+Environment ownership has four public classes:
+
+| Class | Owner and lifecycle |
+|-------|---------------------|
+| `transient_managed` | Yaffle owns bounded execution, state, and cleanup. GitHub PR environments use only `pr-{number}` publicly. |
+| `named_managed` | Yaffle owns a long-lived declared environment. |
+| `named_external` | Customer CI or another orchestrator owns a long-lived environment and may publish outputs. |
+| `static_external` | Yaffle consumes an external dependency without owning its lifecycle. |
+
+The managed runtime `EnvironmentKind` (`named` or `transient`) is separate from
+ownership class. External ownership does not imply a Yaffle-managed runtime.
+
+Shared outputs are immutable, versioned snapshots. Every snapshot records its own stable
+ID and publication version, authenticated producer identity, source revision, opaque
+state identity and serial, publication time, and structurally redacted values with
+per-output sensitivity metadata. Consumers pin an authorized snapshot; a new publication
+creates a new version and sensitive values fail closed at trust boundaries.
 
 ```
 S3 Bucket: yaffle-state-{org}
@@ -202,7 +223,7 @@ S3 Bucket: yaffle-state-{org}
 - PR opened → create `previews/pr-{n}/`
 - PR updated → apply to same state
 - PR closed → `terraform destroy` + delete state
-- PR merged → apply to `production/main/` + destroy preview
+- PR merged → destroy preview; a configured named-environment trigger may run independently
 
 ---
 
@@ -224,8 +245,8 @@ resource "aws_s3_bucket" "data" {
 ```
 
 **Yaffle injects:**
-- Preview: `environment = "preview-pr-247"`
-- Production: `environment = "production"`
+- Pull request: `environment = "pr-247"`
+- Named environment example: `environment = "production"`
 
 ---
 
@@ -258,7 +279,7 @@ WORKSPACE_S3_PATH=$1    # s3://bucket/workspace.tar.gz
 STATE_BUCKET=$2
 STATE_KEY=$3
 COMMAND=$4              # plan | apply | destroy
-VARS_JSON=$5            # {"environment": "preview-pr-247", ...}
+VARS_JSON=$5            # {"environment": "pr-247", ...}
 
 # Download workspace
 aws s3 cp $WORKSPACE_S3_PATH workspace.tar.gz
@@ -356,7 +377,7 @@ async function runTerraform(opts: {
 - `pull_request.opened` → plan + apply preview
 - `pull_request.synchronize` → plan + apply preview (update)
 - `pull_request.closed` → destroy preview
-- `pull_request.closed` (merged) → apply production + destroy preview
+- `pull_request.closed` (merged) → destroy preview; production follows its configured owner
 
 ### Check Runs
 
@@ -376,7 +397,7 @@ Terraform will perform the following actions:
 
   # aws_elasticache_cluster.cache will be created
   + resource "aws_elasticache_cluster" "cache" {
-      + cluster_id           = "myapp-cache-preview-pr-247"
+      + cluster_id           = "myapp-cache-pr-247"
       + engine               = "redis"
       + node_type            = "cache.t3.micro"
       ...
@@ -429,8 +450,8 @@ approvers = ["github:team:acme/platform"]
 |-------|--------|-----------|
 | **Control Plane** | Hono + Bun | Lightweight |
 | **Frontend** | SvelteKit | Elegant |
-| **Auth** | BetterAuth | SSO-ready, DB sessions |
-| **Database** | Postgres (Neon → RDS) | Jobs, metadata, sessions |
+| **Auth** | BetterAuth | GitHub sign-in, DB sessions |
+| **Database** | Postgres (Planetscale) | Jobs, metadata, sessions |
 | **TF Execution** | ECS Fargate | Isolated, scalable |
 | **State Storage** | S3 | Standard TF backend |
 | **State Locking** | DynamoDB | Standard TF locking |
@@ -445,7 +466,7 @@ approvers = ["github:team:acme/platform"]
 ### Design Principles
 
 1. **Frictionless for early adopters** - Install GitHub App, share link, team joins in minutes
-2. **Enterprise-ready** - SSO/SAML, audit trails, compliance when needed
+2. **Honest beta scope** - GitHub-backed access and implemented authorization only
 3. **Decoupled from GitHub** - Yaffle orgs are independent; GitHub is one integration
 
 ### How Membership Works
@@ -475,11 +496,8 @@ One click → Bob is a viewer
 - **Explicit action**: Users click "Join", not auto-added
 - **Auditable**: Every membership records its source
 
-**Enterprise upgrade path:**
-
-- Set `membership_mode = 'invite_only'` or `'sso_only'`
-- Self-join disabled, existing members keep access
-- New members via invite or SCIM provisioning
+Future identity providers or provisioning methods require separate implementation and
+security review; SSO and SCIM are not current product capabilities.
 
 ### Roles
 

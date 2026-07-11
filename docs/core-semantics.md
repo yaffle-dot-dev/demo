@@ -120,9 +120,48 @@ A temporary environment created for a bounded purpose or lifetime, for example:
 
 - `pr-7`
 - `review-foo`
+- `mr-12`
+
+For GitHub pull requests, `pr-{number}` is the only public transient name. Internal
+storage keys and database IDs are implementation details, not alternate environment
+identities.
 
 The canonical public identity for both named and transient environments is the
 environment name.
+
+### Environment source
+
+The source records what requested or owns the lifecycle event, such as a GitHub pull
+request, GitLab merge request, API request, or manual review session. Source metadata is
+separate from:
+
+- the environment name (identity)
+- `EnvironmentKind` (managed lifetime)
+- environment ownership class
+
+A GitHub source may carry a pull-request number and derive `pr-{number}`. Other transient
+sources do not need PR metadata or PR-shaped names. Runtime behavior must not infer source
+solely from `EnvironmentKind` or an environment-name prefix.
+
+### Environment ownership classes
+
+Ownership and lifetime combine into four environment classes:
+
+| Class | Lifecycle owner | Lifetime | Contract |
+|-------|-----------------|----------|----------|
+| `transient_managed` | Yaffle | Bounded by a trigger or requested lifecycle | Yaffle plans, applies, locks, and destroys isolated state. A GitHub pull-request source uses `pr-{number}`; other sources may define other names. |
+| `named_managed` | Yaffle | Long-lived | Yaffle plans, applies, locks, and retains state for a declared named environment. |
+| `named_external` | Customer CI or another orchestrator | Long-lived | The external owner plans and applies. It may publish authorized output snapshots; Yaffle never mutates or destroys it. |
+| `static_external` | External system or operator | Independent of a Yaffle environment lifecycle | Yaffle consumes a pinned external dependency or snapshot and never operates its producer. |
+
+These classes describe product ownership. They are separate from the managed runtime
+`EnvironmentKind`, whose values are only `named` and `transient`. For example,
+`transient_managed` maps to runtime kind `transient`, and `named_managed` maps to
+runtime kind `named`; external classes do not imply a Yaffle-managed runtime.
+
+Production is a role a team may assign to a named environment, not a required Yaffle
+environment. A Yaffle-managed named production environment and production owned by
+customer CI are equally supported steady states.
 
 ### Outputs
 
@@ -131,6 +170,25 @@ environment.
 
 They are the official handoff surface between workspaces and higher-level
 orchestration.
+
+Shared outputs cross workspace or repository boundaries as immutable, versioned
+snapshots. Every snapshot records:
+
+- stable snapshot ID and publication version
+- authenticated producer identity (stable organization/repository IDs, display names,
+  environment, and workspace)
+- source revision
+- opaque state identity and state serial, never a backend URL or state key
+- publication time
+- output values and per-output sensitivity metadata, with sensitive values redacted
+
+A publication creates a new snapshot; it never edits an existing snapshot. Consumers
+pin a snapshot version and receive only outputs authorized for that consumer. Sensitive
+values fail closed at public or external boundaries rather than being copied into
+modules, actions, logs, or lifecycle payloads.
+
+Publication derives producer identity and tenancy from the authenticated publisher; it
+never trusts organization or repository names supplied in a snapshot payload.
 
 ### Converge
 

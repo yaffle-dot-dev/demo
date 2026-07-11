@@ -70,7 +70,7 @@ variables.sandbox_mode = true
 # =============================================================================
 # Define when Terraform runs are triggered based on Git events.
 
-[triggers.github]
+[cloud]
 
 # Push triggers - map refs to environments
 # When a push happens to a matching ref, the environment is deployed

@@ -1,250 +1,43 @@
-# Yaffle Configuration
+# Configuration Implementation Notes
 
-Yaffle is configured via a `yaffle.toml` file in the root of your repository.
+The public `yaffle.toml` contract is documented at
+<https://yaffle.dev/docs/reference/configuration/>. Its source of truth is
+`apps/docs/src/content/docs/reference/configuration.mdx`. Do not duplicate the public
+field reference or setup examples in this file.
 
-## Overview
+## Parser Implementations
 
-The configuration defines:
+Yaffle currently has two native parser implementations:
 
-- **Environments** - Named, long-lived deployment targets (e.g., `main`, `staging`)
-- **Workspaces** - Terraform root modules and which environments they deploy to
-- **Cloud automation** - Cloud-only triggers and forge-driven lifecycle
-- **Cloud policy** - Cloud-only approval and workflow policy
+- TypeScript control plane: `apps/control-plane/src/lib/config-toml.ts`
+- Rust CLI and engine: `crates/yaffle-config/src/lib.rs`
 
-## Example
+Both parse TOML, apply defaults and aliases, normalize the public model, and validate
+semantic invariants. This is duplicated implementation, not two separate contracts.
+Changes to one parser must include equivalent behavior and tests in the other.
 
-```toml
-version = 1
+The parsers already differ in some normalized types and validation details. The intended
+deep seam is a language-neutral conformance corpus under `testdata/config/v1/` containing:
 
-[[environments]]
-name = "main"
+- valid TOML and expected normalized JSON
+- invalid TOML and expected stable error codes/paths
 
-[[environments]]
-name = "staging"
+Both native adapters should consume that corpus. Bun should not invoke Rust, and Rust
+should not invoke Node, at runtime merely to share parsing.
 
-[[workspaces]]
-path = "infra/shared"
-environments = ["main", "staging"]
+## Developer Invariants
 
-[[workspaces]]
-path = "infra/production"
-environments = ["main"]
+- Config schema version `1` is the only accepted public version.
+- Cloud-only triggers and approvals live under `[cloud]`; legacy top-level forms fail.
+- Runtime `EnvironmentKind` (`named` or `transient`) is distinct from ownership class.
+- GitHub pull-request environments use `pr-{number}`. Other transient sources are not
+  required to use PR-shaped names.
+- Public documentation examples are validated by `scripts/public-configs.test.ts`.
+- The repository and published demo are parsed by the Rust config tests.
 
-[[workspaces]]
-path = "apps/control-plane/infra"
-environments = ["*"]
+## Related Internals
 
-[cloud]
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/main"]
-environment = "main"
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/staging"]
-environment = "staging"
-
-[[cloud.triggers.github.pull_request]]
-branch_patterns = ["*"]
-```
-
-## Reference
-
-### `version`
-
-**Required.** Configuration schema version. Currently must be `1`.
-
-```toml
-version = 1
-```
-
-### `[[environments]]`
-
-Declares a named environment. Named environments are long-lived deployment targets tied to branches.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | Yes | Unique identifier for the environment |
-
-```toml
-[[environments]]
-name = "main"
-
-[[environments]]
-name = "staging"
-
-[[environments]]
-name = "production"
-```
-
-### `[[workspaces]]`
-
-Declares a Terraform workspace (root module) and specifies which environments it deploys to.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `path` | string | Yes | Path to the Terraform root module, relative to repo root |
-| `environments` | string or array | Yes | Which environments this workspace deploys to |
-
-The `environments` field accepts:
-
-- `["*"]` - All environments (named + transient)
-- `["main", "staging"]` - Explicit list of named environments
-- `"main"` - Single environment (shorthand for `["main"]`)
-
-```toml
-[[workspaces]]
-path = "infra/shared"
-environments = ["main", "staging"]
-
-[[workspaces]]
-path = "infra/production"
-environments = "main"
-
-[[workspaces]]
-path = "apps/web/infra"
-environments = ["*"]
-```
-
-**Validation:**
-
-- `path` must be unique across all workspaces
-- Environment names must reference declared `[[environments]]`, or be `"*"`
-- Referencing an undeclared environment is an error
-
-### `[cloud]` and `[[cloud.triggers.github.*]]`
-
-Cloud-only automation such as forge/webhook triggers lives under a `cloud`
-namespace to make the local-vs-cloud boundary explicit.
-
-Cloud-only automation such as forge/webhook triggers belongs under the `cloud`
-namespace. Top-level `triggers` is not part of the canonical config model.
-
-### `[[cloud.triggers.github.push]]`
-
-Triggers a plan/apply cycle when a ref is pushed.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `ref_patterns` | array | Yes | Include globs for full refs |
-| `exclude_ref_patterns` | array | No | Exclude globs applied after include matching |
-| `environment` | string | Yes | Named environment to deploy |
-
-```toml
-[cloud]
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/main"]
-environment = "main"
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/staging"]
-environment = "staging"
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/release/*"]
-exclude_ref_patterns = ["refs/heads/release/archive/**"]
-environment = "release"
-```
-
-**Behavior:**
-
-- When a pushed ref matches any `ref_patterns` entry and none of the `exclude_ref_patterns` entries, Yaffle runs `plan` then `apply` for all workspaces that include the named environment
-- The `environment` must reference a declared `[[environments]]` name
-
-**Glob patterns:**
-
-- `*` matches any characters except `/`
-- `**` matches across `/`
-- `refs/heads/release/*` matches `refs/heads/release/v1`, `refs/heads/release/hotfix`, etc.
-
-Legacy single-field `ref = "refs/heads/main"` remains supported as shorthand for
-a single include pattern within the canonical `cloud.triggers` namespace.
-
-### `[[cloud.triggers.github.pull_request]]`
-
-Triggers a transient environment when a pull request is opened or updated.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `branch_patterns` | array | Yes | Include globs for the PR's head (source) branch |
-| `exclude_branch_patterns` | array | No | Exclude globs applied after include matching |
-
-```toml
-[cloud]
-
-[[cloud.triggers.github.pull_request]]
-branch_patterns = ["*"]
-exclude_branch_patterns = ["dependabot/**"]
-```
-
-**Behavior:**
-
-- When a PR is opened from a branch matching any `branch_patterns` entry and none of the `exclude_branch_patterns` entries, Yaffle creates a transient environment named `pr-{number}` (e.g., `pr-123`)
-- Yaffle runs `plan` for all workspaces that include `"*"` in their environments
-- Apply requires explicit approval
-- When the PR is closed (merged or abandoned), Yaffle destroys the transient environment
-
-**Glob patterns:**
-
-- `*` matches any branch
-- `feature/*` matches only branches starting with `feature/`
-- `dependabot/**` matches `dependabot/` branches at any depth
-
-Legacy single-field `branch_pattern = "*"` remains supported as shorthand for a
-single include pattern within the canonical `cloud.triggers` namespace.
-
-## Environments
-
-Yaffle has two kinds of environments:
-
-### Named Environments
-
-Named environments are declared in `[[environments]]` and are long-lived. They represent deployment targets like `main`, `staging`, or `production`.
-
-- Created when first triggered
-- Never automatically destroyed (removed when deleted from config)
-- Tied to specific branches via `[[cloud.triggers.github.push]]`
-
-### Transient Environments
-
-Transient environments are created automatically by cloud triggers like `[[cloud.triggers.github.pull_request]]`. They are short-lived and tied to the lifecycle of their trigger source.
-
-- Named automatically (e.g., `pr-123` for pull requests)
-- Destroyed when the trigger source closes (e.g., PR merged or closed)
-- Useful for preview/ephemeral infrastructure
-
-## Validation
-
-Yaffle validates your configuration on every run:
-
-1. **Environment references** - Workspace `environments` and trigger `environment` must reference declared `[[environments]]` or use `"*"`
-2. **Unique paths** - Workspace paths must be unique
-3. **Trigger coverage** - Warning if a declared environment has no trigger
-
-### `[[cloud.approvals]]`
-
-Approvals are a cloud-only policy surface and belong under the `cloud`
-namespace.
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `workspaces` | array | Yes | Workspace paths or glob patterns |
-| `environments` | array | Yes | Environment names or `"*"` |
-| `approvers` | array | Yes | Namespaced approver identifiers |
-
-```toml
-[cloud]
-
-[[cloud.approvals]]
-workspaces = ["infra/production"]
-environments = ["main"]
-approvers = ["github:user:alice", "github:user:bob"]
-
-[[cloud.approvals]]
-workspaces = ["apps/*"]
-environments = ["*"]
-approvers = []
-```
-
-Top-level `[[approvals]]` is not part of the canonical config model.
+- Graph selection: `crates/yaffle-graph/src/lib.rs`
+- Hosted execution config loading: `apps/control-plane/src/routes/cloud-converge.ts`
+- Local engine config loading: `crates/yaffle-engine/src/lib.rs`
+- Script/CI config loading: `scripts/ci/config.ts`

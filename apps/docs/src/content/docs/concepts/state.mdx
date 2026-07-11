@@ -5,7 +5,9 @@ description: How Yaffle manages OpenTofu state
 
 import { Aside } from '@astrojs/starlight/components';
 
-Yaffle fully manages OpenTofu state. You don't configure backends, set up buckets, or manage lock tables. State storage and locking are handled automatically.
+For environments Yaffle manages, you don't configure backends, set up buckets, or
+manage lock tables. State storage and locking are handled automatically. External
+environments keep their existing backend and lifecycle owner.
 
 ## How it works
 
@@ -37,6 +39,33 @@ Yaffle doesn't prescribe environment names. Use `production` and `staging`, or `
 
 Preview state is completely isolated from named environments. A bug in a preview can't corrupt your other environments' state.
 
+## Ownership and runtime kind
+
+Yaffle uses four ownership classes:
+
+| Class | Lifecycle and state owner |
+|-------|---------------------------|
+| `transient_managed` | Yaffle owns isolated, bounded state and cleanup. Pull-request environments use only `pr-{number}` publicly. |
+| `named_managed` | Yaffle owns long-lived state for a declared environment. |
+| `named_external` | Customer CI or another orchestrator owns long-lived state. |
+| `static_external` | An external dependency has no Yaffle-owned environment lifecycle. |
+
+The managed runtime's `EnvironmentKind` (`named` or `transient`) is a separate axis.
+It does not classify external ownership. Production may be `named_managed`, or it may
+remain `named_external` under customer CI; both are supported steady states.
+
+Trigger source is separate too. A transient environment may come from a GitHub pull
+request, another forge, an API request, or a manual review session. Only GitHub
+pull-request sources use the `pr-{number}` convention.
+
+## Shared output snapshots
+
+The beta contract defines shared outputs as immutable, versioned snapshots. Every
+snapshot records a stable snapshot ID and publication version, producer, source revision,
+opaque state identity and serial, publication time, values, and per-output sensitivity
+metadata. It requires sensitive values to be redacted. Transport, authorization, and
+consumer pinning are downstream beta work.
+
 ## Locking
 
 Yaffle prevents concurrent modifications. If two commits push simultaneously, runs are queued and executed sequentially.
@@ -67,7 +96,7 @@ The Yaffle dashboard shows:
 
 - Resource counts per workspace
 - Last modified timestamps
-- Drift detection (planned)
+- Last successful run and state-version provenance
 
 For debugging, use `tofu show` output in run logs rather than accessing state directly.
 
