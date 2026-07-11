@@ -55,10 +55,7 @@ export async function createPendingRunGroupCheck(
       summary: formatCheckSummary(getRunGroupCheckSummary("pending"), detailsUrl),
     })
 
-    await db
-      .update(runGroups)
-      .set({ checkRunId })
-      .where(eq(runGroups.id, params.runGroupId))
+    await db.update(runGroups).set({ checkRunId }).where(eq(runGroups.id, params.runGroupId))
   } catch (err) {
     logger.warn("failed to create pending check run", {
       runGroupId: params.runGroupId,
@@ -70,10 +67,7 @@ export async function createPendingRunGroupCheck(
   }
 }
 
-export async function surfaceConfigErrorCheck(
-  ctx: WebhookContext,
-  message: string,
-): Promise<void> {
+export async function surfaceConfigErrorCheck(ctx: WebhookContext, message: string): Promise<void> {
   if (ctx.installationId == null) return
 
   try {
@@ -99,7 +93,7 @@ export async function surfaceConfigErrorCheck(
 
 export async function completeRunGroupCheck(params: {
   runGroupId: string
-  conclusion: "success" | "failure" | "cancelled"
+  conclusion: "success" | "failure" | "cancelled" | "action_required"
   title?: string
   summary?: string
   detailsUrl?: string
@@ -109,8 +103,8 @@ export async function completeRunGroupCheck(params: {
     return
   }
 
-  const installation = (await findGithubInstallationsForOrg(context.orgId)).find((candidate) =>
-    candidate.installationStatus === "active"
+  const installation = (await findGithubInstallationsForOrg(context.orgId)).find(
+    (candidate) => candidate.installationStatus === "active",
   )
 
   if (!installation) {
@@ -235,13 +229,16 @@ export async function syncRunGroupCheckFromDeployments(runGroupId: string): Prom
     ...(lifecycle.status === "partial"
       ? {
           title: "Settled with degradation",
-          summary: "Yaffle finished the infrastructure changes for this commit, but an acceptable lifecycle check settled degraded.",
+          summary:
+            "Yaffle finished the infrastructure changes for this commit, but an acceptable lifecycle check settled degraded.",
         }
       : {}),
   })
 }
 
-async function loadRunGroupCheckContext(runGroupId: string): Promise<RunGroupCheckContext | undefined> {
+async function loadRunGroupCheckContext(
+  runGroupId: string,
+): Promise<RunGroupCheckContext | undefined> {
   const rows = await db
     .select({
       id: runGroups.id,
@@ -261,7 +258,9 @@ async function loadRunGroupCheckContext(runGroupId: string): Promise<RunGroupChe
   return rows[0]
 }
 
-function defaultTitleForConclusion(conclusion: "success" | "failure" | "cancelled"): string {
+function defaultTitleForConclusion(
+  conclusion: "success" | "failure" | "cancelled" | "action_required",
+): string {
   switch (conclusion) {
     case "success":
       return "Succeeded"
@@ -269,10 +268,14 @@ function defaultTitleForConclusion(conclusion: "success" | "failure" | "cancelle
       return "Failed"
     case "cancelled":
       return "Cancelled"
+    case "action_required":
+      return "Action required"
   }
 }
 
-function defaultSummaryForConclusion(conclusion: "success" | "failure" | "cancelled"): string {
+function defaultSummaryForConclusion(
+  conclusion: "success" | "failure" | "cancelled" | "action_required",
+): string {
   switch (conclusion) {
     case "success":
       return getRunGroupCheckSummary("success")
@@ -280,10 +283,14 @@ function defaultSummaryForConclusion(conclusion: "success" | "failure" | "cancel
       return getRunGroupCheckSummary("failure")
     case "cancelled":
       return getRunGroupCheckSummary("cancelled")
+    case "action_required":
+      return "Yaffle requires a user decision before this run can continue."
   }
 }
 
-function buildRunGroupDetailsUrl(context: Pick<RunGroupCheckContext, "id" | "orgSlug" | "repo" | "environmentName">): string | undefined {
+function buildRunGroupDetailsUrl(
+  context: Pick<RunGroupCheckContext, "id" | "orgSlug" | "repo" | "environmentName">,
+): string | undefined {
   const baseUrl = getEnv().betterAuthUrl.trim()
   if (!baseUrl) {
     return undefined

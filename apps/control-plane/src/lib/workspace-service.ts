@@ -1,8 +1,8 @@
 import {
   archiveWorkspace,
+  findTransientWorkspaces,
   findWorkspaceById,
-  findWorkspaceByName,
-  findWorkspacesByPr,
+  findWorkspaceByIdentity,
   forceUnlockWorkspace,
   lockWorkspace,
   updateWorkspaceStatus,
@@ -11,7 +11,7 @@ import {
 import { logger } from "./telemetry.ts"
 
 /**
- * Archive a preview workspace.
+ * Archive a transient workspace.
  *
  * This is called when a PR is closed (merged or not).
  * The actual terraform destroy happens separately in the webhook handler.
@@ -40,7 +40,7 @@ export async function beginWorkspaceArchive(
   }
 
   // Lock the workspace for cleanup
-  const locked = await lockWorkspace(workspaceId, "system:cleanup", "Destroying preview")
+  const locked = await lockWorkspace(workspaceId, "system:cleanup", "Destroying transient environment")
   if (!locked) {
     // Already locked - check if it's us from a previous attempt
     if (workspace.lockedBy === "system:cleanup") {
@@ -111,14 +111,13 @@ export async function forceArchiveWorkspace(workspaceId: string): Promise<Worksp
 }
 
 /**
- * Find or create a TFC workspace for a preview.
+ * Find or create a TFC workspace for a transient environment.
  */
-export async function ensurePreviewWorkspace(opts: {
+export async function ensureTransientWorkspace(opts: {
   orgId: string
   orgSlug: string
   repo: string
   environment: string
-  prNumber: number
   workspacePath: string
   ref: string
 }): Promise<Workspace> {
@@ -129,7 +128,13 @@ export async function ensurePreviewWorkspace(opts: {
   const workspaceName = buildWorkspaceName(opts.repo, opts.environment, refName, opts.workspacePath)
 
   // Check if workspace already exists
-  let workspace = await findWorkspaceByName(opts.orgId, workspaceName)
+  let workspace = await findWorkspaceByIdentity(
+    opts.orgId,
+    opts.repo,
+    opts.workspacePath,
+    "transient",
+    opts.environment,
+  )
   if (workspace) {
     // Reactivate if archived
     if (workspace.status === "archived") {
@@ -145,23 +150,23 @@ export async function ensurePreviewWorkspace(opts: {
     name: workspaceName,
     repo: opts.repo,
     workspacePath: opts.workspacePath,
-    environment: "preview",
-    prNumber: opts.prNumber,
+    environmentKind: "transient",
+    environmentName: opts.environment,
     ref: opts.ref,
     status: "active",
   })
 
-  logger.info("Preview workspace created", {
+  logger.info("Transient workspace created", {
     workspaceId: workspace.id,
     workspaceName,
-    prNumber: opts.prNumber,
+    environmentName: opts.environment,
   })
 
   return workspace
 }
 
 /**
- * Find or create a TFC workspace for a named environment (non-preview).
+ * Find or create a TFC workspace for a named environment.
  * Used for refs that trigger named environments (e.g., refs/heads/main → production).
  */
 export async function ensureNamedWorkspace(opts: {
@@ -179,7 +184,13 @@ export async function ensureNamedWorkspace(opts: {
   const workspaceName = buildWorkspaceName(opts.repo, opts.environment, refName, opts.workspacePath)
 
   // Check if workspace already exists
-  let workspace = await findWorkspaceByName(opts.orgId, workspaceName)
+  let workspace = await findWorkspaceByIdentity(
+    opts.orgId,
+    opts.repo,
+    opts.workspacePath,
+    "named",
+    opts.environment,
+  )
   if (workspace) {
     return workspace
   }
@@ -190,8 +201,8 @@ export async function ensureNamedWorkspace(opts: {
     name: workspaceName,
     repo: opts.repo,
     workspacePath: opts.workspacePath,
-    environment: opts.environment,
-    prNumber: null,
+    environmentKind: "named",
+    environmentName: opts.environment,
     ref: opts.ref,
     status: "active",
   })
@@ -207,14 +218,14 @@ export async function ensureNamedWorkspace(opts: {
 }
 
 /**
- * Get all workspaces for a PR that need to be archived.
+ * Get all workspaces for a transient environment that need to be archived.
  */
-export async function getWorkspacesToArchive(
+export async function getTransientWorkspacesToArchive(
   orgId: string,
   repo: string,
-  prNumber: number,
+  environmentName: string,
 ): Promise<Workspace[]> {
-  const workspaces = await findWorkspacesByPr(orgId, repo, prNumber)
+  const workspaces = await findTransientWorkspaces(orgId, repo, environmentName)
   // Filter to only active or destroying workspaces (not already archived)
   return workspaces.filter((ws) => ws.status !== "archived")
 }

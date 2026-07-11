@@ -12,10 +12,15 @@ import {
   generateToken,
   deleteApiTokensByUserId,
 } from "../../db/queries/api-tokens.ts"
-import { deleteWorkspace, findWorkspaceByName } from "../../db/queries/workspaces.ts"
+import {
+  deleteWorkspace,
+  findWorkspaceByName,
+  updateWorkspaceStatus,
+} from "../../db/queries/workspaces.ts"
 import { findOrgBySlug, createOrg } from "../../db/queries/organizations.ts"
 import { ensureMembership } from "../../db/queries/users.ts"
 import { db } from "../../lib/db.ts"
+import { ensureTransientWorkspace } from "../../lib/workspace-service.ts"
 import { stateVersions, user } from "../../db/schema.ts"
 import { eq } from "drizzle-orm"
 
@@ -58,6 +63,8 @@ const TEST_CROSS_TENANT_WORKSPACE_NAME = "tfc-cross-tenant-workspace"
 const TEST_MAIN_WORKSPACE_NAME = "tfc-module-main-workspace"
 const TEST_PREVIEW_WORKSPACE_NAME = "tfc-module-preview-workspace"
 const TEST_OUTPUTS_WORKSPACE_NAME = "tfc-last-known-good-outputs-workspace"
+const TEST_SOURCE_NEUTRAL_WORKSPACE_NAME = "tfc-source-neutral-transient-workspace"
+const TEST_OTHER_TRANSIENT_WORKSPACE_NAME = "tfc-other-transient-workspace"
 
 let testOrgId: string
 let otherOrgId: string
@@ -217,6 +224,10 @@ beforeEach(async () => {
     [testOrgId, TEST_MAIN_WORKSPACE_NAME],
     [testOrgId, TEST_PREVIEW_WORKSPACE_NAME],
     [testOrgId, TEST_OUTPUTS_WORKSPACE_NAME],
+    [testOrgId, TEST_SOURCE_NEUTRAL_WORKSPACE_NAME],
+    [testOrgId, TEST_OTHER_TRANSIENT_WORKSPACE_NAME],
+    [testOrgId, `${TEST_WORKSPACE_NAME}-1`],
+    [testOrgId, `${TEST_WORKSPACE_NAME}-2`],
     [otherOrgId, TEST_WORKSPACE_NAME],
     [otherOrgId, TEST_CROSS_TENANT_WORKSPACE_NAME],
     [otherOrgId, TEST_MAIN_WORKSPACE_NAME],
@@ -595,7 +606,8 @@ describe("Authentication", () => {
           type: "workspaces",
           attributes: {
             name: TEST_WORKSPACE_NAME,
-            environment: "preview",
+            "environment-kind": "transient",
+            "environment-name": "pr-42",
           },
         },
       }),
@@ -696,8 +708,8 @@ describe("Workspace CRUD", () => {
           type: "workspaces",
           attributes: {
             name: TEST_WORKSPACE_NAME,
-            environment: "preview",
-            "pr-number": 42,
+            "environment-kind": "transient",
+            "environment-name": "pr-42",
             "workspace-path": "infra",
           },
         },
@@ -709,7 +721,7 @@ describe("Workspace CRUD", () => {
 
     expect(body.data.type).toBe("workspaces")
     expect(body.data.attributes.name).toBe(TEST_WORKSPACE_NAME)
-    expect(body.data.attributes.environment).toBe("preview")
+    expect(body.data.attributes.environment).toBe("pr-42")
     expect(body.data.attributes.locked).toBe(false)
 
     testWorkspaceId = body.data.id
@@ -737,6 +749,73 @@ describe("Workspace CRUD", () => {
     )
 
     expect(res.status).toBe(409)
+  })
+
+  test("rejects duplicate workspace environment identity", async () => {
+    await app.fetch(
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: TEST_WORKSPACE_NAME,
+            repo: TEST_REPO,
+            "workspace-path": "infra",
+            "environment-kind": "transient",
+            "environment-name": "review-42",
+          },
+        },
+      }),
+    )
+
+    const res = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: `${TEST_WORKSPACE_NAME}-duplicate-identity`,
+            repo: TEST_REPO,
+            "workspace-path": "infra",
+            "environment-kind": "transient",
+            "environment-name": "review-42",
+          },
+        },
+      }),
+    )
+
+    expect(res.status).toBe(409)
+  })
+
+  test("reactivates an archived transient workspace by environment identity", async () => {
+    const createRes = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: {
+            name: TEST_WORKSPACE_NAME,
+            repo: TEST_REPO,
+            "workspace-path": "infra",
+            "environment-kind": "transient",
+            "environment-name": "review-42",
+            ref: "refs/heads/review",
+          },
+        },
+      }),
+    )
+    const created = await createRes.json()
+    const workspaceId = created.data.id
+    await updateWorkspaceStatus(workspaceId, "archived")
+
+    const workspace = await ensureTransientWorkspace({
+      orgId: testOrgId,
+      orgSlug: TEST_ORG_SLUG,
+      repo: TEST_REPO,
+      environment: "review-42",
+      workspacePath: "infra",
+      ref: "refs/heads/review",
+    })
+
+    expect(workspace.id).toBe(workspaceId)
+    expect(workspace.status).toBe("active")
   })
 
   test("gets workspace by name", async () => {
@@ -1974,8 +2053,8 @@ describe("Module Registry", () => {
   async function createModuleWorkspace(options: {
     name: string
     workspacePath: string
-    environment: string
-    prNumber?: number
+    environmentKind: "named" | "transient"
+    environmentName: string
   }): Promise<string> {
     const createRes = await app.fetch(
       authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
@@ -1984,9 +2063,9 @@ describe("Module Registry", () => {
           attributes: {
             name: options.name,
             repo: TEST_REPO,
-            environment: options.environment,
+            "environment-kind": options.environmentKind,
+            "environment-name": options.environmentName,
             "workspace-path": options.workspacePath,
-            ...(options.prNumber ? { "pr-number": options.prNumber } : {}),
           },
         },
       }),
@@ -2051,7 +2130,8 @@ describe("Module Registry", () => {
           attributes: {
             name: TEST_WORKSPACE_NAME,
             repo: TEST_REPO,
-            environment: "main",
+            "environment-kind": "named",
+            "environment-name": "main",
             "workspace-path": "core-infrastructure/vpc",
           },
         },
@@ -2115,26 +2195,27 @@ describe("Module Registry", () => {
     expect(body.modules[0].versions[0].version).toBe("1.0.1")
   })
 
-  test("falls back to non-preview module versions when preview workspace has no finalized state", async () => {
+  test("falls back to named module versions when transient workspace has no finalized state", async () => {
     const workspacePath = "platform/cluster"
     const mainWorkspaceId = await createModuleWorkspace({
       name: TEST_MAIN_WORKSPACE_NAME,
       workspacePath,
-      environment: "main",
+      environmentKind: "named",
+      environmentName: "main",
     })
     await uploadModuleState(mainWorkspaceId)
 
     await createModuleWorkspace({
       name: TEST_PREVIEW_WORKSPACE_NAME,
       workspacePath,
-      environment: "preview",
-      prNumber: 42,
+      environmentKind: "transient",
+      environmentName: "pr-42",
     })
 
     const res = await app.fetch(
       authRequest(
         "GET",
-        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--cluster/yaffle/versions?preview=pr-42`,
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--cluster/yaffle/versions?environment=pr-42`,
         testUserToken,
       ),
     )
@@ -2143,6 +2224,73 @@ describe("Module Registry", () => {
     const body = await res.json()
     expect(body.modules[0].versions).toHaveLength(1)
     expect(body.modules[0].versions[0].version).toBe("1.0.1")
+  })
+
+  test("resolves module versions by source-neutral transient environment name", async () => {
+    const workspacePath = "platform/source-neutral"
+    const transientWorkspaceId = await createModuleWorkspace({
+      name: TEST_SOURCE_NEUTRAL_WORKSPACE_NAME,
+      workspacePath,
+      environmentKind: "transient",
+      environmentName: "review-42",
+    })
+    await uploadModuleState(transientWorkspaceId)
+
+    const res = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--source-neutral/yaffle/versions?environment=review-42`,
+        testUserToken,
+      ),
+    )
+
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.modules[0].versions).toHaveLength(1)
+    expect(body.modules[0].versions[0].version).toBe("1.0.1")
+
+    const runToken = await generateRunToken(
+      "source-neutral-transient-resolution",
+      transientWorkspaceId,
+      testOrgId,
+    )
+    const inferredRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--source-neutral/yaffle/versions`,
+        runToken,
+      ),
+    )
+
+    expect(inferredRes.status).toBe(200)
+    const inferredBody = await inferredRes.json()
+    expect(inferredBody.modules[0].versions[0].version).toBe("1.0.1")
+
+    const otherTransientWorkspaceId = await createModuleWorkspace({
+      name: TEST_OTHER_TRANSIENT_WORKSPACE_NAME,
+      workspacePath,
+      environmentKind: "transient",
+      environmentName: "review-43",
+    })
+    await uploadModuleState(otherTransientWorkspaceId)
+
+    const overrideRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--source-neutral/yaffle/versions?environment=review-43`,
+        runToken,
+      ),
+    )
+    expect(overrideRes.status).toBe(404)
+
+    const overrideDownloadRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--source-neutral/yaffle/latest/download?environment=review-43`,
+        runToken,
+      ),
+    )
+    expect(overrideDownloadRes.status).toBe(404)
   })
 
   test("returns 404 for non-existent module", async () => {
@@ -2178,7 +2326,8 @@ describe("Module Registry", () => {
           attributes: {
             name: TEST_WORKSPACE_NAME,
             repo: TEST_REPO,
-            environment: "main",
+            "environment-kind": "named",
+            "environment-name": "main",
             "workspace-path": "infra/networking",
           },
         },
@@ -2242,26 +2391,27 @@ describe("Module Registry", () => {
     )
   })
 
-  test("download falls back to non-preview state when preview workspace has no finalized state", async () => {
+  test("download falls back to named state when transient workspace has no finalized state", async () => {
     const workspacePath = "platform/runtime"
     const mainWorkspaceId = await createModuleWorkspace({
       name: TEST_MAIN_WORKSPACE_NAME,
       workspacePath,
-      environment: "main",
+      environmentKind: "named",
+      environmentName: "main",
     })
     await uploadModuleState(mainWorkspaceId)
 
     await createModuleWorkspace({
       name: TEST_PREVIEW_WORKSPACE_NAME,
       workspacePath,
-      environment: "preview",
-      prNumber: 42,
+      environmentKind: "transient",
+      environmentName: "pr-42",
     })
 
     const downloadRes = await app.fetch(
       authRequest(
         "GET",
-        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--runtime/yaffle/latest/download?preview=pr-42`,
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--runtime/yaffle/latest/download?environment=pr-42`,
         testUserToken,
       ),
     )
@@ -2289,7 +2439,8 @@ describe("Module Registry", () => {
           attributes: {
             name: TEST_WORKSPACE_NAME,
             repo: TEST_REPO,
-            environment: "main",
+            "environment-kind": "named",
+            "environment-name": "main",
             "workspace-path": "test/outputs",
           },
         },
@@ -2377,7 +2528,11 @@ describe("Run Token Scopes", () => {
       authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
         data: {
           type: "workspaces",
-          attributes: { name: `${TEST_WORKSPACE_NAME}-1` },
+          attributes: {
+            name: `${TEST_WORKSPACE_NAME}-1`,
+            "environment-kind": "named",
+            "environment-name": "main",
+          },
         },
       }),
     )
@@ -2388,7 +2543,11 @@ describe("Run Token Scopes", () => {
       authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
         data: {
           type: "workspaces",
-          attributes: { name: `${TEST_WORKSPACE_NAME}-2` },
+          attributes: {
+            name: `${TEST_WORKSPACE_NAME}-2`,
+            "environment-kind": "named",
+            "environment-name": "secondary",
+          },
         },
       }),
     )

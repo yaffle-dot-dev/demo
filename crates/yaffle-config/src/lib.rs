@@ -21,6 +21,7 @@ pub struct Environment {
 pub struct Workspace {
     pub path: String,
     pub environments: EnvironmentSelector,
+    pub automatic_preview_isolation: bool,
     pub variables: BTreeMap<String, VariableValue>,
     pub outputs: BTreeMap<String, WorkspaceOutputPolicy>,
     pub activation: Vec<LifecycleHook>,
@@ -223,6 +224,42 @@ fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
         }
 
         let environments = normalize_environment_selector(workspace.environments);
+        let path_segments: Vec<&str> = workspace.path.split('/').collect();
+        if workspace.path != "."
+            && (workspace.path.starts_with('/')
+                || workspace.path.starts_with("./")
+                || workspace.path.ends_with('/')
+                || path_segments
+                    .iter()
+                    .any(|segment| segment.is_empty() || *segment == "." || *segment == ".."))
+        {
+            errors.push(format!(
+                "workspaces.{}: path must be repository-relative and normalized (for example, \"infra/app\" or \".\")",
+                workspace.path
+            ));
+        }
+        if let Some(shared_resources) = &workspace.shared_resources {
+            if shared_resources.is_empty() {
+                errors.push(format!(
+                    "workspaces.{}.shared_resources: per-resource shared exceptions are not allowed; move shared resources to an upstream named, external, or static workspace and consume them through authorized immutable outputs or a read-only data source",
+                    workspace.path
+                ));
+            }
+            for resource in shared_resources {
+                errors.push(format!(
+                    "workspaces.{}.shared_resources.{}: per-resource shared exceptions are not allowed; move {} to an upstream named, external, or static workspace and consume it through authorized immutable outputs or a read-only data source",
+                    workspace.path, resource, resource
+                ));
+            }
+        }
+        if workspace.automatic_preview_isolation.unwrap_or(false)
+            && environments != EnvironmentSelector::All
+        {
+            errors.push(format!(
+                "workspaces.{}: automatic_preview_isolation requires environments = \"*\"",
+                workspace.path
+            ));
+        }
         if let EnvironmentSelector::Named(names) = &environments {
             for environment in names {
                 if !declared_environments.contains(environment) {
@@ -251,6 +288,7 @@ fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
         workspaces.push(Workspace {
             path: workspace.path,
             environments,
+            automatic_preview_isolation: workspace.automatic_preview_isolation.unwrap_or(false),
             variables: workspace.variables.unwrap_or_default(),
             outputs,
             activation,
@@ -770,9 +808,12 @@ struct RawCloud {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct RawWorkspace {
     path: String,
     environments: RawEnvironmentSelector,
+    automatic_preview_isolation: Option<bool>,
+    shared_resources: Option<Vec<String>>,
     variables: Option<BTreeMap<String, VariableValue>>,
     outputs: Option<BTreeMap<String, RawWorkspaceOutputPolicy>>,
     activation: Option<Vec<RawLifecycleHook>>,
@@ -907,6 +948,109 @@ branch_patterns = ["*"]
             .expect("github triggers should exist");
         assert_eq!(github.push.len(), 1);
         assert_eq!(github.pull_request.len(), 1);
+    }
+
+    #[test]
+    fn parses_automatic_preview_isolation_as_an_explicit_workspace_opt_in() {
+        let input = r#"
+version = 1
+
+[[workspaces]]
+path = "infra/app"
+environments = ["*"]
+automatic_preview_isolation = true
+"#;
+
+        let config = parse_yaffle_toml(input).expect("config should parse");
+        assert!(config.workspaces[0].automatic_preview_isolation);
+    }
+
+    #[test]
+    fn defaults_automatic_preview_isolation_to_false() {
+        let input = r#"
+version = 1
+
+[[workspaces]]
+path = "infra/app"
+environments = ["*"]
+"#;
+
+        let config = parse_yaffle_toml(input).expect("config should parse");
+        assert!(!config.workspaces[0].automatic_preview_isolation);
+    }
+
+    #[test]
+    fn rejects_automatic_preview_isolation_on_a_named_only_workspace() {
+        let input = r#"
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra/app"
+environments = ["main"]
+automatic_preview_isolation = true
+"#;
+
+        let error = parse_yaffle_toml(input).expect_err("named-only opt-in should fail");
+        assert!(error
+            .to_string()
+            .contains("automatic_preview_isolation requires environments = \"*\""));
+    }
+
+    #[test]
+    fn rejects_misspelled_automatic_preview_isolation_fields() {
+        let input = r#"
+version = 1
+
+[[workspaces]]
+path = "infra/app"
+environments = ["*"]
+automatic_preveiw_isolation = true
+"#;
+
+        let error = parse_yaffle_toml(input).expect_err("unknown workspace fields should fail");
+        assert!(error.to_string().contains("automatic_preveiw_isolation"));
+    }
+
+    #[test]
+    fn rejects_per_resource_shared_exceptions() {
+        let input = r#"
+version = 1
+
+[[workspaces]]
+path = "infra/app"
+environments = ["*"]
+automatic_preview_isolation = true
+shared_resources = ["aws_vpc.shared"]
+"#;
+
+        let error = parse_yaffle_toml(input).expect_err("shared exceptions should fail");
+        let message = error.to_string();
+        assert!(message.contains("shared_resources.aws_vpc.shared"));
+        assert!(message.contains("upstream named, external, or static workspace"));
+    }
+
+    #[test]
+    fn rejects_non_canonical_workspace_paths() {
+        for path in ["./infra", "infra/", "infra/../shared"] {
+            let input = format!(
+                r#"
+version = 1
+
+[[workspaces]]
+path = "{path}"
+environments = ["*"]
+automatic_preview_isolation = true
+"#
+            );
+
+            let error = parse_yaffle_toml(&input).expect_err("non-canonical path should fail");
+            assert!(error
+                .to_string()
+                .contains("path must be repository-relative and normalized"));
+        }
     }
 
     #[test]

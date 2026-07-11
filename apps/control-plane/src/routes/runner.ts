@@ -56,14 +56,14 @@ import {
 import { events } from "../lib/events.ts"
 import {
   type EnvironmentKind,
-  buildPrEnvironmentName,
   parseYaffleToml,
   type Workspace,
 } from "../lib/config-toml.ts"
 import { renderVariables, TemplateError, type TemplateContext } from "../lib/templating.ts"
 import { fetchFileContent } from "../lib/github.ts"
 import { useTfcBackend } from "../lib/tfc-backend.ts"
-import { ensurePreviewWorkspace, ensureNamedWorkspace } from "../lib/workspace-service.ts"
+import { ensureTransientWorkspace, ensureNamedWorkspace } from "../lib/workspace-service.ts"
+import { getDeploymentExecutionEnvironment } from "../lib/deployment-environment.ts"
 import { generateRunToken } from "../lib/run-token.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
 import { getRunnerCredentialHosts, getRunnerReachableTfcHost } from "../lib/tfc-host.ts"
@@ -1291,12 +1291,8 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
   const owner = repoParts.length > 1 ? repoParts[0] : org.slug
   const repo = repoParts.length > 1 ? repoParts[1] : deployment.repo
 
-  // Determine environment
-  const isPr = deployment.prNumber != null && deployment.prNumber > 0
-  const environmentKind = isPr ? "transient" : "named"
-  const environmentName = isPr
-    ? buildPrEnvironmentName(deployment.prNumber!)
-    : deployment.environmentName
+  const { environmentKind, environmentName, sourcePrNumber } =
+    getDeploymentExecutionEnvironment(deployment)
 
   // Build variables - always inject environment and environment_kind
   const variables: Record<string, string | boolean | number> = {
@@ -1328,7 +1324,7 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
             workspace_path: deployment.workspacePath,
             branch: refName,
             commit_sha: deployment.headSha,
-            pr_number: isPr ? deployment.prNumber! : null,
+            pr_number: sourcePrNumber,
           }
 
           try {
@@ -1406,13 +1402,12 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
   })
 
   if (useTfcBackend()) {
-    const tfcWorkspace = isPr
-      ? await ensurePreviewWorkspace({
+    const tfcWorkspace = environmentKind === "transient"
+      ? await ensureTransientWorkspace({
           orgId: org.id,
           orgSlug: org.slug,
           repo: deployment.repo,
           environment: environmentName,
-          prNumber: deployment.prNumber!,
           workspacePath: deployment.workspacePath,
           ref: deployment.ref,
         })

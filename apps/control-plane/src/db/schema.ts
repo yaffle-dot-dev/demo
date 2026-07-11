@@ -1,6 +1,7 @@
 import {
   bigint,
   boolean,
+  check,
   index,
   integer,
   jsonb,
@@ -31,18 +32,16 @@ export const iacJobStatusEnum = pgEnum("iac_job_status", [
   "cancelled",
 ])
 
-export const iacJobTypeEnum = pgEnum("iac_job_type", [
-  "plan",
-  "apply",
-  "destroy",
-])
+export const iacJobTypeEnum = pgEnum("iac_job_type", ["plan", "apply", "destroy"])
 
 // =============================================================================
 // Organizations (decoupled from GitHub)
 // =============================================================================
 
 export const organizations = pgTable("organizations", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv7()),
   name: text("name").notNull(),
   slug: text("slug").unique().notNull(),
   stateBucket: text("state_bucket"), // Nullable until configured
@@ -66,32 +65,39 @@ export const organizations = pgTable("organizations", {
 // Private Beta Invites
 // =============================================================================
 
-export const betaAccessInvites = pgTable("beta_access_invites", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  email: text("email").unique(),
-  githubLogin: text("github_login").unique(),
-  note: text("note"),
-  invitedByUserId: text("invited_by_user_id").references(() => user.id, { onDelete: "set null" }),
-  claimedByUserId: text("claimed_by_user_id").references(() => user.id, { onDelete: "set null" }),
-  claimedAt: timestamp("claimed_at", { withTimezone: true }),
-  revokedAt: timestamp("revoked_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (t) => [
-  index("beta_access_invites_email_idx").on(t.email),
-  index("beta_access_invites_github_login_idx").on(t.githubLogin),
-  index("beta_access_invites_claimed_by_user_id_idx").on(t.claimedByUserId),
-  index("beta_access_invites_revoked_at_idx").on(t.revokedAt),
-])
+export const betaAccessInvites = pgTable(
+  "beta_access_invites",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    email: text("email").unique(),
+    githubLogin: text("github_login").unique(),
+    note: text("note"),
+    invitedByUserId: text("invited_by_user_id").references(() => user.id, { onDelete: "set null" }),
+    claimedByUserId: text("claimed_by_user_id").references(() => user.id, { onDelete: "set null" }),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("beta_access_invites_email_idx").on(t.email),
+    index("beta_access_invites_github_login_idx").on(t.githubLogin),
+    index("beta_access_invites_claimed_by_user_id_idx").on(t.claimedByUserId),
+    index("beta_access_invites_revoked_at_idx").on(t.revokedAt),
+  ],
+)
 
 // =============================================================================
 // GitHub Installations (links Yaffle orgs to GitHub App installations)
 // =============================================================================
 
 export const githubInstallations = pgTable("github_installations", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  orgId: uuid("org_id")
-    .references(() => organizations.id, { onDelete: "cascade" }),
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv7()),
+  orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
   // orgId is nullable during migration — new installations created without an org
   githubOrgId: bigint("github_org_id", { mode: "number" }).notNull(),
   githubOrgLogin: text("github_org_login").notNull(),
@@ -108,7 +114,9 @@ export const githubInstallations = pgTable("github_installations", {
 export const orgMemberships = pgTable(
   "org_memberships",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id, { onDelete: "cascade" })
       .notNull(),
@@ -127,7 +135,9 @@ export const orgMemberships = pgTable(
 // =============================================================================
 
 export const connections = pgTable("connections", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv7()),
   orgId: uuid("org_id")
     .references(() => organizations.id)
     .notNull(),
@@ -149,21 +159,27 @@ export const connections = pgTable("connections", {
 // Provider Credential Signatures (runtime-editable provider env var mapping)
 // =============================================================================
 
-export const providerCredentialSignatures = pgTable("provider_credential_signatures", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  providerType: text("provider_type").notNull().unique(),
-  displayName: text("display_name").notNull(),
-  suggestedCredentialProviderType: text("suggested_credential_provider_type").notNull(),
-  exactEnvVars: text("exact_env_vars").array().notNull().default([]),
-  prefixEnvVars: text("prefix_env_vars").array().notNull().default([]),
-  isActive: boolean("is_active").notNull().default(true),
-  source: text("source").notNull().default("system"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
-}, (t) => [
-  index("provider_credential_signatures_provider_type_idx").on(t.providerType),
-  index("provider_credential_signatures_is_active_idx").on(t.isActive),
-])
+export const providerCredentialSignatures = pgTable(
+  "provider_credential_signatures",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    providerType: text("provider_type").notNull().unique(),
+    displayName: text("display_name").notNull(),
+    suggestedCredentialProviderType: text("suggested_credential_provider_type").notNull(),
+    exactEnvVars: text("exact_env_vars").array().notNull().default([]),
+    prefixEnvVars: text("prefix_env_vars").array().notNull().default([]),
+    isActive: boolean("is_active").notNull().default(true),
+    source: text("source").notNull().default("system"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("provider_credential_signatures_provider_type_idx").on(t.providerType),
+    index("provider_credential_signatures_is_active_idx").on(t.isActive),
+  ],
+)
 
 // =============================================================================
 // Workspace Deployments (formerly "previews")
@@ -172,16 +188,17 @@ export const providerCredentialSignatures = pgTable("provider_credential_signatu
 export const workspaceDeployments = pgTable(
   "workspace_deployments",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id)
       .notNull(),
-    runGroupId: uuid("run_group_id")
-      .references(() => runGroups.id, { onDelete: "cascade" }),
+    runGroupId: uuid("run_group_id").references(() => runGroups.id, { onDelete: "cascade" }),
     installationId: bigint("installation_id", { mode: "number" }),
     repo: text("repo").notNull(),
     // Environment identification (new canonical discriminator)
-    environmentKind: text("environment_kind").notNull(), // 'named' | 'transient'
+    environmentKind: text("environment_kind").$type<"named" | "transient">().notNull(),
     environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
     // PR number as metadata (nullable, not a discriminator)
     prNumber: integer("pr_number"), // GitHub PR number when that is the source; otherwise NULL
@@ -216,6 +233,10 @@ export const workspaceDeployments = pgTable(
       t.environmentName,
       t.workspacePath,
     ),
+    check(
+      "workspace_deployments_environment_kind_check",
+      sql`${t.environmentKind} IN ('named', 'transient')`,
+    ),
   ],
 )
 
@@ -227,25 +248,32 @@ export const previews = workspaceDeployments
 // =============================================================================
 
 export const runGroups = pgTable("run_groups", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv7()),
   orgId: uuid("org_id")
     .references(() => organizations.id, { onDelete: "cascade" })
     .notNull(),
-  repoBindingId: uuid("repo_binding_id")
-    .references(() => principalRepoBindings.id, { onDelete: "set null" }),
+  repoBindingId: uuid("repo_binding_id").references(() => principalRepoBindings.id, {
+    onDelete: "set null",
+  }),
   repo: text("repo").notNull(),
   // Environment identification (new canonical discriminator)
-  environmentKind: text("environment_kind").notNull(), // 'named' | 'transient'
+  environmentKind: text("environment_kind").$type<"named" | "transient">().notNull(),
   environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
   // PR number as metadata (nullable, not a discriminator)
   prNumber: integer("pr_number"), // GitHub PR number when that is the source; otherwise NULL
   ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
   headSha: text("head_sha").notNull(),
-  selectedWorkspacePaths: jsonb("selected_workspace_paths").default(sql`'[]'::jsonb`).notNull(),
+  selectedWorkspacePaths: jsonb("selected_workspace_paths")
+    .default(sql`'[]'::jsonb`)
+    .notNull(),
   checkRunId: bigint("check_run_id", { mode: "number" }),
   checkCompletedAt: timestamp("check_completed_at", { withTimezone: true }),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
-  triggeredByUserId: text("triggered_by_user_id").references(() => user.id, { onDelete: "set null" }),
+  triggeredByUserId: text("triggered_by_user_id").references(() => user.id, {
+    onDelete: "set null",
+  }),
   triggeredByLogin: text("triggered_by_login"),
   status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
   // Inferred dependency graph for this run group
@@ -257,17 +285,23 @@ export const runGroups = pgTable("run_groups", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   startedAt: timestamp("started_at", { withTimezone: true }),
   completedAt: timestamp("completed_at", { withTimezone: true }),
-})
+}, (t) => [
+  check("run_groups_environment_kind_check", sql`${t.environmentKind} IN ('named', 'transient')`),
+])
 
 export const runGroupWorkspaceMetadata = pgTable(
   "run_group_workspace_metadata",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     runGroupId: uuid("run_group_id")
       .references(() => runGroups.id, { onDelete: "cascade" })
       .notNull(),
     workspacePath: text("workspace_path").notNull(),
-    providerRequirements: jsonb("provider_requirements").default(sql`'[]'::jsonb`).notNull(),
+    providerRequirements: jsonb("provider_requirements")
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
     extractionStatus: text("extraction_status").default("pending").notNull(),
     degradationKind: text("degradation_kind"),
     errorKind: text("error_kind"),
@@ -288,7 +322,9 @@ export const runGroupWorkspaceMetadata = pgTable(
 export const environmentGroupProjections = pgTable(
   "environment_group_projections",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id, { onDelete: "cascade" })
       .notNull(),
@@ -333,97 +369,118 @@ export const scanJobStatusEnum = pgEnum("scan_job_status", [
   "failed",
 ])
 
-export const scanJobs = pgTable("scan_jobs", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  runGroupId: uuid("run_group_id")
-    .references(() => runGroups.id, { onDelete: "cascade" })
-    .notNull(),
-  orgId: uuid("org_id")
-    .references(() => organizations.id, { onDelete: "cascade" })
-    .notNull(),
-  status: scanJobStatusEnum("status").default("queued").notNull(),
-  workerId: text("worker_id"),
-  lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),
-  // Inputs
-  repoUrl: text("repo_url").notNull(),
-  ref: text("ref").notNull(),
-  headSha: text("head_sha").notNull(),
-  installationToken: text("installation_token"),
-  orgSlug: text("org_slug").notNull(),
-  // Workspace paths to scan (from parsed yaffle.toml)
-  workspacePaths: jsonb("workspace_paths"),
-  // Effective workspace variables to bind during dependency scanning
-  workspaceVariables: jsonb("workspace_variables"),
-  // Result
-  result: jsonb("result"),
-  errorMessage: text("error_message"),
-  // Timing
-  queuedAt: timestamp("queued_at", { withTimezone: true }).defaultNow().notNull(),
-  startedAt: timestamp("started_at", { withTimezone: true }),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
-}, (table) => [
-  index("scan_jobs_status_idx").on(table.status),
-  index("scan_jobs_run_group_id_idx").on(table.runGroupId),
-])
+export const scanJobs = pgTable(
+  "scan_jobs",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    runGroupId: uuid("run_group_id")
+      .references(() => runGroups.id, { onDelete: "cascade" })
+      .notNull(),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    status: scanJobStatusEnum("status").default("queued").notNull(),
+    workerId: text("worker_id"),
+    lastHeartbeat: timestamp("last_heartbeat", { withTimezone: true }),
+    // Inputs
+    repoUrl: text("repo_url").notNull(),
+    ref: text("ref").notNull(),
+    headSha: text("head_sha").notNull(),
+    installationToken: text("installation_token"),
+    orgSlug: text("org_slug").notNull(),
+    // Workspace paths to scan (from parsed yaffle.toml)
+    workspacePaths: jsonb("workspace_paths"),
+    // Effective workspace variables to bind during dependency scanning
+    workspaceVariables: jsonb("workspace_variables"),
+    // Opted-in transient workspaces requiring automatic isolation preflight
+    automaticIsolationWorkspacePaths: jsonb("automatic_isolation_workspace_paths")
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
+    // Result
+    result: jsonb("result"),
+    errorMessage: text("error_message"),
+    // Timing
+    queuedAt: timestamp("queued_at", { withTimezone: true }).defaultNow().notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("scan_jobs_status_idx").on(table.status),
+    index("scan_jobs_run_group_id_idx").on(table.runGroupId),
+  ],
+)
 
 // =============================================================================
 // TF Runs
 // =============================================================================
 
-export const tfRuns = pgTable("tf_runs", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  deploymentId: uuid("deployment_id")
-    .references(() => workspaceDeployments.id)
-    .notNull(),
-  runGroupId: uuid("run_group_id")
-    .references(() => runGroups.id, { onDelete: "set null" }),
-  runType: text("run_type").notNull(),
-  status: text("status").notNull(),
-  checkRunId: bigint("check_run_id", { mode: "number" }),
-  ecsTaskArn: text("ecs_task_arn"),
-  planSummary: text("plan_summary"),
-  planJson: jsonb("plan_json"),
-  planFileS3Key: text("plan_file_s3_key"),
-  logOutput: text("log_output"),
-  outputs: jsonb("outputs"),
-  errorMessage: text("error_message"),
-  startedAt: timestamp("started_at", { withTimezone: true }),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-}, (t) => [
-  index("tf_runs_deployment_id_idx").on(t.deploymentId, t.createdAt.desc()),
-])
+export const tfRuns = pgTable(
+  "tf_runs",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    deploymentId: uuid("deployment_id")
+      .references(() => workspaceDeployments.id)
+      .notNull(),
+    runGroupId: uuid("run_group_id").references(() => runGroups.id, { onDelete: "set null" }),
+    runType: text("run_type").notNull(),
+    status: text("status").notNull(),
+    checkRunId: bigint("check_run_id", { mode: "number" }),
+    ecsTaskArn: text("ecs_task_arn"),
+    planSummary: text("plan_summary"),
+    planJson: jsonb("plan_json"),
+    planFileS3Key: text("plan_file_s3_key"),
+    logOutput: text("log_output"),
+    outputs: jsonb("outputs"),
+    errorMessage: text("error_message"),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("tf_runs_deployment_id_idx").on(t.deploymentId, t.createdAt.desc())],
+)
 
 // =============================================================================
 // Resource Spans (resource-level timing from tofu runs)
 // =============================================================================
 
-export const resourceSpans = pgTable("resource_spans", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  runId: uuid("run_id").references(() => tfRuns.id, { onDelete: "cascade" }).notNull(),
-  resourceAddress: text("resource_address").notNull(),
-  resourceType: text("resource_type"),
-  action: text("action").notNull(),           // create | update | delete | refresh | read
-  status: text("status").default("started").notNull(), // started | complete | error
-  startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
-  durationMs: integer("duration_ms"),
-  source: text("source").default("log_parse").notNull(), // log_parse | otlp (future)
-  traceId: text("trace_id"),
-  spanId: text("span_id"),
-  parentSpanId: text("parent_span_id"),
-  attributes: jsonb("attributes").default({}),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-}, (t) => [
-  index("resource_spans_run_id_idx").on(t.runId),
-])
+export const resourceSpans = pgTable(
+  "resource_spans",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    runId: uuid("run_id")
+      .references(() => tfRuns.id, { onDelete: "cascade" })
+      .notNull(),
+    resourceAddress: text("resource_address").notNull(),
+    resourceType: text("resource_type"),
+    action: text("action").notNull(), // create | update | delete | refresh | read
+    status: text("status").default("started").notNull(), // started | complete | error
+    startedAt: timestamp("started_at", { withTimezone: true }).notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    durationMs: integer("duration_ms"),
+    source: text("source").default("log_parse").notNull(), // log_parse | otlp (future)
+    traceId: text("trace_id"),
+    spanId: text("span_id"),
+    parentSpanId: text("parent_span_id"),
+    attributes: jsonb("attributes").default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("resource_spans_run_id_idx").on(t.runId)],
+)
 
 // =============================================================================
 // Approvals (now uses BetterAuth user ID)
 // =============================================================================
 
 export const approvals = pgTable("approvals", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv7()),
   deploymentId: uuid("deployment_id")
     .references(() => workspaceDeployments.id)
     .notNull(),
@@ -441,7 +498,9 @@ export const approvals = pgTable("approvals", {
 export const jobs = pgTable(
   "jobs",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id)
       .notNull(),
@@ -468,7 +527,9 @@ export const jobs = pgTable(
 
 function buildIacJobColumns() {
   return {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     deploymentId: uuid("deployment_id")
       .references(() => workspaceDeployments.id, { onDelete: "cascade" })
       .notNull(),
@@ -498,32 +559,24 @@ function buildIacJobColumns() {
   }
 }
 
-export const iacJobs = pgTable(
-  "iac_jobs",
-  buildIacJobColumns(),
-  (t) => [
-    // Index for efficient job queue claiming:
-    // - Filters on status='queued'
-    // - Orders by job_type (priority) then queued_at
-    index("iac_jobs_queue_priority_idx").on(t.status, t.jobType, t.queuedAt),
-    index("iac_jobs_spawn_lease_idx").on(t.status, t.spawnLeaseExpiresAt),
-    index("iac_jobs_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
-  ],
-)
+export const iacJobs = pgTable("iac_jobs", buildIacJobColumns(), (t) => [
+  // Index for efficient job queue claiming:
+  // - Filters on status='queued'
+  // - Orders by job_type (priority) then queued_at
+  index("iac_jobs_queue_priority_idx").on(t.status, t.jobType, t.queuedAt),
+  index("iac_jobs_spawn_lease_idx").on(t.status, t.spawnLeaseExpiresAt),
+  index("iac_jobs_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
+])
 
-export const iacJobHistory = pgTable(
-  "iac_job_history",
-  buildIacJobColumns(),
-  (t) => [
-    index("iac_job_history_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
-    index("iac_job_history_deployment_type_queued_at_idx").on(
-      t.deploymentId.asc(),
-      t.jobType.asc(),
-      t.queuedAt.desc(),
-    ),
-    index("iac_job_history_completed_at_idx").on(t.completedAt.desc()),
-  ],
-)
+export const iacJobHistory = pgTable("iac_job_history", buildIacJobColumns(), (t) => [
+  index("iac_job_history_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
+  index("iac_job_history_deployment_type_queued_at_idx").on(
+    t.deploymentId.asc(),
+    t.jobType.asc(),
+    t.queuedAt.desc(),
+  ),
+  index("iac_job_history_completed_at_idx").on(t.completedAt.desc()),
+])
 
 // =============================================================================
 // Repositories
@@ -532,9 +585,10 @@ export const iacJobHistory = pgTable(
 export const repositories = pgTable(
   "repositories",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-    orgId: uuid("org_id")
-      .references(() => organizations.id),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    orgId: uuid("org_id").references(() => organizations.id),
     // orgId is nullable during migration — repos are now installation inventory
     installationId: bigint("installation_id", { mode: "number" }),
     githubId: bigint("github_id", { mode: "number" }).notNull(),
@@ -554,7 +608,9 @@ export const repositories = pgTable(
 export const githubRepoMappings = pgTable(
   "github_repo_mappings",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id, { onDelete: "cascade" })
       .notNull(),
@@ -576,15 +632,17 @@ export const githubRepoMappings = pgTable(
 export const workspaces = pgTable(
   "workspaces",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id, { onDelete: "cascade" })
       .notNull(),
     name: text("name").notNull(),
     repo: text("repo").notNull(),
     workspacePath: text("workspace_path").notNull(),
-    environment: text("environment").notNull(), // "preview" or environment name (e.g. "main")
-    prNumber: integer("pr_number"),
+    environmentKind: text("environment_kind").$type<"named" | "transient">().notNull(),
+    environmentName: text("environment_name").notNull(),
     ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
     locked: boolean("locked").default(false).notNull(),
     lockedBy: text("locked_by"), // "user:{id}" or "run:{id}"
@@ -596,7 +654,18 @@ export const workspaces = pgTable(
     status: text("status").default("active").notNull(), // "active" | "destroying" | "archived"
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [unique("workspaces_org_name").on(t.orgId, t.name)],
+  (t) => [
+    unique("workspaces_org_name").on(t.orgId, t.name),
+    unique("workspaces_environment_identity_unique").on(
+      t.orgId,
+      t.repo,
+      t.workspacePath,
+      t.environmentKind,
+      t.environmentName,
+    ),
+    check("workspaces_environment_kind_check", sql`${t.environmentKind} IN ('named', 'transient')`),
+    check("workspaces_environment_name_check", sql`length(btrim(${t.environmentName})) > 0`),
+  ],
 )
 
 // =============================================================================
@@ -604,7 +673,9 @@ export const workspaces = pgTable(
 // =============================================================================
 
 export const stateVersions = pgTable("state_versions", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv7()),
   workspaceId: uuid("workspace_id")
     .references(() => workspaces.id, { onDelete: "cascade" })
     .notNull(),
@@ -628,13 +699,18 @@ export const stateVersions = pgTable("state_versions", {
 // =============================================================================
 
 export const apiTokens = pgTable("api_tokens", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+  id: uuid("id")
+    .primaryKey()
+    .$defaultFn(() => uuidv7()),
   userId: text("user_id")
     .references(() => user.id, { onDelete: "cascade" })
     .notNull(),
   orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }),
   description: text("description"),
-  scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`),
+  scopes: text("scopes")
+    .array()
+    .notNull()
+    .default(sql`ARRAY[]::text[]`),
   createdByFlow: text("created_by_flow"),
   tokenHash: text("token_hash").notNull(),
   lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
@@ -646,19 +722,27 @@ export const apiTokens = pgTable("api_tokens", {
 // Local-First Principals and Hosted Output Modules
 // =============================================================================
 
-export const principals = pgTable("principals", {
-  id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-  type: text("type").notNull(), // 'account' | 'anonymous_session'
-  userId: text("user_id").references(() => user.id, { onDelete: "cascade" }),
-  status: text("status").default("active").notNull(), // 'active' | 'expired' | 'revoked'
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
-}, (t) => [unique("principals_user_id_unique").on(t.userId)])
+export const principals = pgTable(
+  "principals",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    type: text("type").notNull(), // 'account' | 'anonymous_session'
+    userId: text("user_id").references(() => user.id, { onDelete: "cascade" }),
+    status: text("status").default("active").notNull(), // 'active' | 'expired' | 'revoked'
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [unique("principals_user_id_unique").on(t.userId)],
+)
 
 export const anonymousSessions = pgTable(
   "anonymous_sessions",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     principalId: uuid("principal_id")
       .references(() => principals.id, { onDelete: "cascade" })
       .notNull(),
@@ -673,7 +757,9 @@ export const anonymousSessions = pgTable(
 export const principalRepoBindings = pgTable(
   "principal_repo_bindings",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     principalId: uuid("principal_id")
       .references(() => principals.id, { onDelete: "cascade" })
       .notNull(),
@@ -695,11 +781,13 @@ export const principalRepoBindings = pgTable(
 export const hostedOutputModules = pgTable(
   "hosted_output_modules",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
-    principalId: uuid("principal_id")
-      .references(() => principals.id, { onDelete: "cascade" }),
-    repoBindingId: uuid("repo_binding_id")
-      .references(() => principalRepoBindings.id, { onDelete: "cascade" }),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    principalId: uuid("principal_id").references(() => principals.id, { onDelete: "cascade" }),
+    repoBindingId: uuid("repo_binding_id").references(() => principalRepoBindings.id, {
+      onDelete: "cascade",
+    }),
     canonicalRepoNamespace: text("canonical_repo_namespace").notNull(),
     environmentName: text("environment_name").notNull(),
     workspacePath: text("workspace_path").notNull(),
@@ -730,9 +818,14 @@ export const oauthAuthorizationCodes = pgTable(
     userId: text("user_id")
       .references(() => user.id, { onDelete: "cascade" })
       .notNull(),
-    orgId: uuid("org_id").references(() => organizations.id, { onDelete: "cascade" }).notNull(),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
     orgSlug: text("org_slug").notNull(),
-    scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`),
+    scopes: text("scopes")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
     codeChallenge: text("code_challenge").notNull(),
     codeChallengeMethod: text("code_challenge_method").notNull(),
     redirectUri: text("redirect_uri").notNull(),
@@ -761,12 +854,13 @@ export const cloudCliAuthorizationCodes = pgTable(
 export const lifecycleRuns = pgTable(
   "lifecycle_runs",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     principalId: uuid("principal_id")
       .references(() => principals.id, { onDelete: "cascade" })
       .notNull(),
-    runGroupId: uuid("run_group_id")
-      .references(() => runGroups.id, { onDelete: "set null" }),
+    runGroupId: uuid("run_group_id").references(() => runGroups.id, { onDelete: "set null" }),
     repoBindingId: uuid("repo_binding_id")
       .references(() => principalRepoBindings.id, { onDelete: "cascade" })
       .notNull(),
@@ -788,7 +882,9 @@ export const lifecycleRuns = pgTable(
 export const lifecycleItems = pgTable(
   "lifecycle_items",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     runId: uuid("run_id")
       .references(() => lifecycleRuns.id, { onDelete: "cascade" })
       .notNull(),
@@ -798,20 +894,30 @@ export const lifecycleItems = pgTable(
     kind: text("kind").notNull(), // 'webhook'
     state: text("state").default("pending").notNull(), // 'pending' | 'running' | 'succeeded' | 'degraded' | 'blocked' | 'failed'
     failurePolicy: text("failure_policy").notNull(), // 'failed' | 'degraded'
-    scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`),
+    scopes: text("scopes")
+      .array()
+      .notNull()
+      .default(sql`ARRAY[]::text[]`),
     destinationUrl: text("destination_url").notNull(),
     destinationClass: text("destination_class").notNull(), // 'public' | 'private_local'
     dispatchMode: text("dispatch_mode").notNull(), // 'local' | 'cloud'
     summary: text("summary"),
     reason: text("reason"),
-    metadata: jsonb("metadata").notNull().default(sql`'{}'::jsonb`),
+    metadata: jsonb("metadata")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
-    unique("lifecycle_items_run_workspace_phase_key_unique").on(t.runId, t.workspacePath, t.phase, t.key),
+    unique("lifecycle_items_run_workspace_phase_key_unique").on(
+      t.runId,
+      t.workspacePath,
+      t.phase,
+      t.key,
+    ),
     index("lifecycle_items_run_idx").on(t.runId, t.phase, t.workspacePath),
   ],
 )
@@ -819,12 +925,16 @@ export const lifecycleItems = pgTable(
 export const lifecycleEvents = pgTable(
   "lifecycle_events",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     itemId: uuid("item_id")
       .references(() => lifecycleItems.id, { onDelete: "cascade" })
       .notNull(),
     eventType: text("event_type").notNull(),
-    payload: jsonb("payload").notNull().default(sql`'{}'::jsonb`),
+    payload: jsonb("payload")
+      .notNull()
+      .default(sql`'{}'::jsonb`),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [index("lifecycle_events_item_idx").on(t.itemId, t.createdAt)],
@@ -847,7 +957,9 @@ export const lifecycleCompletionTokens = pgTable(
 export const environmentPolicies = pgTable(
   "environment_policies",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id, { onDelete: "cascade" })
       .notNull(),
@@ -860,7 +972,11 @@ export const environmentPolicies = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
-    unique("environment_policies_org_repo_env_unique").on(t.orgId, t.repoFullName, t.environmentName),
+    unique("environment_policies_org_repo_env_unique").on(
+      t.orgId,
+      t.repoFullName,
+      t.environmentName,
+    ),
     index("environment_policies_repo_env_idx").on(t.repoFullName, t.environmentName),
   ],
 )
@@ -884,7 +1000,9 @@ export const leases = pgTable("leases", {
 export const warmRunnerSessions = pgTable(
   "warm_runner_sessions",
   {
-    id: uuid("id").primaryKey().$defaultFn(() => uuidv7()),
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
     orgId: uuid("org_id")
       .references(() => organizations.id, { onDelete: "cascade" })
       .notNull(),

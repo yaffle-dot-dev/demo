@@ -78,9 +78,7 @@ export async function executeHostedLifecycleForDeployment(values: {
   const repository = await findRepoByName(values.deployment.orgId, values.deployment.repo)
   const repoFullName = repository?.fullName ?? `${runGroup.repo}`
   const canonicalRepoNamespace = binding.canonicalRepoNamespace
-  const environmentName = values.deployment.prNumber
-    ? `pr-${values.deployment.prNumber}`
-    : values.deployment.environmentName
+  const environmentName = values.deployment.environmentName
   const configRaw = await fetchProducerConfig(values.deployment.installationId, repoFullName, values.deployment.headSha)
   if (!configRaw) {
     return { runId: null }

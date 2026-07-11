@@ -33,16 +33,16 @@ import type { Runner } from "./runner.ts"
 import { useTfcBackend } from "./tfc-backend.ts"
 import { generateRunToken } from "./run-token.ts"
 import { getInstallationToken } from "./github.ts"
+import { getDeploymentExecutionEnvironment } from "./deployment-environment.ts"
 import {
   completeWorkspaceArchive,
-  ensurePreviewWorkspace,
+  ensureTransientWorkspace,
   ensureNamedWorkspace,
   failWorkspaceArchive,
 } from "./workspace-service.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
 import {
   type Workspace,
-  buildPrEnvironmentName,
   parseYaffleToml,
 } from "./config-toml.ts"
 import { fetchFileContent, upsertPrComment } from "./github.ts"
@@ -178,12 +178,8 @@ async function executeJobWork(
   const owner = repoParts.length > 1 ? repoParts[0] : org.slug
   const repo = repoParts.length > 1 ? repoParts[1] : deployment.repo
 
-  // Determine environment kind and name
-  const isPr = deployment.prNumber != null && deployment.prNumber > 0
-  const environmentKind = isPr ? "transient" : "named"
-  const environmentName = isPr
-    ? buildPrEnvironmentName(deployment.prNumber!)
-    : deployment.environmentName
+  const { environmentKind, environmentName, sourcePrNumber } =
+    getDeploymentExecutionEnvironment(deployment)
 
   // Fetch config to get workspace-specific variables
   let workspace: Workspace | undefined
@@ -223,7 +219,7 @@ async function executeJobWork(
       workspace_path: deployment.workspacePath,
       branch: refName,
       commit_sha: deployment.headSha,
-      pr_number: isPr ? deployment.prNumber! : null,
+      pr_number: sourcePrNumber,
     }
 
     try {
@@ -256,14 +252,12 @@ async function executeJobWork(
   let tfcToken: string | undefined
 
   if (useTfcBackend()) {
-    const isPrForTfc = deployment.prNumber != null && deployment.prNumber > 0
-    const tfcWorkspace = isPrForTfc
-      ? await ensurePreviewWorkspace({
+    const tfcWorkspace = environmentKind === "transient"
+      ? await ensureTransientWorkspace({
           orgId: org.id,
           orgSlug: org.slug,
           repo: deployment.repo,
           environment: environmentName,
-          prNumber: deployment.prNumber!,
           workspacePath: deployment.workspacePath,
           ref: deployment.ref,
         })

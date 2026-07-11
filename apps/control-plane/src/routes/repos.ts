@@ -33,6 +33,7 @@ import {
 } from "../db/queries/run-groups.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 import { events, type DeploymentUpdateEvent, type JobUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
+import { buildPrEnvironmentName } from "../lib/config-toml.ts"
 import {
   getSseSnapshotDurationHistogram,
   getSseEventToSendLatencyHistogram,
@@ -142,7 +143,7 @@ reposRoute.get(
     }
     const prNumber = prParsed.data
 
-    const environmentName = `pr-${prNumber}`
+    const environmentName = buildPrEnvironmentName(prNumber)
     const deployments = await findDeploymentsByEnvironment(auth.orgId, repo, environmentName)
     const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
 
@@ -228,7 +229,7 @@ reposRoute.get(
     }
     const prNumber = prParsed.data
 
-    const environmentName = `pr-${prNumber}`
+    const environmentName = buildPrEnvironmentName(prNumber)
 
     return streamSSE(c, async (stream) => {
       getSseConnectionsActiveCounter().add(1, { type: "pr" })
@@ -765,7 +766,7 @@ async function buildEnvironmentSnapshotData(params: {
     return {
       org: params.orgSlug,
       repo: params.repo,
-      environmentKind: latestRunGroup.prNumber ? "transient" : "named",
+      environmentKind: latestRunGroup.environmentKind,
       environmentName: params.environmentName,
       ref: latestRunGroup.ref,
       headSha: latestRunGroup.headSha,
@@ -809,7 +810,7 @@ async function buildEnvironmentSnapshotData(params: {
     return {
       org: params.orgSlug,
       repo: params.repo,
-      environmentKind: first.prNumber ? "transient" : "named",
+      environmentKind: first.environmentKind,
       environmentName: first.environmentName,
       ref: first.ref,
       headSha: first.headSha,
@@ -917,7 +918,7 @@ async function buildEnvironmentSnapshotData(params: {
   return {
     org: params.orgSlug,
     repo: params.repo,
-    environmentKind: first.prNumber ? "transient" : "named",
+    environmentKind: first.environmentKind,
     environmentName: first.environmentName,
     ref: first.ref,
     headSha: first.headSha,

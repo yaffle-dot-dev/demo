@@ -14,15 +14,20 @@ export type PreviewStatus =
 
 export type RunType = "plan" | "apply" | "destroy"
 
-export type RunStatus = "pending" | "scanning" | "running" | "success" | "failed" | "cancelled" | "skipped"
+export type RunStatus =
+  | "pending"
+  | "scanning"
+  | "isolation_review_required"
+  | "isolation_blocked"
+  | "running"
+  | "success"
+  | "failed"
+  | "cancelled"
+  | "skipped"
 
 export type RunnerMode = "saas" | "byoa"
 
-export type PullRequestAction =
-  | "opened"
-  | "synchronize"
-  | "closed"
-  | "reopened"
+export type PullRequestAction = "opened" | "synchronize" | "closed" | "reopened"
 
 /**
  * Context for a pull_request webhook event.

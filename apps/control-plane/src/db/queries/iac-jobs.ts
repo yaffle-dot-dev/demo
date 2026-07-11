@@ -692,7 +692,7 @@ export async function getJobWithContext(jobId: string): Promise<
         orgId: string
         orgSlug: string
         repo: string
-        environmentKind: string
+        environmentKind: "named" | "transient"
         environmentName: string
         prNumber: number | null
         workspacePath: string

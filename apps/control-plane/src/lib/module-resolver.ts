@@ -1,6 +1,8 @@
+import { environmentName, type EnvironmentName } from "@yaffle/shared"
+
 import {
-  findNonPreviewWorkspace,
-  findPreviewWorkspace,
+  findNamedWorkspace,
+  findTransientWorkspace,
   type Workspace,
 } from "../db/queries/workspaces.ts"
 import {
@@ -11,30 +13,23 @@ import {
 import { logger } from "./telemetry.ts"
 
 /**
- * Preview context for module resolution.
- * Passed via ?preview=pr-{n} query parameter.
+ * Source-neutral transient environment context for module resolution.
  */
-export interface PreviewContext {
-  /** PR number for the preview */
-  prNumber: number
+export interface TransientEnvironmentContext {
+  environmentName: EnvironmentName
 }
 
 /**
- * Parse preview context from a query parameter value.
- * Accepts "pr-42" format.
+ * Parse a transient environment identity from a query parameter value.
  */
-export function parsePreviewContext(value: string | null): PreviewContext | null {
-  if (!value) {
+export function parseTransientEnvironmentContext(
+  value: string | null,
+): TransientEnvironmentContext | null {
+  if (!value?.trim()) {
     return null
   }
 
-  const match = value.match(/^pr-([1-9]\d*)$/)
-  if (!match) {
-    return null
-  }
-
-  const prNumber = Number.parseInt(match[1], 10)
-  return Number.isSafeInteger(prNumber) ? { prNumber } : null
+  return { environmentName: environmentName(value) }
 }
 
 /**
@@ -43,8 +38,7 @@ export function parsePreviewContext(value: string | null): PreviewContext | null
 export interface ResolvedModule {
   workspace: Workspace
   stateVersion: StateVersion
-  /** Whether this resolved to a preview workspace */
-  isPreview: boolean
+  isTransient: boolean
 }
 
 /**
@@ -59,27 +53,24 @@ export interface ResolveModuleOptions {
   workspacePath: string
   /** State version serial, or "latest" for current */
   serial: number | "latest"
-  /** Preview context, if resolving in a preview */
-  previewContext: PreviewContext | null
+  /** Transient environment identity, if resolving in a transient environment */
+  transientEnvironment: TransientEnvironmentContext | null
 }
 
 /**
  * Resolve a module to a workspace and state version.
  *
  * Resolution algorithm:
- * 1. If no preview context, resolve to production
- * 2. If preview context, prefer a preview workspace only when it has a usable
+ * 1. If no transient environment is requested, resolve to a named environment
+ * 2. Prefer a matching transient workspace only when it has a usable
  *    finalized state version for the requested serial
- * 3. Fall back to a non-preview workspace when the preview workspace is
+ * 3. Fall back to a named workspace when the transient workspace is
  *    missing or has no finalized state to serve
- *
- * This implements "auto" preview resolution. The "never" and "always" modes
- * will be added when config parsing is implemented (YAF-41).
  */
 export async function resolveModule(
   options: ResolveModuleOptions,
 ): Promise<ResolvedModule | null> {
-  const { orgId, repo, workspacePath, serial, previewContext } = options
+  const { orgId, repo, workspacePath, serial, transientEnvironment } = options
 
   async function findUsableStateVersion(workspaceId: string): Promise<StateVersion | undefined> {
     const stateVersion = serial === "latest"
@@ -93,40 +84,43 @@ export async function resolveModule(
     return stateVersion
   }
 
-  // Try preview workspace first if we have preview context
-  if (previewContext) {
-    const previewWorkspace = await findPreviewWorkspace(orgId, repo, workspacePath, previewContext.prNumber)
-    if (previewWorkspace) {
-      const previewStateVersion = await findUsableStateVersion(previewWorkspace.id)
-      if (previewStateVersion) {
-        logger.debug("Resolved to preview workspace", {
+  if (transientEnvironment) {
+    const transientWorkspace = await findTransientWorkspace(
+      orgId,
+      repo,
+      workspacePath,
+      transientEnvironment.environmentName,
+    )
+    if (transientWorkspace) {
+      const transientStateVersion = await findUsableStateVersion(transientWorkspace.id)
+      if (transientStateVersion) {
+        logger.debug("Resolved to transient workspace", {
           repo,
           workspacePath,
-          prNumber: previewContext.prNumber,
-          workspaceId: previewWorkspace.id,
-          stateVersionId: previewStateVersion.id,
-          serial: previewStateVersion.serial,
+          environmentName: transientEnvironment.environmentName,
+          workspaceId: transientWorkspace.id,
+          stateVersionId: transientStateVersion.id,
+          serial: transientStateVersion.serial,
         })
 
         return {
-          workspace: previewWorkspace,
-          stateVersion: previewStateVersion,
-          isPreview: true,
+          workspace: transientWorkspace,
+          stateVersion: transientStateVersion,
+          isTransient: true,
         }
       }
 
-      logger.info("Preview workspace has no finalized state version, falling back to non-preview workspace", {
+      logger.info("Transient workspace has no finalized state version, falling back to named workspace", {
         repo,
         workspacePath,
-        prNumber: previewContext.prNumber,
-        workspaceId: previewWorkspace.id,
+        environmentName: transientEnvironment.environmentName,
+        workspaceId: transientWorkspace.id,
         requestedSerial: serial,
       })
     }
   }
 
-  // Fall back to non-preview workspace (e.g. main branch) if no usable preview was found
-  const workspace = await findNonPreviewWorkspace(orgId, repo, workspacePath)
+  const workspace = await findNamedWorkspace(orgId, repo, workspacePath)
   if (!workspace) {
     return null
   }
@@ -136,19 +130,19 @@ export async function resolveModule(
     return null
   }
 
-  logger.debug("Resolved to non-preview workspace", {
+  logger.debug("Resolved to named workspace", {
     repo,
     workspacePath,
     workspaceId: workspace.id,
     stateVersionId: stateVersion.id,
     serial: stateVersion.serial,
-    environment: workspace.environment,
-    hadPreviewContext: !!previewContext,
+    environmentName: workspace.environmentName,
+    hadTransientEnvironment: !!transientEnvironment,
   })
 
   return {
     workspace,
     stateVersion,
-    isPreview: false,
+    isTransient: false,
   }
 }

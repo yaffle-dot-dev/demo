@@ -11,7 +11,8 @@ export interface ModuleConsumerWorkspace {
   orgSlug: string
   repo: string
   workspacePath: string
-  prNumber?: number | null
+  environmentKind: "named" | "transient"
+  environmentName: string
 }
 
 export interface ModuleAccessDecision {

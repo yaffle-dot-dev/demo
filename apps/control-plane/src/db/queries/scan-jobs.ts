@@ -1,4 +1,6 @@
-import { and, eq, lt, or, isNull } from "drizzle-orm"
+import { and, desc, eq, lt, or, isNull } from "drizzle-orm"
+
+import type { AutomaticIsolationPreflight } from "@yaffle/shared"
 
 import type { WorkspaceVariablesByPath } from "../../lib/workspace-variables.ts"
 
@@ -13,6 +15,7 @@ export interface ScanJobResult {
   graph: { workspaces: string[]; edges: [string, string][] }
   executionOrder: string[]
   workspaceS3Key?: string
+  automaticIsolationPreflight?: AutomaticIsolationPreflight
 }
 
 /**
@@ -28,6 +31,7 @@ export async function createScanJob(values: {
   orgSlug: string
   workspacePaths: string[]
   workspaceVariables?: WorkspaceVariablesByPath
+  automaticIsolationWorkspacePaths?: string[]
 }): Promise<ScanJob> {
   return withDbSpan("insert", "scan_jobs", async () => {
     const rows = await db
@@ -42,6 +46,7 @@ export async function createScanJob(values: {
         orgSlug: values.orgSlug,
         workspacePaths: values.workspacePaths,
         workspaceVariables: values.workspaceVariables ?? {},
+        automaticIsolationWorkspacePaths: values.automaticIsolationWorkspacePaths ?? [],
       })
       .returning()
 
@@ -72,12 +77,7 @@ export async function claimScanJob(
         startedAt: new Date(),
         lastHeartbeat: new Date(),
       })
-      .where(
-        and(
-          eq(scanJobs.id, jobId),
-          eq(scanJobs.status, "queued"),
-        ),
-      )
+      .where(and(eq(scanJobs.id, jobId), eq(scanJobs.status, "queued")))
       .returning()
 
     const job = rows[0]
@@ -107,12 +107,7 @@ export async function completeScanJob(
         result,
         completedAt: new Date(),
       })
-      .where(
-        and(
-          eq(scanJobs.id, jobId),
-          eq(scanJobs.status, "running"),
-        ),
-      )
+      .where(and(eq(scanJobs.id, jobId), eq(scanJobs.status, "running")))
       .returning()
 
     const job = rows[0]
@@ -142,12 +137,7 @@ export async function failScanJob(
         errorMessage,
         completedAt: new Date(),
       })
-      .where(
-        and(
-          eq(scanJobs.id, jobId),
-          eq(scanJobs.status, "running"),
-        ),
-      )
+      .where(and(eq(scanJobs.id, jobId), eq(scanJobs.status, "running")))
       .returning()
 
     const job = rows[0]
@@ -229,12 +219,7 @@ export async function heartbeatScanJob(jobId: string): Promise<boolean> {
     const rows = await db
       .update(scanJobs)
       .set({ lastHeartbeat: new Date() })
-      .where(
-        and(
-          eq(scanJobs.id, jobId),
-          eq(scanJobs.status, "running"),
-        ),
-      )
+      .where(and(eq(scanJobs.id, jobId), eq(scanJobs.status, "running")))
       .returning({ id: scanJobs.id })
 
     return rows.length > 0
@@ -246,14 +231,23 @@ export async function heartbeatScanJob(jobId: string): Promise<boolean> {
  */
 export async function findScanJobById(id: string): Promise<ScanJob | undefined> {
   return withDbSpan("select", "scan_jobs", async () => {
-    const rows = await db
-      .select()
-      .from(scanJobs)
-      .where(eq(scanJobs.id, id))
-      .limit(1)
+    const rows = await db.select().from(scanJobs).where(eq(scanJobs.id, id)).limit(1)
 
     return rows[0]
   })
+}
+
+export async function findLatestScanJobByRunGroup(
+  runGroupId: string,
+): Promise<ScanJob | undefined> {
+  const rows = await db
+    .select()
+    .from(scanJobs)
+    .where(eq(scanJobs.runGroupId, runGroupId))
+    .orderBy(desc(scanJobs.queuedAt))
+    .limit(1)
+
+  return rows[0]
 }
 
 /**
@@ -271,10 +265,7 @@ export async function findStaleScanJobs(thresholdMs: number): Promise<ScanJob[]>
       .where(
         or(
           // Running but heartbeat went stale
-          and(
-            eq(scanJobs.status, "running"),
-            lt(scanJobs.lastHeartbeat, cutoff),
-          ),
+          and(eq(scanJobs.status, "running"), lt(scanJobs.lastHeartbeat, cutoff)),
           // Queued but never claimed (no heartbeat, queued before cutoff)
           and(
             eq(scanJobs.status, "queued"),

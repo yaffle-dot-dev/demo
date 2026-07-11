@@ -118,17 +118,17 @@ name = "production"
 name = "staging"
 ```
 
-PR previews are *transient* environments—they don't need to be declared.
+PR previews are _transient_ environments—they don't need to be declared.
 
 ### `[[cloud.triggers.github.push]]`
 
 Run workspaces when a ref (branch or tag) is pushed.
 
-| Field | Description |
-|-------|-------------|
-| `ref_patterns` | Include globs for full refs (must start with `refs/heads/` or `refs/tags/`) |
-| `exclude_ref_patterns` | Optional exclude globs applied after includes |
-| `environment` | Which environment to target |
+| Field                  | Description                                                                 |
+| ---------------------- | --------------------------------------------------------------------------- |
+| `ref_patterns`         | Include globs for full refs (must start with `refs/heads/` or `refs/tags/`) |
+| `exclude_ref_patterns` | Optional exclude globs applied after includes                               |
+| `environment`          | Which environment to target                                                 |
 
 ```toml
 version = 1
@@ -166,10 +166,10 @@ Ref globs use `*` for a single path segment and `**` to match across `/`.
 
 Create transient previews for PRs.
 
-| Field | Description |
-|-------|-------------|
-| `branch_patterns` | Include globs for the head branch (`["*"]` = all PRs) |
-| `exclude_branch_patterns` | Optional exclude globs applied after includes |
+| Field                     | Description                                           |
+| ------------------------- | ----------------------------------------------------- |
+| `branch_patterns`         | Include globs for the head branch (`["*"]` = all PRs) |
+| `exclude_branch_patterns` | Optional exclude globs applied after includes         |
 
 ```toml
 version = 1
@@ -185,12 +185,13 @@ exclude_branch_patterns = ["dependabot/**"]
 
 OpenTofu directories Yaffle manages. (Terraform directories work too—OpenTofu is fully compatible.)
 
-| Field | Description |
-|-------|-------------|
-| `path` | Path to OpenTofu/Terraform directory |
-| `environments` | Which environments run this workspace |
-| `variables` | Variables to inject |
-| `outputs` | Optional per-output visibility rules for cross-repo module consumers |
+| Field                         | Description                                                                                             |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `path`                        | Path to OpenTofu/Terraform directory                                                                    |
+| `environments`                | Which environments run this workspace                                                                   |
+| `automatic_preview_isolation` | Opt into whole-workspace provider-aware isolation for managed transient environments (default: `false`) |
+| `variables`                   | Variables to inject                                                                                     |
+| `outputs`                     | Optional per-output visibility rules for cross-repo module consumers                                    |
 
 ```toml
 version = 1
@@ -207,6 +208,30 @@ variables.region = "us-east-1"
 - `["production"]` — Only runs in production
 - `["production", "staging"]` — Runs in both
 - `["*"]` — Runs in all environments, including PR previews
+
+#### Automatic preview isolation
+
+Set `automatic_preview_isolation = true` on a workspace with `environments = ["*"]` to opt
+into Yaffle's whole-workspace preview isolation contract:
+
+```toml
+version = 1
+
+[[workspaces]]
+path = "infra/api"
+environments = ["*"]
+automatic_preview_isolation = true
+```
+
+The setting applies only to managed transient environments. Named environments keep their
+existing resource configuration and names.
+
+Every managed resource in an opted-in workspace must belong to the transient environment and
+be safe for Yaffle to create, replace, and destroy. Shared resources must live in an upstream
+named, external, or static workspace and be consumed through authorized outputs or read-only
+data sources. Imports, provisioners, `lifecycle.prevent_destroy`, and unsupported or unverified
+resources stop before Terraform planning. When provider knowledge needs a user decision, Yaffle
+Cloud reports an automatic-isolation review requirement rather than silently bypassing it.
 
 #### Variables
 
@@ -246,10 +271,10 @@ outputs.secret_arn = { visibility = "public", consumers = ["acme:applications:ap
 
 `outputs.<name>` fields:
 
-| Field | Description |
-|-------|-------------|
-| `visibility` | `internal` or `public` |
-| `consumers` | Required for `public`; allowlist of `<org-slug>:<repo-slug>:<workspace-pattern>` |
+| Field        | Description                                                                      |
+| ------------ | -------------------------------------------------------------------------------- |
+| `visibility` | `internal` or `public`                                                           |
+| `consumers`  | Required for `public`; allowlist of `<org-slug>:<repo-slug>:<workspace-pattern>` |
 
 Rules:
 
@@ -260,18 +285,20 @@ Rules:
 - consumer selectors match Yaffle org slug, repo slug, and workspace path
 
 <Aside type="note">
-Public exports are for stable platform APIs. If a Terraform output is marked `sensitive = true`, don't export it publicly. Store the value in Secrets Manager or SSM, export the ARN or name instead, and grant consumers IAM access to read it directly.
+  Public exports are for stable platform APIs. If a Terraform output is marked `sensitive = true`,
+  don't export it publicly. Store the value in Secrets Manager or SSM, export the ARN or name
+  instead, and grant consumers IAM access to read it directly.
 </Aside>
 
 ### `[[cloud.approvals]]`
 
 Require approval before applying.
 
-| Field | Description |
-|-------|-------------|
-| `workspaces` | Paths or globs |
+| Field          | Description        |
+| -------------- | ------------------ |
+| `workspaces`   | Paths or globs     |
 | `environments` | Which environments |
-| `approvers` | Who can approve |
+| `approvers`    | Who can approve    |
 
 ```toml
 version = 1
@@ -295,9 +322,9 @@ approvers = [
 <provider>:<type>:<identifier>
 ```
 
-| Example | Meaning |
-|---------|---------|
-| `github:user:alice` | GitHub user alice |
+| Example                     | Meaning                    |
+| --------------------------- | -------------------------- |
+| `github:user:alice`         | GitHub user alice          |
 | `github:team:acme/platform` | GitHub team @acme/platform |
 
 #### Matching
@@ -312,16 +339,16 @@ Use `{{ }}` in variable values. Yaffle uses [MiniJinja](https://github.com/mitsu
 
 ### Available variables
 
-| Template | Description | Example value |
-|----------|-------------|---------------|
-| `{{ environment }}` | Environment name | `production`, `pr-42` |
-| `{{ environment_kind }}` | `named` or `transient` | `transient` |
-| `{{ org }}` | GitHub organization/owner | `acme` |
-| `{{ repo }}` | Repository name | `infra` |
-| `{{ workspace_path }}` | Workspace path | `infra/network` |
-| `{{ branch }}` | Git branch name | `main`, `feature/login` |
-| `{{ commit_sha }}` | Full commit SHA | `a1b2c3d4...` |
-| `{{ pr_number }}` | GitHub PR number (null for every other source) | `42` |
+| Template                 | Description                                    | Example value           |
+| ------------------------ | ---------------------------------------------- | ----------------------- |
+| `{{ environment }}`      | Environment name                               | `production`, `pr-42`   |
+| `{{ environment_kind }}` | `named` or `transient`                         | `transient`             |
+| `{{ org }}`              | GitHub organization/owner                      | `acme`                  |
+| `{{ repo }}`             | Repository name                                | `infra`                 |
+| `{{ workspace_path }}`   | Workspace path                                 | `infra/network`         |
+| `{{ branch }}`           | Git branch name                                | `main`, `feature/login` |
+| `{{ commit_sha }}`       | Full commit SHA                                | `a1b2c3d4...`           |
+| `{{ pr_number }}`        | GitHub PR number (null for every other source) | `42`                    |
 
 ### Examples
 
@@ -370,11 +397,11 @@ variables.domain = "{% if environment_kind == 'transient' %}preview-{{ pr_number
 
 Globs work in `ref`, `branch_patterns`, `exclude_branch_patterns`, `workspaces`, and `environments`:
 
-| Pattern | Matches |
-|---------|---------|
-| `*` | Anything within a single path segment |
-| `**` | Anything, including `/` |
-| `refs/heads/feature/*` | `refs/heads/feature/login`, but not `refs/heads/feature/a/b` |
-| `dependabot/**` | `dependabot/npm_and_yarn/foo` |
-| `refs/tags/v*` | `refs/tags/v1`, `refs/tags/v1.0.0` |
-| `infra/*` | `infra/foo`, `infra/foo/bar` (workspace patterns match across `/`) |
+| Pattern                | Matches                                                            |
+| ---------------------- | ------------------------------------------------------------------ |
+| `*`                    | Anything within a single path segment                              |
+| `**`                   | Anything, including `/`                                            |
+| `refs/heads/feature/*` | `refs/heads/feature/login`, but not `refs/heads/feature/a/b`       |
+| `dependabot/**`        | `dependabot/npm_and_yarn/foo`                                      |
+| `refs/tags/v*`         | `refs/tags/v1`, `refs/tags/v1.0.0`                                 |
+| `infra/*`              | `infra/foo`, `infra/foo/bar` (workspace patterns match across `/`) |

@@ -6,6 +6,8 @@
  * and report results.
  */
 
+import type { AutomaticIsolationPreflight } from "@yaffle/shared"
+
 export interface ScannerConfig {
   apiUrl: string
   jobToken: string
@@ -22,6 +24,7 @@ export interface ScanClaimResponse {
   orgSlug: string
   workspacePaths: string[]
   workspaceVariables: Record<string, Record<string, string | number | boolean>>
+  automaticIsolationWorkspacePaths: string[]
   workspaceUploadUrl?: string
 }
 
@@ -29,6 +32,7 @@ export interface ScanResult {
   graph: { workspaces: string[]; edges: [string, string][] }
   executionOrder: string[]
   workspaceS3Key?: string
+  automaticIsolationPreflight?: AutomaticIsolationPreflight
 }
 
 export class ScannerApiClient {

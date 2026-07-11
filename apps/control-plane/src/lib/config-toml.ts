@@ -15,7 +15,7 @@ export class ConfigError extends Error {
 /**
  * Environment kind discriminator.
  * - "named": Long-lived environments tied to branches (e.g., main, staging)
- * - "transient": Short-lived environments tied to PRs (e.g., pr-123)
+ * - "transient": Short-lived environments with source-neutral identity
  */
 export type EnvironmentKind = "named" | "transient"
 
@@ -66,57 +66,67 @@ const lifecycleHookSchema = z.object({
   github: lifecycleGitHubDispatchSchema.optional(),
 })
 
-const workspaceSchema = z.object({
-  path: z.string().min(1, "workspace path is required"),
-  environments: z.union([
-    z.literal("*"),
-    z.array(z.string().min(1)),
-    z.string().min(1), // Single environment shorthand
-  ]),
-  variables: z.record(z.string(), variableValueSchema).optional(),
-  outputs: z.record(z.string().min(1, "output name is required"), workspaceOutputPolicySchema).optional(),
-  activation: z.array(lifecycleHookSchema).optional().default([]),
-  verification: z.array(lifecycleHookSchema).optional().default([]),
-})
+const workspaceSchema = z
+  .object({
+    path: z.string().min(1, "workspace path is required"),
+    environments: z.union([
+      z.literal("*"),
+      z.array(z.string().min(1)),
+      z.string().min(1), // Single environment shorthand
+    ]),
+    automatic_preview_isolation: z.boolean().optional().default(false),
+    variables: z.record(z.string(), variableValueSchema).optional(),
+    outputs: z
+      .record(z.string().min(1, "output name is required"), workspaceOutputPolicySchema)
+      .optional(),
+    activation: z.array(lifecycleHookSchema).optional().default([]),
+    verification: z.array(lifecycleHookSchema).optional().default([]),
+  })
+  .strict()
 
 const refPatternSchema = z.string().min(1, "ref pattern is required")
 
-const pushTriggerSchema = z.object({
-  ref: refPatternSchema.optional(),
-  ref_patterns: z.array(refPatternSchema).min(1, "ref_patterns must contain at least one pattern").optional(),
-  exclude_ref_patterns: z.array(refPatternSchema).optional(),
-  environment: z.string().min(1, "environment is required"),
-}).superRefine((data, ctx) => {
-  const hasLegacyRef = data.ref !== undefined
-  const hasRefPatterns = data.ref_patterns !== undefined
+const pushTriggerSchema = z
+  .object({
+    ref: refPatternSchema.optional(),
+    ref_patterns: z
+      .array(refPatternSchema)
+      .min(1, "ref_patterns must contain at least one pattern")
+      .optional(),
+    exclude_ref_patterns: z.array(refPatternSchema).optional(),
+    environment: z.string().min(1, "environment is required"),
+  })
+  .superRefine((data, ctx) => {
+    const hasLegacyRef = data.ref !== undefined
+    const hasRefPatterns = data.ref_patterns !== undefined
 
-  if (!hasLegacyRef && !hasRefPatterns) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["ref_patterns"],
-      message: "ref or ref_patterns is required",
-    })
-  }
+    if (!hasLegacyRef && !hasRefPatterns) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ref_patterns"],
+        message: "ref or ref_patterns is required",
+      })
+    }
 
-  if (hasLegacyRef && hasRefPatterns) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["ref_patterns"],
-      message: "ref and ref_patterns cannot both be set",
-    })
-  }
+    if (hasLegacyRef && hasRefPatterns) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["ref_patterns"],
+        message: "ref and ref_patterns cannot both be set",
+      })
+    }
 
-  addRefPatternValidationIssues(ctx, "ref", data.ref)
-  addRefPatternValidationIssues(ctx, "ref_patterns", data.ref_patterns)
-  addRefPatternValidationIssues(ctx, "exclude_ref_patterns", data.exclude_ref_patterns)
-})
+    addRefPatternValidationIssues(ctx, "ref", data.ref)
+    addRefPatternValidationIssues(ctx, "ref_patterns", data.ref_patterns)
+    addRefPatternValidationIssues(ctx, "exclude_ref_patterns", data.exclude_ref_patterns)
+  })
 
 function addRefPatternValidationIssues(
   ctx: z.RefinementCtx,
   field: "ref" | "ref_patterns" | "exclude_ref_patterns",
   value: string | string[] | undefined,
 ): void {
-  const patterns = typeof value === "string" ? [value] : value ?? []
+  const patterns = typeof value === "string" ? [value] : (value ?? [])
 
   for (const [index, pattern] of patterns.entries()) {
     const message = getRefPatternValidationError(pattern, field === "ref" ? "ref" : "ref pattern")
@@ -132,7 +142,10 @@ function addRefPatternValidationIssues(
   }
 }
 
-function getRefPatternValidationError(pattern: string, label: "ref" | "ref pattern"): string | null {
+function getRefPatternValidationError(
+  pattern: string,
+  label: "ref" | "ref pattern",
+): string | null {
   if (!pattern.startsWith("refs/heads/") && !pattern.startsWith("refs/tags/")) {
     return `${label} must start with "refs/heads/" or "refs/tags/"`
   }
@@ -147,31 +160,35 @@ function getRefPatternValidationError(pattern: string, label: "ref" | "ref patte
 
 const triggerPatternSchema = z.string().min(1, "branch pattern is required")
 
-const pullRequestTriggerSchema = z.object({
-  branch_pattern: triggerPatternSchema.optional(),
-  branch_patterns: z.array(triggerPatternSchema).min(1, "branch_patterns must contain at least one pattern")
-    .optional(),
-  exclude_branch_patterns: z.array(triggerPatternSchema).optional(),
-}).superRefine((data, ctx) => {
-  const hasLegacyPattern = data.branch_pattern !== undefined
-  const hasBranchPatterns = data.branch_patterns !== undefined
+const pullRequestTriggerSchema = z
+  .object({
+    branch_pattern: triggerPatternSchema.optional(),
+    branch_patterns: z
+      .array(triggerPatternSchema)
+      .min(1, "branch_patterns must contain at least one pattern")
+      .optional(),
+    exclude_branch_patterns: z.array(triggerPatternSchema).optional(),
+  })
+  .superRefine((data, ctx) => {
+    const hasLegacyPattern = data.branch_pattern !== undefined
+    const hasBranchPatterns = data.branch_patterns !== undefined
 
-  if (!hasLegacyPattern && !hasBranchPatterns) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["branch_patterns"],
-      message: "branch_pattern or branch_patterns is required",
-    })
-  }
+    if (!hasLegacyPattern && !hasBranchPatterns) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["branch_patterns"],
+        message: "branch_pattern or branch_patterns is required",
+      })
+    }
 
-  if (hasLegacyPattern && hasBranchPatterns) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["branch_patterns"],
-      message: "branch_pattern and branch_patterns cannot both be set",
-    })
-  }
-})
+    if (hasLegacyPattern && hasBranchPatterns) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["branch_patterns"],
+        message: "branch_pattern and branch_patterns cannot both be set",
+      })
+    }
+  })
 
 const githubTriggersSchema = z.object({
   push: z.array(pushTriggerSchema).optional(),
@@ -186,7 +203,8 @@ const triggersSchema = z.object({
 const approverStringSchema = z.string().refine(
   (val) => val === "" || isValidApproverString(val),
   (val) => ({
-    message: getApproverValidationError(val) ??
+    message:
+      getApproverValidationError(val) ??
       `Invalid approver format: "${val}". Expected: github:user:<username> or github:team:<org>/<team>`,
   }),
 )
@@ -202,30 +220,32 @@ const cloudSchema = z.object({
   approvals: z.array(approvalSchema).optional().default([]),
 })
 
-const configSchema = z.object({
-  version: z.literal(1),
-  environments: z.array(environmentSchema).optional().default([]),
-  workspaces: z.array(workspaceSchema).min(1, "at least one workspace is required"),
-  cloud: cloudSchema.optional(),
-  triggers: z.unknown().optional(),
-  approvals: z.unknown().optional(),
-}).superRefine((data, ctx) => {
-  if (data.triggers !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["triggers"],
-      message: "top-level triggers are no longer supported; move them under cloud.triggers",
-    })
-  }
+const configSchema = z
+  .object({
+    version: z.literal(1),
+    environments: z.array(environmentSchema).optional().default([]),
+    workspaces: z.array(workspaceSchema).min(1, "at least one workspace is required"),
+    cloud: cloudSchema.optional(),
+    triggers: z.unknown().optional(),
+    approvals: z.unknown().optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.triggers !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["triggers"],
+        message: "top-level triggers are no longer supported; move them under cloud.triggers",
+      })
+    }
 
-  if (data.approvals !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ["approvals"],
-      message: "top-level approvals are no longer supported; move them under cloud.approvals",
-    })
-  }
-})
+    if (data.approvals !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["approvals"],
+        message: "top-level approvals are no longer supported; move them under cloud.approvals",
+      })
+    }
+  })
 
 /** Variable value type: string, number, or boolean */
 export type VariableValue = string | number | boolean
@@ -248,6 +268,8 @@ export interface Workspace {
   path: string
   /** Environments this workspace deploys to. "*" means all environments. */
   environments: string[] | "*"
+  /** Apply provider-aware resource isolation during managed transient execution. */
+  automaticPreviewIsolation: boolean
   /** Variables to inject into Terraform. Values can be templates. */
   variables?: Record<string, VariableValue>
   /** Output policy for cross-repo module access within a Yaffle org. */
@@ -363,6 +385,7 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
   }
 
   rejectUnsupportedWorkspaceExportSyntax(parsed)
+  rejectUnsupportedSharedResourcesSyntax(parsed)
 
   // Validate against schema
   const result = configSchema.safeParse(parsed)
@@ -377,6 +400,7 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
   const workspaces: Workspace[] = raw.workspaces.map((ws) => ({
     path: ws.path,
     environments: normalizeEnvironments(ws.environments),
+    automaticPreviewIsolation: ws.automatic_preview_isolation,
     variables: ws.variables,
     outputs: ws.outputs,
     activation: ws.activation.map(normalizeLifecycleHook),
@@ -405,9 +429,9 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
       triggers: {
         github: triggerRoot?.github
           ? {
-            push: pushTriggers,
-            pull_request: pullRequestTriggers,
-          }
+              push: pushTriggers,
+              pull_request: pullRequestTriggers,
+            }
           : undefined,
       },
       approvals: raw.cloud?.approvals ?? [],
@@ -448,7 +472,9 @@ function normalizeLifecycleHook(hook: z.infer<typeof lifecycleHookSchema>): Life
           method: hook.request.method ?? "POST",
           auth: hook.request.auth
             ? {
-                scheme: hook.request.auth.scheme ?? (hook.kind === "generic_hmac" ? "hmac_sha256" : "bearer"),
+                scheme:
+                  hook.request.auth.scheme ??
+                  (hook.kind === "generic_hmac" ? "hmac_sha256" : "bearer"),
                 secret_ref: hook.request.auth.secret_ref,
                 connection: hook.request.auth.connection,
               }
@@ -485,12 +511,43 @@ function rejectUnsupportedWorkspaceExportSyntax(parsed: unknown): void {
       continue
     }
 
-    const path = typeof (workspace as { path?: unknown }).path === "string"
-      ? (workspace as { path: string }).path
-      : "<unknown>"
+    const path =
+      typeof (workspace as { path?: unknown }).path === "string"
+        ? (workspace as { path: string }).path
+        : "<unknown>"
 
     throw new ConfigError(
       `Invalid yaffle.toml:\n  - Workspace "${path}" uses unsupported [[workspaces.exports]] syntax. Use outputs.<name> = { visibility = "public", consumers = ["org-slug:repo-slug:workspace-pattern"] } instead`,
+    )
+  }
+}
+
+function rejectUnsupportedSharedResourcesSyntax(parsed: unknown): void {
+  if (!parsed || typeof parsed !== "object") {
+    return
+  }
+
+  const workspaces = (parsed as { workspaces?: unknown }).workspaces
+  if (!Array.isArray(workspaces)) {
+    return
+  }
+
+  for (const workspace of workspaces) {
+    if (!workspace || typeof workspace !== "object" || !("shared_resources" in workspace)) {
+      continue
+    }
+
+    const candidate = workspace as { path?: unknown; shared_resources?: unknown }
+    const workspacePath = typeof candidate.path === "string" ? candidate.path : "<unknown>"
+    const resources = Array.isArray(candidate.shared_resources)
+      ? candidate.shared_resources.filter(
+          (resource): resource is string => typeof resource === "string",
+        )
+      : []
+    const addressedResources = resources.length > 0 ? resources.join(", ") : "<unknown resource>"
+
+    throw new ConfigError(
+      `Invalid yaffle.toml:\n  - Workspace "${workspacePath}" cannot retain per-resource shared exceptions (${addressedResources}). Move each shared resource to an upstream named, external, or static workspace and consume it through authorized immutable outputs or a read-only data source.`,
     )
   }
 }
@@ -521,6 +578,23 @@ function validateSemantics(config: YaffleTomlConfig): void {
 
   // 3. Workspace environments must reference declared environments or be "*"
   for (const ws of config.workspaces) {
+    const segments = ws.path.split("/")
+    if (
+      ws.path !== "." &&
+      (ws.path.startsWith("/") ||
+        ws.path.startsWith("./") ||
+        ws.path.endsWith("/") ||
+        segments.some((segment) => segment === "" || segment === "." || segment === ".."))
+    ) {
+      errors.push(
+        `Workspace "${ws.path}" path must be repository-relative and normalized (for example, "infra/app" or ".")`,
+      )
+    }
+
+    if (ws.automaticPreviewIsolation && ws.environments !== "*") {
+      errors.push(`Workspace "${ws.path}" automatic_preview_isolation requires environments = "*"`)
+    }
+
     if (ws.environments !== "*") {
       for (const env of ws.environments) {
         if (!declaredEnvs.has(env)) {
@@ -534,11 +608,15 @@ function validateSemantics(config: YaffleTomlConfig): void {
   for (const ws of config.workspaces) {
     for (const [outputName, policy] of Object.entries(ws.outputs ?? {})) {
       if (policy.visibility === "public" && (!policy.consumers || policy.consumers.length === 0)) {
-        errors.push(`Workspace "${ws.path}" public output policy for "${outputName}" must declare at least one consumer selector`)
+        errors.push(
+          `Workspace "${ws.path}" public output policy for "${outputName}" must declare at least one consumer selector`,
+        )
       }
 
       if (policy.visibility === "internal" && policy.consumers && policy.consumers.length > 0) {
-        errors.push(`Workspace "${ws.path}" internal output policy for "${outputName}" cannot declare consumers`)
+        errors.push(
+          `Workspace "${ws.path}" internal output policy for "${outputName}" cannot declare consumers`,
+        )
       }
 
       for (const selector of policy.consumers ?? []) {
@@ -550,27 +628,42 @@ function validateSemantics(config: YaffleTomlConfig): void {
       }
     }
 
-    for (const [phase, hooks] of [["activation", ws.activation ?? []], ["verification", ws.verification ?? []]] as const) {
+    for (const [phase, hooks] of [
+      ["activation", ws.activation ?? []],
+      ["verification", ws.verification ?? []],
+    ] as const) {
       for (const hook of hooks) {
         if (hook.environments.length === 0) {
-          errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" must declare at least one environment pattern`)
+          errors.push(
+            `Workspace "${ws.path}" ${phase} hook "${hook.key}" must declare at least one environment pattern`,
+          )
         }
         if (hook.scopes.length === 0) {
-          errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" must declare at least one scope`)
+          errors.push(
+            `Workspace "${ws.path}" ${phase} hook "${hook.key}" must declare at least one scope`,
+          )
         }
         if (hook.kind === "generic" || hook.kind === "generic_hmac") {
           if (!hook.request) {
-            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" requires request settings`)
+            errors.push(
+              `Workspace "${ws.path}" ${phase} hook "${hook.key}" requires request settings`,
+            )
           } else if (hook.request.method !== "POST") {
-            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" only supports POST requests`)
+            errors.push(
+              `Workspace "${ws.path}" ${phase} hook "${hook.key}" only supports POST requests`,
+            )
           }
 
           if (hook.kind === "generic_hmac") {
             const auth = hook.request?.auth
             if (!auth) {
-              errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" requires auth for generic_hmac dispatch`)
+              errors.push(
+                `Workspace "${ws.path}" ${phase} hook "${hook.key}" requires auth for generic_hmac dispatch`,
+              )
             } else if (auth.scheme !== "hmac_sha256") {
-              errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" must use hmac_sha256 auth for generic_hmac dispatch`)
+              errors.push(
+                `Workspace "${ws.path}" ${phase} hook "${hook.key}" must use hmac_sha256 auth for generic_hmac dispatch`,
+              )
             }
           }
 
@@ -579,17 +672,23 @@ function validateSemantics(config: YaffleTomlConfig): void {
             const hasSecretRef = Boolean(auth.secret_ref)
             const hasConnection = Boolean(auth.connection)
             if (hasSecretRef === hasConnection) {
-              errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" auth must set exactly one of secret_ref or connection`)
+              errors.push(
+                `Workspace "${ws.path}" ${phase} hook "${hook.key}" auth must set exactly one of secret_ref or connection`,
+              )
             }
           }
         }
 
         if (hook.kind === "github_repository_dispatch") {
           if (!hook.github) {
-            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" requires github settings`)
+            errors.push(
+              `Workspace "${ws.path}" ${phase} hook "${hook.key}" requires github settings`,
+            )
           }
           if (hook.request) {
-            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" does not use request settings for github_repository_dispatch`)
+            errors.push(
+              `Workspace "${ws.path}" ${phase} hook "${hook.key}" does not use request settings for github_repository_dispatch`,
+            )
           }
         }
       }
@@ -652,10 +751,7 @@ export function matchBranchPattern(pattern: string, branch: string): boolean {
   return regex.test(branch)
 }
 
-function globToRegexPattern(
-  pattern: string,
-  options: { asteriskMatchesSlash: boolean },
-): string {
+function globToRegexPattern(pattern: string, options: { asteriskMatchesSlash: boolean }): string {
   let regex = ""
 
   for (let i = 0; i < pattern.length; i += 1) {
@@ -728,9 +824,11 @@ export function matchConsumerSelector(
     return false
   }
 
-  return matchBranchPattern(parsed.orgPattern, consumer.org) &&
+  return (
+    matchBranchPattern(parsed.orgPattern, consumer.org) &&
     matchBranchPattern(parsed.repoPattern, consumer.repo) &&
     matchWorkspacePattern(parsed.workspacePattern, consumer.workspacePath)
+  )
 }
 
 /**
@@ -755,6 +853,15 @@ export function matchEnvironmentPattern(pattern: string, environmentName: string
   return matchBranchPattern(pattern, environmentName)
 }
 
+export function getEnvironmentKind(
+  config: YaffleTomlConfig,
+  environmentName: string,
+): EnvironmentKind {
+  return config.environments.some((environment) => environment.name === environmentName)
+    ? "named"
+    : "transient"
+}
+
 /**
  * Find matching push trigger for a ref.
  * Returns the environment name if matched, undefined otherwise.
@@ -769,7 +876,9 @@ export function findPushTriggerEnvironment(
   const pushTriggers = config.cloud.triggers.github?.push ?? []
 
   for (const trigger of pushTriggers) {
-    if (matchesPatternSet(ref, trigger.ref_patterns, trigger.exclude_ref_patterns, matchRefPattern)) {
+    if (
+      matchesPatternSet(ref, trigger.ref_patterns, trigger.exclude_ref_patterns, matchRefPattern)
+    ) {
       return trigger.environment
     }
   }
@@ -788,19 +897,18 @@ export function matchRefPattern(pattern: string, ref: string): boolean {
 /**
  * Check if a branch matches any pull_request trigger.
  */
-export function matchesPullRequestTrigger(
-  config: YaffleTomlConfig,
-  headBranch: string,
-): boolean {
+export function matchesPullRequestTrigger(config: YaffleTomlConfig, headBranch: string): boolean {
   const prTriggers = config.cloud.triggers.github?.pull_request ?? []
 
   for (const trigger of prTriggers) {
-    if (matchesPatternSet(
-      headBranch,
-      trigger.branch_patterns,
-      trigger.exclude_branch_patterns,
-      matchBranchPattern,
-    )) {
+    if (
+      matchesPatternSet(
+        headBranch,
+        trigger.branch_patterns,
+        trigger.exclude_branch_patterns,
+        matchBranchPattern,
+      )
+    ) {
       return true
     }
   }
@@ -851,6 +959,22 @@ export function getWorkspacesForEnvironment(
     .map((ws) => ws.path)
 }
 
+/** Return selected workspaces whose transient runs require automatic isolation preflight. */
+export function getAutomaticIsolationWorkspacePaths(
+  config: YaffleTomlConfig,
+  selectedWorkspacePaths: string[],
+  environmentKind: EnvironmentKind,
+): string[] {
+  if (environmentKind !== "transient") {
+    return []
+  }
+
+  const selected = new Set(selectedWorkspacePaths)
+  return config.workspaces
+    .filter((workspace) => workspace.automaticPreviewIsolation && selected.has(workspace.path))
+    .map((workspace) => workspace.path)
+}
+
 /**
  * Resolve approvers for a workspace/environment pair.
  *
@@ -872,7 +996,7 @@ export function resolveApprovers(
   for (const rule of config.cloud.approvals) {
     // Check if workspace matches any pattern in the rule
     const workspaceMatches = rule.workspaces.some((pattern) =>
-      matchWorkspacePattern(pattern, workspacePath)
+      matchWorkspacePattern(pattern, workspacePath),
     )
     if (!workspaceMatches) continue
 
@@ -961,7 +1085,7 @@ export async function validateWorkspacePaths(
           message: `Workspace path "${ws.path}" does not exist in the repository`,
         })
       }
-    })
+    }),
   )
 
   return errors

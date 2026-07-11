@@ -54,6 +54,7 @@ const DEFAULT_CONFIG: YaffleTomlConfig = {
     {
       path: "infra",
       environments: "*",
+      automaticPreviewIsolation: false,
     },
   ],
   cloud: {
@@ -78,6 +79,7 @@ async function fakeScanDispatcher(
   runGroupId: string,
   workspacePaths: string[],
   workspaceVariables: Record<string, Record<string, string | number | boolean>>,
+  automaticIsolationWorkspacePaths: string[],
   installationToken?: string,
 ): Promise<void> {
   const scanJob = await createScanJob({
@@ -90,6 +92,7 @@ async function fakeScanDispatcher(
     orgSlug,
     workspacePaths,
     workspaceVariables,
+    automaticIsolationWorkspacePaths,
   })
 
   const claimed = await claimScanJob(scanJob.id, "test-scanner")

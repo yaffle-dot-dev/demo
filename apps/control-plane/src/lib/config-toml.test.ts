@@ -4,6 +4,7 @@ import {
   buildPrEnvironmentName,
   ConfigError,
   findPushTriggerEnvironment,
+  getAutomaticIsolationWorkspacePaths,
   getWorkspacesForEnvironment,
   isApprovalRequired,
   matchConsumerSelector,
@@ -60,10 +61,82 @@ branch_pattern = "*"
     expect(config.workspaces[0].environments).toEqual(["main", "staging"])
     expect(config.workspaces[1].path).toBe("apps/web/infra")
     expect(config.workspaces[1].environments).toBe("*")
+    expect(config.workspaces[1].automaticPreviewIsolation).toBe(false)
     expect(config.cloud.triggers.github?.push).toHaveLength(2)
     expect(config.cloud.triggers.github?.push?.[0].ref_patterns).toEqual(["refs/heads/main"])
     expect(config.cloud.triggers.github?.push?.[0].exclude_ref_patterns).toEqual([])
     expect(config.cloud.triggers.github?.pull_request).toHaveLength(1)
+  })
+
+  test("parses automatic preview isolation as an explicit workspace opt-in", () => {
+    const config = parseYaffleToml(`
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+automatic_preview_isolation = true
+`)
+
+    expect(config.workspaces[0].automaticPreviewIsolation).toBe(true)
+  })
+
+  test("rejects automatic preview isolation on a named-only workspace", () => {
+    expect(() =>
+      parseYaffleToml(`
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+automatic_preview_isolation = true
+`),
+    ).toThrow(/automatic_preview_isolation requires environments = "\*"/)
+  })
+
+  test("rejects misspelled automatic preview isolation fields", () => {
+    expect(() =>
+      parseYaffleToml(`
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+automatic_preveiw_isolation = true
+`),
+    ).toThrow(/Unrecognized key/)
+  })
+
+  test("rejects per-resource shared exceptions in automatically isolated workspaces", () => {
+    expect(() =>
+      parseYaffleToml(`
+version = 1
+
+[[workspaces]]
+path = "infra"
+environments = ["*"]
+automatic_preview_isolation = true
+shared_resources = ["aws_vpc.shared"]
+`),
+    ).toThrow(/aws_vpc\.shared.*upstream named, external, or static workspace/)
+  })
+
+  test("rejects non-canonical workspace paths", () => {
+    for (const path of ["./infra", "infra/", "infra/../shared"]) {
+      expect(() =>
+        parseYaffleToml(`
+version = 1
+
+[[workspaces]]
+path = "${path}"
+environments = ["*"]
+automatic_preview_isolation = true
+`),
+      ).toThrow(/path must be repository-relative and normalized/)
+    }
   })
 
   test("parses cloud namespaced triggers", () => {
@@ -737,6 +810,7 @@ environments = ["main"]
 [[workspaces]]
 path = "apps/web/infra"
 environments = ["*"]
+automatic_preview_isolation = true
 
 [[cloud.triggers.github.push]]
 ref = "refs/heads/main"
@@ -772,6 +846,14 @@ branch_pattern = "*"
     expect(workspaces).not.toContain("infra/shared")
     expect(workspaces).not.toContain("infra/production")
     expect(workspaces).toHaveLength(1)
+  })
+
+  test("returns opted-in selected workspaces only for transient execution", () => {
+    expect(getAutomaticIsolationWorkspacePaths(config, ["apps/web/infra"], "transient")).toEqual([
+      "apps/web/infra",
+    ])
+    expect(getAutomaticIsolationWorkspacePaths(config, ["apps/web/infra"], "named")).toEqual([])
+    expect(getAutomaticIsolationWorkspacePaths(config, [], "transient")).toEqual([])
   })
 })
 
@@ -951,7 +1033,9 @@ environments = ["*"]
 outputs.cluster_endpoint = { visibility = "public" }
 `
 
-    expect(() => parseYaffleToml(toml)).toThrow(/public output policy for "cluster_endpoint" must declare at least one consumer selector/)
+    expect(() => parseYaffleToml(toml)).toThrow(
+      /public output policy for "cluster_endpoint" must declare at least one consumer selector/,
+    )
   })
 
   test("rejects internal output policies with consumers", () => {
@@ -965,7 +1049,9 @@ environments = ["*"]
 outputs.cluster_endpoint = { visibility = "internal", consumers = ["acme:yaffle-dot-dev/apps:apps/*"] }
 `
 
-    expect(() => parseYaffleToml(toml)).toThrow(/internal output policy for "cluster_endpoint" cannot declare consumers/)
+    expect(() => parseYaffleToml(toml)).toThrow(
+      /internal output policy for "cluster_endpoint" cannot declare consumers/,
+    )
   })
 
   test("rejects unsupported [[workspaces.exports]] syntax", () => {
@@ -1055,33 +1141,41 @@ describe("consumer selectors", () => {
   })
 
   test("matches consumer selectors with workspace globs", () => {
-    expect(matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
-      org: "acme",
-      repo: "yaffle-dot-dev/yaffle",
-      workspacePath: "apps/api/infra",
-    })).toBe(true)
+    expect(
+      matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
+        org: "acme",
+        repo: "yaffle-dot-dev/yaffle",
+        workspacePath: "apps/api/infra",
+      }),
+    ).toBe(true)
 
-    expect(matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
-      org: "acme",
-      repo: "yaffle-dot-dev/yaffle",
-      workspacePath: "services/worker/infra",
-    })).toBe(false)
+    expect(
+      matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
+        org: "acme",
+        repo: "yaffle-dot-dev/yaffle",
+        workspacePath: "services/worker/infra",
+      }),
+    ).toBe(false)
   })
 
   test("supports wildcards in org and repo segments", () => {
-    expect(matchConsumerSelector("acme-*:yaffle-dot-dev/*:apps/*", {
-      org: "acme-prod",
-      repo: "yaffle-dot-dev/yaffle",
-      workspacePath: "apps/web/infra",
-    })).toBe(true)
+    expect(
+      matchConsumerSelector("acme-*:yaffle-dot-dev/*:apps/*", {
+        org: "acme-prod",
+        repo: "yaffle-dot-dev/yaffle",
+        workspacePath: "apps/web/infra",
+      }),
+    ).toBe(true)
   })
 
   test("supports exact repo matching", () => {
-    expect(matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
-      org: "other-org",
-      repo: "other-platform/yaffle",
-      workspacePath: "apps/web/infra",
-    })).toBe(false)
+    expect(
+      matchConsumerSelector("acme:yaffle-dot-dev/yaffle:apps/*", {
+        org: "other-org",
+        repo: "other-platform/yaffle",
+        workspacePath: "apps/web/infra",
+      }),
+    ).toBe(false)
   })
 })
 

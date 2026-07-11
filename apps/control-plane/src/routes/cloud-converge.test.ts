@@ -61,7 +61,12 @@ describe("cloudConvergeRoute", () => {
 
     const seen: {
       installationId?: number
-      scan?: { runGroupId: string; workspacePaths: string[]; installationToken: string }
+      scan?: {
+        runGroupId: string
+        workspacePaths: string[]
+        automaticIsolationWorkspacePaths: string[]
+        installationToken: string
+      }
     } = {}
     const app = new Hono()
     app.route(
@@ -70,6 +75,9 @@ describe("cloudConvergeRoute", () => {
         loadConfig: async () =>
           parseYaffleToml(`
 version = 1
+
+[[environments]]
+name = "main"
 
 [cloud.triggers.github]
 push = [{ environment = "main", ref_patterns = ["refs/heads/main"] }]
@@ -90,6 +98,7 @@ environments = ["main"]
           seen.scan = {
             runGroupId: input.runGroupId,
             workspacePaths: input.workspacePaths,
+            automaticIsolationWorkspacePaths: input.automaticIsolationWorkspacePaths,
             installationToken: input.installationToken,
           }
           return { scanJobId: "scan-job-1" }
@@ -126,6 +135,7 @@ environments = ["main"]
     expect(body.data.status).toBe("queued")
     expect(seen.installationId).toBe(67890)
     expect(seen.scan?.workspacePaths).toEqual(["apps/control-plane/infra"])
+    expect(seen.scan?.automaticIsolationWorkspacePaths).toEqual([])
     expect(seen.scan?.installationToken).toBe("installation-token")
 
     const runGroup = await db.query.runGroups.findFirst({
@@ -133,6 +143,7 @@ environments = ["main"]
     })
     expect(runGroup?.trigger).toBe("manual")
     expect(runGroup?.environmentName).toBe("main")
+    expect(runGroup?.prNumber).toBeNull()
     expect(runGroup?.ref).toBe("refs/heads/main")
     expect(runGroup?.repoBindingId).toBeTruthy()
     expect(seen.scan?.runGroupId).toBe(body.data.runGroupId)
@@ -264,6 +275,9 @@ environments = ["main"]
         loadConfig: async () =>
           parseYaffleToml(`
 version = 1
+
+[[environments]]
+name = "main"
 
 [cloud.triggers.github]
 push = [{ environment = "main", ref_patterns = ["refs/heads/main"] }]
@@ -397,6 +411,9 @@ environments = ["main"]
         loadConfig: async () =>
           parseYaffleToml(`
 version = 1
+
+[[environments]]
+name = "main"
 
 [cloud.triggers.github]
 push = [{ environment = "main", ref_patterns = ["refs/heads/main"] }]

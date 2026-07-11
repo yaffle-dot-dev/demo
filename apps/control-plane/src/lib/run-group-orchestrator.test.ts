@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "@yaffle/test"
 import { sql } from "drizzle-orm"
 
-import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
+import { createGithubInstallation, createOrg, updateOrg } from "../db/queries/organizations.ts"
 import { createRunGroup } from "../db/queries/run-groups.ts"
 import { previews, iacJobs } from "../db/schema.ts"
 import { db } from "./db.ts"
@@ -172,6 +172,46 @@ describe("run-group-orchestrator", () => {
     )
 
     expect(providerDiscovery?.status).toBe("ready")
+  })
+
+  test("isolates source-neutral transient state by environment identity", async () => {
+    const org = await createOrg({
+      name: "Transient Test Org",
+      slug: "transient-test-org",
+    })
+    await updateOrg(org.id, {
+      planTier: "pro",
+      subscriptionStatus: "active",
+    })
+
+    const runGroup = await createRunGroup({
+      orgId: org.id,
+      repo: "test-repo",
+      environmentKind: "transient",
+      environmentName: "review-42",
+      prNumber: null,
+      ref: "refs/heads/feature/test",
+      headSha: "abc123def456",
+      trigger: "manual",
+      status: "pending",
+    })
+
+    await completeRunGroup(runGroup.id, {
+      graph: {
+        workspaces: ["infra"],
+        edges: [],
+      },
+      executionOrder: ["infra"],
+    })
+
+    const deployments = await db.select().from(previews)
+    expect(deployments).toHaveLength(1)
+    expect(deployments[0]).toMatchObject({
+      environmentKind: "transient",
+      environmentName: "review-42",
+      prNumber: null,
+      stateKey: "transient-review-42/infra/terraform.tfstate",
+    })
   })
 
   test("marks removed named-environment workspaces destroyed for push runs", async () => {

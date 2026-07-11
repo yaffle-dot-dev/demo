@@ -9,8 +9,8 @@ import {
   findOrgMembership,
 } from "../../db/queries/organizations.ts"
 import {
-  findNonPreviewWorkspace,
-  findPreviewWorkspace,
+  findNamedWorkspace,
+  findTransientWorkspace,
   findWorkspaceById,
   type Workspace,
 } from "../../db/queries/workspaces.ts"
@@ -36,9 +36,9 @@ import {
   getOrGenerateModule,
 } from "../../lib/module-cache.ts"
 import {
+  parseTransientEnvironmentContext,
   resolveModule,
-  parsePreviewContext,
-  type PreviewContext,
+  type TransientEnvironmentContext,
 } from "../../lib/module-resolver.ts"
 import { parseYaffleToml, type YaffleTomlConfig } from "../../lib/config-toml.ts"
 import {
@@ -63,9 +63,9 @@ type TfcVariables = {
  *     source = "yaffle.dev/acme/core-infrastructure/vpc"
  *   }
  *
- * Preview-aware resolution is supported via ?preview=pr-{n} query parameter:
+ * Transient-aware resolution uses the source-neutral environment identity:
  *   module "shared" {
- *     source = "yaffle.dev/acme/apps/shared/infra?preview=pr-42"
+ *     source = "yaffle.dev/acme/apps/shared/infra?environment=review-42"
  *   }
  *
  * See: https://developer.hashicorp.com/terraform/internals/module-registry-protocol
@@ -288,35 +288,33 @@ async function resolveConsumerWorkspace(auth: TfcAuthContext): Promise<ModuleCon
     orgSlug: org.slug,
     repo: repository?.fullName ?? workspace.repo,
     workspacePath: workspace.workspacePath,
-    prNumber: workspace.prNumber,
+    environmentKind: workspace.environmentKind,
+    environmentName: workspace.environmentName,
   }
 }
 
-function derivePreviewContext(options: {
-  explicitPreviewContext: PreviewContext | null
+function deriveTransientEnvironment(options: {
+  explicitEnvironment: TransientEnvironmentContext | null
   consumerWorkspace: ModuleConsumerWorkspace | null
-  producerOrgSlug: string
-  producerRepo: string
-}): PreviewContext | null {
-  if (options.explicitPreviewContext) {
-    return options.explicitPreviewContext
-  }
-
+}):
+  | { allowed: true; environment: TransientEnvironmentContext | null }
+  | { allowed: false } {
   const consumer = options.consumerWorkspace
-  if (!consumer || !consumer.prNumber) {
-    return null
+  if (!consumer) {
+    return { allowed: true, environment: options.explicitEnvironment }
   }
 
-  const consumerRepo = consumer.repo.includes("/") ? consumer.repo : `${consumer.orgSlug}/${consumer.repo}`
-  const producerRepo = `${options.producerOrgSlug}/${options.producerRepo}`
-
-  if (consumerRepo.toLowerCase() !== producerRepo.toLowerCase()) {
-    return null
+  const boundEnvironment = consumer.environmentKind === "transient"
+    ? parseTransientEnvironmentContext(consumer.environmentName)
+    : null
+  if (
+    options.explicitEnvironment &&
+    options.explicitEnvironment.environmentName !== boundEnvironment?.environmentName
+  ) {
+    return { allowed: false }
   }
 
-  return {
-    prNumber: consumer.prNumber,
-  }
+  return { allowed: true, environment: boundEnvironment }
 }
 
 async function loadProducerConfig(
@@ -393,7 +391,7 @@ function sensitivePublicOutputsError(outputNames: string[]): Response {
  * Namespace format: "{org}--{repo}" (e.g., "yaffle-dot-dev--yaffle")
  *
  * Query parameters:
- * - preview: "pr-{n}" to list versions from a preview workspace
+ * - environment: transient environment name to prefer over a named workspace
  */
 registryRoute.get(
   "/:namespace/:name/:provider/versions",
@@ -402,7 +400,7 @@ registryRoute.get(
     const moduleName = c.req.param("name")
     const provider = c.req.param("provider")
     const auth = c.get("tfcAuth")
-    const previewParam = c.req.query("preview")
+    const environmentParam = c.req.query("environment")
 
     // Provider must be "yaffle" for our modules
     if (provider !== "yaffle") {
@@ -473,49 +471,57 @@ registryRoute.get(
     // Convert module name to workspace path
     const workspacePath = moduleNameToWorkspacePath(moduleName)
     const consumerWorkspace = await resolveConsumerWorkspace(auth)
-    const previewContext = derivePreviewContext({
-      explicitPreviewContext: parsePreviewContext(previewParam ?? null),
+    const environmentDecision = deriveTransientEnvironment({
+      explicitEnvironment: parseTransientEnvironmentContext(environmentParam ?? null),
       consumerWorkspace,
-      producerOrgSlug: orgSlug,
-      producerRepo: repo,
     })
+    if (!environmentDecision.allowed) {
+      return c.json(
+        { errors: [{ status: "404", title: "Module not found" }] },
+        404,
+      )
+    }
+    const transientEnvironment = environmentDecision.environment
 
     // Find the appropriate workspace
     let workspace: Workspace | undefined
     let stateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> = []
-    let previewWorkspace: Workspace | undefined
-    let previewStateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> | undefined
+    let transientWorkspace: Workspace | undefined
+    let transientStateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> | undefined
 
-    if (previewContext) {
-      // Try preview workspace first
-      previewWorkspace = await findPreviewWorkspace(org.id, repo, workspacePath, previewContext.prNumber)
-      if (previewWorkspace) {
-        previewStateVersions = await listStateVersionsForModule(previewWorkspace.id)
+    if (transientEnvironment) {
+      transientWorkspace = await findTransientWorkspace(
+        org.id,
+        repo,
+        workspacePath,
+        transientEnvironment.environmentName,
+      )
+      if (transientWorkspace) {
+        transientStateVersions = await listStateVersionsForModule(transientWorkspace.id)
 
-        if (previewStateVersions.length > 0) {
-          workspace = previewWorkspace
-          stateVersions = previewStateVersions
+        if (transientStateVersions.length > 0) {
+          workspace = transientWorkspace
+          stateVersions = transientStateVersions
         } else {
-          log.info("Preview workspace has no finalized module versions, falling back to non-preview workspace", {
+          log.info("Transient workspace has no finalized module versions, falling back to named workspace", {
             namespace,
             repo,
             workspacePath,
-            prNumber: previewContext.prNumber,
-            workspaceId: previewWorkspace.id,
+            environmentName: transientEnvironment.environmentName,
+            workspaceId: transientWorkspace.id,
           })
         }
       }
     }
 
     if (!workspace) {
-      // Fall back to non-preview (e.g. main branch) workspace
-      workspace = await findNonPreviewWorkspace(org.id, repo, workspacePath)
+      workspace = await findNamedWorkspace(org.id, repo, workspacePath)
 
       if (workspace) {
         stateVersions = await listStateVersionsForModule(workspace.id)
-      } else if (previewWorkspace) {
-        workspace = previewWorkspace
-        stateVersions = previewStateVersions ?? []
+      } else if (transientWorkspace) {
+        workspace = transientWorkspace
+        stateVersions = transientStateVersions ?? []
       }
     }
 
@@ -556,7 +562,7 @@ registryRoute.get(
       workspacePath,
       workspaceId: workspace.id,
       versionCount: versions.length,
-      isPreview: workspace.environment === "preview",
+      isTransient: workspace.environmentKind === "transient",
     })
 
     // Return in Terraform module registry format
@@ -583,7 +589,7 @@ registryRoute.get(
  * Namespace format: "{org}--{repo}" (e.g., "yaffle-dot-dev--yaffle")
  *
  * Query parameters:
- * - preview: "pr-{n}" to download from a preview workspace
+ * - environment: transient environment name to prefer over a named workspace
  */
 registryRoute.get(
   "/:namespace/:name/:provider/:version/download",
@@ -593,7 +599,7 @@ registryRoute.get(
     const provider = c.req.param("provider")
     const version = c.req.param("version")
     const auth = c.get("tfcAuth")
-    const previewParam = c.req.query("preview")
+    const environmentParam = c.req.query("environment")
 
     // Provider must be "yaffle"
     if (provider !== "yaffle") {
@@ -688,12 +694,17 @@ registryRoute.get(
     // Convert module name to workspace path
     const workspacePath = moduleNameToWorkspacePath(moduleName)
     const consumerWorkspace = await resolveConsumerWorkspace(auth)
-    const previewContext = derivePreviewContext({
-      explicitPreviewContext: parsePreviewContext(previewParam ?? null),
+    const environmentDecision = deriveTransientEnvironment({
+      explicitEnvironment: parseTransientEnvironmentContext(environmentParam ?? null),
       consumerWorkspace,
-      producerOrgSlug: orgSlug,
-      producerRepo: repo,
     })
+    if (!environmentDecision.allowed) {
+      return c.json(
+        { errors: [{ status: "404", title: "Module not found" }] },
+        404,
+      )
+    }
+    const transientEnvironment = environmentDecision.environment
 
     // Resolve the module
     const resolved = await resolveModule({
@@ -701,7 +712,7 @@ registryRoute.get(
       repo,
       workspacePath,
       serial,
-      previewContext,
+      transientEnvironment,
     })
 
     if (!resolved) {
@@ -754,7 +765,7 @@ registryRoute.get(
       workspaceId: resolved.workspace.id,
       stateVersionId: resolved.stateVersion.id,
       serial: resolved.stateVersion.serial,
-      isPreview: resolved.isPreview,
+      isTransient: resolved.isTransient,
     })
 
     // Build archive URL with signed token

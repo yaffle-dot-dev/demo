@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import { parsePreviewContext } from "./module-resolver.ts"
+import { parseTransientEnvironmentContext } from "./module-resolver.ts"
 
 /**
  * Unit tests for the module resolver.
@@ -9,36 +9,36 @@ import { parsePreviewContext } from "./module-resolver.ts"
  *   pnpm exec vitest run src/lib/module-resolver.test.ts
  */
 
-describe("parsePreviewContext", () => {
-  test("parses valid pr-{n} format", () => {
-    const result = parsePreviewContext("pr-42")
-    expect(result).toEqual({ prNumber: 42 })
+describe("parseTransientEnvironmentContext", () => {
+  test("parses source-neutral environment names", () => {
+    expect(parseTransientEnvironmentContext("review-42")).toEqual({
+      environmentName: "review-42",
+    })
   })
 
-  test("rejects uppercase PR-{n} aliases", () => {
-    expect(parsePreviewContext("PR-123")).toBeNull()
+  test("parses GitHub pull-request environment names without extracting source metadata", () => {
+    expect(parseTransientEnvironmentContext("pr-42")).toEqual({
+      environmentName: "pr-42",
+    })
   })
 
-  test("rejects noncanonical PR numbers", () => {
-    expect(parsePreviewContext("pr-0")).toBeNull()
-    expect(parsePreviewContext("pr-01")).toBeNull()
-    expect(parsePreviewContext("pr-999999999999999999999")).toBeNull()
+  test("preserves source-specific names other than GitHub pull requests", () => {
+    expect(parseTransientEnvironmentContext("MR-123")).toEqual({
+      environmentName: "MR-123",
+    })
   })
 
   test("returns null for null input", () => {
-    const result = parsePreviewContext(null)
+    const result = parseTransientEnvironmentContext(null)
     expect(result).toBeNull()
   })
 
   test("returns null for empty string", () => {
-    const result = parsePreviewContext("")
+    const result = parseTransientEnvironmentContext("")
     expect(result).toBeNull()
   })
 
-  test("returns null for invalid format", () => {
-    expect(parsePreviewContext("42")).toBeNull()
-    expect(parsePreviewContext("preview-42")).toBeNull()
-    expect(parsePreviewContext("pr-")).toBeNull()
-    expect(parsePreviewContext("pr-abc")).toBeNull()
+  test("rejects names that are only whitespace", () => {
+    expect(parseTransientEnvironmentContext("   ")).toBeNull()
   })
 })

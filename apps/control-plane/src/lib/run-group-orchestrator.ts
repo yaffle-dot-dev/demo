@@ -27,7 +27,7 @@ import { createIacJob, cancelJobsForPreview } from "../db/queries/iac-jobs.ts"
 import { checkOrgEntitlements } from "./entitlements.ts"
 import { getEnv } from "./env.ts"
 import { completeRunGroupCheck } from "./run-group-checks.ts"
-import { buildStateKey, previewStatePrefix, environmentStatePrefix } from "./runner.ts"
+import { buildStateKey, transientStatePrefix, environmentStatePrefix } from "./runner.ts"
 import { events } from "./events.ts"
 import { persistRunGroupWorkspaceMetadataFromArchive } from "./run-group-workspace-metadata.ts"
 import { logger } from "./telemetry.ts"
@@ -78,13 +78,13 @@ export async function completeRunGroup(
   // Check entitlements
   const entitlement = await checkOrgEntitlements(
     org,
-    runGroup.environmentKind === "transient" ? "pull_request" : "push",
+    runGroup.environmentKind,
     runGroup.environmentName,
   )
 
   // Build state prefix based on environment kind
   const statePrefix = runGroup.environmentKind === "transient"
-    ? previewStatePrefix(runGroup.prNumber!)
+    ? transientStatePrefix(runGroup.environmentName)
     : environmentStatePrefix(runGroup.environmentName)
 
   // Build dependency maps

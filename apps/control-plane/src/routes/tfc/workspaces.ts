@@ -5,6 +5,7 @@ import { logger as log } from "../../lib/telemetry.ts"
 import { findOrgBySlug } from "../../db/queries/organizations.ts"
 import {
   findWorkspaceById,
+  findWorkspaceByIdentity,
   findWorkspaceByName,
   listWorkspaces,
   createWorkspace,
@@ -108,7 +109,7 @@ function toJsonApiWorkspace(ws: Workspace): JsonApiWorkspace {
       "locked-reason": ws.lockReason,
       "lock-id": ws.lockId,
       "terraform-version": ws.terraformVersion ?? "latest",
-      environment: ws.environment,
+      environment: ws.environmentName,
       "created-at": ws.createdAt.toISOString(),
       // Yaffle uses local execution mode - plans run locally, state stored remotely
       "execution-mode": "local",
@@ -402,9 +403,9 @@ workspacesRoute.post(
           name: z.string().min(1).max(90),
           repo: z.string().optional(),
           "workspace-path": z.string().optional(),
-          environment: z.string().min(1).max(50).optional(),
+          "environment-kind": z.enum(["named", "transient"]).default("named"),
+          "environment-name": z.string().trim().min(1).max(255).default("main"),
           ref: z.string().optional(),
-          "pr-number": z.number().optional(),
           "terraform-version": z.string().optional(),
         }),
       }),
@@ -437,14 +438,28 @@ workspacesRoute.post(
       )
     }
 
+    const existingIdentity = await findWorkspaceByIdentity(
+      org.id,
+      attrs.repo ?? "",
+      attrs["workspace-path"] ?? "",
+      attrs["environment-kind"],
+      attrs["environment-name"],
+    )
+    if (existingIdentity) {
+      return c.json(
+        { errors: [{ status: "409", title: "Workspace environment identity already exists" }] },
+        409,
+      )
+    }
+
     const ws = await createWorkspace({
       orgId: org.id,
       name: attrs.name,
       repo: attrs.repo ?? "",
       workspacePath: attrs["workspace-path"] ?? "",
-      environment: attrs.environment ?? "preview",
+      environmentKind: attrs["environment-kind"],
+      environmentName: attrs["environment-name"],
       ref: attrs.ref ?? "refs/heads/main",
-      prNumber: attrs["pr-number"],
       terraformVersion: attrs["terraform-version"],
     })
 

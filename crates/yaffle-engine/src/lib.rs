@@ -3039,6 +3039,17 @@ fn configure_workspace_execution(
     workspace: &yaffle_config::Workspace,
     environment_kind: EnvironmentKind,
 ) -> Result<PreparedWorkspaceExecution, EngineError> {
+    if automatic_preview_isolation_requires_cloud_review(workspace, environment_kind) {
+        return Err(request_error(
+            request,
+            "automatic_preview_isolation_cloud_review_required",
+            format!(
+                "Workspace '{}' enables automatic_preview_isolation for a transient environment. Unverified isolation review is available only in Yaffle Cloud; local execution will not bypass it.",
+                workspace.path
+            ),
+        ));
+    }
+
     let environment_name = request
         .target
         .as_ref()
@@ -3074,6 +3085,13 @@ fn configure_workspace_execution(
         uses_local_backend: !has_explicit_backend,
         auth,
     })
+}
+
+fn automatic_preview_isolation_requires_cloud_review(
+    workspace: &yaffle_config::Workspace,
+    environment_kind: EnvironmentKind,
+) -> bool {
+    workspace.automatic_preview_isolation && environment_kind == EnvironmentKind::Transient
 }
 
 fn run_tofu_command(
@@ -6282,6 +6300,7 @@ module "relative" {
                     environments: yaffle_config::EnvironmentSelector::Named(vec![
                         "main".to_string()
                     ]),
+                    automatic_preview_isolation: false,
                     variables: BTreeMap::new(),
                     outputs: BTreeMap::new(),
                     activation: Vec::new(),
@@ -6364,11 +6383,23 @@ module "shared" {
         let workspace = yaffle_config::Workspace {
             path: "infra/app".to_string(),
             environments: yaffle_config::EnvironmentSelector::Named(vec!["main".to_string()]),
+            automatic_preview_isolation: false,
             variables: BTreeMap::new(),
             outputs: BTreeMap::new(),
             activation: Vec::new(),
             verification: Vec::new(),
         };
+
+        let mut automatic_workspace = workspace.clone();
+        automatic_workspace.automatic_preview_isolation = true;
+        assert!(automatic_preview_isolation_requires_cloud_review(
+            &automatic_workspace,
+            EnvironmentKind::Transient,
+        ));
+        assert!(!automatic_preview_isolation_requires_cloud_review(
+            &automatic_workspace,
+            EnvironmentKind::Named,
+        ));
         let repo_context = RepoContext {
             repo_root: repo.path().to_path_buf(),
             config_path: repo.path().join("yaffle.toml"),
@@ -6382,6 +6413,19 @@ module "shared" {
             },
             current_namespace: Some("test-org--fixture".to_string()),
         };
+
+        let error = configure_workspace_execution(
+            &request,
+            &repo_context,
+            &prepared_repo,
+            &automatic_workspace,
+            EnvironmentKind::Transient,
+        )
+        .expect_err("local transient execution should require Cloud review");
+        assert_eq!(
+            error.error.code,
+            "automatic_preview_isolation_cloud_review_required"
+        );
 
         let execution = configure_workspace_execution(
             &request,

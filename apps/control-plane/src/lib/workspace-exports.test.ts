@@ -17,8 +17,8 @@ function makeWorkspace(overrides: Partial<TfcWorkspace> = {}): TfcWorkspace {
     name: "producer-workspace",
     repo: "yaffle-dot-dev/platform",
     workspacePath: "platform/eks",
-    environment: "main",
-    prNumber: null,
+    environmentKind: "named",
+    environmentName: "main",
     ref: "refs/heads/main",
     locked: false,
     lockedBy: null,
@@ -39,6 +39,8 @@ function makeConsumer(overrides: Partial<ModuleConsumerWorkspace> = {}): ModuleC
     orgSlug: "acme",
     repo: "yaffle-dot-dev/applications",
     workspacePath: "apps/api/infra",
+    environmentKind: "named",
+    environmentName: "main",
     ...overrides,
   }
 }

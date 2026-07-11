@@ -56,7 +56,10 @@ class FakeRunner implements Runner {
 
 /** Helper to get queued jobs from the database */
 async function getQueuedJobs() {
-  return db.select().from(iacJobs).where(sql`${iacJobs.status} = 'queued'`)
+  return db
+    .select()
+    .from(iacJobs)
+    .where(sql`${iacJobs.status} = 'queued'`)
 }
 
 /** Helper to get all jobs from the database */
@@ -77,12 +80,15 @@ const DEFAULT_CONFIG: YaffleTomlConfig = {
     {
       path: "infra",
       environments: "*", // Matches all environments (both named and transient)
+      automaticPreviewIsolation: false,
     },
   ],
   cloud: {
     triggers: {
       github: {
-        push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+        push: [
+          { ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" },
+        ],
         pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
       },
     },
@@ -98,18 +104,22 @@ const MULTI_WORKSPACE_CONFIG: YaffleTomlConfig = {
     {
       path: "infra",
       environments: "*",
+      automaticPreviewIsolation: false,
       variables: { region: "us-east-1" },
     },
     {
       path: "infra/monitoring",
       environments: "*",
+      automaticPreviewIsolation: false,
       variables: { region: "us-east-1" },
     },
   ],
   cloud: {
     triggers: {
       github: {
-        push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+        push: [
+          { ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" },
+        ],
         pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
       },
     },
@@ -125,12 +135,15 @@ const APPROVAL_CONFIG: YaffleTomlConfig = {
     {
       path: "infra",
       environments: "*",
+      automaticPreviewIsolation: false,
     },
   ],
   cloud: {
     triggers: {
       github: {
-        push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+        push: [
+          { ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" },
+        ],
         pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
       },
     },
@@ -149,6 +162,8 @@ function fakeConfigLoader(config: YaffleTomlConfig) {
   return async (_ctx: WebhookContext, _token?: string): Promise<YaffleTomlConfig> => config
 }
 
+let lastAutomaticIsolationWorkspacePaths: string[] = []
+
 async function fakeScanDispatcher(
   ctx: WebhookContext,
   orgId: string,
@@ -156,8 +171,10 @@ async function fakeScanDispatcher(
   runGroupId: string,
   workspacePaths: string[],
   workspaceVariables: Record<string, Record<string, string | number | boolean>>,
+  automaticIsolationWorkspacePaths: string[],
   installationToken?: string,
 ): Promise<void> {
+  lastAutomaticIsolationWorkspacePaths = automaticIsolationWorkspacePaths
   const scanJob = await createScanJob({
     runGroupId,
     orgId,
@@ -168,6 +185,7 @@ async function fakeScanDispatcher(
     orgSlug,
     workspacePaths,
     workspaceVariables,
+    automaticIsolationWorkspacePaths,
   })
 
   const claimed = await claimScanJob(scanJob.id, "test-scanner")
@@ -241,8 +259,8 @@ function assertTestDatabase(): void {
   if (!dbUrl.includes("_test")) {
     throw new Error(
       `FATAL: Test attempted to truncate tables but DATABASE_URL doesn't contain '_test'. ` +
-      `Refusing to run. Set DATABASE_URL to yaffle_test before running tests. ` +
-      `Current URL: ${dbUrl.replace(/\/\/[^@]+@/, "//***@")}`
+        `Refusing to run. Set DATABASE_URL to yaffle_test before running tests. ` +
+        `Current URL: ${dbUrl.replace(/\/\/[^@]+@/, "//***@")}`,
     )
   }
 }
@@ -254,6 +272,7 @@ describe("webhook-handler", () => {
   beforeEach(async () => {
     // Safety check - refuse to truncate production/dev database
     assertTestDatabase()
+    lastAutomaticIsolationWorkspacePaths = []
 
     // Use TRUNCATE CASCADE to properly handle all FK constraints
     // This is faster and more reliable than DELETE in order
@@ -268,7 +287,7 @@ describe("webhook-handler", () => {
         repositories, 
         github_installations, 
         organizations 
-      CASCADE`
+      CASCADE`,
     )
 
     const org = await createOrg({
@@ -309,7 +328,7 @@ describe("webhook-handler", () => {
         repositories, 
         github_installations, 
         organizations 
-      CASCADE`
+      CASCADE`,
     )
   })
 
@@ -324,7 +343,7 @@ describe("webhook-handler", () => {
     const pvs = await db.select().from(previews)
     expect(pvs).toHaveLength(1)
     expect(pvs[0].status).toBe("pending")
-    expect(pvs[0].stateKey).toBe("preview-pr-42/infra/terraform.tfstate")
+    expect(pvs[0].stateKey).toBe("transient-pr-42/infra/terraform.tfstate")
     expect(pvs[0].runGroupId).not.toBeNull()
 
     // Plan job is queued (not executed inline)
@@ -340,6 +359,24 @@ describe("webhook-handler", () => {
 
     // Runner is NOT called - execution happens via IaC engine
     expect(runner.calls).toHaveLength(0)
+    expect(lastAutomaticIsolationWorkspacePaths).toEqual([])
+  })
+
+  test("PR opened: propagates automatic isolation only for opted-in transient workspaces", async () => {
+    handler = createHandler(runner, {
+      configLoader: fakeConfigLoader({
+        ...DEFAULT_CONFIG,
+        workspaces: DEFAULT_CONFIG.workspaces.map((workspace) => ({
+          ...workspace,
+          automaticPreviewIsolation: true,
+        })),
+      }),
+      scanDispatcher: fakeScanDispatcher,
+    })
+
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+
+    expect(lastAutomaticIsolationWorkspacePaths).toEqual(["infra"])
   })
 
   // -----------------------------------------------------------------------
@@ -559,9 +596,7 @@ describe("webhook-handler", () => {
       scanDispatcher: fakeScanDispatcher,
     })
 
-    const p1 = testHandler.handleWebhookEvent(
-      makePrContext({ action: "opened", headSha: "sha-1" }),
-    )
+    const p1 = testHandler.handleWebhookEvent(makePrContext({ action: "opened", headSha: "sha-1" }))
     const p2 = testHandler.handleWebhookEvent(
       makePrContext({ action: "synchronize", headSha: "sha-2" }),
     )
@@ -653,11 +688,23 @@ describe("webhook-handler", () => {
     const config: YaffleTomlConfig = {
       version: 1,
       environments: [{ name: "develop" }],
-      workspaces: [{ path: "infra", environments: ["develop"] }],
+      workspaces: [
+        {
+          path: "infra",
+          environments: ["develop"],
+          automaticPreviewIsolation: false,
+        },
+      ],
       cloud: {
         triggers: {
           github: {
-            push: [{ ref_patterns: ["refs/heads/develop"], exclude_ref_patterns: [], environment: "develop" }],
+            push: [
+              {
+                ref_patterns: ["refs/heads/develop"],
+                exclude_ref_patterns: [],
+                environment: "develop",
+              },
+            ],
             pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
           },
         },
@@ -676,7 +723,9 @@ describe("webhook-handler", () => {
     expect(jobs).toHaveLength(0)
 
     // Push to "develop" should queue plan job
-    await h.handleWebhookEvent(makePushContext({ ref: "refs/heads/develop", defaultBranch: "main" }))
+    await h.handleWebhookEvent(
+      makePushContext({ ref: "refs/heads/develop", defaultBranch: "main" }),
+    )
     // Runner NOT called - job-based
     expect(runner.calls).toHaveLength(0)
     jobs = await getAllJobs()
@@ -732,8 +781,8 @@ describe("webhook-handler", () => {
     // Each preview has its own state key
     const stateKeys = pvs.map((p) => p.stateKey).sort()
     expect(stateKeys).toEqual([
-      "preview-pr-42/infra/monitoring/terraform.tfstate",
-      "preview-pr-42/infra/terraform.tfstate",
+      "transient-pr-42/infra/monitoring/terraform.tfstate",
+      "transient-pr-42/infra/terraform.tfstate",
     ])
 
     // Each workspace gets a plan job queued

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "@yaffle/test"
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, test, vi } from "@yaffle/test"
 import { eq } from "drizzle-orm"
 import { Hono } from "hono"
 import { createHash } from "node:crypto"
@@ -23,7 +23,7 @@ const mockCreateCheckRun = mock(async () => 1)
 const mockUpdateCheckRun = mock(async () => {})
 const mockUpsertPrComment = mock(async () => 1)
 
-mock.module("../../lib/github.ts", () => ({
+vi.doMock("../../lib/github.ts", () => ({
   fetchFileContent: mockFetchFileContent,
   checkTeamMembership: mockCheckTeamMembership,
   getInstallationToken: mockGetInstallationToken,
@@ -142,7 +142,8 @@ async function createWorkspaceForOrg(params: {
   name: string
   repo: string
   workspacePath: string
-  environment?: string
+  environmentKind?: "named" | "transient"
+  environmentName?: string
 }): Promise<string> {
   const res = await app.fetch(
     authRequest(
@@ -155,7 +156,8 @@ async function createWorkspaceForOrg(params: {
           attributes: {
             name: params.name,
             repo: params.repo,
-            environment: params.environment ?? "main",
+            "environment-kind": params.environmentKind ?? "named",
+            "environment-name": params.environmentName ?? "main",
             "workspace-path": params.workspacePath,
           },
         },

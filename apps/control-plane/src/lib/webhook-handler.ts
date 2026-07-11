@@ -2,17 +2,14 @@ import { randomUUID } from "node:crypto"
 
 import { SpanKind } from "@opentelemetry/api"
 
-import type {
-  PullRequestContext,
-  PushContext,
-  WebhookContext,
-} from "@yaffle/shared"
+import type { PullRequestContext, PushContext, WebhookContext } from "@yaffle/shared"
 
 import {
   type YaffleTomlConfig,
   buildPrEnvironmentName,
   ConfigError,
   findPushTriggerEnvironment,
+  getAutomaticIsolationWorkspacePaths,
   getWorkspacesForEnvironment,
   matchesPullRequestTrigger,
   parseYaffleToml,
@@ -31,43 +28,26 @@ import {
   recordDeploymentApproval,
   resetSkippedDownstreams,
 } from "../db/queries/workspace-deployments.ts"
-import { createIacJob, cancelJobsForPreview, findPendingJobsForPreview } from "../db/queries/iac-jobs.ts"
+import {
+  createIacJob,
+  cancelJobsForPreview,
+  findPendingJobsForPreview,
+} from "../db/queries/iac-jobs.ts"
 import { findLatestRun } from "../db/queries/tf-runs.ts"
-import {
-  createRunGroup,
-  type RunGroupTrigger,
-} from "../db/queries/run-groups.ts"
+import { createRunGroup, type RunGroupTrigger } from "../db/queries/run-groups.ts"
 import { events } from "./events.ts"
-import {
-  fetchFileContent,
-  getInstallationToken,
-} from "./github.ts"
-import {
-  createPendingRunGroupCheck,
-  surfaceConfigErrorCheck,
-} from "./run-group-checks.ts"
-import {
-  type CheckRunRef,
-  checkRunUrl,
-} from "./pr-comment.ts"
+import { fetchFileContent, getInstallationToken } from "./github.ts"
+import { createPendingRunGroupCheck, surfaceConfigErrorCheck } from "./run-group-checks.ts"
+import { type CheckRunRef, checkRunUrl } from "./pr-comment.ts"
 import { LocalRunner } from "./local-runner.ts"
 import { type Mutex, KeyedMutex } from "./mutex.ts"
 import { DbLeaseMutex } from "./db-lease.ts"
-import {
-  type Runner,
-} from "./runner.ts"
+import { type Runner } from "./runner.ts"
 
-import {
-  beginWorkspaceArchive,
-  getWorkspacesToArchive,
-} from "./workspace-service.ts"
+import { beginWorkspaceArchive, getTransientWorkspacesToArchive } from "./workspace-service.ts"
 import { buildWorkspaceVariablesByPath } from "./workspace-variables.ts"
 import { useTfcBackend } from "./tfc-backend.ts"
-import {
-  getConfigLoadErrorCounter,
-  logger,
-  withSpan,
-} from "./telemetry.ts"
+import { getConfigLoadErrorCounter, logger, withSpan } from "./telemetry.ts"
 import { createScanJob } from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "./job-token.ts"
 import { getScheduler } from "./scheduler.ts"
@@ -135,6 +115,7 @@ type ScanDispatcher = (
   runGroupId: string,
   workspacePaths: string[],
   workspaceVariables: WorkspaceVariablesByPath,
+  automaticIsolationWorkspacePaths: string[],
   installationToken?: string,
 ) => Promise<void>
 
@@ -180,6 +161,7 @@ async function dispatchScan(
   runGroupId: string,
   workspacePaths: string[],
   workspaceVariables: WorkspaceVariablesByPath,
+  automaticIsolationWorkspacePaths: string[],
   installationToken?: string,
 ): Promise<void> {
   const repoUrl = `https://github.com/${ctx.owner}/${ctx.repo}.git`
@@ -194,6 +176,7 @@ async function dispatchScan(
     orgSlug,
     workspacePaths,
     workspaceVariables,
+    automaticIsolationWorkspacePaths,
   })
 
   const scanToken = await generateScanJobToken(scanJob.id, orgId)
@@ -278,7 +261,9 @@ export async function triggerApply(opts: {
     // Manual apply is allowed both before the auto-apply countdown is paused
     // and after it has been explicitly paused for approval.
     if (preview.status !== "awaiting_apply" && preview.status !== "awaiting_approval") {
-      throw new Error(`preview is in ${preview.status} state, expected awaiting_apply or awaiting_approval`)
+      throw new Error(
+        `preview is in ${preview.status} state, expected awaiting_apply or awaiting_approval`,
+      )
     }
 
     // Check that plan succeeded
@@ -288,7 +273,8 @@ export async function triggerApply(opts: {
     }
 
     // Check that apply isn't already queued/running/completed for this plan
-    const { findPendingJobsForPreview, findLatestIacJob } = await import("../db/queries/iac-jobs.ts")
+    const { findPendingJobsForPreview, findLatestIacJob } =
+      await import("../db/queries/iac-jobs.ts")
     const pendingApplyJobs = await findPendingJobsForPreview(preview.id, "apply")
     if (pendingApplyJobs.length > 0) {
       throw new Error("apply already queued or in progress")
@@ -298,8 +284,11 @@ export async function triggerApply(opts: {
     if (latestApplyJob && latestApplyJob.status === "completed") {
       // Check if this completed job is for the current plan
       // (by comparing timestamps - apply should be after plan)
-      if (latestApplyJob.completedAt && latestPlan.completedAt &&
-          latestApplyJob.completedAt > latestPlan.completedAt) {
+      if (
+        latestApplyJob.completedAt &&
+        latestPlan.completedAt &&
+        latestApplyJob.completedAt > latestPlan.completedAt
+      ) {
         throw new Error("apply already completed for this plan")
       }
     }
@@ -506,19 +495,13 @@ async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<Yaffle
 
 async function fetchRawConfig(ctx: WebhookContext): Promise<string | null> {
   if (!ctx.installationId) {
-    throw new ConfigError(
-      "Cannot fetch config without a GitHub App installation",
-    )
+    throw new ConfigError("Cannot fetch config without a GitHub App installation")
   }
 
-  return (await fetchFileContent(
-    ctx.installationId,
-    ctx.owner,
-    ctx.repo,
-    "yaffle.toml",
-    ctx.headSha,
-  )) ?? null
-
+  return (
+    (await fetchFileContent(ctx.installationId, ctx.owner, ctx.repo, "yaffle.toml", ctx.headSha)) ??
+    null
+  )
 }
 
 function inferEnvironmentIdentity(ctx: WebhookContext): {
@@ -569,7 +552,10 @@ async function ensureWebhookRunGroupRepoBinding(ctx: WebhookContext) {
   })
 }
 
-function extractConfigErrorLocation(raw: string, message: string): { line: number | null; column: number | null } {
+function extractConfigErrorLocation(
+  raw: string,
+  message: string,
+): { line: number | null; column: number | null } {
   const parseMatch = message.match(/line\s+(\d+),\s*column\s+(\d+)/i)
   if (parseMatch) {
     return {
@@ -596,10 +582,7 @@ function extractConfigErrorLocation(raw: string, message: string): { line: numbe
   }
 }
 
-function buildConfigErrorExcerpt(
-  raw: string,
-  line: number | null,
-): ConfigSystemErrorLine[] {
+function buildConfigErrorExcerpt(raw: string, line: number | null): ConfigSystemErrorLine[] {
   const lines = raw.split(/\r?\n/)
   if (lines.length === 0) {
     return []
@@ -692,19 +675,22 @@ async function handleEvent(
   configLoader: ConfigLoader,
   scanDispatcher: ScanDispatcher,
 ): Promise<void> {
-  const spanName = ctx.kind === "pull_request"
-    ? `webhook.pull_request.${ctx.action}`
-    : "webhook.push"
+  const spanName =
+    ctx.kind === "pull_request" ? `webhook.pull_request.${ctx.action}` : "webhook.push"
 
-  return withSpan(spanName, async (span) => {
-    span.setAttributes(contextAttrs(ctx))
+  return withSpan(
+    spanName,
+    async (span) => {
+      span.setAttributes(contextAttrs(ctx))
 
-    if (ctx.kind === "pull_request") {
-      await handlePullRequestEvent(ctx, runner, configLoader, scanDispatcher)
-    } else {
-      await handlePushEvent(ctx, runner, configLoader, scanDispatcher)
-    }
-  }, { kind: SpanKind.INTERNAL })
+      if (ctx.kind === "pull_request") {
+        await handlePullRequestEvent(ctx, runner, configLoader, scanDispatcher)
+      } else {
+        await handlePushEvent(ctx, runner, configLoader, scanDispatcher)
+      }
+    },
+    { kind: SpanKind.INTERNAL },
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -790,16 +776,21 @@ async function handlePrOpenedOrUpdated(
   // Get workspaces that apply to the GitHub PR's transient environment
   const environmentName = buildPrEnvironmentName(ctx.prNumber)
   const workspacePaths = getWorkspacesForEnvironment(config, environmentName, true)
+  const automaticIsolationWorkspacePaths = getAutomaticIsolationWorkspacePaths(
+    config,
+    workspacePaths,
+    "transient",
+  )
 
   if (workspacePaths.length === 0) {
     logger.info("no workspaces configured for transient environments", attrs)
     return
   }
 
-  logger.info(
-    `config loaded: ${workspacePaths.length} workspace(s) for PR`,
-    { ...attrs, "yaffle.workspace_count": workspacePaths.length },
-  )
+  logger.info(`config loaded: ${workspacePaths.length} workspace(s) for PR`, {
+    ...attrs,
+    "yaffle.workspace_count": workspacePaths.length,
+  })
 
   let workspaceVariables: WorkspaceVariablesByPath
   try {
@@ -852,6 +843,7 @@ async function handlePrOpenedOrUpdated(
     runGroup.id,
     workspacePaths,
     workspaceVariables,
+    automaticIsolationWorkspacePaths,
     installationToken,
   )
 }
@@ -925,15 +917,13 @@ async function handlePrClosed(
 
   // If using TFC backend, get TFC workspaces to archive
   const tfcWorkspacesToArchive = usingTfcBackend
-    ? await getWorkspacesToArchive(org.id, ctx.repo, ctx.prNumber)
+    ? await getTransientWorkspacesToArchive(org.id, ctx.repo, buildPrEnvironmentName(ctx.prNumber))
     : []
 
   // Identify leaf deployments (those with no downstream dependencies within this PR)
   // A deployment is a leaf if no other deployment in this PR has it in their upstreamIds
   const leafDeployments = deployments.filter((d) => {
-    const hasDownstreams = deployments.some((other) =>
-      other.upstreamIds?.includes(d.id),
-    )
+    const hasDownstreams = deployments.some((other) => other.upstreamIds?.includes(d.id))
     return !hasDownstreams
   })
 
@@ -946,7 +936,11 @@ async function handlePrClosed(
 
   // Process each deployment: cancel pending jobs, lock TFC workspace, queue destroy
   for (const deployment of deployments) {
-    const wsAttrs = { ...attrs, "yaffle.workspace_path": deployment.workspacePath, deploymentId: deployment.id }
+    const wsAttrs = {
+      ...attrs,
+      "yaffle.workspace_path": deployment.workspacePath,
+      deploymentId: deployment.id,
+    }
 
     // Cancel any pending plan/apply jobs for this deployment
     const cancelledCount = await cancelJobsForPreview(deployment.id)
@@ -999,13 +993,7 @@ async function handlePrClosed(
   // Emit event so UI sees the queued state
   if (deployments.length > 0) {
     const first = deployments[0]
-    events.emitDeploymentUpdate(
-      first.id,
-      org.id,
-      ctx.repo,
-      "transient",
-      environmentName,
-    )
+    events.emitDeploymentUpdate(first.id, org.id, ctx.repo, "transient", environmentName)
   }
 }
 
@@ -1059,10 +1047,7 @@ async function handlePushEvent(
   const environmentName = findPushTriggerEnvironment(config, ctx.ref)
 
   if (!environmentName) {
-    logger.info(
-      `ignoring push to ref that doesn't match any trigger`,
-      { ...attrs, ref: ctx.ref },
-    )
+    logger.info(`ignoring push to ref that doesn't match any trigger`, { ...attrs, ref: ctx.ref })
     return
   }
 
@@ -1077,10 +1062,11 @@ async function handlePushEvent(
     return
   }
 
-  logger.info(
-    `config loaded: ${workspacePaths.length} workspace(s) for ${environmentName}`,
-    { ...attrs, "yaffle.workspace_count": workspacePaths.length, environmentName },
-  )
+  logger.info(`config loaded: ${workspacePaths.length} workspace(s) for ${environmentName}`, {
+    ...attrs,
+    "yaffle.workspace_count": workspacePaths.length,
+    environmentName,
+  })
 
   let workspaceVariables: WorkspaceVariablesByPath
   try {
@@ -1133,11 +1119,10 @@ async function handlePushEvent(
     runGroup.id,
     workspacePaths,
     workspaceVariables,
+    [],
     installationToken,
   )
 }
-
-
 
 /**
  * Build a CheckRunRef from a context and check run ID, or undefined if
@@ -1167,7 +1152,7 @@ async function acquireToken(ctx: WebhookContext): Promise<string | undefined> {
     logger.warn("failed to get installation token", {
       "yaffle.owner": ctx.owner,
       "yaffle.repo": ctx.repo,
-      "error": err instanceof Error ? err.message : String(err),
+      error: err instanceof Error ? err.message : String(err),
     })
     return undefined
   }

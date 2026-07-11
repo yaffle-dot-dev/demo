@@ -7,17 +7,12 @@ import { withDbSpan } from "../../lib/telemetry.ts"
 export type Workspace = typeof workspaces.$inferSelect
 export type NewWorkspace = typeof workspaces.$inferInsert
 export type WorkspaceStatus = "active" | "destroying" | "archived"
-/**
- * Workspace environment type.
- * - "preview": ephemeral workspace for a PR
- * - string: branch name for non-preview workspaces (e.g. "main", "staging")
- */
-export type WorkspaceEnvironment = "preview" | string
+export type WorkspaceEnvironmentKind = "named" | "transient"
 
 export interface ListWorkspacesOptions {
   repo?: string
-  environment?: WorkspaceEnvironment
-  prNumber?: number
+  environmentKind?: WorkspaceEnvironmentKind
+  environmentName?: string
   status?: WorkspaceStatus
   limit?: number
   cursor?: string
@@ -82,11 +77,11 @@ export async function listWorkspaces(
     if (opts.repo) {
       conditions.push(eq(workspaces.repo, opts.repo))
     }
-    if (opts.environment) {
-      conditions.push(eq(workspaces.environment, opts.environment))
+    if (opts.environmentKind) {
+      conditions.push(eq(workspaces.environmentKind, opts.environmentKind))
     }
-    if (opts.prNumber !== undefined) {
-      conditions.push(eq(workspaces.prNumber, opts.prNumber))
+    if (opts.environmentName) {
+      conditions.push(eq(workspaces.environmentName, opts.environmentName))
     }
     if (opts.status) {
       conditions.push(eq(workspaces.status, opts.status))
@@ -133,6 +128,8 @@ export async function upsertWorkspace(values: NewWorkspace): Promise<Workspace> 
         set: {
           repo: values.repo,
           workspacePath: values.workspacePath,
+          environmentKind: values.environmentKind,
+          environmentName: values.environmentName,
           ref: values.ref,
           terraformVersion: values.terraformVersion,
         },
@@ -300,12 +297,12 @@ export function buildWorkspaceLockId(orgSlug: string, workspaceName: string): st
 }
 
 /**
- * Find all workspaces for a PR.
+ * Find all transient workspaces with the given environment identity.
  */
-export async function findWorkspacesByPr(
+export async function findTransientWorkspaces(
   orgId: string,
   repo: string,
-  prNumber: number,
+  environmentName: string,
 ): Promise<Workspace[]> {
   return withDbSpan("select", "workspaces", async () => {
     return db
@@ -315,8 +312,8 @@ export async function findWorkspacesByPr(
         and(
           eq(workspaces.orgId, orgId),
           eq(workspaces.repo, repo),
-          eq(workspaces.prNumber, prNumber),
-          eq(workspaces.environment, "preview"),
+          eq(workspaces.environmentKind, "transient"),
+          eq(workspaces.environmentName, environmentName),
         ),
       )
   })
@@ -345,7 +342,7 @@ export async function archiveWorkspace(workspaceId: string): Promise<Workspace |
 }
 
 /**
- * Find all preview workspaces that are in a failed state (for admin cleanup).
+ * Find all transient workspaces that are in a failed state (for admin cleanup).
  */
 export async function findFailedWorkspaces(
   orgId: string,
@@ -357,7 +354,7 @@ export async function findFailedWorkspaces(
       .where(
         and(
           eq(workspaces.orgId, orgId),
-          eq(workspaces.environment, "preview"),
+          eq(workspaces.environmentKind, "transient"),
           // Using status check - workspaces can be in various failed states
           // We consider locked but inactive workspaces as potentially failed
         ),
@@ -381,16 +378,14 @@ export async function deleteWorkspace(workspaceId: string): Promise<boolean> {
 }
 
 /**
- * Find a workspace by org, workspace path, and environment.
- * Used by the module registry to look up workspaces.
- *
- * The workspace path is stored in the `workspacePath` column.
- * For non-preview workspaces, environment is the branch name (e.g. "main").
+ * Find a workspace by its canonical environment identity.
  */
-export async function findWorkspaceByPath(
+export async function findWorkspaceByIdentity(
   orgId: string,
+  repo: string,
   workspacePath: string,
-  environment: WorkspaceEnvironment,
+  environmentKind: WorkspaceEnvironmentKind,
+  environmentName: string,
 ): Promise<Workspace | undefined> {
   return withDbSpan("select", "workspaces", async () => {
     const rows = await db
@@ -399,9 +394,10 @@ export async function findWorkspaceByPath(
       .where(
         and(
           eq(workspaces.orgId, orgId),
+          eq(workspaces.repo, repo),
           eq(workspaces.workspacePath, workspacePath),
-          eq(workspaces.environment, environment),
-          eq(workspaces.status, "active"),
+          eq(workspaces.environmentKind, environmentKind),
+          eq(workspaces.environmentName, environmentName),
         ),
       )
       .limit(1)
@@ -410,12 +406,11 @@ export async function findWorkspaceByPath(
 }
 
 /**
- * Find a non-preview workspace by org, repo, and workspace path.
+ * Find a named workspace by org, repo, and workspace path.
  * Returns the "main" environment workspace if it exists, otherwise the first
- * active workspace that is not a preview.
- * Used for module resolution when the caller doesn't know the branch name.
+ * active named workspace.
  */
-export async function findNonPreviewWorkspace(
+export async function findNamedWorkspace(
   orgId: string,
   repo: string,
   workspacePath: string,
@@ -429,31 +424,25 @@ export async function findNonPreviewWorkspace(
           eq(workspaces.orgId, orgId),
           eq(workspaces.repo, repo),
           eq(workspaces.workspacePath, workspacePath),
-          // Non-preview means environment is NOT "preview"
-          // In SQL: environment != 'preview'
+          eq(workspaces.environmentKind, "named"),
+          eq(workspaces.status, "active"),
         ),
       )
       .limit(10) // Get a few to filter
 
-    // Filter out preview workspaces
-    const nonPreviewRows = rows.filter(
-      (row) => row.environment !== "preview" && row.status === "active",
-    )
-
     // Prefer "main" environment, then fall back to first found
-    return nonPreviewRows.find((row) => row.environment === "main") ?? nonPreviewRows[0]
+    return rows.find((row) => row.environmentName === "main") ?? rows[0]
   })
 }
 
 /**
- * Find a preview workspace by org, repo, workspace path, and PR number.
- * Used by the module registry for preview-aware resolution.
+ * Find a transient workspace by its source-neutral environment identity.
  */
-export async function findPreviewWorkspace(
+export async function findTransientWorkspace(
   orgId: string,
   repo: string,
   workspacePath: string,
-  prNumber: number,
+  environmentName: string,
 ): Promise<Workspace | undefined> {
   return withDbSpan("select", "workspaces", async () => {
     const rows = await db
@@ -464,8 +453,8 @@ export async function findPreviewWorkspace(
           eq(workspaces.orgId, orgId),
           eq(workspaces.repo, repo),
           eq(workspaces.workspacePath, workspacePath),
-          eq(workspaces.environment, "preview"),
-          eq(workspaces.prNumber, prNumber),
+          eq(workspaces.environmentKind, "transient"),
+          eq(workspaces.environmentName, environmentName),
           eq(workspaces.status, "active"),
         ),
       )

@@ -18,7 +18,8 @@ variable table or Terraform examples here.
 - `environment_kind` describes managed runtime lifetime only: `named` or `transient`.
 - Trigger metadata is a separate concern. `pr_number` is populated only when the source
   is a GitHub pull request; other transient environments receive `null`.
-- Provider resource names and scopes come from customer Terraform. During beta,
+- Provider resource names and scopes normally come from customer Terraform. During beta,
   collision-prone resources may need the environment name in their configuration.
-- Provider-aware isolation without explicit differentiator configuration remains a
-  product goal and must not be ruled out by the runtime model.
+- Workspaces may explicitly opt into `automatic_preview_isolation`. The opt-in applies only to
+  managed transient environments and fails closed before planning when provider/resource behavior
+  is forbidden, unsupported, or still requires Cloud review.

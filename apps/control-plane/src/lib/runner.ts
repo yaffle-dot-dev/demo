@@ -47,8 +47,8 @@ export interface RunOpts {
 
 /**
  * Build a state key for a workspace.
- * Preview: preview-pr-{n}/{workspacePath}/terraform.tfstate
- * Named environment: {environment}/{workspacePath}/terraform.tfstate
+ * Transient environment: transient-{environment}/{workspacePath}/terraform.tfstate
+ * Named environment: named-{environment}/{workspacePath}/terraform.tfstate
  */
 export function buildStateKey(
   prefix: string,
@@ -58,11 +58,10 @@ export function buildStateKey(
 }
 
 /**
- * Build a preview state key prefix for a PR.
- * Format: preview-pr-{n}
+ * Build a state key prefix for a transient environment.
  */
-export function previewStatePrefix(prNumber: number): string {
-  return `preview-pr-${prNumber}`
+export function transientStatePrefix(environmentName: string): string {
+  return `transient-${encodeURIComponent(environmentName)}`
 }
 
 /**
@@ -70,5 +69,5 @@ export function previewStatePrefix(prNumber: number): string {
  * Format: {environment}
  */
 export function environmentStatePrefix(environment: string): string {
-  return environment
+  return `named-${encodeURIComponent(environment)}`
 }

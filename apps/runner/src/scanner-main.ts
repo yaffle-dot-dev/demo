@@ -22,7 +22,13 @@ import * as tar from "tar-stream"
 
 import {
   buildGraphFromInferred,
+  combineAutomaticIsolationPreflights,
+  deriveAutomaticIsolationWorkspaceStatus,
   extractDependenciesFromContent,
+  inspectAutomaticPreviewIsolationWorkspace,
+  type AutomaticIsolationFinding,
+  type AutomaticIsolationPreflight,
+  type AutomaticIsolationSourceFile,
   type DependencyScannerVariableBindingsByPath,
 } from "@yaffle/shared"
 
@@ -30,11 +36,26 @@ import { ScannerApiClient } from "./lib/scanner-api-client.ts"
 import { HeartbeatSupervisor } from "./lib/supervisor.ts"
 
 type TarEntryHeader = {
+  linkname?: string
   name: string
   type?: string
 }
 
 type TarEntryNext = (error?: Error | null) => void
+
+export function findWorkspaceForTerraformPath(
+  relativePath: string,
+  workspacePaths: string[],
+): string | undefined {
+  return [...workspacePaths]
+    .sort((left, right) => right.length - left.length)
+    .find(
+      (workspacePath) =>
+        workspacePath === "." ||
+        relativePath === workspacePath ||
+        relativePath.startsWith(`${workspacePath}/`),
+    )
+}
 
 function log(message: string, data?: Record<string, unknown>): void {
   const timestamp = new Date().toISOString()
@@ -101,19 +122,29 @@ async function downloadTarball(
  * GitHub tarballs have a single top-level directory ({owner}-{repo}-{sha}/).
  * We strip that prefix to get workspace-relative paths.
  */
-async function scanTarball(
+export async function scanTarball(
   tarballBuffer: Buffer,
   workspacePaths: string[],
   workspaceVariables: DependencyScannerVariableBindingsByPath,
   currentNamespace: string,
-): Promise<{ workspaces: string[]; edges: [string, string][] }> {
+  automaticIsolationWorkspacePaths: string[],
+): Promise<{
+  workspaces: string[]
+  edges: [string, string][]
+  automaticIsolationPreflight?: AutomaticIsolationPreflight
+}> {
   const knownWorkspaces = new Set(workspacePaths)
+  const isolationWorkspaces = new Set(automaticIsolationWorkspacePaths)
   const edges: [string, string][] = []
 
   // Map workspace path → concatenated Terraform file contents
-  const workspaceContents = new Map<string, string[]>()
+  const workspaceContents = new Map<string, AutomaticIsolationSourceFile[]>()
   for (const ws of workspacePaths) {
     workspaceContents.set(ws, [])
+  }
+  const archiveFindings = new Map<string, AutomaticIsolationFinding[]>()
+  for (const ws of automaticIsolationWorkspacePaths) {
+    archiveFindings.set(ws, [])
   }
 
   // Stream through tarball entries, reading only .tf files
@@ -129,19 +160,42 @@ async function scanTarball(
 
       const relativePath = stripPrefix ? header.name.replace(stripPrefix, "") : header.name
 
-      // Only process .tf files within known workspaces
-      if (header.type === "file" && relativePath.endsWith(".tf")) {
+      if (header.type === "symlink" || header.type === "link") {
+        const linkedPath = relativePath.replace(/\/$/, "")
+        for (const workspacePath of isolationWorkspaces) {
+          const linkAffectsWorkspace =
+            workspacePath === "." ||
+            linkedPath === workspacePath ||
+            linkedPath.startsWith(`${workspacePath}/`) ||
+            workspacePath.startsWith(`${linkedPath}/`)
+          if (!linkAffectsWorkspace) {
+            continue
+          }
+
+          archiveFindings.get(workspacePath)!.push({
+            code: "symlink_not_supported",
+            filePath: linkedPath,
+            message:
+              `${linkedPath} is a symbolic or hard link${header.linkname ? ` to ${header.linkname}` : ""}. ` +
+              "Yaffle cannot prove linked Terraform source belongs to this transient workspace.",
+          })
+        }
+      }
+
+      // Process Terraform HCL and JSON files within known workspaces.
+      if (
+        header.type === "file" &&
+        (relativePath.endsWith(".tf") || relativePath.endsWith(".tf.json"))
+      ) {
         // Find which workspace this file belongs to
-        const matchingWorkspace = workspacePaths.find((ws) =>
-          relativePath.startsWith(ws + "/") || relativePath === ws,
-        )
+        const matchingWorkspace = findWorkspaceForTerraformPath(relativePath, workspacePaths)
 
         if (matchingWorkspace) {
           const chunks: Buffer[] = []
           stream.on("data", (chunk: Buffer) => chunks.push(chunk))
           stream.on("end", () => {
             const content = Buffer.concat(chunks).toString("utf-8")
-            workspaceContents.get(matchingWorkspace)!.push(content)
+            workspaceContents.get(matchingWorkspace)!.push({ path: relativePath, content })
             next()
           })
           stream.resume()
@@ -166,7 +220,8 @@ async function scanTarball(
   await processing
 
   // Convert to edges
-  for (const [workspace, contents] of workspaceContents) {
+  for (const [workspace, files] of workspaceContents) {
+    const contents = files.filter((file) => file.path.endsWith(".tf")).map((file) => file.content)
     const deps = extractDependenciesFromContent(contents.join("\n\n"), {
       currentNamespace,
       variables: workspaceVariables[workspace],
@@ -178,12 +233,30 @@ async function scanTarball(
     }
   }
 
+  const automaticIsolationPreflight =
+    isolationWorkspaces.size > 0
+      ? combineAutomaticIsolationPreflights(
+          [...isolationWorkspaces].map((workspacePath) => {
+            const inspected = inspectAutomaticPreviewIsolationWorkspace(
+              workspacePath,
+              workspaceContents.get(workspacePath) ?? [],
+            )
+            const findings = [...inspected.findings, ...(archiveFindings.get(workspacePath) ?? [])]
+            return {
+              ...inspected,
+              status: deriveAutomaticIsolationWorkspaceStatus(findings),
+              findings,
+            }
+          }),
+        )
+      : undefined
+
   log("Tarball scan complete", {
     workspaceCount: workspacePaths.length,
     edgeCount: edges.length,
   })
 
-  return { workspaces: workspacePaths, edges }
+  return { workspaces: workspacePaths, edges, automaticIsolationPreflight }
 }
 
 /**
@@ -302,6 +375,7 @@ export async function runScanner(): Promise<void> {
       workspacePaths,
       claimResult.workspaceVariables,
       currentNamespace,
+      claimResult.automaticIsolationWorkspacePaths,
     )
     const graph = buildGraphFromInferred(inferredGraph.workspaces, inferredGraph.edges)
 
@@ -329,6 +403,21 @@ export async function runScanner(): Promise<void> {
       executionOrder: filteredOrder,
       edgeCount: inferredGraph.edges.length,
     })
+
+    if (
+      inferredGraph.automaticIsolationPreflight &&
+      inferredGraph.automaticIsolationPreflight.status !== "ready"
+    ) {
+      await apiClient.complete({
+        graph: graph.toSerializable(),
+        executionOrder: filteredOrder,
+        automaticIsolationPreflight: inferredGraph.automaticIsolationPreflight,
+      })
+      log("Automatic preview isolation preflight requires attention", {
+        status: inferredGraph.automaticIsolationPreflight.status,
+      })
+      return
+    }
 
     // 5. Repackage tarball (strip GitHub's prefix dir) and upload to S3
     let workspaceS3Key: string | undefined
@@ -361,6 +450,7 @@ export async function runScanner(): Promise<void> {
       graph: graph.toSerializable(),
       executionOrder: filteredOrder,
       workspaceS3Key,
+      automaticIsolationPreflight: inferredGraph.automaticIsolationPreflight,
     })
 
     log("Scan result reported successfully")

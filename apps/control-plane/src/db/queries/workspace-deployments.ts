@@ -144,39 +144,6 @@ export async function findDeployment(
 }
 
 /**
- * @deprecated Use findDeployment with environmentName instead
- * Find a deployment by org + repo + PR number + workspace path.
- */
-export async function findPreview(
-  orgId: string,
-  repo: string,
-  prNumber: number,
-  workspacePath: string,
-): Promise<WorkspaceDeployment | undefined> {
-  const environmentName = prNumber > 0 ? `pr-${prNumber}` : undefined
-  if (!environmentName) {
-    // For prNumber=0, we need to look up by workspace path in named environments
-    // This is ambiguous without branch info, so we fall back to a direct query
-    return withDbSpan("select", "workspace_deployments", async () => {
-      const rows = await db
-        .select()
-        .from(workspaceDeployments)
-        .where(
-          and(
-            eq(workspaceDeployments.orgId, orgId),
-            eq(workspaceDeployments.repo, repo),
-            eq(workspaceDeployments.environmentKind, "named"),
-            eq(workspaceDeployments.workspacePath, workspacePath),
-          ),
-        )
-        .limit(1)
-      return rows[0]
-    })
-  }
-  return findDeployment(orgId, repo, environmentName, workspacePath)
-}
-
-/**
  * Upsert a deployment. On conflict (same org/repo/env/workspace), update the head SHA,
  * ref, and reset status to pending.
  *

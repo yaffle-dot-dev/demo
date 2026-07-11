@@ -311,57 +311,56 @@ Invalidation: Automatic when new state version uploaded.
 
 ---
 
-## Preview-Aware Resolution
+## Transient-Aware Resolution
 
-When a caller provides preview context, Yaffle resolves the requested module to
+When a caller provides transient environment context, Yaffle resolves the requested module to
 the best available finalized state.
 
 ### The Problem
 
-- A preview workspace may exist before it has uploaded any finalized state
+- A transient workspace may exist before it has uploaded any finalized state
 - The latest attempt may have failed, leaving the last good state unchanged
-- Callers still need a stable module surface while preview runs are in flight
+- Callers still need a stable module surface while transient runs are in flight
 
 ### Resolution Algorithm
 
 ```
-resolveModule(moduleSource, previewContext, requestedVersion):
+resolveModule(moduleSource, transientEnvironment, requestedVersion):
   workspacePath = parseWorkspacePath(moduleSource)
 
-  if previewContext is null:
-    return nonPreviewFinalizedState(workspacePath, requestedVersion)
+  if transientEnvironment is null:
+    return namedFinalizedState(workspacePath, requestedVersion)
 
-  previewWorkspace = findPreviewWorkspace(workspacePath, previewContext.prNumber)
-  if previewWorkspace has a finalized state for requestedVersion:
-    return previewWorkspace.finalizedState
+  transientWorkspace = findTransientWorkspace(
+    workspacePath,
+    transientEnvironment.environmentName,
+  )
+  if transientWorkspace has a finalized state for requestedVersion:
+    return transientWorkspace.finalizedState
 
-  return nonPreviewFinalizedState(workspacePath, requestedVersion)
+  return namedFinalizedState(workspacePath, requestedVersion)
 ```
 
 In practice this means:
 
-- preview state wins only when it is finalized and readable
-- if a preview workspace exists but has no finalized state yet, Yaffle falls
-  back to the repo's non-preview workspace
+- transient state wins only when it is finalized and readable
+- if a transient workspace exists but has no finalized state yet, Yaffle falls
+  back to the repo's named workspace
 - module downloads continue to work from the last known good state after a
   failed preview upload or discarded pending state
 
-### Preview Context
+### Transient Environment Context
 
-The current query parameter is a GitHub pull-request compatibility adapter:
+Registry resolution accepts the canonical environment name without interpreting its source:
 
 ```hcl
 module "vpc" {
-  source = "yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle?preview=pr-42"
+  source = "yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle?environment=review-42"
 }
 ```
 
-Or Yaffle injects this when generating the runner's Terraform config.
-
-This is not the generic transient-environment interface. Before another transient source
-is added, registry resolution must accept a canonical environment name and query by that
-identity instead of `prNumber`. Source metadata such as a GitHub PR number remains an
-adapter concern and must not become the environment discriminator.
+For a GitHub pull request, the GitHub adapter supplies its canonical name such as `pr-42`.
+The registry only sees an environment identity. It does not receive or derive a PR number.
 
 ---
 
@@ -460,12 +459,12 @@ Generate typed shim modules from workspace outputs:
 
 **Blocked by:** YAF-38
 
-### Phase 3: Preview-Aware Resolution (YAF-40)
+### Phase 3: Transient-Aware Resolution (YAF-40)
 
 Resolve modules to correct state based on context:
-- Non-preview vs preview finalized state
-- Last-known-good fallback when preview state is unavailable
-- `?preview=pr-{n}` propagation through registry requests
+- Named vs transient finalized state
+- Last-known-good fallback when transient state is unavailable
+- `?environment={name}` propagation through registry requests
 
 **Blocked by:** YAF-39
 

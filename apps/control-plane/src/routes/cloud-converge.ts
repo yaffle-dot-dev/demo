@@ -2,7 +2,7 @@ import { Hono, type MiddlewareHandler } from "hono"
 import { timingSafeEqual } from "node:crypto"
 import { z } from "zod"
 
-import type { PullRequestContext, PushContext, WebhookContext } from "@yaffle/shared"
+import type { PushContext, WebhookContext } from "@yaffle/shared"
 
 import { createRunGroup, findRunGroupById } from "../db/queries/run-groups.ts"
 import { findRunById, listRunsForDeployments } from "../db/queries/tf-runs.ts"
@@ -19,7 +19,12 @@ import {
 import { findOrgById, findOrgMembership } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { findUserById } from "../db/queries/users.ts"
-import { parseYaffleToml, type YaffleTomlConfig } from "../lib/config-toml.ts"
+import {
+  getAutomaticIsolationWorkspacePaths,
+  getEnvironmentKind,
+  parseYaffleToml,
+  type YaffleTomlConfig,
+} from "../lib/config-toml.ts"
 import {
   parseEnvironmentGroupProjectionPayload,
   type EnvironmentGroupProjectionPayload,
@@ -28,7 +33,6 @@ import {
   findPushTriggerEnvironment,
   getWorkspacesForEnvironment,
   matchesPullRequestTrigger,
-  parsePrEnvironmentName,
 } from "../lib/config-toml.ts"
 import { getEnv } from "../lib/env.ts"
 import { fetchFileContent, getInstallationToken } from "../lib/github.ts"
@@ -43,7 +47,11 @@ import {
   type WorkspaceVariablesByPath,
 } from "../lib/workspace-variables.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
-import { createScanJob } from "../db/queries/scan-jobs.ts"
+import {
+  createScanJob,
+  findLatestScanJobByRunGroup,
+  type ScanJobResult,
+} from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "../lib/job-token.ts"
 import { getScheduler } from "../lib/scheduler.ts"
 
@@ -60,6 +68,7 @@ type ScanDispatcher = (input: {
   runGroupId: string
   workspacePaths: string[]
   workspaceVariables: WorkspaceVariablesByPath
+  automaticIsolationWorkspacePaths: string[]
   installationToken: string
 }) => Promise<{ scanJobId: string }>
 
@@ -257,34 +266,41 @@ export function createCloudConvergeRoute(
     const activeRunGroupIds = activeRunGroupIdsFromDeployments(
       latestDeployments.filter((deployment) => deployment.repo === repo.name),
     )
-    const environments = (await Promise.all(rows.map(async (row) => {
-      const payload = parseEnvironmentGroupProjectionPayload(row.payload)
-      if (!payload) {
-        return null
-      }
-      const activeRunGroupId = activeRunGroupIds.get(environmentGroupKey({
-        repo: payload.repo,
-        environmentKind: payload.environmentKind,
-        environmentName: payload.environmentName,
-      })) ?? await activeRunGroupIdFromPayload(payload)
+    const environments = (
+      await Promise.all(
+        rows.map(async (row) => {
+          const payload = parseEnvironmentGroupProjectionPayload(row.payload)
+          if (!payload) {
+            return null
+          }
+          const activeRunGroupId =
+            activeRunGroupIds.get(
+              environmentGroupKey({
+                repo: payload.repo,
+                environmentKind: payload.environmentKind,
+                environmentName: payload.environmentName,
+              }),
+            ) ?? (await activeRunGroupIdFromPayload(payload))
 
-      return {
-        repo: payload.repo,
-        environmentKind: payload.environmentKind,
-        environmentName: payload.environmentName,
-        sourceKind: payload.sourceKind,
-        status: environmentInventoryStatus(payload.status, payload.workspaces),
-        activeRunGroupId,
-        ref: payload.ref,
-        headSha: payload.headSha,
-        updatedAt: payload.updatedAt,
-        workspaceCount: payload.workspaces.length,
-        statusVector: workspaceStatusVector(payload.workspaces),
-        prNumber: payload.sourceMetadata?.prNumber ?? null,
-        actorLogin:
-          payload.sourceMetadata?.authorLogin ?? latestWorkspaceAuthor(payload.workspaces),
-      }
-    }))).filter((environment): environment is NonNullable<typeof environment> => environment !== null)
+          return {
+            repo: payload.repo,
+            environmentKind: payload.environmentKind,
+            environmentName: payload.environmentName,
+            sourceKind: payload.sourceKind,
+            status: environmentInventoryStatus(payload.status, payload.workspaces),
+            activeRunGroupId,
+            ref: payload.ref,
+            headSha: payload.headSha,
+            updatedAt: payload.updatedAt,
+            workspaceCount: payload.workspaces.length,
+            statusVector: workspaceStatusVector(payload.workspaces),
+            prNumber: payload.sourceMetadata?.prNumber ?? null,
+            actorLogin:
+              payload.sourceMetadata?.authorLogin ?? latestWorkspaceAuthor(payload.workspaces),
+          }
+        }),
+      )
+    ).filter((environment): environment is NonNullable<typeof environment> => environment !== null)
 
     return c.json({
       data: {
@@ -399,13 +415,13 @@ export function createCloudConvergeRoute(
       installationId: repo.installationId,
       repoGithubId: repo.githubId,
       defaultBranch: repo.defaultBranch,
-      environmentName: values.environmentName,
       ref: values.ref,
       headSha: values.headSha,
     })
     const config = await loadConfig(ctx)
+    const environmentKind = getEnvironmentKind(config, values.environmentName)
 
-    if (!environmentMatchesRef(config, ctx, values.environmentName)) {
+    if (environmentKind === "named" && !environmentMatchesRef(config, ctx, values.environmentName)) {
       return c.json(
         {
           error: {
@@ -420,7 +436,7 @@ export function createCloudConvergeRoute(
     const eligibleWorkspacePathsInOrder = getWorkspacesForEnvironment(
       config,
       values.environmentName,
-      ctx.kind === "pull_request",
+      environmentKind === "transient",
     )
     const eligibleWorkspacePaths = new Set(eligibleWorkspacePathsInOrder)
     const requestedWorkspacePaths = [...new Set(values.workspacePaths)]
@@ -446,7 +462,12 @@ export function createCloudConvergeRoute(
       selectedWorkspacePaths,
       ctx,
       values.environmentName,
-      ctx.kind === "pull_request" ? "transient" : "named",
+      environmentKind,
+    )
+    const automaticIsolationWorkspacePaths = getAutomaticIsolationWorkspacePaths(
+      config,
+      selectedWorkspacePaths,
+      environmentKind,
     )
 
     const actor = await findUserById(principal.userId)
@@ -454,9 +475,9 @@ export function createCloudConvergeRoute(
       orgId: org.id,
       repoBindingId: repoBinding.id,
       repo: repo.name,
-      environmentKind: ctx.kind === "pull_request" ? "transient" : "named",
+      environmentKind,
       environmentName: values.environmentName,
-      prNumber: ctx.kind === "pull_request" ? ctx.prNumber : null,
+      prNumber: null,
       ref: values.ref,
       headSha: values.headSha,
       selectedWorkspacePaths: selectedWorkspacePaths,
@@ -474,6 +495,7 @@ export function createCloudConvergeRoute(
       runGroupId: runGroup.id,
       workspacePaths: selectedWorkspacePaths,
       workspaceVariables,
+      automaticIsolationWorkspacePaths,
       installationToken,
     })
 
@@ -551,6 +573,8 @@ export function createCloudConvergeRoute(
       lifecycleState?.items.map((item) => item.id) ?? [],
     )
     const lifecycleItems = lifecycleState?.items ?? []
+    const scanJob = await findLatestScanJobByRunGroup(runGroup.id)
+    const scanResult = scanJob?.result as ScanJobResult | null
 
     const serializedDeployments = await Promise.all(
       deployments.map(async (deployment) => {
@@ -630,6 +654,7 @@ export function createCloudConvergeRoute(
           startedAt: runGroup.startedAt?.toISOString() ?? null,
           completedAt: runGroup.completedAt?.toISOString() ?? null,
         },
+        automaticIsolationPreflight: scanResult?.automaticIsolationPreflight ?? null,
         lifecycle: lifecycleState
           ? {
               run: {
@@ -835,7 +860,10 @@ async function activeRunGroupIdFromPayload(
 
   const activeStatuses = new Set(["planning", "applying", "activating", "destroying", "running"])
   const activeWorkspace = payload.workspaces
-    .filter((workspace) => activeStatuses.has(workspace.status) || activeStatuses.has(workspace.lastRunStatus ?? ""))
+    .filter(
+      (workspace) =>
+        activeStatuses.has(workspace.status) || activeStatuses.has(workspace.lastRunStatus ?? ""),
+    )
     .sort((left, right) => right.headUpdatedAt.localeCompare(left.headUpdatedAt))[0]
 
   if (!activeWorkspace?.lastRunId) {
@@ -857,33 +885,12 @@ function buildManualWebhookContext(input: {
   installationId: number
   repoGithubId: number
   defaultBranch: string
-  environmentName: string
   ref: string
   headSha: string
 }): WebhookContext {
   const [owner, repo] = input.repoFullName.split("/")
   if (!owner || !repo) {
     throw new Error(`Invalid repo full name '${input.repoFullName}'`)
-  }
-
-  const prNumber = parsePrEnvironmentName(input.environmentName)
-  if (prNumber != null) {
-    return {
-      kind: "pull_request",
-      installationId: input.installationId,
-      repoGithubId: input.repoGithubId,
-      ownerGithubId: 0,
-      owner,
-      repo,
-      prNumber,
-      action: "synchronize",
-      headSha: input.headSha,
-      branch: stripBranchRef(input.ref),
-      authorGithubId: 0,
-      authorLogin: "manual",
-      merged: false,
-      defaultBranch: input.defaultBranch,
-    } satisfies PullRequestContext
   }
 
   return {
@@ -913,10 +920,6 @@ function environmentMatchesRef(
   }
 
   return findPushTriggerEnvironment(config, ctx.ref) === environmentName
-}
-
-function stripBranchRef(ref: string): string {
-  return ref.replace(/^refs\/heads\//, "")
 }
 
 function stripGitRef(ref: string): string {
@@ -996,6 +999,7 @@ async function dispatchManualScan(input: {
   runGroupId: string
   workspacePaths: string[]
   workspaceVariables: WorkspaceVariablesByPath
+  automaticIsolationWorkspacePaths: string[]
   installationToken: string
 }): Promise<{ scanJobId: string }> {
   const scanJob = await createScanJob({
@@ -1008,6 +1012,7 @@ async function dispatchManualScan(input: {
     orgSlug: input.orgSlug,
     workspacePaths: input.workspacePaths,
     workspaceVariables: input.workspaceVariables,
+    automaticIsolationWorkspacePaths: input.automaticIsolationWorkspacePaths,
   })
 
   const scanToken = await generateScanJobToken(scanJob.id, input.orgId)

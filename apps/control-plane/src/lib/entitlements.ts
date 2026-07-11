@@ -35,12 +35,12 @@ export type EntitlementResult =
   | { allowed: false; code: string; message: string }
 
 /**
- * Check whether an org is allowed to process a webhook event.
+ * Check whether an org is allowed to use an environment kind.
  * Returns { allowed: true } or { allowed: false, code, message }.
  */
 export async function checkOrgEntitlements(
   org: Organization,
-  eventKind: "pull_request" | "push",
+  environmentKind: "named" | "transient",
   environmentName?: string,
 ): Promise<EntitlementResult> {
   // Subscription status checks (all tiers)
@@ -57,12 +57,12 @@ export async function checkOrgEntitlements(
     return { allowed: true }
   }
 
-  // Free tier: check limits based on event type
-  if (eventKind === "pull_request") {
+  // Free tier: check limits based on environment kind
+  if (environmentKind === "transient") {
     return checkFreePreviewLimits(org)
   }
 
-  if (eventKind === "push") {
+  if (environmentKind === "named") {
     return checkFreeEnvironmentLimits(org, environmentName)
   }
 
@@ -193,8 +193,7 @@ export async function requeuePlanLimitedDeployments(org: Organization): Promise<
 
   for (const deployment of deployments) {
     // Re-check entitlements with current plan state
-    const eventKind = deployment.environmentKind === "transient" ? "pull_request" : "push"
-    const check = await checkOrgEntitlements(org, eventKind as "pull_request" | "push")
+    const check = await checkOrgEntitlements(org, deployment.environmentKind)
 
     if (!check.allowed) {
       // Hit the new limit — stop re-queuing
