@@ -14,6 +14,7 @@ import { sql } from "drizzle-orm"
 import { db } from "./db.ts"
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
 import { setRepoMapping } from "../db/queries/repo-mappings.ts"
+import { getJobWithContext } from "../db/queries/iac-jobs.ts"
 import { claimScanJob, completeScanJob, createScanJob } from "../db/queries/scan-jobs.ts"
 import { iacJobHistory, iacJobs, previews, runGroups } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
@@ -356,10 +357,145 @@ describe("webhook-handler", () => {
     expect(groups).toHaveLength(1)
     expect(groups[0].repoBindingId).toBeTruthy()
     expect(groups[0].selectedWorkspacePaths).toEqual(["infra"])
+    expect(groups[0].executionSnapshot).toMatchObject({
+      version: 1,
+      source: {
+        installationId: 0,
+        repositoryId: 123456,
+        ownerId: 99999,
+        owner: "test-org",
+        repository: "test-repo",
+        ref: "refs/heads/feature/test",
+        commitSha: "abc123def456",
+        actor: {
+          githubId: 12345,
+          login: "octocat",
+        },
+      },
+      configuration: {
+        path: "yaffle.toml",
+        revision: "abc123def456",
+      },
+      environment: {
+        kind: "transient",
+        name: "pr-42",
+        sourcePullRequestNumber: 42,
+      },
+      workspaces: [
+        {
+          path: "infra",
+          variables: {},
+          approval: { required: false, approvers: [] },
+          lifecycle: { activation: [], verification: [] },
+          automaticPreviewIsolation: false,
+        },
+      ],
+    })
 
     // Runner is NOT called - execution happens via IaC engine
     expect(runner.calls).toHaveLength(0)
     expect(lastAutomaticIsolationWorkspacePaths).toEqual([])
+  })
+
+  test("later repository config does not mutate an existing run or job", async () => {
+    let config: YaffleTomlConfig = {
+      ...DEFAULT_CONFIG,
+      workspaces: [
+        {
+          ...DEFAULT_CONFIG.workspaces[0],
+          variables: { release: "first" },
+          activation: [
+            {
+              key: "deploy",
+              environments: ["*"],
+              kind: "generic",
+              failure: "failed",
+              scopes: [],
+              request: { url: "https://first.example.test/deploy", method: "POST" },
+            },
+          ],
+        },
+      ],
+      cloud: {
+        ...DEFAULT_CONFIG.cloud,
+        approvals: [
+          {
+            workspaces: ["infra"],
+            environments: ["*"],
+            approvers: ["github:user:first-reviewer"],
+          },
+        ],
+      },
+    }
+    handler = createHandler(runner, {
+      configLoader: async () => config,
+      scanDispatcher: fakeScanDispatcher,
+    })
+
+    await handler.handleWebhookEvent(makePrContext({ headSha: "sha-first" }))
+
+    const firstGroup = (await db.select().from(runGroups)).find(
+      (group) => group.headSha === "sha-first",
+    )
+    const firstJob = (await getQueuedJobs())[0]
+    expect(firstGroup).toBeDefined()
+    expect(firstJob).toBeDefined()
+
+    config = {
+      ...config,
+      workspaces: [
+        {
+          ...config.workspaces[0],
+          variables: { release: "second" },
+          activation: [
+            {
+              key: "deploy",
+              environments: ["*"],
+              kind: "generic",
+              failure: "failed",
+              scopes: [],
+              request: { url: "https://second.example.test/deploy", method: "POST" },
+            },
+          ],
+        },
+      ],
+    }
+    await handler.handleWebhookEvent(makePrContext({
+      action: "synchronize",
+      headSha: "sha-second",
+    }))
+
+    const persistedFirstGroup = (await db.select().from(runGroups)).find(
+      (group) => group.id === firstGroup?.id,
+    )
+    expect(persistedFirstGroup?.executionSnapshot).toMatchObject({
+      source: { commitSha: "sha-first" },
+      configuration: { revision: "sha-first" },
+      workspaces: [
+        {
+          path: "infra",
+          variables: { release: "first" },
+          approval: {
+            required: true,
+            approvers: ["github:user:first-reviewer"],
+          },
+          lifecycle: {
+            activation: [
+              {
+                key: "deploy",
+                request: { url: "https://first.example.test/deploy" },
+              },
+            ],
+          },
+        },
+      ],
+    })
+
+    const firstJobContext = await getJobWithContext(firstJob.id)
+    expect(firstJobContext?.runGroup?.id).toBe(firstGroup?.id)
+    expect(firstJobContext?.runGroup?.executionSnapshot).toEqual(
+      persistedFirstGroup?.executionSnapshot,
+    )
   })
 
   test("PR opened: propagates automatic isolation only for opted-in transient workspaces", async () => {
@@ -626,7 +762,7 @@ describe("webhook-handler", () => {
     expect(pvs[0].prNumber).toBeNull() // null for named environments (production)
     expect(pvs[0].environmentKind).toBe("named")
     expect(pvs[0].environmentName).toBe("main")
-    expect(pvs[0].stateKey).toBe("main/infra/terraform.tfstate")
+    expect(pvs[0].stateKey).toBe("named-main/infra/terraform.tfstate")
     expect(pvs[0].status).toBe("pending") // Waiting for plan job to run
 
     // Plan job queued

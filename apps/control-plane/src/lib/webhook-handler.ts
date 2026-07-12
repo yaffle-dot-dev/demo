@@ -52,6 +52,7 @@ import { createScanJob } from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "./job-token.ts"
 import { getScheduler } from "./scheduler.ts"
 import type { WorkspaceVariablesByPath } from "./workspace-variables.ts"
+import { buildExecutionSnapshot } from "./execution-snapshot.ts"
 
 /** Default runner for production use. Override via createHandler() for tests. */
 const defaultRunner: Runner = new LocalRunner()
@@ -317,6 +318,7 @@ export async function triggerApply(opts: {
     // Queue apply job
     const job = await createIacJob({
       deploymentId: preview.id,
+      runGroupId: latestPlan.runGroupId,
       jobType: "apply",
     })
 
@@ -392,6 +394,7 @@ export async function queueAutoApply(deploymentId: string): Promise<{ jobId: str
     // Queue apply job (no approval recording - this is server-initiated)
     const job = await createIacJob({
       deploymentId: preview.id,
+      runGroupId: latestPlan.runGroupId,
       jobType: "apply",
     })
 
@@ -811,6 +814,14 @@ async function handlePrOpenedOrUpdated(
 
   // Create a single run group for this PR event (covers both plan and apply)
   const trigger: RunGroupTrigger = ctx.action === "opened" ? "pr_opened" : "pr_sync"
+  const executionSnapshot = buildExecutionSnapshot({
+    ctx,
+    config,
+    workspacePaths,
+    workspaceVariables,
+    environmentKind: "transient",
+    environmentName,
+  })
   const runGroup = await createRunGroup({
     orgId: org.id,
     repoBindingId: (await ensureWebhookRunGroupRepoBinding(ctx)).id,
@@ -821,7 +832,9 @@ async function handlePrOpenedOrUpdated(
     ref: `refs/heads/${ctx.branch}`,
     headSha: ctx.headSha,
     selectedWorkspacePaths: workspacePaths,
+    executionSnapshot,
     trigger,
+    triggeredByLogin: ctx.authorLogin,
     status: "pending",
   })
 
@@ -1087,6 +1100,14 @@ async function handlePushEvent(
 
   // Create a single run group for this push event (covers both plan and apply)
   // Push events to the default branch are "named" environments (e.g., "main", "production")
+  const executionSnapshot = buildExecutionSnapshot({
+    ctx,
+    config,
+    workspacePaths,
+    workspaceVariables,
+    environmentKind: "named",
+    environmentName,
+  })
   const runGroup = await createRunGroup({
     orgId: org.id,
     repoBindingId: (await ensureWebhookRunGroupRepoBinding(ctx)).id,
@@ -1097,7 +1118,9 @@ async function handlePushEvent(
     ref: ctx.ref,
     headSha: ctx.headSha,
     selectedWorkspacePaths: workspacePaths,
+    executionSnapshot,
     trigger: "push",
+    triggeredByLogin: ctx.pusherLogin,
     status: "pending",
   })
 

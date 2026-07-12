@@ -31,6 +31,7 @@ import { buildStateKey, transientStatePrefix, environmentStatePrefix } from "./r
 import { events } from "./events.ts"
 import { persistRunGroupWorkspaceMetadataFromArchive } from "./run-group-workspace-metadata.ts"
 import { logger } from "./telemetry.ts"
+import { findExecutionSnapshotWorkspace } from "./execution-snapshot.ts"
 
 /**
  * Complete a run group after the scanner reports results.
@@ -56,6 +57,16 @@ export async function completeRunGroup(
   }
 
   const { graph, executionOrder, workspaceS3Key } = scanResult
+  const executionSnapshot = runGroup.executionSnapshot
+  if (executionSnapshot) {
+    const selectedPaths = new Set(executionSnapshot.workspaces.map((workspace) => workspace.path))
+    const scanPaths = new Set(executionOrder)
+    const selectionChanged = selectedPaths.size !== scanPaths.size
+      || [...selectedPaths].some((workspacePath) => !scanPaths.has(workspacePath))
+    if (selectionChanged) {
+      throw new Error(`Scanner result does not match run group ${runGroupId} workspace selection`)
+    }
+  }
 
   // Store graph + S3 key on run group
   await updateRunGroupDependencyGraph(runGroupId, graph)
@@ -83,9 +94,11 @@ export async function completeRunGroup(
   )
 
   // Build state prefix based on environment kind
-  const statePrefix = runGroup.environmentKind === "transient"
-    ? transientStatePrefix(runGroup.environmentName)
-    : environmentStatePrefix(runGroup.environmentName)
+  const environmentKind = executionSnapshot?.environment.kind ?? runGroup.environmentKind
+  const environmentName = executionSnapshot?.environment.name ?? runGroup.environmentName
+  const statePrefix = environmentKind === "transient"
+    ? transientStatePrefix(environmentName)
+    : environmentStatePrefix(environmentName)
 
   // Build dependency maps
   const workspaceDeps = new Map<string, Set<string>>()
@@ -95,9 +108,6 @@ export async function completeRunGroup(
     }
     workspaceDeps.get(downstream)!.add(upstream)
   }
-
-  // Environment info comes from the run group row (set by webhook handler)
-  const environmentName = runGroup.environmentName
 
   // First pass: upsert all deployments with run_group_id
   const pathToDeploymentId = new Map<string, string>()
@@ -111,21 +121,25 @@ export async function completeRunGroup(
     const stateKey = buildStateKey(statePrefix, wsPath)
     const upstreamPaths = workspaceDeps.get(wsPath) ?? new Set()
     const isRoot = upstreamPaths.size === 0
+    const workspaceSnapshot = findExecutionSnapshotWorkspace(executionSnapshot, wsPath)
+    const source = executionSnapshot?.source
 
     const deployment = await upsertDeployment({
       orgId: org.id,
-      installationId: undefined, // Will be set from run group context if needed
-      repo: runGroup.repo,
-      environmentKind: runGroup.environmentKind as "named" | "transient",
+      installationId: source?.installationId,
+      repo: source?.repository ?? runGroup.repo,
+      environmentKind,
       environmentName,
-      prNumber: runGroup.prNumber ?? undefined,
+      prNumber: executionSnapshot?.environment.sourcePullRequestNumber ?? runGroup.prNumber ?? undefined,
       workspacePath: wsPath,
-      ref: runGroup.ref,
-      headSha: runGroup.headSha,
+      ref: source?.ref ?? runGroup.ref,
+      headSha: source?.commitSha ?? runGroup.headSha,
+      authorGithubId: source?.actor.githubId ?? undefined,
+      authorLogin: source?.actor.login ?? undefined,
       stateKey,
       mode: "terraform",
-      requireApproval: false, // TODO: resolve from config approvers
-      approvers: null,
+      requireApproval: workspaceSnapshot?.approval.required ?? false,
+      approvers: workspaceSnapshot?.approval.approvers ?? null,
       runGroupId,
     })
 
@@ -171,6 +185,7 @@ export async function completeRunGroup(
       if (isRoot) {
         const job = await createIacJob({
           deploymentId,
+          runGroupId,
           jobType: "plan",
         })
         logger.info("Queued plan job for root workspace", {
@@ -186,12 +201,12 @@ export async function completeRunGroup(
   // Mark removed workspaces as destroyed only for push-triggered named-environment runs.
   // Manual subset selection can intentionally scan/deploy a subset of workspaces and
   // must not destroy unrelated named-environment deployments.
-  if (runGroup.environmentKind === "named" && runGroup.trigger === "push") {
+  if (environmentKind === "named" && runGroup.trigger === "push") {
     await markRemovedWorkspacesDestroyed(
       org.id,
       runGroup.repo,
       environmentName,
-      runGroup.headSha,
+      executionSnapshot?.source.commitSha ?? runGroup.headSha,
       executionOrder,
     )
   }
@@ -205,7 +220,7 @@ export async function completeRunGroup(
       deploymentData[0].deploymentId,
       org.id,
       runGroup.repo,
-      runGroup.environmentKind as "named" | "transient",
+      environmentKind,
       environmentName,
     )
   }

@@ -12,6 +12,7 @@ import { getLifecycleStateForRunGroup } from "../db/queries/lifecycle.ts"
 import { findGithubInstallationsForOrg } from "../db/queries/organizations.ts"
 import { findRepoByInstallationAndName } from "../db/queries/repositories.ts"
 import { iacJobs, organizations, runGroups, workspaceDeployments } from "../db/schema.ts"
+import type { ExecutionSnapshotV1 } from "./execution-snapshot.ts"
 
 const CHECK_NAME = "Yaffle / run"
 
@@ -22,6 +23,7 @@ interface RunGroupCheckContext {
   repo: string
   environmentName: string
   headSha: string
+  executionSnapshot: ExecutionSnapshotV1 | null
   checkRunId: number | null
   checkCompletedAt: Date | null
 }
@@ -103,9 +105,15 @@ export async function completeRunGroupCheck(params: {
     return
   }
 
-  const installation = (await findGithubInstallationsForOrg(context.orgId)).find(
-    (candidate) => candidate.installationStatus === "active",
-  )
+  const snapshot = context.executionSnapshot
+  const installation = snapshot
+    ? {
+        installationId: snapshot.source.installationId,
+        githubOrgLogin: snapshot.source.owner,
+      }
+    : (await findGithubInstallationsForOrg(context.orgId)).find(
+        (candidate) => candidate.installationStatus === "active",
+      )
 
   if (!installation) {
     logger.warn("Skipping run group check completion: no active GitHub installation", {
@@ -117,8 +125,14 @@ export async function completeRunGroupCheck(params: {
     return
   }
 
-  const repoRecord = await findRepoByInstallationAndName(installation.installationId, context.repo)
-  const owner = repoRecord?.fullName.split("/")[0] ?? installation.githubOrgLogin
+  const repo = snapshot?.source.repository ?? context.repo
+  const headSha = snapshot?.source.commitSha ?? context.headSha
+  const repoRecord = snapshot
+    ? null
+    : await findRepoByInstallationAndName(installation.installationId, repo)
+  const owner = snapshot?.source.owner
+    ?? repoRecord?.fullName.split("/")[0]
+    ?? installation.githubOrgLogin
   const title = params.title ?? defaultTitleForConclusion(params.conclusion)
   const detailsUrl = params.detailsUrl ?? buildRunGroupDetailsUrl(context)
   const summary = formatCheckSummary(
@@ -129,7 +143,7 @@ export async function completeRunGroupCheck(params: {
   try {
     let checkRunId = context.checkRunId
     if (checkRunId) {
-      await updateCheckRun(installation.installationId, owner, context.repo, checkRunId, {
+      await updateCheckRun(installation.installationId, owner, repo, checkRunId, {
         status: "completed",
         conclusion: params.conclusion,
         detailsUrl,
@@ -139,8 +153,8 @@ export async function completeRunGroupCheck(params: {
     } else {
       checkRunId = await createCheckRun(installation.installationId, {
         owner,
-        repo: context.repo,
-        headSha: context.headSha,
+        repo,
+        headSha,
         name: CHECK_NAME,
         status: "completed",
         conclusion: params.conclusion,
@@ -161,8 +175,8 @@ export async function completeRunGroupCheck(params: {
     logger.warn("failed to complete run group check run", {
       runGroupId: params.runGroupId,
       owner,
-      repo: context.repo,
-      headSha: context.headSha,
+      repo,
+      headSha,
       installationId: installation.installationId,
       error: err instanceof Error ? err.message : String(err),
     })
@@ -200,8 +214,7 @@ export async function syncRunGroupCheckFromDeployments(runGroupId: string): Prom
   const activeJobs = await db
     .select({ id: iacJobs.id })
     .from(iacJobs)
-    .innerJoin(workspaceDeployments, eq(workspaceDeployments.id, iacJobs.deploymentId))
-    .where(eq(workspaceDeployments.runGroupId, runGroupId))
+    .where(eq(iacJobs.runGroupId, runGroupId))
     .limit(1)
 
   if (activeJobs.length > 0) {
@@ -247,6 +260,7 @@ async function loadRunGroupCheckContext(
       repo: runGroups.repo,
       environmentName: runGroups.environmentName,
       headSha: runGroups.headSha,
+      executionSnapshot: runGroups.executionSnapshot,
       checkRunId: runGroups.checkRunId,
       checkCompletedAt: runGroups.checkCompletedAt,
     })

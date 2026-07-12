@@ -678,6 +678,7 @@ lifecycleRoute.post("/completions/:token", async (c) => {
           deploymentId: deployment.id,
           workspacePath: deployment.workspacePath,
           lifecycleRunId: consumed.run.id,
+          runGroupId: consumed.run.runGroupId,
         })
       }
     }

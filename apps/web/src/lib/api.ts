@@ -73,6 +73,12 @@ export interface RunGroup {
   ref: string
   headSha: string
   selectedWorkspacePaths?: string[]
+  executionContext?: {
+    version: 1
+    commitSha: string
+    configurationRevision: string
+    configurationDigest: string
+  } | null
   trigger: string
   triggeredByLogin?: string | null
   status: string

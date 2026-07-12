@@ -9,6 +9,7 @@ import {
   iacJobStatusEnum,
   iacJobTypeEnum,
   organizations,
+  runGroups,
   tfRuns,
   workspaceDeployments,
 } from "../schema.ts"
@@ -65,6 +66,7 @@ export async function createIacJob(values: {
   /** @deprecated Use deploymentId */
   previewId?: string
   deploymentId?: string
+  runGroupId?: string | null
   jobType: IacJobType
 }): Promise<IacJob> {
   const deploymentId = values.deploymentId ?? values.previewId
@@ -73,10 +75,20 @@ export async function createIacJob(values: {
   }
 
   return withDbSpan("insert", "iac_jobs", async () => {
+    const runGroupId = values.runGroupId === undefined
+      ? (
+          await db
+            .select({ runGroupId: workspaceDeployments.runGroupId })
+            .from(workspaceDeployments)
+            .where(eq(workspaceDeployments.id, deploymentId))
+            .limit(1)
+        )[0]?.runGroupId ?? null
+      : values.runGroupId
     const rows = await db
       .insert(iacJobs)
       .values({
         deploymentId,
+        runGroupId,
         jobType: values.jobType,
         status: "queued",
         blockedAt: null,
@@ -642,25 +654,19 @@ export async function failStaleJob(
   }).then(async (result) => {
     // Update deployment status outside the transaction to avoid circular import issues
     if (result.failed && result.job) {
-      const deployment = await db
-        .select({
-          runGroupId: workspaceDeployments.runGroupId,
-        })
-        .from(workspaceDeployments)
-        .where(eq(workspaceDeployments.id, result.job.deploymentId))
-        .limit(1)
-
       const errorMessage = "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry."
 
+      const runningRunConditions = [
+        eq(tfRuns.deploymentId, result.job.deploymentId),
+        eq(tfRuns.status, "running"),
+      ]
+      if (result.job.runGroupId) {
+        runningRunConditions.push(eq(tfRuns.runGroupId, result.job.runGroupId))
+      }
       const latestRunningRun = await db
         .select({ id: tfRuns.id })
         .from(tfRuns)
-        .where(
-          and(
-            eq(tfRuns.deploymentId, result.job.deploymentId),
-            eq(tfRuns.status, "running"),
-          ),
-        )
+        .where(and(...runningRunConditions))
         .orderBy(desc(tfRuns.createdAt))
         .limit(1)
 
@@ -669,10 +675,10 @@ export async function failStaleJob(
           completedAt: new Date(),
           errorMessage,
         })
-      } else if (deployment[0]?.runGroupId) {
+      } else if (result.job.runGroupId) {
         // Defensive recompute when the corresponding tf_run cannot be found.
         // This avoids run groups getting stuck in "running" after stale job cleanup.
-        await recomputeRunGroupStatus(deployment[0].runGroupId)
+        await recomputeRunGroupStatus(result.job.runGroupId)
       }
 
       await updateDeploymentStatus(result.job.deploymentId, "system_error")
@@ -702,6 +708,11 @@ export async function getJobWithContext(jobId: string): Promise<
         installationId: number | null
         runGroupId: string | null
       }
+      runGroup: {
+        id: string
+        workspaceS3Key: string | null
+        executionSnapshot: typeof runGroups.$inferSelect.executionSnapshot
+      } | null
       /** @deprecated Use deployment */
       preview: {
         id: string
@@ -738,17 +749,23 @@ export async function getJobWithContext(jobId: string): Promise<
           installationId: workspaceDeployments.installationId,
           runGroupId: workspaceDeployments.runGroupId,
         },
+        runGroup: {
+          id: runGroups.id,
+          workspaceS3Key: runGroups.workspaceS3Key,
+          executionSnapshot: runGroups.executionSnapshot,
+        },
       })
       .from(iacJobs)
       .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .innerJoin(organizations, eq(workspaceDeployments.orgId, organizations.id))
+      .leftJoin(runGroups, eq(iacJobs.runGroupId, runGroups.id))
       .where(eq(iacJobs.id, jobId))
       .limit(1)
 
     if (activeRows.length > 0) {
-      const { job, deployment } = activeRows[0]
+      const { job, deployment, runGroup } = activeRows[0]
       // Provide backward-compatible preview alias
-      return { ...job, deployment, preview: deployment }
+      return { ...job, deployment, runGroup, preview: deployment }
     }
 
     const historyRows = await db
@@ -769,17 +786,23 @@ export async function getJobWithContext(jobId: string): Promise<
           installationId: workspaceDeployments.installationId,
           runGroupId: workspaceDeployments.runGroupId,
         },
+        runGroup: {
+          id: runGroups.id,
+          workspaceS3Key: runGroups.workspaceS3Key,
+          executionSnapshot: runGroups.executionSnapshot,
+        },
       })
       .from(iacJobHistory)
       .innerJoin(workspaceDeployments, eq(iacJobHistory.deploymentId, workspaceDeployments.id))
       .innerJoin(organizations, eq(workspaceDeployments.orgId, organizations.id))
+      .leftJoin(runGroups, eq(iacJobHistory.runGroupId, runGroups.id))
       .where(eq(iacJobHistory.id, jobId))
       .limit(1)
 
     if (historyRows.length === 0) return undefined
 
-    const { job, deployment } = historyRows[0]
-    return { ...job, deployment, preview: deployment }
+    const { job, deployment, runGroup } = historyRows[0]
+    return { ...job, deployment, runGroup, preview: deployment }
   })
 }
 
@@ -889,13 +912,12 @@ export async function countActiveJobsByRunGroup(): Promise<Map<string, number>> 
   return withDbSpan("select", "iac_jobs", async () => {
     const result = await db
       .select({
-        runGroupId: workspaceDeployments.runGroupId,
+        runGroupId: iacJobs.runGroupId,
         count: sql<number>`count(*)::int`,
       })
       .from(iacJobs)
-      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .where(eq(iacJobs.status, "running"))
-      .groupBy(workspaceDeployments.runGroupId)
+      .groupBy(iacJobs.runGroupId)
 
     const map = new Map<string, number>()
     for (const row of result) {
@@ -916,10 +938,9 @@ export async function getQueuedJobsByRunGroup(): Promise<Map<string, IacJob[]>> 
     const jobs = await db
       .select({
         job: iacJobs,
-        runGroupId: workspaceDeployments.runGroupId,
+        runGroupId: iacJobs.runGroupId,
       })
       .from(iacJobs)
-      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .where(and(eq(iacJobs.status, "queued"), sql`(${SPAWN_LEASE_AVAILABLE_SQL})`))
       .orderBy(iacJobs.queuedAt)
 
@@ -1355,13 +1376,12 @@ export async function findQueuedJobsForSpawning(
     // 2. Get run groups with queued work
     const groupsWithWork = await db
       .select({
-        runGroupId: workspaceDeployments.runGroupId,
+        runGroupId: iacJobs.runGroupId,
         queuedCount: sql<number>`count(*)::int`,
       })
       .from(iacJobs)
-      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .where(and(eq(iacJobs.status, "queued"), sql`(${SPAWN_LEASE_AVAILABLE_SQL})`))
-      .groupBy(workspaceDeployments.runGroupId)
+      .groupBy(iacJobs.runGroupId)
 
     if (groupsWithWork.length === 0) {
       return {
@@ -1379,13 +1399,12 @@ export async function findQueuedJobsForSpawning(
     // 3. Count active jobs per run group
     const activeByGroupResult = await db
       .select({
-        runGroupId: workspaceDeployments.runGroupId,
+        runGroupId: iacJobs.runGroupId,
         count: sql<number>`count(*)::int`,
       })
       .from(iacJobs)
-      .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .where(eq(iacJobs.status, "running"))
-      .groupBy(workspaceDeployments.runGroupId)
+      .groupBy(iacJobs.runGroupId)
 
     const activeByGroup = new Map<string, number>()
     for (const row of activeByGroupResult) {
@@ -1415,8 +1434,8 @@ export async function findQueuedJobsForSpawning(
             eq(iacJobs.status, "queued"),
             sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
             runGroupId
-              ? eq(workspaceDeployments.runGroupId, runGroupId)
-              : sql`${workspaceDeployments.runGroupId} IS NULL`,
+              ? eq(iacJobs.runGroupId, runGroupId)
+              : sql`${iacJobs.runGroupId} IS NULL`,
           ),
         )
         .orderBy(JOB_BLOCK_PRIORITY_SQL, JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
@@ -1484,7 +1503,7 @@ export async function findQueuedJobsForWarmRunner(
 
     const groupsWithWork = await db
       .select({
-        runGroupId: workspaceDeployments.runGroupId,
+        runGroupId: iacJobs.runGroupId,
         queuedCount: sql<number>`count(*)::int`,
       })
       .from(iacJobs)
@@ -1496,7 +1515,7 @@ export async function findQueuedJobsForWarmRunner(
           sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
         ),
       )
-      .groupBy(workspaceDeployments.runGroupId)
+      .groupBy(iacJobs.runGroupId)
 
     if (groupsWithWork.length === 0) {
       return []
@@ -1504,7 +1523,7 @@ export async function findQueuedJobsForWarmRunner(
 
     const activeByGroupResult = await db
       .select({
-        runGroupId: workspaceDeployments.runGroupId,
+        runGroupId: iacJobs.runGroupId,
         count: sql<number>`count(*)::int`,
       })
       .from(iacJobs)
@@ -1515,7 +1534,7 @@ export async function findQueuedJobsForWarmRunner(
           eq(workspaceDeployments.orgId, orgId),
         ),
       )
-      .groupBy(workspaceDeployments.runGroupId)
+      .groupBy(iacJobs.runGroupId)
 
     const activeByGroup = new Map<string, number>()
     for (const row of activeByGroupResult) {
@@ -1543,8 +1562,8 @@ export async function findQueuedJobsForWarmRunner(
             eq(workspaceDeployments.orgId, orgId),
             sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
             runGroupId
-              ? eq(workspaceDeployments.runGroupId, runGroupId)
-              : sql`${workspaceDeployments.runGroupId} IS NULL`,
+              ? eq(iacJobs.runGroupId, runGroupId)
+              : sql`${iacJobs.runGroupId} IS NULL`,
           ),
         )
         .orderBy(JOB_BLOCK_PRIORITY_SQL, JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)

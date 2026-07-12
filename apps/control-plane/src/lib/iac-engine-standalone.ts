@@ -32,8 +32,7 @@ import { LocalRunner } from "./local-runner.ts"
 import type { Runner } from "./runner.ts"
 import { useTfcBackend } from "./tfc-backend.ts"
 import { generateRunToken } from "./run-token.ts"
-import { getInstallationToken } from "./github.ts"
-import { getDeploymentExecutionEnvironment } from "./deployment-environment.ts"
+import { getInstallationToken, upsertPrComment } from "./github.ts"
 import {
   completeWorkspaceArchive,
   ensureTransientWorkspace,
@@ -41,14 +40,13 @@ import {
   failWorkspaceArchive,
 } from "./workspace-service.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
-import {
-  type Workspace,
-  parseYaffleToml,
-} from "./config-toml.ts"
-import { fetchFileContent, upsertPrComment } from "./github.ts"
 import { findDeploymentsByEnvironment } from "../db/queries/workspace-deployments.ts"
 import { findLatestRun } from "../db/queries/tf-runs.ts"
-import { renderVariables, TemplateError, type TemplateContext } from "./templating.ts"
+import {
+  buildExecutionVariables,
+  findExecutionSnapshotWorkspace,
+  type ExecutionSnapshotV1,
+} from "./execution-snapshot.ts"
 
 /**
  * Execute a job standalone (for external worker processes).
@@ -72,21 +70,31 @@ export async function executeJobStandalone(jobId: string): Promise<TerraformResu
     }
   }
 
-  const { deployment, ...job } = jobContext
+  const { deployment, runGroup, ...job } = jobContext
+
+  if (!runGroup?.executionSnapshot) {
+    return {
+      success: false,
+      command: job.jobType as "plan" | "apply" | "destroy",
+      output: "",
+      errorMessage: "Job is not bound to an immutable execution snapshot",
+      durationMs: 0,
+    }
+  }
 
   try {
     // Execute the job
-    const result = await executeJobWork(job, deployment)
+    const result = await executeJobWork(job, deployment, runGroup.executionSnapshot)
 
     // Handle downstream effects based on result
     if (result.success) {
       // Notify dependent workspaces on successful completion
       if (job.jobType === "destroy") {
         // For destroy, notify upstreams (reverse DAG order)
-        await notifyDestroyComplete(deployment.id)
+        await notifyDestroyComplete(deployment.id, job.runGroupId)
       } else {
         // For plan/apply, notify downstreams (forward DAG order)
-        await notifyDownstreams(deployment.id, job.jobType)
+        await notifyDownstreams(deployment.id, job.jobType, job.runGroupId)
       }
     } else {
       // Mark downstream deployments as skipped
@@ -124,9 +132,10 @@ export async function executeJobStandalone(jobId: string): Promise<TerraformResu
  */
 async function executeJobWork(
   job: Awaited<ReturnType<typeof getJobWithContext>> extends infer T
-    ? T extends undefined ? never : Omit<NonNullable<T>, "deployment" | "preview">
+    ? T extends undefined ? never : Omit<NonNullable<T>, "deployment" | "preview" | "runGroup">
     : never,
   deployment: NonNullable<Awaited<ReturnType<typeof getJobWithContext>>>["deployment"],
+  executionSnapshot: ExecutionSnapshotV1,
 ): Promise<TerraformResult> {
   const runner: Runner = new LocalRunner()
 
@@ -159,9 +168,9 @@ async function executeJobWork(
 
   // Get installation token
   let installationToken: string | undefined
-  if (deployment.installationId) {
+  if (executionSnapshot.source.installationId) {
     try {
-      installationToken = await getInstallationToken(deployment.installationId)
+      installationToken = await getInstallationToken(executionSnapshot.source.installationId)
     } catch (err) {
       return {
         success: false,
@@ -173,75 +182,20 @@ async function executeJobWork(
     }
   }
 
-  // Parse owner/repo from deployment.repo (format: "owner/repo" or just "repo")
-  const repoParts = deployment.repo.split("/")
-  const owner = repoParts.length > 1 ? repoParts[0] : org.slug
-  const repo = repoParts.length > 1 ? repoParts[1] : deployment.repo
-
-  const { environmentKind, environmentName, sourcePrNumber } =
-    getDeploymentExecutionEnvironment(deployment)
-
-  // Fetch config to get workspace-specific variables
-  let workspace: Workspace | undefined
-  if (deployment.installationId) {
-    try {
-      const configRaw = await fetchFileContent(
-        deployment.installationId,
-        owner,
-        repo,
-        "yaffle.toml",
-        deployment.headSha,
-      )
-      if (configRaw) {
-        const config = parseYaffleToml(configRaw)
-        workspace = config.workspaces.find((ws) => ws.path === deployment.workspacePath)
-      }
-    } catch (err) {
-      logger.warn("Failed to load config for variables", {
-        jobId: job.id,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
-  }
-
-  // Build variables
-  const variables: Record<string, string | boolean | number> = {
-    environment: environmentName,
-    environment_kind: environmentKind,
-  }
-  if (workspace?.variables) {
-    const refName = deployment.ref.replace(/^refs\/(heads|tags)\//, "")
-    const templateContext: TemplateContext = {
-      environment: environmentName,
-      environment_kind: environmentKind,
-      org: owner,
-      repo,
-      workspace_path: deployment.workspacePath,
-      branch: refName,
-      commit_sha: deployment.headSha,
-      pr_number: sourcePrNumber,
-    }
-
-    try {
-      const renderedVars = renderVariables(
-        workspace.variables,
-        templateContext,
-        deployment.workspacePath,
-      )
-      for (const [key, value] of Object.entries(renderedVars)) {
-        variables[key] = value
-      }
-    } catch (err) {
-      if (err instanceof TemplateError) {
-        return {
-          success: false,
-          command: job.jobType as "plan" | "apply" | "destroy",
-          output: "",
-          errorMessage: err.message,
-          durationMs: 0,
-        }
-      }
-      throw err
+  const { source, environment } = executionSnapshot
+  const owner = source.owner
+  const repo = source.repository
+  const environmentKind = environment.kind
+  const environmentName = environment.name
+  const workspace = findExecutionSnapshotWorkspace(executionSnapshot, deployment.workspacePath)
+  const variables = buildExecutionVariables(executionSnapshot, deployment.workspacePath)
+  if (!workspace || !variables) {
+    return {
+      success: false,
+      command: job.jobType as "plan" | "apply" | "destroy",
+      output: "",
+      errorMessage: "Workspace is not present in the job execution snapshot",
+      durationMs: 0,
     }
   }
 
@@ -256,17 +210,17 @@ async function executeJobWork(
       ? await ensureTransientWorkspace({
           orgId: org.id,
           orgSlug: org.slug,
-          repo: deployment.repo,
+          repo: source.repository,
           environment: environmentName,
           workspacePath: deployment.workspacePath,
-          ref: deployment.ref,
+          ref: source.ref,
         })
       : await ensureNamedWorkspace({
           orgId: org.id,
           orgSlug: org.slug,
-          repo: deployment.repo,
+          repo: source.repository,
           environment: environmentName,
-          ref: deployment.ref,
+          ref: source.ref,
           workspacePath: deployment.workspacePath,
         })
 
@@ -279,7 +233,7 @@ async function executeJobWork(
   // Create a tf_run record
   const tfRun = await createTfRun({
     deploymentId: deployment.id,
-    runGroupId: deployment.runGroupId ?? undefined,
+    runGroupId: job.runGroupId ?? undefined,
     runType: job.jobType,
     status: "running",
   })
@@ -319,14 +273,14 @@ async function executeJobWork(
     result = await runner.run({
       owner,
       repo,
-      headSha: deployment.headSha,
+      headSha: source.commitSha,
       command: job.jobType as "plan" | "apply" | "destroy",
       workspacePath: deployment.workspacePath,
       stateKey: deployment.stateKey,
       variables,
       installationToken,
       runId: tfRun.id,
-      prNumber: deployment.prNumber != null && deployment.prNumber > 0 ? deployment.prNumber : undefined,
+      prNumber: environment.sourcePullRequestNumber ?? undefined,
       tfcWorkspaceId,
       tfcWorkspaceName,
       tfcOrganization,
@@ -360,13 +314,13 @@ async function executeJobWork(
 
         const skippedApply = await createTfRun({
           deploymentId: deployment.id,
-          runGroupId: deployment.runGroupId ?? undefined,
+          runGroupId: job.runGroupId ?? undefined,
           runType: "apply",
           status: "skipped",
         })
         events.emitRunUpdate(skippedApply.id, deployment.id)
 
-        await notifyDownstreams(deployment.id, "apply")
+        await notifyDownstreams(deployment.id, "apply", job.runGroupId)
       }
     } else if (job.jobType === "apply") {
       await updateDeploymentStatus(deployment.id, "ready")
@@ -407,6 +361,7 @@ async function executeJobWork(
 async function notifyDownstreams(
   previewId: string,
   completedJobType: string,
+  runGroupId: string | null,
 ): Promise<void> {
   if (completedJobType !== "apply") {
     return
@@ -444,6 +399,7 @@ async function notifyDownstreams(
 
       await createIacJob({
         deploymentId: downstream.id,
+        runGroupId,
         jobType: "plan",
       })
     } else if (result.deployment.status === "planning") {
@@ -507,7 +463,10 @@ async function cascadeFailure(previewId: string): Promise<void> {
   }
 }
 
-async function notifyDestroyComplete(deploymentId: string): Promise<void> {
+async function notifyDestroyComplete(
+  deploymentId: string,
+  runGroupId: string | null,
+): Promise<void> {
   const deployment = await findDeploymentById(deploymentId)
   if (!deployment) return
 
@@ -531,6 +490,7 @@ async function notifyDestroyComplete(deploymentId: string): Promise<void> {
       if (result.claimed && result.deployment) {
         await createIacJob({
           deploymentId: upstreamId,
+          runGroupId,
           jobType: "destroy",
         })
 

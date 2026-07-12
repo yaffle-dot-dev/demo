@@ -395,6 +395,7 @@ export async function findLatestRun(
 export async function findLatestSuccessfulRun(
   deploymentId: string,
   runType?: RunType,
+  runGroupId?: string,
 ): Promise<TfRun | undefined> {
   return withDbSpan("select", "tf_runs", async () => {
     const conditions = [
@@ -403,6 +404,9 @@ export async function findLatestSuccessfulRun(
     ]
     if (runType) {
       conditions.push(eq(tfRuns.runType, runType))
+    }
+    if (runGroupId) {
+      conditions.push(eq(tfRuns.runGroupId, runGroupId))
     }
 
     const rows = await db

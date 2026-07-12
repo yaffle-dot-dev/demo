@@ -270,6 +270,7 @@ webhooksRoute.post("/github", async (c) => {
       prNumber,
       action: action as PullRequestAction,
       headSha,
+      baseSha: payload.pull_request.base?.sha,
       branch: payload.pull_request.head.ref,
       authorGithubId: payload.pull_request.user?.id ?? 0,
       authorLogin: payload.pull_request.user?.login ?? "unknown",

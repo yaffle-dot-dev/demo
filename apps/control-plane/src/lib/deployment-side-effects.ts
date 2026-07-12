@@ -11,6 +11,7 @@ import { logger } from "./telemetry.ts"
 export async function notifyDownstreams(
   deploymentId: string,
   completedJobType: string,
+  runGroupId?: string | null,
 ): Promise<void> {
   if (completedJobType !== "apply") {
     return
@@ -46,6 +47,7 @@ export async function notifyDownstreams(
 
       await createIacJob({
         deploymentId: downstream.id,
+        runGroupId,
         jobType: "plan",
       })
     }
@@ -89,7 +91,10 @@ export async function cascadeFailure(deploymentId: string): Promise<void> {
   }
 }
 
-export async function notifyDestroyComplete(deploymentId: string): Promise<void> {
+export async function notifyDestroyComplete(
+  deploymentId: string,
+  runGroupId?: string | null,
+): Promise<void> {
   const deployment = await findDeploymentById(deploymentId)
   if (!deployment || !deployment.upstreamIds || deployment.upstreamIds.length === 0) {
     return
@@ -107,6 +112,7 @@ export async function notifyDestroyComplete(deploymentId: string): Promise<void>
     if (result.claimed && result.deployment) {
       await createIacJob({
         deploymentId: upstreamId,
+        runGroupId,
         jobType: "destroy",
       })
     }

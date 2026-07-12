@@ -5,6 +5,7 @@ import { createGithubInstallation, createOrg, updateOrg } from "../db/queries/or
 import { createRunGroup } from "../db/queries/run-groups.ts"
 import { previews, iacJobs } from "../db/schema.ts"
 import { db } from "./db.ts"
+import type { ExecutionSnapshotV1 } from "./execution-snapshot.ts"
 
 process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS = "1"
 process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS = "99"
@@ -20,6 +21,51 @@ mock.module("./github.ts", () => ({
 }))
 
 const { completeRunGroup } = await import("./run-group-orchestrator.ts")
+
+function transientSnapshot(values: {
+  environmentName: string
+  workspacePath: string
+  prNumber: number | null
+  installationId?: number
+}): ExecutionSnapshotV1 {
+  return {
+    version: 1,
+    source: {
+      installationId: values.installationId ?? 0,
+      repositoryId: 123,
+      ownerId: 456,
+      owner: "test-owner",
+      repository: "test-repo",
+      defaultBranch: "main",
+      ref: "refs/heads/feature/test",
+      commitSha: "abc123def456",
+      baseSha: null,
+      actor: { githubId: 789, login: "test-author" },
+    },
+    configuration: {
+      path: "yaffle.toml",
+      revision: "abc123def456",
+      digest: "test-digest",
+    },
+    environment: {
+      kind: "transient",
+      name: values.environmentName,
+      sourcePullRequestNumber: values.prNumber,
+    },
+    workspaces: [
+      {
+        path: values.workspacePath,
+        variables: { release: "snapshot" },
+        approval: {
+          required: true,
+          approvers: ["github:user:reviewer"],
+        },
+        lifecycle: { activation: [], verification: [] },
+        automaticPreviewIsolation: false,
+      },
+    ],
+  }
+}
 
 function assertTestDatabase(): void {
   const dbUrl = process.env.DATABASE_URL ?? ""
@@ -91,6 +137,13 @@ describe("run-group-orchestrator", () => {
       prNumber: 42,
       ref: "refs/heads/feature/test",
       headSha: "abc123def456",
+      selectedWorkspacePaths: ["infra"],
+      executionSnapshot: transientSnapshot({
+        environmentName: "pr-42",
+        workspacePath: "infra",
+        prNumber: 42,
+        installationId: 12345,
+      }),
       trigger: "pr_opened",
       status: "pending",
     })
@@ -106,6 +159,14 @@ describe("run-group-orchestrator", () => {
     const deployments = await db.select().from(previews)
     expect(deployments).toHaveLength(1)
     expect(deployments[0].status).toBe("plan_limited")
+    expect(deployments[0]).toMatchObject({
+      installationId: 12345,
+      authorGithubId: 789,
+      authorLogin: "test-author",
+      requireApproval: true,
+      approvers: ["github:user:reviewer"],
+      headSha: "abc123def456",
+    })
 
     const jobs = await db.select().from(iacJobs)
     expect(jobs).toHaveLength(0)
@@ -192,6 +253,12 @@ describe("run-group-orchestrator", () => {
       prNumber: null,
       ref: "refs/heads/feature/test",
       headSha: "abc123def456",
+      selectedWorkspacePaths: ["infra"],
+      executionSnapshot: transientSnapshot({
+        environmentName: "review-42",
+        workspacePath: "infra",
+        prNumber: null,
+      }),
       trigger: "manual",
       status: "pending",
     })
@@ -212,6 +279,45 @@ describe("run-group-orchestrator", () => {
       prNumber: null,
       stateKey: "transient-review-42/infra/terraform.tfstate",
     })
+  })
+
+  test("rejects scanner output that changes the snapshotted workspace selection", async () => {
+    const org = await createOrg({
+      name: "Immutable Selection Org",
+      slug: "immutable-selection-org",
+    })
+    await updateOrg(org.id, {
+      planTier: "pro",
+      subscriptionStatus: "active",
+    })
+
+    const runGroup = await createRunGroup({
+      orgId: org.id,
+      repo: "test-repo",
+      environmentKind: "transient",
+      environmentName: "review-42",
+      prNumber: null,
+      ref: "refs/heads/feature/test",
+      headSha: "abc123def456",
+      selectedWorkspacePaths: ["infra"],
+      executionSnapshot: transientSnapshot({
+        environmentName: "review-42",
+        workspacePath: "infra",
+        prNumber: null,
+      }),
+      trigger: "manual",
+      status: "pending",
+    })
+
+    await expect(completeRunGroup(runGroup.id, {
+      graph: {
+        workspaces: ["other"],
+        edges: [],
+      },
+      executionOrder: ["other"],
+    })).rejects.toThrow("workspace selection")
+
+    expect(await db.select().from(previews)).toHaveLength(0)
   })
 
   test("marks removed named-environment workspaces destroyed for push runs", async () => {

@@ -54,6 +54,7 @@ import {
 } from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "../lib/job-token.ts"
 import { getScheduler } from "../lib/scheduler.ts"
+import { buildExecutionSnapshot, serializeExecutionSnapshotIdentity } from "../lib/execution-snapshot.ts"
 
 type Variables = {
   principalAuth: PrincipalAuthContext
@@ -471,6 +472,14 @@ export function createCloudConvergeRoute(
     )
 
     const actor = await findUserById(principal.userId)
+    const executionSnapshot = buildExecutionSnapshot({
+      ctx,
+      config,
+      workspacePaths: selectedWorkspacePaths,
+      workspaceVariables,
+      environmentKind,
+      environmentName: values.environmentName,
+    })
     const runGroup = await createRunGroup({
       orgId: org.id,
       repoBindingId: repoBinding.id,
@@ -481,6 +490,7 @@ export function createCloudConvergeRoute(
       ref: values.ref,
       headSha: values.headSha,
       selectedWorkspacePaths: selectedWorkspacePaths,
+      executionSnapshot,
       trigger: "manual",
       triggeredByUserId: principal.userId,
       triggeredByLogin: actor?.name ?? actor?.email ?? null,
@@ -649,6 +659,7 @@ export function createCloudConvergeRoute(
           ref: runGroup.ref,
           headSha: runGroup.headSha,
           selectedWorkspacePaths: (runGroup.selectedWorkspacePaths as string[] | null) ?? [],
+          executionContext: serializeExecutionSnapshotIdentity(runGroup.executionSnapshot),
           trigger: runGroup.trigger,
           createdAt: runGroup.createdAt.toISOString(),
           startedAt: runGroup.startedAt?.toISOString() ?? null,

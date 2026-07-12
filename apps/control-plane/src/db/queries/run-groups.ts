@@ -58,6 +58,14 @@ export function deriveRunGroupStatusFromRunStatuses(statuses: string[]): {
  * Create a new run group.
  */
 export async function createRunGroup(values: NewRunGroup): Promise<RunGroup> {
+  if (
+    values.environmentKind === "transient"
+    && values.status !== "failed"
+    && !values.executionSnapshot
+  ) {
+    throw new Error("Transient run groups require an immutable execution snapshot")
+  }
+
   return withDbSpan("insert", "run_groups", async () => {
     const rows = await db.insert(runGroups).values(values).returning()
     return rows[0]

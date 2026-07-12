@@ -37,7 +37,6 @@ import {
   registerWarmRunner,
 } from "../db/queries/warm-runners.ts"
 import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
-import { findRunGroupById } from "../db/queries/run-groups.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
 import {
   createTfRun,
@@ -56,14 +55,9 @@ import {
 import { events } from "../lib/events.ts"
 import {
   type EnvironmentKind,
-  parseYaffleToml,
-  type Workspace,
 } from "../lib/config-toml.ts"
-import { renderVariables, TemplateError, type TemplateContext } from "../lib/templating.ts"
-import { fetchFileContent } from "../lib/github.ts"
 import { useTfcBackend } from "../lib/tfc-backend.ts"
 import { ensureTransientWorkspace, ensureNamedWorkspace } from "../lib/workspace-service.ts"
-import { getDeploymentExecutionEnvironment } from "../lib/deployment-environment.ts"
 import { generateRunToken } from "../lib/run-token.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
 import { getRunnerCredentialHosts, getRunnerReachableTfcHost } from "../lib/tfc-host.ts"
@@ -79,6 +73,10 @@ import {
 } from "../lib/hosted-lifecycle.ts"
 import { getConfiguredSchedulerConcurrencyLimits } from "../lib/scheduler.ts"
 import { isWarmRunnerWorkspaceExcluded } from "../lib/warm-runner.ts"
+import {
+  buildExecutionVariables,
+  findExecutionSnapshotWorkspace,
+} from "../lib/execution-snapshot.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -252,7 +250,7 @@ async function createClaimResponse(
 
   const tfRun = await createTfRun({
     deploymentId: deployment.id,
-    runGroupId: deployment.runGroupId ?? undefined,
+    runGroupId: jobContext.runGroup?.id ?? undefined,
     runType: job.jobType,
     status: "running",
     startedAt: new Date(),
@@ -925,6 +923,7 @@ runnerJobRoute.post("/complete", async (c) => {
   }
 
   const { deployment } = jobContext
+  const executionRunGroupId = jobContext.runGroup?.id ?? null
   const jobType = jobContext.jobType
 
   if (status === "completed") {
@@ -969,7 +968,7 @@ runnerJobRoute.post("/complete", async (c) => {
           try {
             const skippedApply = await createTfRun({
               deploymentId: deployment.id,
-              runGroupId: deployment.runGroupId ?? undefined,
+              runGroupId: executionRunGroupId ?? undefined,
               runType: "apply",
               status: "skipped",
             })
@@ -981,23 +980,18 @@ runnerJobRoute.post("/complete", async (c) => {
               : null
 
             await publishHostedOutputModuleForRunGroupBinding({
-              runGroupId: deployment.runGroupId,
+              runGroupId: executionRunGroupId,
               environmentName: deployment.environmentName,
               workspacePath: deployment.workspacePath,
               outputs: latestOutputs,
             })
             const lifecycle = await executeHostedLifecycleForDeployment({
+              runGroupId: executionRunGroupId,
               deployment: {
                 id: deployment.id,
                 orgId: deployment.orgId,
                 repo: deployment.repo,
-                runGroupId: deployment.runGroupId ?? null,
-                environmentName: deployment.environmentName,
-                prNumber: deployment.prNumber ?? null,
                 workspacePath: deployment.workspacePath,
-                ref: deployment.ref,
-                headSha: deployment.headSha,
-                installationId: deployment.installationId ?? null,
               },
               outputs: latestOutputs ?? {},
             })
@@ -1005,13 +999,14 @@ runnerJobRoute.post("/complete", async (c) => {
               deploymentId: deployment.id,
               workspacePath: deployment.workspacePath,
               lifecycleRunId: lifecycle.runId,
+              runGroupId: executionRunGroupId,
             })
           } catch (error) {
             logger.error("runner.complete.noop_lifecycle_failed", {
               "job.id": jobId,
               "run.id": runId,
               deploymentId: deployment.id,
-              runGroupId: deployment.runGroupId ?? undefined,
+              runGroupId: executionRunGroupId ?? undefined,
               workspacePath: deployment.workspacePath,
               error: error instanceof Error ? error.message : String(error),
             })
@@ -1022,7 +1017,7 @@ runnerJobRoute.post("/complete", async (c) => {
       } else if (jobType === "apply") {
         try {
           await publishHostedOutputModuleForRunGroupBinding({
-            runGroupId: deployment.runGroupId,
+            runGroupId: executionRunGroupId,
             environmentName: deployment.environmentName,
             workspacePath: deployment.workspacePath,
             outputs: (result?.outputs && typeof result.outputs === "object")
@@ -1030,17 +1025,12 @@ runnerJobRoute.post("/complete", async (c) => {
               : null,
           })
           const lifecycle = await executeHostedLifecycleForDeployment({
+            runGroupId: executionRunGroupId,
             deployment: {
               id: deployment.id,
               orgId: deployment.orgId,
               repo: deployment.repo,
-              runGroupId: deployment.runGroupId ?? null,
-              environmentName: deployment.environmentName,
-              prNumber: deployment.prNumber ?? null,
               workspacePath: deployment.workspacePath,
-              ref: deployment.ref,
-              headSha: deployment.headSha,
-              installationId: deployment.installationId ?? null,
             },
             outputs: (result?.outputs && typeof result.outputs === "object")
               ? result.outputs as Record<string, unknown>
@@ -1050,13 +1040,14 @@ runnerJobRoute.post("/complete", async (c) => {
             deploymentId: deployment.id,
             workspacePath: deployment.workspacePath,
             lifecycleRunId: lifecycle.runId,
+            runGroupId: executionRunGroupId,
           })
         } catch (error) {
           logger.error("runner.complete.hosted_output_publish_failed", {
             "job.id": jobId,
             "run.id": runId,
             deploymentId: deployment.id,
-            runGroupId: deployment.runGroupId ?? undefined,
+            runGroupId: executionRunGroupId ?? undefined,
             workspacePath: deployment.workspacePath,
             error: error instanceof Error ? error.message : String(error),
           })
@@ -1065,7 +1056,7 @@ runnerJobRoute.post("/complete", async (c) => {
         }
       } else if (jobType === "destroy") {
         await updateDeploymentStatus(deployment.id, "destroyed")
-        await notifyDestroyComplete(deployment.id)
+        await notifyDestroyComplete(deployment.id, executionRunGroupId)
       }
 
       await releaseWorkspaceLockForDeployment(deployment)
@@ -1250,7 +1241,7 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
     )
   }
 
-  const { deployment, ...job } = jobContext
+  const { deployment, runGroup, ...job } = jobContext
 
   // Get organization
   const org = await findOrgById(deployment.orgId)
@@ -1261,21 +1252,46 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
     )
   }
 
-  // Get run group to find workspace S3 key
+  if (!runGroup?.executionSnapshot) {
+    return c.json(
+      {
+        error: {
+          code: "EXECUTION_SNAPSHOT_MISSING",
+          message: "Job is not bound to an immutable execution snapshot",
+        },
+      },
+      409,
+    )
+  }
+
+  const executionSnapshot = runGroup.executionSnapshot
+  const workspaceSnapshot = findExecutionSnapshotWorkspace(
+    executionSnapshot,
+    deployment.workspacePath,
+  )
+  if (!workspaceSnapshot) {
+    return c.json(
+      {
+        error: {
+          code: "WORKSPACE_SNAPSHOT_MISSING",
+          message: "Workspace is not present in the job execution snapshot",
+        },
+      },
+      409,
+    )
+  }
+
   let workspaceUrl: string | undefined
-  if (deployment.runGroupId) {
-    const runGroup = await findRunGroupById(deployment.runGroupId)
-    if (runGroup?.workspaceS3Key) {
-      try {
-        const cache = createWorkspaceCache()
-        workspaceUrl = await cache.getDownloadUrl(runGroup.workspaceS3Key)
-      } catch (err) {
-        logger.warn("Failed to generate workspace download URL", {
-          jobId,
-          s3Key: runGroup.workspaceS3Key,
-          error: err instanceof Error ? err.message : String(err),
-        })
-      }
+  if (runGroup.workspaceS3Key) {
+    try {
+      const cache = createWorkspaceCache()
+      workspaceUrl = await cache.getDownloadUrl(runGroup.workspaceS3Key)
+    } catch (err) {
+      logger.warn("Failed to generate workspace download URL", {
+        jobId,
+        s3Key: runGroup.workspaceS3Key,
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
@@ -1286,73 +1302,13 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
     )
   }
 
-  // Parse owner/repo
-  const repoParts = deployment.repo.split("/")
-  const owner = repoParts.length > 1 ? repoParts[0] : org.slug
-  const repo = repoParts.length > 1 ? repoParts[1] : deployment.repo
-
-  const { environmentKind, environmentName, sourcePrNumber } =
-    getDeploymentExecutionEnvironment(deployment)
-
-  // Build variables - always inject environment and environment_kind
-  const variables: Record<string, string | boolean | number> = {
-    environment: environmentName,
-    environment_kind: environmentKind,
-  }
-
-  // Fetch config to get workspace-specific variables
-  if (deployment.installationId) {
-    try {
-      const configRaw = await fetchFileContent(
-        deployment.installationId,
-        owner,
-        repo,
-        "yaffle.toml",
-        deployment.headSha,
-      )
-      if (configRaw) {
-        const config = parseYaffleToml(configRaw)
-        const workspace = config.workspaces.find((ws: Workspace) => ws.path === deployment.workspacePath)
-
-        if (workspace?.variables) {
-          const refName = deployment.ref.replace(/^refs\/(heads|tags)\//, "")
-          const templateContext: TemplateContext = {
-            environment: environmentName,
-            environment_kind: environmentKind,
-            org: owner,
-            repo,
-            workspace_path: deployment.workspacePath,
-            branch: refName,
-            commit_sha: deployment.headSha,
-            pr_number: sourcePrNumber,
-          }
-
-          try {
-            const renderedVars = renderVariables(
-              workspace.variables,
-              templateContext,
-              deployment.workspacePath,
-            )
-            for (const [key, value] of Object.entries(renderedVars)) {
-              variables[key] = value
-            }
-          } catch (err) {
-            if (err instanceof TemplateError) {
-              return c.json(
-                { error: { code: "TEMPLATE_ERROR", message: err.message } },
-                400,
-              )
-            }
-            throw err
-          }
-        }
-      }
-    } catch (err) {
-      logger.warn("Failed to load config for variables", {
-        jobId,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
+  const { kind: environmentKind, name: environmentName } = executionSnapshot.environment
+  const variables = buildExecutionVariables(executionSnapshot, deployment.workspacePath)
+  if (!variables) {
+    return c.json(
+      { error: { code: "WORKSPACE_SNAPSHOT_MISSING", message: "Workspace variables unavailable" } },
+      409,
+    )
   }
 
   // TFC backend setup
@@ -1406,17 +1362,17 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       ? await ensureTransientWorkspace({
           orgId: org.id,
           orgSlug: org.slug,
-          repo: deployment.repo,
+          repo: executionSnapshot.source.repository,
           environment: environmentName,
           workspacePath: deployment.workspacePath,
-          ref: deployment.ref,
+          ref: executionSnapshot.source.ref,
         })
       : await ensureNamedWorkspace({
           orgId: org.id,
           orgSlug: org.slug,
-          repo: deployment.repo,
+          repo: executionSnapshot.source.repository,
           environment: environmentName,
-          ref: deployment.ref,
+          ref: executionSnapshot.source.ref,
           workspacePath: deployment.workspacePath,
         })
 
@@ -1433,7 +1389,7 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
   let planFileUrl: string | undefined
   if (job.jobType === "apply") {
     try {
-      const latestPlan = await findLatestSuccessfulRun(deployment.id, "plan")
+      const latestPlan = await findLatestSuccessfulRun(deployment.id, "plan", runGroup.id)
       if (latestPlan?.planFileS3Key) {
         const cache = createWorkspaceCache()
         planFileUrl = await cache.getDownloadUrl(latestPlan.planFileS3Key)

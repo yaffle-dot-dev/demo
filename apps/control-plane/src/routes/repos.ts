@@ -59,6 +59,7 @@ import {
   parseRunViewCorrelation,
   runViewCorrelationQueryFields,
 } from "../lib/run-view-monitoring.ts"
+import { serializeExecutionSnapshotIdentity } from "../lib/execution-snapshot.ts"
 
 const prNumberParam = z.coerce.number().int().positive()
 const environmentQuerySchema = z.object({
@@ -1483,6 +1484,12 @@ interface SerializedRunGroup {
   ref: string
   headSha: string
   selectedWorkspacePaths: string[]
+  executionContext: {
+    version: 1
+    commitSha: string
+    configurationRevision: string
+    configurationDigest: string
+  } | null
   trigger: string
   triggeredByLogin: string | null
   status: string
@@ -1526,6 +1533,7 @@ function serializeRunGroup(
     selectedWorkspacePaths: Array.isArray(rg.selectedWorkspacePaths)
       ? rg.selectedWorkspacePaths.filter((value): value is string => typeof value === "string")
       : [],
+    executionContext: serializeExecutionSnapshotIdentity(rg.executionSnapshot),
     trigger: rg.trigger,
     triggeredByLogin: rg.triggeredByLogin,
     status: rg.status,

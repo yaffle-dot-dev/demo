@@ -225,6 +225,13 @@
       "when": 1783825000000,
       "tag": "0031_automatic_isolation_scan_preflight",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1783826000000,
+      "tag": "0032_immutable_execution_snapshot",
+      "breakpoints": true
     }
   ]
 }

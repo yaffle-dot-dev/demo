@@ -3,11 +3,8 @@ import { randomBytes } from "node:crypto"
 import {
   type LifecycleHook,
   matchEnvironmentPattern,
-  parseYaffleToml,
-  type Workspace,
 } from "./config-toml.ts"
 import { getEnv } from "./env.ts"
-import { fetchFileContent } from "./github.ts"
 import { buildHostedLifecyclePayload } from "./hosted-lifecycle-payload.ts"
 import {
   createLifecycleEvent,
@@ -22,7 +19,7 @@ import {
   updateLifecycleRun,
 } from "../db/queries/lifecycle.ts"
 import { findPrincipalById, findPrincipalRepoBindingById } from "../db/queries/principals.ts"
-import { findRepoByFullName, findRepoByName } from "../db/queries/repositories.ts"
+import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { findRunGroupById } from "../db/queries/run-groups.ts"
 import {
   findDeploymentById,
@@ -37,32 +34,28 @@ import { createHmac } from "node:crypto"
 import { findOrgById } from "../db/queries/organizations.ts"
 import { cascadeFailure, notifyDownstreams } from "./deployment-side-effects.ts"
 import { deriveLifecycleConditions, deriveWorkspaceLifecycleState } from "./lifecycle-conditions.ts"
+import { findExecutionSnapshotWorkspace } from "./execution-snapshot.ts"
 
 export interface HostedLifecycleExecutionResult {
   runId: string | null
 }
 
 export async function executeHostedLifecycleForDeployment(values: {
+  runGroupId: string | null
   deployment: {
     id: string
     orgId: string
     repo: string
-    runGroupId: string | null
-    environmentName: string
-    prNumber: number | null
     workspacePath: string
-    ref: string
-    headSha: string
-    installationId: number | null
   }
   outputs: Record<string, unknown>
 }): Promise<HostedLifecycleExecutionResult> {
-  if (!values.deployment.runGroupId || !values.deployment.installationId) {
+  if (!values.runGroupId) {
     return { runId: null }
   }
 
-  const runGroup = await findRunGroupById(values.deployment.runGroupId)
-  if (!runGroup?.repoBindingId) {
+  const runGroup = await findRunGroupById(values.runGroupId)
+  if (!runGroup?.repoBindingId || !runGroup.executionSnapshot) {
     return { runId: null }
   }
 
@@ -75,27 +68,21 @@ export async function executeHostedLifecycleForDeployment(values: {
     throw new Error(`principal ${binding.principalId} for run group ${runGroup.id} was not found`)
   }
 
-  const repository = await findRepoByName(values.deployment.orgId, values.deployment.repo)
-  const repoFullName = repository?.fullName ?? `${runGroup.repo}`
-  const canonicalRepoNamespace = binding.canonicalRepoNamespace
-  const environmentName = values.deployment.environmentName
-  const configRaw = await fetchProducerConfig(values.deployment.installationId, repoFullName, values.deployment.headSha)
-  if (!configRaw) {
-    return { runId: null }
-  }
-  const baseSha = await resolveHostedLifecycleBaseSha({
-    installationId: values.deployment.installationId,
-    repoFullName,
-    prNumber: values.deployment.prNumber,
-  })
-  const config = parseYaffleToml(configRaw)
-  const workspace = config.workspaces.find((entry: Workspace) => entry.path === values.deployment.workspacePath)
+  const executionSnapshot = runGroup.executionSnapshot
+  const workspace = findExecutionSnapshotWorkspace(
+    executionSnapshot,
+    values.deployment.workspacePath,
+  )
   if (!workspace) {
     return { runId: null }
   }
 
-  const activationHooks = lifecycleHooksForEnvironment(workspace.activation ?? [], environmentName)
-  const verificationHooks = lifecycleHooksForEnvironment(workspace.verification ?? [], environmentName)
+  const canonicalRepoNamespace = binding.canonicalRepoNamespace
+  const environmentName = executionSnapshot.environment.name
+  const source = executionSnapshot.source
+
+  const activationHooks = lifecycleHooksForEnvironment(workspace.lifecycle.activation, environmentName)
+  const verificationHooks = lifecycleHooksForEnvironment(workspace.lifecycle.verification, environmentName)
   if (activationHooks.length === 0 && verificationHooks.length === 0) {
     return { runId: null }
   }
@@ -122,9 +109,10 @@ export async function executeHostedLifecycleForDeployment(values: {
       hook,
       environmentName,
       canonicalRepoNamespace,
-      ref: values.deployment.ref,
-      headSha: values.deployment.headSha,
-      baseSha,
+      ref: source.ref,
+      headSha: source.commitSha,
+      baseSha: source.baseSha ?? undefined,
+      installationId: source.installationId,
       outputs: values.outputs,
     })
     pendingDispatches.push({ itemId: item.id })
@@ -138,9 +126,10 @@ export async function executeHostedLifecycleForDeployment(values: {
       hook,
       environmentName,
       canonicalRepoNamespace,
-      ref: values.deployment.ref,
-      headSha: values.deployment.headSha,
-      baseSha,
+      ref: source.ref,
+      headSha: source.commitSha,
+      baseSha: source.baseSha ?? undefined,
+      installationId: source.installationId,
       outputs: values.outputs,
     })
   }
@@ -163,6 +152,7 @@ export async function reconcileHostedDeploymentState(values: {
   deploymentId: string
   workspacePath: string
   lifecycleRunId: string | null
+  runGroupId: string | null
 }): Promise<void> {
   const deployment = await findDeploymentById(values.deploymentId)
   if (!deployment || deployment.status === "destroyed") {
@@ -191,7 +181,7 @@ export async function reconcileHostedDeploymentState(values: {
   )
 
   if (conditions.infra_ready.met) {
-    await notifyDownstreams(deployment.id, "apply")
+    await notifyDownstreams(deployment.id, "apply", values.runGroupId)
   }
 
   const infraDagFailed = conditions.infra_ready.vector.degraded > 0
@@ -258,6 +248,7 @@ async function createHostedLifecycleItem(values: {
   ref: string
   headSha: string
   baseSha?: string
+  installationId: number
   outputs: Record<string, unknown>
 }) {
   const destination = hostedLifecycleDestination(values.hook, values.canonicalRepoNamespace)
@@ -277,7 +268,7 @@ async function createHostedLifecycleItem(values: {
       ? "Waiting for hosted activation dispatch"
       : "Waiting for hosted verification dispatch",
     metadata: {
-      hostedDispatch: serializeHostedDispatch(values.hook),
+      hostedDispatch: serializeHostedDispatch(values.hook, values.installationId),
       hostedPayload: buildHostedLifecyclePayload({
         canonicalRepoNamespace: values.canonicalRepoNamespace,
         environmentName: values.environmentName,
@@ -406,9 +397,12 @@ function lifecycleHooksForEnvironment(hooks: LifecycleHook[], environmentName: s
 
 type HostedDispatchSpec =
   | { kind: "generic"; request: { url: string; method: "POST"; auth?: { scheme: "bearer" | "hmac_sha256"; connection: string } } }
-  | { kind: "github_repository_dispatch"; github: { owner?: string; repo?: string; eventType: string; apiUrl?: string } }
+  | { kind: "github_repository_dispatch"; github: { owner?: string; repo?: string; eventType: string; apiUrl?: string; installationId?: number } }
 
-function serializeHostedDispatch(hook: LifecycleHook): HostedDispatchSpec {
+function serializeHostedDispatch(
+  hook: LifecycleHook,
+  producerInstallationId: number,
+): HostedDispatchSpec {
   if (hook.kind === "github_repository_dispatch") {
     return {
       kind: "github_repository_dispatch",
@@ -417,6 +411,9 @@ function serializeHostedDispatch(hook: LifecycleHook): HostedDispatchSpec {
         repo: hook.github?.repo,
         eventType: hook.github?.event_type ?? hook.key,
         apiUrl: hook.github?.api_url,
+        installationId: hook.github?.owner || hook.github?.repo
+          ? undefined
+          : producerInstallationId,
       },
     }
   }
@@ -460,10 +457,11 @@ async function dispatchHostedLifecycle(spec: HostedDispatchSpec, payload: Record
   if (spec.kind === "github_repository_dispatch") {
     const target = resolveGitHubDispatchTarget(spec.github, payload.repo_namespace)
     const repo = await findRepoByFullName(`${target.owner}/${target.repo}`)
-    if (!repo?.installationId) {
+    const installationId = spec.github.installationId ?? repo?.installationId
+    if (!installationId) {
       throw new Error(`GitHub App installation is not configured for ${target.owner}/${target.repo}`)
     }
-    const octokit = await getInstallationOctokit(repo.installationId)
+    const octokit = await getInstallationOctokit(installationId)
     await octokit.request("POST /repos/{owner}/{repo}/dispatches", {
       owner: target.owner,
       repo: target.repo,
@@ -491,46 +489,6 @@ async function dispatchHostedLifecycle(spec: HostedDispatchSpec, payload: Record
   })
   if (!response.ok) {
     throw new Error(`Lifecycle webhook returned ${response.status}`)
-  }
-}
-
-async function fetchProducerConfig(
-  installationId: number,
-  repoFullName: string,
-  headSha: string,
-): Promise<string | null> {
-  const [owner, repo] = repoFullName.split("/")
-  if (!owner || !repo) {
-    return null
-  }
-  return (await fetchFileContent(installationId, owner, repo, "yaffle.toml", headSha)) ?? null
-}
-
-async function resolveHostedLifecycleBaseSha(values: {
-  installationId: number
-  repoFullName: string
-  prNumber: number | null
-}): Promise<string | undefined> {
-  if (!values.prNumber) {
-    return undefined
-  }
-
-  const [owner, repo] = values.repoFullName.split("/")
-  if (!owner || !repo) {
-    return undefined
-  }
-
-  try {
-    const octokit = await getInstallationOctokit(values.installationId)
-    const response = await octokit.request("GET /repos/{owner}/{repo}/pulls/{pull_number}", {
-      owner,
-      repo,
-      pull_number: values.prNumber,
-    })
-    const baseSha = response.data.base?.sha?.trim()
-    return baseSha || undefined
-  } catch {
-    return undefined
   }
 }
 

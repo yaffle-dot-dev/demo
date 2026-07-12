@@ -466,6 +466,32 @@ environments = ["main"]
         environmentName: "main",
         ref: "refs/heads/main",
         headSha: "abc123def456",
+        executionSnapshot: {
+          version: 1,
+          source: {
+            installationId: 67890,
+            repositoryId: 123,
+            ownerId: 456,
+            owner: "remote-converge-status-org",
+            repository: "fixture",
+            defaultBranch: "main",
+            ref: "refs/heads/main",
+            commitSha: "abc123def456",
+            baseSha: null,
+            actor: { githubId: null, login: "manual" },
+          },
+          configuration: {
+            path: "yaffle.toml",
+            revision: "abc123def456",
+            digest: "snapshot-digest",
+          },
+          environment: {
+            kind: "named",
+            name: "main",
+            sourcePullRequestNumber: null,
+          },
+          workspaces: [],
+        },
         trigger: "manual",
         status: "running",
         startedAt: new Date(),
@@ -525,7 +551,16 @@ environments = ["main"]
     expect(response.status).toBe(200)
     const body = (await response.json()) as {
       data: {
-        runGroup: { id: string; status: string }
+        runGroup: {
+          id: string
+          status: string
+          executionContext: {
+            version: number
+            commitSha: string
+            configurationRevision: string
+            configurationDigest: string
+          } | null
+        }
         deployments: Array<{
           workspacePath: string
           status: string
@@ -535,6 +570,12 @@ environments = ["main"]
     }
     expect(body.data.runGroup.id).toBe(runGroup.id)
     expect(body.data.runGroup.status).toBe("running")
+    expect(body.data.runGroup.executionContext).toEqual({
+      version: 1,
+      commitSha: "abc123def456",
+      configurationRevision: "abc123def456",
+      configurationDigest: "snapshot-digest",
+    })
     expect(body.data.deployments).toHaveLength(1)
     expect(body.data.deployments[0]?.workspacePath).toBe("apps/control-plane/infra")
     expect(body.data.deployments[0]?.latestRun?.runType).toBe("plan")

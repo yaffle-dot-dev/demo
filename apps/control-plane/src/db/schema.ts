@@ -15,6 +15,8 @@ import {
 import { sql } from "drizzle-orm"
 import { uuidv7 } from "uuidv7"
 
+import type { ExecutionSnapshotV1 } from "../lib/execution-snapshot.ts"
+
 // Re-export BetterAuth tables
 export * from "./auth-schema"
 import { user } from "./auth-schema"
@@ -268,6 +270,7 @@ export const runGroups = pgTable("run_groups", {
   selectedWorkspacePaths: jsonb("selected_workspace_paths")
     .default(sql`'[]'::jsonb`)
     .notNull(),
+  executionSnapshot: jsonb("execution_snapshot").$type<ExecutionSnapshotV1>(),
   checkRunId: bigint("check_run_id", { mode: "number" }),
   checkCompletedAt: timestamp("check_completed_at", { withTimezone: true }),
   trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
@@ -533,6 +536,7 @@ function buildIacJobColumns() {
     deploymentId: uuid("deployment_id")
       .references(() => workspaceDeployments.id, { onDelete: "cascade" })
       .notNull(),
+    runGroupId: uuid("run_group_id").references(() => runGroups.id, { onDelete: "set null" }),
     jobType: iacJobTypeEnum("job_type").notNull(),
     status: iacJobStatusEnum("status").default("queued").notNull(),
     // Worker tracking
@@ -566,6 +570,7 @@ export const iacJobs = pgTable("iac_jobs", buildIacJobColumns(), (t) => [
   index("iac_jobs_queue_priority_idx").on(t.status, t.jobType, t.queuedAt),
   index("iac_jobs_spawn_lease_idx").on(t.status, t.spawnLeaseExpiresAt),
   index("iac_jobs_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
+  index("iac_jobs_run_group_id_idx").on(t.runGroupId),
 ])
 
 export const iacJobHistory = pgTable("iac_job_history", buildIacJobColumns(), (t) => [
@@ -576,6 +581,7 @@ export const iacJobHistory = pgTable("iac_job_history", buildIacJobColumns(), (t
     t.queuedAt.desc(),
   ),
   index("iac_job_history_completed_at_idx").on(t.completedAt.desc()),
+  index("iac_job_history_run_group_id_idx").on(t.runGroupId),
 ])
 
 // =============================================================================
