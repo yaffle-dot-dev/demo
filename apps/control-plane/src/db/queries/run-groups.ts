@@ -3,11 +3,13 @@ import { and, desc, eq, inArray, isNull, or } from "drizzle-orm"
 import type { RunStatus } from "@yaffle/shared"
 
 import { db } from "../../lib/db.ts"
-import { runGroups, tfRuns } from "../schema.ts"
+import { principalRepoBindings, runGroups, tfRuns } from "../schema.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
+import { ExecutionSnapshotInvariantError } from "../../lib/execution-snapshot.ts"
 import type { SerializableDependencyGraph } from "@yaffle/shared"
 
 export type RunGroup = typeof runGroups.$inferSelect
+export type RunGroupWithRepoBinding = RunGroup & { canonicalRepoNamespace: string | null }
 export type NewRunGroup = typeof runGroups.$inferInsert
 
 export type RunGroupTrigger = "pr_opened" | "pr_sync" | "push" | "manual"
@@ -63,7 +65,9 @@ export async function createRunGroup(values: NewRunGroup): Promise<RunGroup> {
     && values.status !== "failed"
     && !values.executionSnapshot
   ) {
-    throw new Error("Transient run groups require an immutable execution snapshot")
+    throw new ExecutionSnapshotInvariantError(
+      "Transient run groups require an immutable execution snapshot",
+    )
   }
 
   return withDbSpan("insert", "run_groups", async () => {
@@ -108,18 +112,31 @@ export async function findRunGroupById(runGroupId: string): Promise<RunGroup | u
 /**
  * Batch-load run groups by ID.
  */
-export async function findRunGroupsByIds(runGroupIds: string[]): Promise<Map<string, RunGroup>> {
+export async function findRunGroupsByIds(
+  runGroupIds: string[],
+  orgId?: string,
+): Promise<Map<string, RunGroupWithRepoBinding>> {
   if (runGroupIds.length === 0) {
     return new Map()
   }
 
   return withDbSpan("select", "run_groups", async () => {
     const rows = await db
-      .select()
+      .select({
+        runGroup: runGroups,
+        canonicalRepoNamespace: principalRepoBindings.canonicalRepoNamespace,
+      })
       .from(runGroups)
-      .where(inArray(runGroups.id, runGroupIds))
+      .leftJoin(principalRepoBindings, eq(runGroups.repoBindingId, principalRepoBindings.id))
+      .where(and(
+        inArray(runGroups.id, runGroupIds),
+        ...(orgId ? [eq(runGroups.orgId, orgId)] : []),
+      ))
 
-    return new Map(rows.map((row) => [row.id, row]))
+    return new Map(rows.map(({ runGroup, canonicalRepoNamespace }) => [
+      runGroup.id,
+      { ...runGroup, canonicalRepoNamespace },
+    ]))
   })
 }
 

@@ -12,6 +12,11 @@
 import { Hono } from "hono"
 import { z } from "zod"
 
+import {
+  computeAutomaticIsolationArtifactHash,
+  type AutomaticIsolationArtifactManifest,
+} from "@yaffle/shared"
+
 import { verifyScanJobToken, type ScanJobTokenPayload } from "../lib/job-token.ts"
 import { logger } from "../lib/telemetry.ts"
 import {
@@ -22,16 +27,33 @@ import {
   heartbeatScanJob,
   type ScanJobResult,
 } from "../db/queries/scan-jobs.ts"
-import { updateRunGroupStatus } from "../db/queries/run-groups.ts"
+import { findRunGroupById, updateRunGroupStatus } from "../db/queries/run-groups.ts"
 import { completeRunGroupCheck } from "../lib/run-group-checks.ts"
 import { completeRunGroup } from "../lib/run-group-orchestrator.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
+import { findExecutionSnapshotWorkspace } from "../lib/execution-snapshot.ts"
 import {
   getAutomaticIsolationPreflightOutcome,
   validateAutomaticIsolationPreflightCoverage,
 } from "../lib/automatic-preview-isolation-preflight.ts"
 
 const MAX_SCAN_COMPLETION_BODY_BYTES = 1_000_000
+
+function workspaceArtifactKey(runGroupId: string): string {
+  return `run-groups/${runGroupId}/workspace.tar.gz`
+}
+
+function repositoryFromUrl(rawUrl: string): string | null {
+  try {
+    const parts = new URL(rawUrl).pathname
+      .replace(/\.git$/, "")
+      .split("/")
+      .filter(Boolean)
+    return parts.length === 2 ? `${parts[0]}/${parts[1]}`.toLowerCase() : null
+  } catch {
+    return null
+  }
+}
 
 interface ScannerRouteDependencies {
   verifyScanJobToken: typeof verifyScanJobToken
@@ -40,6 +62,7 @@ interface ScannerRouteDependencies {
   failScanJob: typeof failScanJob
   findScanJobById: typeof findScanJobById
   heartbeatScanJob: typeof heartbeatScanJob
+  findRunGroupById: typeof findRunGroupById
   updateRunGroupStatus: typeof updateRunGroupStatus
   completeRunGroupCheck: typeof completeRunGroupCheck
   completeRunGroup: typeof completeRunGroup
@@ -53,6 +76,7 @@ const defaultDependencies: ScannerRouteDependencies = {
   failScanJob,
   findScanJobById,
   heartbeatScanJob,
+  findRunGroupById,
   updateRunGroupStatus,
   completeRunGroupCheck,
   completeRunGroup,
@@ -64,6 +88,7 @@ const automaticIsolationFindingSchema = z.object({
     "hcl_parse_error",
     "import_not_allowed",
     "module_review_required",
+    "override_not_allowed",
     "prevent_destroy_not_allowed",
     "provisioner_not_allowed",
     "removed_not_allowed",
@@ -87,6 +112,69 @@ const automaticIsolationPreflightSchema = z.object({
   workspaces: z.array(automaticIsolationWorkspacePreflightSchema).max(1000),
 })
 
+const automaticIsolationArtifactManifestSchema = z
+  .object({
+    contractVersion: z.literal(1),
+    sourceRevision: z.string().min(1).max(128),
+    identity: z
+      .object({
+        organizationId: z.string().min(1).max(128),
+        repositoryId: z.string().min(1).max(128),
+        workspacePath: z.string().min(1).max(1024),
+        environmentKind: z.literal("transient"),
+        environmentName: z.string().min(1).max(512),
+      })
+      .strict(),
+    suffix: z.string().regex(/^[a-f0-9]{10}$/),
+    strategyRevision: z.string().min(1).max(128),
+    naming: z
+      .object({
+        separator: z.string().min(1).max(8),
+        maxLength: z.number().int().positive(),
+        allowedPattern: z.string().min(1).max(256),
+        collisionScope: z.literal("organization_repository_workspace_environment"),
+      })
+      .strict()
+      .optional(),
+    providerLocks: z
+      .array(
+        z
+          .object({
+            source: z.string().min(1).max(512),
+            version: z.string().min(1).max(128),
+            constraints: z.string().max(512).optional(),
+            hashes: z.array(z.string().min(1).max(256)).max(100),
+          })
+          .strict(),
+      )
+      .max(100),
+    transformations: z
+      .array(
+        z
+          .object({
+            resourceAddress: z.string().min(1).max(512),
+            attribute: z.string().min(1).max(256),
+            sourceFile: z.string().min(1).max(1024),
+            sourceExpression: z.string().min(1).max(4096),
+            strategyRevision: z.string().min(1).max(128),
+          })
+          .strict(),
+      )
+      .max(5000),
+    files: z
+      .array(
+        z
+          .object({
+            path: z.string().min(1).max(1024),
+            sha256: z.string().regex(/^[a-f0-9]{64}$/),
+          })
+          .strict(),
+      )
+      .max(5000),
+    artifactHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict()
+
 const scanCompletionSchema = z.union([
   z.object({ error: z.string().min(1) }).strict(),
   z
@@ -99,10 +187,68 @@ const scanCompletionSchema = z.union([
       }),
       executionOrder: z.array(z.string().min(1).max(1024)).max(1000),
       workspaceS3Key: z.string().min(1).max(2048).optional(),
+      workspaceArtifactSha256: z
+        .string()
+        .regex(/^[a-f0-9]{64}$/)
+        .optional(),
       automaticIsolationPreflight: automaticIsolationPreflightSchema.optional(),
+      automaticIsolationArtifacts: z
+        .array(automaticIsolationArtifactManifestSchema)
+        .max(1000)
+        .optional(),
     })
     .strict(),
 ])
+
+function validateAutomaticIsolationArtifacts(values: {
+  workspacePaths: string[]
+  artifacts: AutomaticIsolationArtifactManifest[] | undefined
+  executionSnapshot: NonNullable<Awaited<ReturnType<typeof findRunGroupById>>>["executionSnapshot"]
+  orgId: string
+}): string | null {
+  const artifacts = values.artifacts ?? []
+  if (values.workspacePaths.length === 0) {
+    return artifacts.length === 0
+      ? null
+      : "automatic isolation artifacts were reported for non-opted-in workspaces"
+  }
+  if (!values.executionSnapshot) {
+    return "automatic isolation artifacts are not bound to an execution snapshot"
+  }
+  if (artifacts.length !== values.workspacePaths.length) {
+    return "automatic isolation artifact coverage does not match opted-in workspaces"
+  }
+
+  const seenPaths = new Set<string>()
+  for (const artifact of artifacts) {
+    const workspacePath = artifact.identity.workspacePath
+    const workspace = findExecutionSnapshotWorkspace(values.executionSnapshot, workspacePath)
+    if (
+      seenPaths.has(workspacePath) ||
+      !values.workspacePaths.includes(workspacePath) ||
+      !workspace?.automaticPreviewIsolation
+    ) {
+      return `automatic isolation artifact is not authorized for workspace ${workspacePath}`
+    }
+    seenPaths.add(workspacePath)
+
+    const { artifactHash, ...manifestWithoutHash } = artifact
+    if (computeAutomaticIsolationArtifactHash(manifestWithoutHash) !== artifactHash) {
+      return `automatic isolation artifact hash is invalid for workspace ${workspacePath}`
+    }
+    if (
+      artifact.identity.organizationId !== values.orgId ||
+      artifact.identity.repositoryId !== String(values.executionSnapshot.source.repositoryId) ||
+      artifact.identity.environmentKind !== "transient" ||
+      artifact.identity.environmentName !== values.executionSnapshot.environment.name ||
+      artifact.sourceRevision !== values.executionSnapshot.source.commitSha
+    ) {
+      return `automatic isolation artifact identity does not match workspace ${workspacePath}`
+    }
+  }
+
+  return null
+}
 
 async function readBoundedJson(request: Request): Promise<unknown> {
   const declaredLength = Number(request.headers.get("content-length"))
@@ -180,6 +326,41 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
     if (!queuedJob || queuedJob.orgId !== payload.org_id) {
       return c.json({ error: { code: "NOT_FOUND", message: "Job not found" } }, 404)
     }
+    const runGroup = await deps.findRunGroupById(queuedJob.runGroupId)
+    if (!runGroup || runGroup.orgId !== payload.org_id) {
+      return c.json({ error: { code: "NOT_FOUND", message: "Run group not found" } }, 404)
+    }
+    const queuedAutomaticIsolationWorkspacePaths =
+      (queuedJob.automaticIsolationWorkspacePaths as string[]) ?? []
+    const snapshot = runGroup.executionSnapshot
+    const snapshotRepository = snapshot
+      ? `${snapshot.source.owner}/${snapshot.source.repository}`.toLowerCase()
+      : null
+    if (
+      queuedAutomaticIsolationWorkspacePaths.length > 0 &&
+      (!snapshot ||
+        snapshot.environment.kind !== "transient" ||
+        snapshot.source.commitSha !== queuedJob.headSha ||
+        snapshot.source.ref !== queuedJob.ref ||
+        snapshotRepository !== repositoryFromUrl(queuedJob.repoUrl) ||
+        runGroup.repo !== snapshot.source.repository ||
+        runGroup.environmentKind !== snapshot.environment.kind ||
+        runGroup.environmentName !== snapshot.environment.name ||
+        queuedAutomaticIsolationWorkspacePaths.some(
+          (workspacePath) =>
+            !findExecutionSnapshotWorkspace(snapshot, workspacePath)?.automaticPreviewIsolation,
+        ))
+    ) {
+      return c.json(
+        {
+          error: {
+            code: "CONFLICT",
+            message: "Automatic preview isolation does not match the immutable execution snapshot",
+          },
+        },
+        409,
+      )
+    }
 
     const { claimed, job } = await deps.claimScanJob(scanJobId, workerId)
     if (!claimed || !job) {
@@ -191,10 +372,12 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
 
     // Generate presigned S3 upload URL for workspace tarball
     let workspaceUploadUrl: string | undefined
+    const automaticIsolationWorkspacePaths =
+      (job.automaticIsolationWorkspacePaths as string[]) ?? []
+    const workspaceS3Key = workspaceArtifactKey(job.runGroupId)
     try {
       const cache = deps.createWorkspaceCache()
-      const s3Key = `${job.orgSlug}/${job.ref.replace("refs/heads/", "")}/${job.headSha}/workspace.tar.gz`
-      workspaceUploadUrl = await cache.getUploadUrl(s3Key)
+      workspaceUploadUrl = await cache.getUploadUrl(workspaceS3Key)
     } catch (err) {
       logger.warn("Failed to generate workspace upload URL", {
         scanJobId,
@@ -213,8 +396,19 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
       workspacePaths: job.workspacePaths as string[],
       workspaceVariables:
         (job.workspaceVariables as Record<string, Record<string, string | number | boolean>>) ?? {},
-      automaticIsolationWorkspacePaths: (job.automaticIsolationWorkspacePaths as string[]) ?? [],
+      automaticIsolationWorkspacePaths,
+      automaticIsolationContext:
+        automaticIsolationWorkspacePaths.length > 0
+          ? {
+              organizationId: job.orgId,
+              repositoryId: String(runGroup.executionSnapshot!.source.repositoryId),
+              environmentKind: "transient" as const,
+              environmentName: runGroup.executionSnapshot!.environment.name,
+              sourceRevision: runGroup.executionSnapshot!.source.commitSha,
+            }
+          : undefined,
       workspaceUploadUrl,
+      workspaceS3Key,
     })
   })
 
@@ -261,6 +455,10 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
     const runningJob = await deps.findScanJobById(scanJobId)
     if (!runningJob || runningJob.orgId !== payload.org_id) {
       return c.json({ error: { code: "NOT_FOUND", message: "Job not found" } }, 404)
+    }
+    const runGroup = await deps.findRunGroupById(runningJob.runGroupId)
+    if (!runGroup || runGroup.orgId !== payload.org_id) {
+      return c.json({ error: { code: "NOT_FOUND", message: "Run group not found" } }, 404)
     }
 
     let rawBody: unknown
@@ -315,7 +513,9 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
       graph: body.graph,
       executionOrder: body.executionOrder,
       workspaceS3Key: body.workspaceS3Key,
+      workspaceArtifactSha256: body.workspaceArtifactSha256,
       automaticIsolationPreflight: body.automaticIsolationPreflight,
+      automaticIsolationArtifacts: body.automaticIsolationArtifacts,
     }
 
     if (runningJob.status !== "running") {
@@ -340,14 +540,51 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
       return c.json({ ok: true })
     }
 
+    const isolationOutcome = getAutomaticIsolationPreflightOutcome(
+      result.automaticIsolationPreflight,
+    )
+    const artifactError = !isolationOutcome
+      ? (validateAutomaticIsolationArtifacts({
+          workspacePaths: (runningJob.automaticIsolationWorkspacePaths as string[]) ?? [],
+          artifacts: result.automaticIsolationArtifacts,
+          executionSnapshot: runGroup.executionSnapshot,
+          orgId: runningJob.orgId,
+        }) ??
+        (result.workspaceArtifactSha256
+          ? null
+          : "workspace artifact digest is required before planning"))
+      : null
+    if (artifactError) {
+      const failedJob = await deps.failScanJob(scanJobId, artifactError)
+      if (failedJob) {
+        await deps.updateRunGroupStatus(failedJob.runGroupId, "failed", { completedAt: new Date() })
+        await deps.completeRunGroupCheck({
+          runGroupId: failedJob.runGroupId,
+          conclusion: "failure",
+          title: "Workspace artifact validation failed",
+          summary: `${artifactError}. No Terraform plan was created.`,
+        })
+      }
+      return c.json({ ok: true })
+    }
+    const expectedWorkspaceS3Key = workspaceArtifactKey(runningJob.runGroupId)
+    if (!isolationOutcome && body.workspaceS3Key !== expectedWorkspaceS3Key) {
+      return c.json(
+        {
+          error: {
+            code: "INVALID_WORKSPACE_ARTIFACT",
+            message: "Workspace artifact does not match the scan run group",
+          },
+        },
+        400,
+      )
+    }
+
     const job = await deps.completeScanJob(scanJobId, result)
     if (!job) {
       return c.json({ error: { code: "CONFLICT", message: "Job not found or not running" } }, 409)
     }
 
-    const isolationOutcome = getAutomaticIsolationPreflightOutcome(
-      result.automaticIsolationPreflight,
-    )
     if (isolationOutcome) {
       await deps.updateRunGroupStatus(job.runGroupId, isolationOutcome.runGroupStatus, {
         completedAt: new Date(),

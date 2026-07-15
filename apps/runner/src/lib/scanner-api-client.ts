@@ -6,7 +6,11 @@
  * and report results.
  */
 
-import type { AutomaticIsolationPreflight } from "@yaffle/shared"
+import type {
+  AutomaticIsolationArtifactManifest,
+  AutomaticIsolationIdentity,
+  AutomaticIsolationPreflight,
+} from "@yaffle/shared"
 
 export interface ScannerConfig {
   apiUrl: string
@@ -25,14 +29,20 @@ export interface ScanClaimResponse {
   workspacePaths: string[]
   workspaceVariables: Record<string, Record<string, string | number | boolean>>
   automaticIsolationWorkspacePaths: string[]
+  automaticIsolationContext?: Omit<AutomaticIsolationIdentity, "workspacePath"> & {
+    sourceRevision: string
+  }
   workspaceUploadUrl?: string
+  workspaceS3Key?: string
 }
 
 export interface ScanResult {
   graph: { workspaces: string[]; edges: [string, string][] }
   executionOrder: string[]
   workspaceS3Key?: string
+  workspaceArtifactSha256?: string
   automaticIsolationPreflight?: AutomaticIsolationPreflight
+  automaticIsolationArtifacts?: AutomaticIsolationArtifactManifest[]
 }
 
 export class ScannerApiClient {
@@ -48,14 +58,15 @@ export class ScannerApiClient {
 
   private async request(path: string, options: RequestInit = {}): Promise<Response> {
     const url = `${this.apiUrl}/api/scanner${path}`
+    const headers = new Headers({
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${this.jobToken}`,
+      "x-worker-id": `scanner-${process.pid}`,
+    })
+    new Headers(options.headers).forEach((value, key) => headers.set(key, value))
     const response = await fetch(url, {
       ...options,
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.jobToken}`,
-        "x-worker-id": `scanner-${process.pid}`,
-        ...options.headers,
-      },
+      headers,
     })
 
     if (!response.ok) {

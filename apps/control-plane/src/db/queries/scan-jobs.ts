@@ -1,6 +1,9 @@
 import { and, desc, eq, lt, or, isNull } from "drizzle-orm"
 
-import type { AutomaticIsolationPreflight } from "@yaffle/shared"
+import type {
+  AutomaticIsolationArtifactManifest,
+  AutomaticIsolationPreflight,
+} from "@yaffle/shared"
 
 import type { WorkspaceVariablesByPath } from "../../lib/workspace-variables.ts"
 
@@ -15,7 +18,9 @@ export interface ScanJobResult {
   graph: { workspaces: string[]; edges: [string, string][] }
   executionOrder: string[]
   workspaceS3Key?: string
+  workspaceArtifactSha256?: string
   automaticIsolationPreflight?: AutomaticIsolationPreflight
+  automaticIsolationArtifacts?: AutomaticIsolationArtifactManifest[]
 }
 
 /**

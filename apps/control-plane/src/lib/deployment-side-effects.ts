@@ -93,7 +93,6 @@ export async function cascadeFailure(deploymentId: string): Promise<void> {
 
 export async function notifyDestroyComplete(
   deploymentId: string,
-  runGroupId?: string | null,
 ): Promise<void> {
   const deployment = await findDeploymentById(deploymentId)
   if (!deployment || !deployment.upstreamIds || deployment.upstreamIds.length === 0) {
@@ -112,7 +111,6 @@ export async function notifyDestroyComplete(
     if (result.claimed && result.deployment) {
       await createIacJob({
         deploymentId: upstreamId,
-        runGroupId,
         jobType: "destroy",
       })
     }

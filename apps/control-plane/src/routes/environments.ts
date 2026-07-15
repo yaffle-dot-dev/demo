@@ -7,6 +7,10 @@ import { findLatestRunsForDeployments } from "../db/queries/tf-runs.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { findRunGroupWorkspaceMetadataForRunGroups } from "../db/queries/run-group-workspace-metadata.ts"
+import {
+  findRunGroupsByIds,
+  type RunGroupWithRepoBinding,
+} from "../db/queries/run-groups.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 import {
   formatConnectionBlockedReason,
@@ -20,6 +24,10 @@ import {
 } from "../lib/provider-requirements.ts"
 import { parseEnvironmentGroupProjectionPayload } from "../lib/projections/environment-groups.ts"
 import { logger, withSpan } from "../lib/telemetry.ts"
+import {
+  isExecutionContextAssociationValid,
+  serializeBoundExecutionSnapshotIdentity,
+} from "../lib/execution-snapshot.ts"
 
 const listQuerySchema = z.object({
   org: z.string().min(1),
@@ -89,13 +97,19 @@ async function loadEnvironmentGroupsFromProjections(
     return []
   }
 
-  const environments: EnvironmentGroup[] = []
-  for (const row of rows) {
+  const payloads = rows.flatMap((row) => {
     const payload = parseEnvironmentGroupProjectionPayload(row.payload)
-    if (!payload || payload.environmentKind !== "named") {
-      continue
-    }
+    return payload?.environmentKind === "named" ? [payload] : []
+  })
+  const runGroupsById = await findRunGroupsByIds(
+    payloads.flatMap((payload) =>
+      payload.workspaces.flatMap((workspace) => workspace.runGroupId ? [workspace.runGroupId] : []),
+    ),
+    orgId,
+  )
 
+  const environments: EnvironmentGroup[] = []
+  for (const payload of payloads) {
     environments.push({
       repo: payload.repo,
       ref: payload.ref,
@@ -120,6 +134,12 @@ async function loadEnvironmentGroupsFromProjections(
         lastRunStatus: workspace.lastRunStatus,
         lastRunCompletedAt: workspace.lastRunCompletedAt,
         planSummary: workspace.planSummary,
+        executionContext: serializeEnvironmentExecutionContext(
+          orgId,
+          payload,
+          workspace,
+          workspace.runGroupId ? runGroupsById.get(workspace.runGroupId) : undefined,
+        ),
       })),
     })
   }
@@ -177,6 +197,7 @@ interface EnvironmentWorkspace {
   lastRunStatus: string | null
   lastRunCompletedAt: string | null
   planSummary: string | null
+  executionContext: ReturnType<typeof serializeBoundExecutionSnapshotIdentity>
 }
 
 interface EnvironmentGroup {
@@ -475,6 +496,7 @@ async function loadEnvironments(
       .map((preview) => preview.runGroupId)
       .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
   )]
+  const runGroupsById = await findRunGroupsByIds(deploymentRunGroupIds, orgId)
 
   if (detailLevel === "dag") {
     const groups = new Map<string, EnvironmentGroup>()
@@ -499,6 +521,12 @@ async function loadEnvironments(
         lastRunStatus: null,
         lastRunCompletedAt: null,
         planSummary: null,
+        executionContext: serializeEnvironmentExecutionContext(
+          orgId,
+          preview,
+          preview,
+          preview.runGroupId ? runGroupsById.get(preview.runGroupId) : undefined,
+        ),
       }
 
       const existing = groups.get(key)
@@ -640,6 +668,12 @@ async function loadEnvironments(
       lastRunStatus: latestRun?.status ?? null,
       lastRunCompletedAt: latestRun?.completedAt?.toISOString() ?? null,
       planSummary: latestRun?.planSummary ?? null,
+      executionContext: serializeEnvironmentExecutionContext(
+        orgId,
+        preview,
+        preview,
+        preview.runGroupId ? runGroupsById.get(preview.runGroupId) : undefined,
+      ),
     }
 
     const existing = groups.get(key)
@@ -687,6 +721,50 @@ async function loadEnvironments(
     },
     phaseMetrics,
   }
+}
+
+function serializeEnvironmentExecutionContext(
+  orgId: string,
+  environment: {
+    repo: string
+    environmentKind?: string
+    environmentName: string
+  },
+  workspace: {
+    workspacePath: string
+    runGroupId: string | null
+  },
+  runGroup?: RunGroupWithRepoBinding,
+): ReturnType<typeof serializeBoundExecutionSnapshotIdentity> {
+  if (!workspace.runGroupId || !runGroup || runGroup.id !== workspace.runGroupId) {
+    return null
+  }
+
+  const resource = {
+    orgId,
+    repo: environment.repo,
+    environmentKind: environment.environmentKind ?? "named",
+    environmentName: environment.environmentName,
+    workspacePath: workspace.workspacePath,
+  }
+  if (
+    resource.environmentKind === "transient"
+    && !isExecutionContextAssociationValid({
+      snapshot: runGroup.executionSnapshot,
+      runGroup,
+      resource,
+      canonicalRepoNamespace: runGroup.canonicalRepoNamespace,
+      requireRepoBinding: true,
+    })
+  ) {
+    return null
+  }
+
+  return serializeBoundExecutionSnapshotIdentity({
+    snapshot: runGroup.executionSnapshot,
+    runGroup,
+    resource,
+  })
 }
 
 function aggregateStatus(workspaces: EnvironmentWorkspace[]): string {

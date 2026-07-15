@@ -9,18 +9,19 @@ import type {
 } from "@yaffle/shared"
 
 import type { YaffleTomlConfig } from "./config-toml.ts"
-import { sql } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 
 import { db } from "./db.ts"
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
 import { setRepoMapping } from "../db/queries/repo-mappings.ts"
 import { getJobWithContext } from "../db/queries/iac-jobs.ts"
 import { claimScanJob, completeScanJob, createScanJob } from "../db/queries/scan-jobs.ts"
-import { iacJobHistory, iacJobs, previews, runGroups } from "../db/schema.ts"
+import { iacJobHistory, iacJobs, previews, runGroups, tfRuns } from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
 import { completeRunGroup } from "./run-group-orchestrator.ts"
-import { createHandler } from "./webhook-handler.ts"
+import { createHandler, queueAutoApply } from "./webhook-handler.ts"
 import type { Runner, RunOpts } from "./runner.ts"
+import { ExecutionSnapshotInvariantError } from "./execution-snapshot.ts"
 
 /** A fake runner that records calls and returns canned results. */
 class FakeRunner implements Runner {
@@ -207,6 +208,10 @@ async function fakeScanDispatcher(
     throw new Error(`Failed to complete fake scan job ${scanJob.id}`)
   }
 
+  await db
+    .update(runGroups)
+    .set({ workspaceS3Key: `${orgSlug}/${ctx.repo}/${ctx.headSha}/workspace.tar.gz` })
+    .where(eq(runGroups.id, runGroupId))
   await completeRunGroup(runGroupId, result)
 }
 
@@ -569,6 +574,11 @@ describe("webhook-handler", () => {
 
   test("PR closed without merge: queues destroy job", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+    const [openGroup] = await db.select().from(runGroups)
+    await db
+      .update(runGroups)
+      .set({ workspaceS3Key: "test-org/test-repo/abc123def456/workspace.tar.gz" })
+      .where(eq(runGroups.id, openGroup.id))
     await handler.handleWebhookEvent(makePrContext({ action: "closed", merged: false }))
 
     const pvs = await db.select().from(previews)
@@ -582,8 +592,69 @@ describe("webhook-handler", () => {
     expect(destroyJobs).toHaveLength(1)
     expect(destroyJobs[0].status).toBe("queued")
 
+    const destroyContext = await getJobWithContext(destroyJobs[0].id)
+    expect(destroyJobs[0].runGroupId).toBe(openGroup.id)
+    expect(destroyContext?.runGroup).toMatchObject({
+      id: openGroup.id,
+      workspaceS3Key: "test-org/test-repo/abc123def456/workspace.tar.gz",
+    })
+
     // No inline execution - runner is not called
     expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(0)
+  })
+
+  test("PR close destroys from the prior snapshot when repository config is unavailable", async () => {
+    let configLoadCount = 0
+    const closeHandler = createHandler(runner, {
+      configLoader: async () => {
+        configLoadCount++
+        if (configLoadCount > 1) {
+          throw new Error("closing revision removed yaffle.toml")
+        }
+        return DEFAULT_CONFIG
+      },
+      scanDispatcher: fakeScanDispatcher,
+    })
+
+    await closeHandler.handleWebhookEvent(makePrContext({ action: "opened" }))
+    const [openGroup] = await db.select().from(runGroups)
+    await closeHandler.handleWebhookEvent(makePrContext({ action: "closed", merged: false }))
+
+    const destroyJobs = (await getAllJobs()).filter((job) => job.jobType === "destroy")
+    expect(configLoadCount).toBe(1)
+    expect(destroyJobs).toHaveLength(1)
+    expect(destroyJobs[0].runGroupId).toBe(openGroup.id)
+  })
+
+  test("PR close rejects a deployment whose immutable artifact is missing", async () => {
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+    const [openGroup] = await db.select().from(runGroups)
+    await db
+      .update(runGroups)
+      .set({ workspaceS3Key: null })
+      .where(eq(runGroups.id, openGroup.id))
+
+    await expect(
+      handler.handleWebhookEvent(makePrContext({ action: "closed", merged: false })),
+    ).rejects.toBeInstanceOf(ExecutionSnapshotInvariantError)
+    expect((await getAllJobs()).filter((job) => job.jobType === "destroy")).toHaveLength(0)
+  })
+
+  test("PR close ignores a same-named repository with another GitHub repository ID", async () => {
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+    await setRepoMapping({
+      orgId: (await db.select().from(previews))[0].orgId,
+      installationId: 0,
+      githubRepoId: 654321,
+    })
+
+    await handler.handleWebhookEvent(makePrContext({
+      action: "closed",
+      merged: false,
+      repoGithubId: 654321,
+    }))
+
+    expect((await getAllJobs()).filter((job) => job.jobType === "destroy")).toHaveLength(0)
   })
 
   // -----------------------------------------------------------------------
@@ -607,6 +678,25 @@ describe("webhook-handler", () => {
 
     // No inline execution - runner is not called
     expect(runner.calls.filter((c) => c.command === "destroy")).toHaveLength(0)
+  })
+
+  test("auto-apply rejects a successful plan without an execution snapshot", async () => {
+    await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
+    const [deployment] = await db.select().from(previews)
+    await db
+      .update(previews)
+      .set({ status: "awaiting_apply", requireApproval: false })
+      .where(eq(previews.id, deployment.id))
+    await db.insert(tfRuns).values({
+      deploymentId: deployment.id,
+      runType: "plan",
+      status: "success",
+      completedAt: new Date(),
+    })
+
+    await expect(queueAutoApply(deployment.id)).rejects.toBeInstanceOf(
+      ExecutionSnapshotInvariantError,
+    )
   })
 
   // -----------------------------------------------------------------------

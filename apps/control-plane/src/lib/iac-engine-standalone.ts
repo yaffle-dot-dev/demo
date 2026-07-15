@@ -54,7 +54,10 @@ import {
  * This does NOT update job status - the worker is responsible for that via API.
  * This does update deployment status and handles downstream notifications.
  */
-export async function executeJobStandalone(jobId: string): Promise<TerraformResult> {
+export async function executeJobStandalone(
+  jobId: string,
+  runner: Runner = new LocalRunner(),
+): Promise<TerraformResult> {
   logger.info("Standalone engine executing job", { jobId })
 
   // Fetch job with context
@@ -84,14 +87,14 @@ export async function executeJobStandalone(jobId: string): Promise<TerraformResu
 
   try {
     // Execute the job
-    const result = await executeJobWork(job, deployment, runGroup.executionSnapshot)
+    const result = await executeJobWork(job, deployment, runGroup.executionSnapshot, runner)
 
     // Handle downstream effects based on result
     if (result.success) {
       // Notify dependent workspaces on successful completion
       if (job.jobType === "destroy") {
         // For destroy, notify upstreams (reverse DAG order)
-        await notifyDestroyComplete(deployment.id, job.runGroupId)
+        await notifyDestroyComplete(deployment.id)
       } else {
         // For plan/apply, notify downstreams (forward DAG order)
         await notifyDownstreams(deployment.id, job.jobType, job.runGroupId)
@@ -136,9 +139,8 @@ async function executeJobWork(
     : never,
   deployment: NonNullable<Awaited<ReturnType<typeof getJobWithContext>>>["deployment"],
   executionSnapshot: ExecutionSnapshotV1,
+  runner: Runner,
 ): Promise<TerraformResult> {
-  const runner: Runner = new LocalRunner()
-
   // Get organization
   const org = await findOrgById(deployment.orgId)
   if (!org) {
@@ -465,7 +467,6 @@ async function cascadeFailure(previewId: string): Promise<void> {
 
 async function notifyDestroyComplete(
   deploymentId: string,
-  runGroupId: string | null,
 ): Promise<void> {
   const deployment = await findDeploymentById(deploymentId)
   if (!deployment) return
@@ -490,7 +491,6 @@ async function notifyDestroyComplete(
       if (result.claimed && result.deployment) {
         await createIacJob({
           deploymentId: upstreamId,
-          runGroupId,
           jobType: "destroy",
         })
 

@@ -38,12 +38,14 @@ import {
 } from "../db/queries/warm-runners.ts"
 import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
+import { findLatestScanJobByRunGroup, type ScanJobResult } from "../db/queries/scan-jobs.ts"
 import {
   createTfRun,
   appendRunLog,
   getRunLogState,
   replaceRunLog,
   updateRunStatus,
+  findRunById,
   findLatestSuccessfulRun,
 } from "../db/queries/tf-runs.ts"
 import { insertResourceSpan, completeResourceSpan, closeOrphanedSpans } from "../db/queries/resource-spans.ts"
@@ -66,6 +68,7 @@ import {
   notifyDestroyComplete,
 } from "../lib/deployment-side-effects.ts"
 import { resolveExecutionCredentialsForDeployment } from "../lib/execution-credentials.ts"
+import { validateAutomaticIsolationExecutionContext } from "../lib/automatic-isolation-execution-context.ts"
 import { publishHostedOutputModuleForRunGroupBinding } from "../lib/hosted-output-modules.ts"
 import {
   executeHostedLifecycleForDeployment,
@@ -75,6 +78,7 @@ import { getConfiguredSchedulerConcurrencyLimits } from "../lib/scheduler.ts"
 import { isWarmRunnerWorkspaceExcluded } from "../lib/warm-runner.ts"
 import {
   buildExecutionVariables,
+  ExecutionContextAssociationError,
   findExecutionSnapshotWorkspace,
 } from "../lib/execution-snapshot.ts"
 
@@ -88,6 +92,33 @@ interface RunnerAuthContext {
 
 interface WarmRunnerAuthContext {
   runnerToken: WarmRunnerTokenPayload
+}
+
+type JobContext = Awaited<ReturnType<typeof getJobWithContext>>
+
+function hasHostedExecutionContext(jobContext: JobContext): boolean {
+  return Boolean(
+    jobContext?.deployment
+    && jobContext.runGroup?.executionSnapshot
+    && jobContext.runGroup.workspaceS3Key,
+  )
+}
+
+function jobTokenMatchesContext(token: JobTokenPayload, jobContext: NonNullable<JobContext>): boolean {
+  return token.job_id === jobContext.id
+    && token.deployment_id === jobContext.deployment.id
+    && token.org_id === jobContext.deployment.orgId
+}
+
+async function runMatchesJob(runId: string, jobContext: NonNullable<JobContext>): Promise<boolean> {
+  const run = await findRunById(runId)
+  return Boolean(
+    run
+    && run.deploymentId === jobContext.deployment.id
+    && run.runGroupId === jobContext.runGroup?.id
+    && run.runType === jobContext.jobType
+    && run.status === "running",
+  )
 }
 
 type RunnerVariables = {
@@ -241,9 +272,9 @@ async function createClaimResponse(
 }> {
   const jobContext = await getJobWithContext(job.id)
 
-  if (!jobContext?.deployment) {
+  if (!jobContext?.deployment || !hasHostedExecutionContext(jobContext)) {
     logger.error("runner.claim.missing_context", { jobId: job.id })
-    throw new Error("Job context not found after claim")
+    throw new ExecutionContextAssociationError("Job has no valid hosted execution context")
   }
 
   const { deployment } = jobContext
@@ -491,7 +522,11 @@ warmRunnerRoute.post("/claim-next", async (c) => {
 
   for (const candidate of candidates) {
     const jobContext = await getJobWithContext(candidate.id)
-    if (!jobContext?.deployment || jobContext.deployment.orgId !== auth.runnerToken.org_id) {
+    if (
+      !jobContext?.deployment
+      || jobContext.deployment.orgId !== auth.runnerToken.org_id
+      || !hasHostedExecutionContext(jobContext)
+    ) {
       continue
     }
 
@@ -601,6 +636,20 @@ runnerJobRoute.post("/claim", async (c) => {
     )
   }
 
+  const jobContext = await getJobWithContext(jobId)
+  if (!jobContext || !jobTokenMatchesContext(auth.jobToken, jobContext)) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job token does not match job context" } },
+      403,
+    )
+  }
+  if (!hasHostedExecutionContext(jobContext)) {
+    return c.json(
+      { error: { code: "EXECUTION_CONTEXT_INVALID", message: "Job execution context is invalid" } },
+      409,
+    )
+  }
+
   // Attempt atomic claim
   const result = await claimJobForRunner(jobId, workerId, auth.jobToken.spawn_lease_token)
 
@@ -660,6 +709,18 @@ runnerJobRoute.post("/logs", async (c) => {
   if (auth.jobToken.job_id !== jobId) {
     return c.json(
       { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
+      403,
+    )
+  }
+  const jobContext = await getJobWithContext(jobId)
+  if (
+    !jobContext
+    || !jobTokenMatchesContext(auth.jobToken, jobContext)
+    || !hasHostedExecutionContext(jobContext)
+    || !(await runMatchesJob(runId, jobContext))
+  ) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
       403,
     )
   }
@@ -752,6 +813,18 @@ runnerJobRoute.post("/spans", async (c) => {
   if (auth.jobToken.job_id !== jobId) {
     return c.json(
       { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
+      403,
+    )
+  }
+  const jobContext = await getJobWithContext(jobId)
+  if (
+    !jobContext
+    || !jobTokenMatchesContext(auth.jobToken, jobContext)
+    || !hasHostedExecutionContext(jobContext)
+    || !(await runMatchesJob(runId, jobContext))
+  ) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
       403,
     )
   }
@@ -921,6 +994,24 @@ runnerJobRoute.post("/complete", async (c) => {
       404,
     )
   }
+  if (!jobTokenMatchesContext(auth.jobToken, jobContext)) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job token does not match job context" } },
+      403,
+    )
+  }
+  if (!hasHostedExecutionContext(jobContext)) {
+    return c.json(
+      { error: { code: "EXECUTION_CONTEXT_INVALID", message: "Job execution context is invalid" } },
+      409,
+    )
+  }
+  if (!(await runMatchesJob(runId, jobContext))) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
+      403,
+    )
+  }
 
   const { deployment } = jobContext
   const executionRunGroupId = jobContext.runGroup?.id ?? null
@@ -991,7 +1082,10 @@ runnerJobRoute.post("/complete", async (c) => {
                 id: deployment.id,
                 orgId: deployment.orgId,
                 repo: deployment.repo,
+                environmentKind: deployment.environmentKind,
+                environmentName: deployment.environmentName,
                 workspacePath: deployment.workspacePath,
+                installationId: deployment.installationId,
               },
               outputs: latestOutputs ?? {},
             })
@@ -1030,7 +1124,10 @@ runnerJobRoute.post("/complete", async (c) => {
               id: deployment.id,
               orgId: deployment.orgId,
               repo: deployment.repo,
+              environmentKind: deployment.environmentKind,
+              environmentName: deployment.environmentName,
               workspacePath: deployment.workspacePath,
+              installationId: deployment.installationId,
             },
             outputs: (result?.outputs && typeof result.outputs === "object")
               ? result.outputs as Record<string, unknown>
@@ -1056,7 +1153,7 @@ runnerJobRoute.post("/complete", async (c) => {
         }
       } else if (jobType === "destroy") {
         await updateDeploymentStatus(deployment.id, "destroyed")
-        await notifyDestroyComplete(deployment.id, executionRunGroupId)
+        await notifyDestroyComplete(deployment.id)
       }
 
       await releaseWorkspaceLockForDeployment(deployment)
@@ -1144,6 +1241,18 @@ runnerJobRoute.get("/job/:jobId", async (c) => {
       404,
     )
   }
+  if (!jobTokenMatchesContext(auth.jobToken, jobContext)) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job token does not match job context" } },
+      403,
+    )
+  }
+  if (!hasHostedExecutionContext(jobContext)) {
+    return c.json(
+      { error: { code: "EXECUTION_CONTEXT_INVALID", message: "Job execution context is invalid" } },
+      409,
+    )
+  }
 
   return c.json({
     data: {
@@ -1178,6 +1287,18 @@ runnerJobRoute.post("/plan-file-url", async (c) => {
     return c.json(
       { error: { code: "BAD_REQUEST", message: "runId is required" } },
       400,
+    )
+  }
+  const jobContext = await getJobWithContext(auth.jobToken.job_id)
+  if (
+    !jobContext
+    || !jobTokenMatchesContext(auth.jobToken, jobContext)
+    || !hasHostedExecutionContext(jobContext)
+    || !(await runMatchesJob(runId, jobContext))
+  ) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
+      403,
     )
   }
 
@@ -1240,6 +1361,12 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       404,
     )
   }
+  if (!jobTokenMatchesContext(auth.jobToken, jobContext)) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job token does not match job context" } },
+      403,
+    )
+  }
 
   const { deployment, runGroup, ...job } = jobContext
 
@@ -1275,6 +1402,33 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
         error: {
           code: "WORKSPACE_SNAPSHOT_MISSING",
           message: "Workspace is not present in the job execution snapshot",
+        },
+      },
+      409,
+    )
+  }
+
+  const scanJob = await findLatestScanJobByRunGroup(runGroup.id)
+  const scanResult =
+    scanJob?.status === "completed" && scanJob.result && typeof scanJob.result === "object"
+      ? (scanJob.result as ScanJobResult)
+      : undefined
+  const isolationContext = validateAutomaticIsolationExecutionContext({
+    orgId: deployment.orgId,
+    repositoryId: String(executionSnapshot.source.repositoryId),
+    workspacePath: deployment.workspacePath,
+    environmentKind: executionSnapshot.environment.kind,
+    environmentName: executionSnapshot.environment.name,
+    sourceRevision: executionSnapshot.source.commitSha,
+    automaticPreviewIsolation: workspaceSnapshot.automaticPreviewIsolation,
+    scanResult,
+  })
+  if (!isolationContext.ok) {
+    return c.json(
+      {
+        error: {
+          code: isolationContext.code,
+          message: isolationContext.message,
         },
       },
       409,
@@ -1413,6 +1567,9 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       workspaceUrl,
       command: job.jobType as "plan" | "apply" | "destroy",
       workspacePath: deployment.workspacePath,
+      workspaceArtifactSha256: isolationContext.workspaceArtifactSha256,
+      automaticIsolationRequired: isolationContext.automaticIsolationRequired,
+      automaticIsolationManifest: isolationContext.automaticIsolationManifest,
       variables,
       executionEnv,
       backendConfig,

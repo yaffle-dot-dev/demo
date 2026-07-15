@@ -9,6 +9,7 @@ import {
   iacJobStatusEnum,
   iacJobTypeEnum,
   organizations,
+  principalRepoBindings,
   runGroups,
   tfRuns,
   workspaceDeployments,
@@ -28,6 +29,11 @@ import { updateDeploymentStatus } from "./workspace-deployments.ts"
 import { updateRunStatus } from "./tf-runs.ts"
 import { recomputeRunGroupStatus } from "./run-groups.ts"
 import { cascadeFailure } from "../../lib/deployment-side-effects.ts"
+import {
+  ExecutionContextAssociationError,
+  isExecutionContextAssociationValid,
+  type ExecutionSnapshotV1,
+} from "../../lib/execution-snapshot.ts"
 
 export type IacJob = typeof iacJobs.$inferSelect
 export type NewIacJob = typeof iacJobs.$inferInsert
@@ -35,6 +41,114 @@ export type NewIacJob = typeof iacJobs.$inferInsert
 export type IacJobType = (typeof iacJobTypeEnum.enumValues)[number]
 export type IacJobStatus = (typeof iacJobStatusEnum.enumValues)[number]
 type DbTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0]
+
+interface ExecutionContextDeployment {
+  orgId: string
+  repo: string
+  environmentKind: "named" | "transient"
+  environmentName: string
+  workspacePath: string
+  installationId?: number | null
+}
+
+interface ExecutionContextRunGroup {
+  id?: string
+  orgId: string
+  repo: string
+  environmentKind: "named" | "transient"
+  environmentName: string
+  ref: string
+  headSha: string
+  selectedWorkspacePaths: unknown
+  repoBindingId: string | null
+  workspaceS3Key?: string | null
+  executionSnapshot: ExecutionSnapshotV1 | null
+}
+
+function runGroupMatchesDeployment(
+  runGroup: ExecutionContextRunGroup,
+  deployment: ExecutionContextDeployment,
+  canonicalRepoNamespace: string | null,
+): boolean {
+  if (!runGroup.executionSnapshot) {
+    return deployment.environmentKind !== "transient"
+      && runGroup.orgId === deployment.orgId
+      && runGroup.repo === deployment.repo
+      && runGroup.environmentKind === deployment.environmentKind
+      && runGroup.environmentName === deployment.environmentName
+  }
+  if (deployment.environmentKind === "transient" && !runGroup.workspaceS3Key) {
+    return false
+  }
+
+  return isExecutionContextAssociationValid({
+    snapshot: runGroup.executionSnapshot,
+    runGroup,
+    resource: deployment,
+    canonicalRepoNamespace,
+    requireRepoBinding: deployment.environmentKind === "transient",
+  })
+}
+
+async function resolveRunGroupIdForDeployment(
+  deploymentId: string,
+  requestedRunGroupId: string | null | undefined,
+): Promise<string | null> {
+  const deployment = (
+    await db
+      .select({
+        runGroupId: workspaceDeployments.runGroupId,
+        orgId: workspaceDeployments.orgId,
+        repo: workspaceDeployments.repo,
+        environmentKind: workspaceDeployments.environmentKind,
+        environmentName: workspaceDeployments.environmentName,
+        workspacePath: workspaceDeployments.workspacePath,
+      })
+      .from(workspaceDeployments)
+      .where(eq(workspaceDeployments.id, deploymentId))
+      .limit(1)
+  )[0]
+
+  if (!deployment) {
+    throw new ExecutionContextAssociationError(`Deployment ${deploymentId} does not exist`)
+  }
+
+  const runGroupId = requestedRunGroupId === undefined
+    ? deployment.runGroupId
+    : requestedRunGroupId
+  if (!runGroupId) {
+    throw new ExecutionContextAssociationError(
+      `Deployment ${deploymentId} is missing its execution run group`,
+    )
+  }
+
+  const result = (
+    await db
+      .select({
+        runGroup: runGroups,
+        canonicalRepoNamespace: principalRepoBindings.canonicalRepoNamespace,
+      })
+      .from(runGroups)
+      .leftJoin(principalRepoBindings, eq(runGroups.repoBindingId, principalRepoBindings.id))
+      .where(eq(runGroups.id, runGroupId))
+      .limit(1)
+  )[0]
+
+  if (
+    !result
+    || !runGroupMatchesDeployment(
+      result.runGroup,
+      deployment,
+      result.canonicalRepoNamespace,
+    )
+  ) {
+    throw new ExecutionContextAssociationError(
+      `Run group ${runGroupId} does not own deployment ${deploymentId}`,
+    )
+  }
+
+  return runGroupId
+}
 
 const SPAWN_LEASE_AVAILABLE_SQL = sql`${iacJobs.spawnLeaseExpiresAt} IS NULL OR ${iacJobs.spawnLeaseExpiresAt} < NOW()`
 
@@ -75,15 +189,7 @@ export async function createIacJob(values: {
   }
 
   return withDbSpan("insert", "iac_jobs", async () => {
-    const runGroupId = values.runGroupId === undefined
-      ? (
-          await db
-            .select({ runGroupId: workspaceDeployments.runGroupId })
-            .from(workspaceDeployments)
-            .where(eq(workspaceDeployments.id, deploymentId))
-            .limit(1)
-        )[0]?.runGroupId ?? null
-      : values.runGroupId
+    const runGroupId = await resolveRunGroupIdForDeployment(deploymentId, values.runGroupId)
     const rows = await db
       .insert(iacJobs)
       .values({
@@ -710,6 +816,14 @@ export async function getJobWithContext(jobId: string): Promise<
       }
       runGroup: {
         id: string
+        orgId: string
+        repo: string
+        environmentKind: "named" | "transient"
+        environmentName: string
+        ref: string
+        headSha: string
+        selectedWorkspacePaths: unknown
+        repoBindingId: string | null
         workspaceS3Key: string | null
         executionSnapshot: typeof runGroups.$inferSelect.executionSnapshot
       } | null
@@ -751,21 +865,44 @@ export async function getJobWithContext(jobId: string): Promise<
         },
         runGroup: {
           id: runGroups.id,
+          orgId: runGroups.orgId,
+          repo: runGroups.repo,
+          environmentKind: runGroups.environmentKind,
+          environmentName: runGroups.environmentName,
+          ref: runGroups.ref,
+          headSha: runGroups.headSha,
+          selectedWorkspacePaths: runGroups.selectedWorkspacePaths,
+          repoBindingId: runGroups.repoBindingId,
           workspaceS3Key: runGroups.workspaceS3Key,
           executionSnapshot: runGroups.executionSnapshot,
         },
+        canonicalRepoNamespace: principalRepoBindings.canonicalRepoNamespace,
       })
       .from(iacJobs)
       .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
       .innerJoin(organizations, eq(workspaceDeployments.orgId, organizations.id))
-      .leftJoin(runGroups, eq(iacJobs.runGroupId, runGroups.id))
+      .leftJoin(
+        runGroups,
+        and(
+          eq(iacJobs.runGroupId, runGroups.id),
+          eq(runGroups.orgId, workspaceDeployments.orgId),
+          eq(runGroups.repo, workspaceDeployments.repo),
+          eq(runGroups.environmentKind, workspaceDeployments.environmentKind),
+          eq(runGroups.environmentName, workspaceDeployments.environmentName),
+        ),
+      )
+      .leftJoin(principalRepoBindings, eq(runGroups.repoBindingId, principalRepoBindings.id))
       .where(eq(iacJobs.id, jobId))
       .limit(1)
 
     if (activeRows.length > 0) {
-      const { job, deployment, runGroup } = activeRows[0]
+      const { job, deployment, runGroup, canonicalRepoNamespace } = activeRows[0]
+      const validatedRunGroup = runGroup
+        && runGroupMatchesDeployment(runGroup, deployment, canonicalRepoNamespace)
+        ? runGroup
+        : null
       // Provide backward-compatible preview alias
-      return { ...job, deployment, runGroup, preview: deployment }
+      return { ...job, deployment, runGroup: validatedRunGroup, preview: deployment }
     }
 
     const historyRows = await db
@@ -788,21 +925,44 @@ export async function getJobWithContext(jobId: string): Promise<
         },
         runGroup: {
           id: runGroups.id,
+          orgId: runGroups.orgId,
+          repo: runGroups.repo,
+          environmentKind: runGroups.environmentKind,
+          environmentName: runGroups.environmentName,
+          ref: runGroups.ref,
+          headSha: runGroups.headSha,
+          selectedWorkspacePaths: runGroups.selectedWorkspacePaths,
+          repoBindingId: runGroups.repoBindingId,
           workspaceS3Key: runGroups.workspaceS3Key,
           executionSnapshot: runGroups.executionSnapshot,
         },
+        canonicalRepoNamespace: principalRepoBindings.canonicalRepoNamespace,
       })
       .from(iacJobHistory)
       .innerJoin(workspaceDeployments, eq(iacJobHistory.deploymentId, workspaceDeployments.id))
       .innerJoin(organizations, eq(workspaceDeployments.orgId, organizations.id))
-      .leftJoin(runGroups, eq(iacJobHistory.runGroupId, runGroups.id))
+      .leftJoin(
+        runGroups,
+        and(
+          eq(iacJobHistory.runGroupId, runGroups.id),
+          eq(runGroups.orgId, workspaceDeployments.orgId),
+          eq(runGroups.repo, workspaceDeployments.repo),
+          eq(runGroups.environmentKind, workspaceDeployments.environmentKind),
+          eq(runGroups.environmentName, workspaceDeployments.environmentName),
+        ),
+      )
+      .leftJoin(principalRepoBindings, eq(runGroups.repoBindingId, principalRepoBindings.id))
       .where(eq(iacJobHistory.id, jobId))
       .limit(1)
 
     if (historyRows.length === 0) return undefined
 
-    const { job, deployment, runGroup } = historyRows[0]
-    return { ...job, deployment, runGroup, preview: deployment }
+    const { job, deployment, runGroup, canonicalRepoNamespace } = historyRows[0]
+    const validatedRunGroup = runGroup
+      && runGroupMatchesDeployment(runGroup, deployment, canonicalRepoNamespace)
+      ? runGroup
+      : null
+    return { ...job, deployment, runGroup: validatedRunGroup, preview: deployment }
   })
 }
 

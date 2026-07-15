@@ -456,11 +456,18 @@ environments = ["main"]
     const user = await createTestUser({ id: "remote-converge-status-user" })
     const org = await createTestOrg({ slug: "remote-converge-status-org" })
     await addMembership(org.id, user.id, "viewer")
+    const principal = await ensureAccountPrincipal({ userId: user.id })
+    const binding = await ensurePrincipalRepoBinding({
+      principalId: principal.id,
+      canonicalRepoNamespace: "remote-converge-status-org--fixture",
+      localRepoFingerprint: "remote-converge-status-fixture",
+    })
 
     const [runGroup] = await db
       .insert(runGroups)
       .values({
         orgId: org.id,
+        repoBindingId: binding.id,
         repo: "fixture",
         environmentKind: "named",
         environmentName: "main",
@@ -490,7 +497,30 @@ environments = ["main"]
             name: "main",
             sourcePullRequestNumber: null,
           },
-          workspaces: [],
+          workspaces: [
+            {
+              path: "apps/control-plane/infra",
+              variables: { internalMarker: "must-not-leak-variable" },
+              approval: { required: false, approvers: [] },
+              lifecycle: {
+                activation: [
+                  {
+                    key: "private-hook",
+                    environments: ["*"],
+                    kind: "generic",
+                    failure: "failed",
+                    scopes: [],
+                    request: {
+                      url: "https://must-not-leak-lifecycle.example.test",
+                      method: "POST",
+                    },
+                  },
+                ],
+                verification: [],
+              },
+              automaticPreviewIsolation: false,
+            },
+          ],
         },
         trigger: "manual",
         status: "running",
@@ -529,7 +559,6 @@ environments = ["main"]
       startedAt: new Date(),
     })
 
-    const principal = await ensureAccountPrincipal({ userId: user.id })
     const token = await generateAccountPrincipalToken({
       principalId: principal.id,
       userId: user.id,
@@ -576,6 +605,8 @@ environments = ["main"]
       configurationRevision: "abc123def456",
       configurationDigest: "snapshot-digest",
     })
+    expect(JSON.stringify(body)).not.toContain("must-not-leak-variable")
+    expect(JSON.stringify(body)).not.toContain("must-not-leak-lifecycle")
     expect(body.data.deployments).toHaveLength(1)
     expect(body.data.deployments[0]?.workspacePath).toBe("apps/control-plane/infra")
     expect(body.data.deployments[0]?.latestRun?.runType).toBe("plan")

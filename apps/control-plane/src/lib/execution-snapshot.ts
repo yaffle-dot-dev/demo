@@ -13,12 +13,14 @@ import type { WorkspaceVariablesByPath } from "./workspace-variables.ts"
 
 export interface ExecutionSnapshotWorkspace {
   path: string
+  /** Repository-authored, non-secret values. Credentials resolve from connections at execution. */
   variables: Record<string, VariableValue>
   approval: {
     required: boolean
     approvers: string[]
   }
   lifecycle: {
+    /** Hook auth stores connection names, never resolved credentials. */
     activation: LifecycleHook[]
     verification: LifecycleHook[]
   }
@@ -55,6 +57,24 @@ export interface ExecutionSnapshotV1 {
   workspaces: ExecutionSnapshotWorkspace[]
 }
 
+export class ExecutionSnapshotInvariantError extends Error {
+  readonly code = "EXECUTION_SNAPSHOT_INVARIANT"
+
+  constructor(message: string) {
+    super(message)
+    this.name = "ExecutionSnapshotInvariantError"
+  }
+}
+
+export class ExecutionContextAssociationError extends Error {
+  readonly code = "EXECUTION_CONTEXT_ASSOCIATION_INVALID"
+
+  constructor(message: string) {
+    super(message)
+    this.name = "ExecutionContextAssociationError"
+  }
+}
+
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(stableJson).join(",")}]`
@@ -79,6 +99,22 @@ function sourceActor(ctx: WebhookContext): { githubId: number | null; login: str
   return { githubId: ctx.pusherGithubId, login: ctx.pusherLogin }
 }
 
+function assertLifecycleUrlsDoNotEmbedCredentials(hooks: LifecycleHook[]): void {
+  for (const hook of hooks) {
+    const urls = [hook.request?.url, hook.github?.api_url].filter(
+      (value): value is string => typeof value === "string",
+    )
+    for (const rawUrl of urls) {
+      const url = new URL(rawUrl)
+      if (url.username || url.password || url.search || url.hash) {
+        throw new ExecutionSnapshotInvariantError(
+          `Lifecycle hook '${hook.key}' must use a connection instead of URL credentials`,
+        )
+      }
+    }
+  }
+}
+
 export function buildExecutionSnapshot(values: {
   ctx: WebhookContext
   config: YaffleTomlConfig
@@ -92,6 +128,10 @@ export function buildExecutionSnapshot(values: {
     .filter((workspace) => selectedPaths.has(workspace.path))
     .map((workspace): ExecutionSnapshotWorkspace => {
       const approvers = resolveApprovers(values.config, workspace.path, values.environmentName)
+      assertLifecycleUrlsDoNotEmbedCredentials([
+        ...(workspace.activation ?? []),
+        ...(workspace.verification ?? []),
+      ])
       return {
         path: workspace.path,
         variables: structuredClone(values.workspaceVariables[workspace.path] ?? {}),
@@ -175,4 +215,89 @@ export function serializeExecutionSnapshotIdentity(snapshot: ExecutionSnapshotV1
     configurationRevision: snapshot.configuration.revision,
     configurationDigest: snapshot.configuration.digest,
   }
+}
+
+export function serializeBoundExecutionSnapshotIdentity(values: {
+  snapshot: ExecutionSnapshotV1 | null
+  runGroup: {
+    orgId: string
+    repo: string
+    environmentKind: string
+    environmentName: string
+  }
+  resource: {
+    orgId: string
+    repo: string
+    environmentKind: string
+    environmentName: string
+    workspacePath?: string
+  }
+}): ReturnType<typeof serializeExecutionSnapshotIdentity> {
+  if (!isExecutionContextAssociationValid(values)) {
+    return null
+  }
+
+  return serializeExecutionSnapshotIdentity(values.snapshot)
+}
+
+export function isExecutionContextAssociationValid(values: {
+  snapshot: ExecutionSnapshotV1 | null
+  runGroup: {
+    orgId: string
+    repo: string
+    environmentKind: string
+    environmentName: string
+    ref?: string
+    headSha?: string
+    selectedWorkspacePaths?: unknown
+    repoBindingId?: string | null
+  }
+  resource: {
+    orgId: string
+    repo: string
+    environmentKind: string
+    environmentName: string
+    workspacePath?: string
+    installationId?: number | null
+  }
+  canonicalRepoNamespace?: string | null
+  requireRepoBinding?: boolean
+}): boolean {
+  const { snapshot, runGroup, resource } = values
+  if (!snapshot || snapshot.version !== 1) {
+    return false
+  }
+
+  const selectedWorkspacePaths = Array.isArray(runGroup.selectedWorkspacePaths)
+    ? runGroup.selectedWorkspacePaths.filter((path): path is string => typeof path === "string")
+    : null
+  const workspaceMatches = resource.workspacePath === undefined
+    || (
+      findExecutionSnapshotWorkspace(snapshot, resource.workspacePath) !== undefined
+      && (selectedWorkspacePaths === null || selectedWorkspacePaths.includes(resource.workspacePath))
+    )
+  const canonicalRepoNamespace = `${snapshot.source.owner}--${snapshot.source.repository}`
+
+  return runGroup.orgId === resource.orgId
+    && runGroup.repo === resource.repo
+    && runGroup.environmentKind === resource.environmentKind
+    && runGroup.environmentName === resource.environmentName
+    && snapshot.source.repository === resource.repo
+    && snapshot.environment.kind === resource.environmentKind
+    && snapshot.environment.name === resource.environmentName
+    && (runGroup.ref === undefined || runGroup.ref === snapshot.source.ref)
+    && (runGroup.headSha === undefined || runGroup.headSha === snapshot.source.commitSha)
+    && (
+      resource.installationId === undefined
+      || resource.installationId === null
+      || resource.installationId === snapshot.source.installationId
+    )
+    && workspaceMatches
+    && (
+      !values.requireRepoBinding
+      || (
+        Boolean(runGroup.repoBindingId)
+        && values.canonicalRepoNamespace === canonicalRepoNamespace
+      )
+    )
 }

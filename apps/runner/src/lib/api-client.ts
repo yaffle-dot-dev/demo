@@ -5,6 +5,8 @@
  * Used by worker processes to claim jobs, send heartbeats, and report completion.
  */
 
+import type { AutomaticIsolationArtifactManifest } from "@yaffle/shared"
+
 export interface RunnerConfig {
   apiUrl: string
   jobToken: string
@@ -44,8 +46,11 @@ export interface ClaimResponse {
 
 export interface ExecutionContext {
   workspaceUrl: string
+  workspaceArtifactSha256: string
   command: "plan" | "apply" | "destroy"
   workspacePath: string
+  automaticIsolationRequired: boolean
+  automaticIsolationManifest?: AutomaticIsolationArtifactManifest
   variables: Record<string, string | boolean | number>
   executionEnv?: Record<string, string>
   backendConfig?: {

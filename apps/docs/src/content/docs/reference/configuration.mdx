@@ -232,10 +232,24 @@ named, external, or static workspace and be consumed through authorized outputs 
 data sources. Imports, provisioners, `lifecycle.prevent_destroy`, and unsupported or unverified
 resources stop before Terraform planning. When provider knowledge needs a user decision, Yaffle
 Cloud reports an automatic-isolation review requirement rather than silently bypassing it.
+Native `.tf` and `.tofu` sources follow OpenTofu's normal precedence. JSON configuration and
+repository-authored override files stop before planning because Yaffle cannot prove the final
+materialized configuration while they are present.
+
+The initial verified strategy supports `local_file.filename` with provider
+`registry.opentofu.org/hashicorp/local` locked at version `2.5.3`. Yaffle preserves the configured
+filename when it is a literal basename or one direct string expression, normalizes the result to
+lowercase letters, digits, and hyphens, limits it to 63 characters, and adds a deterministic
+environment suffix. Mixed interpolation and path expressions require review. The generated override,
+provider lock evidence, and manifest are bound to the immutable execution artifact by SHA-256;
+repository files and named-environment execution remain unchanged. Other managed resource and exact
+provider-version combinations require review.
 
 #### Variables
 
 Variables are injected as `-var` flags. Use `{{ environment }}` to template the current environment name.
+Yaffle persists each run's rendered values as immutable execution inputs. Do not put secrets in
+`variables`; use a Yaffle connection or a cloud secret reference and resolve the value at runtime.
 
 ```toml
 version = 1

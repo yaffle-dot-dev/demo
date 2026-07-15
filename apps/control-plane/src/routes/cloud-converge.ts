@@ -11,7 +11,10 @@ import {
   listLatestDeploymentsForOrg,
 } from "../db/queries/workspace-deployments.ts"
 import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
-import { ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
+import {
+  ensurePrincipalRepoBinding,
+  findPrincipalRepoBindingById,
+} from "../db/queries/principals.ts"
 import {
   getLifecycleStateForRunGroup,
   listLifecycleEventsForItems,
@@ -54,7 +57,11 @@ import {
 } from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "../lib/job-token.ts"
 import { getScheduler } from "../lib/scheduler.ts"
-import { buildExecutionSnapshot, serializeExecutionSnapshotIdentity } from "../lib/execution-snapshot.ts"
+import {
+  buildExecutionSnapshot,
+  isExecutionContextAssociationValid,
+  serializeBoundExecutionSnapshotIdentity,
+} from "../lib/execution-snapshot.ts"
 
 type Variables = {
   principalAuth: PrincipalAuthContext
@@ -575,6 +582,32 @@ export function createCloudConvergeRoute(
     if (!membership || !hasMinRole(membership.role, "viewer")) {
       return c.json({ error: { code: "FORBIDDEN", message: "run group access denied" } }, 403)
     }
+    const repoBinding = runGroup.repoBindingId
+      ? await findPrincipalRepoBindingById(runGroup.repoBindingId)
+      : undefined
+    const executionContext = repoBinding && isExecutionContextAssociationValid({
+      snapshot: runGroup.executionSnapshot,
+      runGroup,
+      resource: {
+        orgId: runGroup.orgId,
+        repo: runGroup.repo,
+        environmentKind: runGroup.environmentKind,
+        environmentName: runGroup.environmentName,
+      },
+      canonicalRepoNamespace: repoBinding.canonicalRepoNamespace,
+      requireRepoBinding: true,
+    })
+      ? serializeBoundExecutionSnapshotIdentity({
+          snapshot: runGroup.executionSnapshot,
+          runGroup,
+          resource: {
+            orgId: runGroup.orgId,
+            repo: runGroup.repo,
+            environmentKind: runGroup.environmentKind,
+            environmentName: runGroup.environmentName,
+          },
+        })
+      : null
 
     const deployments = await findDeploymentsByRunGroup(runGroup.id)
     const latestRuns = await listRunsForDeployments(deployments.map((deployment) => deployment.id))
@@ -659,7 +692,7 @@ export function createCloudConvergeRoute(
           ref: runGroup.ref,
           headSha: runGroup.headSha,
           selectedWorkspacePaths: (runGroup.selectedWorkspacePaths as string[] | null) ?? [],
-          executionContext: serializeExecutionSnapshotIdentity(runGroup.executionSnapshot),
+          executionContext,
           trigger: runGroup.trigger,
           createdAt: runGroup.createdAt.toISOString(),
           startedAt: runGroup.startedAt?.toISOString() ?? null,

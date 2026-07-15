@@ -10,7 +10,14 @@ import {
 
 import { db } from "../lib/db.ts"
 import { rebuildEnvironmentGroupProjections } from "../lib/projections/environment-groups.ts"
-import { organizations, previews, tfRuns, orgMemberships, environmentGroupProjections } from "../db/schema.ts"
+import {
+  environmentGroupProjections,
+  organizations,
+  orgMemberships,
+  previews,
+  runGroups,
+  tfRuns,
+} from "../db/schema.ts"
 import { environmentsRoute } from "./environments.ts"
 
 const app = new Hono()
@@ -101,6 +108,7 @@ beforeEach(async () => {
   await db.delete(tfRuns)
   await db.delete(environmentGroupProjections)
   await db.delete(previews)
+  await db.delete(runGroups)
 })
 
 afterAll(async () => {
@@ -108,6 +116,7 @@ afterAll(async () => {
   await db.delete(tfRuns)
   await db.delete(environmentGroupProjections)
   await db.delete(previews)
+  await db.delete(runGroups)
   await db.delete(orgMemberships)
   await db.delete(organizations)
 })
@@ -128,14 +137,75 @@ describe("GET /api/environments", () => {
   })
 
   test("returns empty list when no environments exist", async () => {
-    const res = await req("/api/environments?org=test-org")
+    const res = await req("/api/environments?org=test-org&repo=test-repo")
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.data).toEqual([])
   })
 
   test("returns production environments grouped by branch", async () => {
-    const preview = await seedProductionPreview()
+    const [runGroup] = await db
+      .insert(runGroups)
+      .values({
+        orgId: ctx.org.id,
+        repo: "test-repo",
+        environmentKind: "named",
+        environmentName: "main-status",
+        ref: "refs/heads/main",
+        headSha: "abc123",
+        selectedWorkspacePaths: ["infra"],
+        trigger: "push",
+        executionSnapshot: {
+          version: 1,
+          source: {
+            installationId: 1,
+            repositoryId: 2,
+            ownerId: 3,
+            owner: "test-owner",
+            repository: "test-repo",
+            defaultBranch: "main",
+            ref: "refs/heads/main",
+            commitSha: "abc123",
+            baseSha: null,
+            actor: { githubId: 4, login: "octocat" },
+          },
+          configuration: {
+            path: "yaffle.toml",
+            revision: "abc123",
+            digest: "environment-config-digest",
+          },
+          environment: {
+            kind: "named",
+            name: "main-status",
+            sourcePullRequestNumber: null,
+          },
+          workspaces: [{
+            path: "infra",
+            variables: { internal_marker: "do-not-expose" },
+            approval: { required: false, approvers: [] },
+            lifecycle: {
+              activation: [{
+                key: "deploy",
+                environments: ["main-status"],
+                kind: "generic",
+                failure: "failed",
+                scopes: [],
+                request: {
+                  url: "https://private-hook.example.test/deploy",
+                  method: "POST",
+                },
+              }],
+              verification: [],
+            },
+            automaticPreviewIsolation: false,
+          }],
+        },
+      })
+      .returning()
+    const preview = await seedProductionPreview({
+      runGroupId: runGroup.id,
+      environmentName: "main-status",
+    })
     await seedRun(preview.id)
 
     const res = await req("/api/environments?org=test-org")
@@ -146,6 +216,14 @@ describe("GET /api/environments", () => {
     expect(body.data[0].repo).toBe("test-repo")
     expect(body.data[0].workspaces).toHaveLength(1)
     expect(body.data[0].workspaces[0].workspacePath).toBe("infra")
+    expect(body.data[0].workspaces[0].executionContext).toEqual({
+      version: 1,
+      commitSha: "abc123",
+      configurationRevision: "abc123",
+      configurationDigest: "environment-config-digest",
+    })
+    expect(JSON.stringify(body)).not.toContain("do-not-expose")
+    expect(JSON.stringify(body)).not.toContain("private-hook.example.test")
   })
 
   test("uses head update time for commit age in dag view", async () => {

@@ -25,6 +25,7 @@ import {
 import { getSpansForRun } from "../db/queries/resource-spans.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import { findRunGroupWorkspaceMetadataForRunGroups } from "../db/queries/run-group-workspace-metadata.ts"
+import { findPrincipalRepoBindingById } from "../db/queries/principals.ts"
 import {
   listRunGroupsForPr,
   listRunGroupsForBranch,
@@ -59,7 +60,10 @@ import {
   parseRunViewCorrelation,
   runViewCorrelationQueryFields,
 } from "../lib/run-view-monitoring.ts"
-import { serializeExecutionSnapshotIdentity } from "../lib/execution-snapshot.ts"
+import {
+  isExecutionContextAssociationValid,
+  serializeBoundExecutionSnapshotIdentity,
+} from "../lib/execution-snapshot.ts"
 
 const prNumberParam = z.coerce.number().int().positive()
 const environmentQuerySchema = z.object({
@@ -167,7 +171,7 @@ reposRoute.get(
           authorGithubId: null,
           authorLogin: null,
           workspaces: [],
-          runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
+          runGroups: await serializeRunGroups(runGroupsData),
         },
       })
     }
@@ -200,7 +204,7 @@ reposRoute.get(
         authorGithubId: first.authorGithubId,
         authorLogin: first.authorLogin,
         workspaces: deploymentsWithRuns,
-        runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
+        runGroups: await serializeRunGroups(runGroupsData),
       },
     })
   },
@@ -265,7 +269,7 @@ reposRoute.get(
                     authorGithubId: null,
                     authorLogin: null,
                     workspaces: [],
-                    runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
+                    runGroups: await serializeRunGroups(runGroupsData),
                   },
                 })
             if (emptyPayload !== lastPayload) {
@@ -315,7 +319,7 @@ reposRoute.get(
               authorGithubId: first.authorGithubId,
               authorLogin: first.authorLogin,
               workspaces: deploymentsWithRuns,
-              runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
+              runGroups: await serializeRunGroups(runGroupsData),
             },
           })
 
@@ -436,7 +440,7 @@ reposRoute.get(
           branch,
           headSha: latestRunGroup.headSha,
           workspaces: [],
-          runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
+          runGroups: await serializeRunGroups(runGroupsData),
         },
       })
     }
@@ -465,7 +469,7 @@ reposRoute.get(
         branch,
         headSha: first.headSha,
         workspaces: deploymentsWithRuns,
-        runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
+        runGroups: await serializeRunGroups(runGroupsData),
       },
     })
   },
@@ -520,7 +524,7 @@ reposRoute.get(
                     branch,
                     headSha: runGroupsData[0]?.headSha ?? "",
                     workspaces: [],
-                    runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
+                    runGroups: await serializeRunGroups(runGroupsData),
                   },
                 })
             if (emptyPayload !== lastPayload) {
@@ -567,7 +571,7 @@ reposRoute.get(
               branch,
               headSha: first.headSha,
               workspaces: deploymentsWithRuns,
-              runGroups: runGroupsData.map((runGroup) => serializeRunGroup(runGroup)),
+              runGroups: await serializeRunGroups(runGroupsData),
             },
           })
 
@@ -713,7 +717,7 @@ type SerializedEnvironmentLifecycle = {
 type WorkspaceWithRunsForResponse = {
   preview: SerializedPreview
   runs: SerializedRun[]
-  outputs: unknown | null
+  outputs: unknown
   resourceSpans?: SerializedResourceSpan[]
 }
 
@@ -1501,10 +1505,26 @@ interface SerializedRunGroup {
   completedAt: string | null
 }
 
+async function serializeRunGroups(runGroups: RunGroup[]): Promise<SerializedRunGroup[]> {
+  return Promise.all(
+    runGroups.map(async (runGroup) => {
+      const repoBinding = runGroup.repoBindingId
+        ? await findPrincipalRepoBindingById(runGroup.repoBindingId)
+        : undefined
+      return serializeRunGroup(runGroup, null, repoBinding?.canonicalRepoNamespace)
+    }),
+  )
+}
+
 async function serializeRunGroupsWithLifecycle(runGroups: RunGroup[]): Promise<SerializedRunGroup[]> {
   return Promise.all(
     runGroups.map(async (runGroup) => {
-      const lifecycleState = await getLifecycleStateForRunGroup(runGroup.id)
+      const [lifecycleState, repoBinding] = await Promise.all([
+        getLifecycleStateForRunGroup(runGroup.id),
+        runGroup.repoBindingId
+          ? findPrincipalRepoBindingById(runGroup.repoBindingId)
+          : Promise.resolve(undefined),
+      ])
       const lifecycleEvents = lifecycleState
         ? await listLifecycleEventsForItems(lifecycleState.items.map((item) => item.id))
         : []
@@ -1513,6 +1533,7 @@ async function serializeRunGroupsWithLifecycle(runGroups: RunGroup[]): Promise<S
         lifecycleState
           ? serializeEnvironmentLifecycle(lifecycleState.run, lifecycleState.items, lifecycleEvents)
           : null,
+        repoBinding?.canonicalRepoNamespace,
       )
     }),
   )
@@ -1521,8 +1542,23 @@ async function serializeRunGroupsWithLifecycle(runGroups: RunGroup[]): Promise<S
 function serializeRunGroup(
   rg: RunGroup,
   environmentLifecycle?: SerializedEnvironmentLifecycle | null,
+  canonicalRepoNamespace?: string,
 ): SerializedRunGroup {
   const rawGraph = rg.dependencyGraph as (SerializedDependencyGraph & { systemError?: SerializedSystemError }) | null
+  const resource = {
+    orgId: rg.orgId,
+    repo: rg.repo,
+    environmentKind: rg.environmentKind,
+    environmentName: rg.environmentName,
+  }
+  const executionContextValid = rg.environmentKind !== "transient"
+    || isExecutionContextAssociationValid({
+      snapshot: rg.executionSnapshot,
+      runGroup: rg,
+      resource,
+      canonicalRepoNamespace,
+      requireRepoBinding: true,
+    })
 
   return {
     id: rg.id,
@@ -1533,7 +1569,13 @@ function serializeRunGroup(
     selectedWorkspacePaths: Array.isArray(rg.selectedWorkspacePaths)
       ? rg.selectedWorkspacePaths.filter((value): value is string => typeof value === "string")
       : [],
-    executionContext: serializeExecutionSnapshotIdentity(rg.executionSnapshot),
+    executionContext: executionContextValid
+      ? serializeBoundExecutionSnapshotIdentity({
+          snapshot: rg.executionSnapshot,
+          runGroup: rg,
+          resource,
+        })
+      : null,
     trigger: rg.trigger,
     triggeredByLogin: rg.triggeredByLogin,
     status: rg.status,

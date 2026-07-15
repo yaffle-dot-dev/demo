@@ -12,6 +12,7 @@ import { spawn } from "node:child_process"
 import type { Readable } from "node:stream"
 
 import type { ExecutionContext } from "./api-client.ts"
+import { verifyAutomaticIsolationArtifact } from "./automatic-isolation-artifact.ts"
 import { log } from "./runner-log.ts"
 import { ResourceSpanParser, type ResourceSpanEvent } from "./span-parser.ts"
 
@@ -65,6 +66,12 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
   }
 
   try {
+    await verifyAutomaticIsolationArtifact(
+      workDir,
+      context.automaticIsolationRequired,
+      context.automaticIsolationManifest,
+    )
+
     // Configure backend
     const backendEnv = await configureBackend(workDir, context)
     const executionEnv = context.executionEnv ?? {}
@@ -205,7 +212,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       }
 
       default:
-        throw new Error(`Unknown command: ${context.command}`)
+        throw new Error("Unknown Terraform command")
     }
 
     // Flush any remaining buffered lines in the span parser

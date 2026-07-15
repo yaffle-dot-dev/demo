@@ -11,7 +11,18 @@ import {
 
 import { db } from "../lib/db.ts"
 import { rebuildEnvironmentGroupProjections } from "../lib/projections/environment-groups.ts"
-import { organizations, previews, tfRuns, orgMemberships, approvals, environmentGroupProjections } from "../db/schema.ts"
+import { createPrincipal, ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
+import {
+  approvals,
+  environmentGroupProjections,
+  organizations,
+  orgMemberships,
+  previews,
+  principalRepoBindings,
+  principals,
+  runGroups,
+  tfRuns,
+} from "../db/schema.ts"
 import { previewsRoute } from "./previews.ts"
 
 // Mount the route under /api/previews like the real app
@@ -97,6 +108,9 @@ beforeEach(async () => {
   await db.delete(tfRuns)
   await db.delete(environmentGroupProjections)
   await db.delete(previews)
+  await db.delete(runGroups)
+  await db.delete(principalRepoBindings)
+  await db.delete(principals)
 })
 
 afterAll(async () => {
@@ -105,6 +119,9 @@ afterAll(async () => {
   await db.delete(tfRuns)
   await db.delete(environmentGroupProjections)
   await db.delete(previews)
+  await db.delete(runGroups)
+  await db.delete(principalRepoBindings)
+  await db.delete(principals)
   await db.delete(orgMemberships)
   await db.delete(organizations)
 })
@@ -152,6 +169,67 @@ describe("GET /api/previews", () => {
     expect(body.data[0]).toHaveProperty("repo", "test-repo")
     expect(body.data[0]).toHaveProperty("createdAt")
     expect(body.data[0]).toHaveProperty("headUpdatedAt")
+  })
+
+  test("does not load execution context from a foreign run group", async () => {
+    const [foreignOrg] = await db
+      .insert(organizations)
+      .values({ name: "Foreign Status Org", slug: `foreign-status-${crypto.randomUUID()}` })
+      .returning()
+    const [foreignRunGroup] = await db
+      .insert(runGroups)
+      .values({
+        orgId: foreignOrg.id,
+        repo: "test-repo",
+        environmentKind: "transient",
+        environmentName: "pr-42",
+        prNumber: 42,
+        ref: "refs/heads/feature/test",
+        headSha: "foreign-sha",
+        selectedWorkspacePaths: ["infra"],
+        trigger: "pr_opened",
+        executionSnapshot: {
+          version: 1,
+          source: {
+            installationId: 1,
+            repositoryId: 2,
+            ownerId: 3,
+            owner: "foreign-owner",
+            repository: "test-repo",
+            defaultBranch: "main",
+            ref: "refs/heads/feature/test",
+            commitSha: "foreign-sha",
+            baseSha: "base-sha",
+            actor: { githubId: 4, login: "octocat" },
+          },
+          configuration: {
+            path: "yaffle.toml",
+            revision: "foreign-sha",
+            digest: "foreign-secret-digest",
+          },
+          environment: {
+            kind: "transient",
+            name: "pr-42",
+            sourcePullRequestNumber: 42,
+          },
+          workspaces: [{
+            path: "infra",
+            variables: { internal_marker: "foreign-do-not-expose" },
+            approval: { required: false, approvers: [] },
+            lifecycle: { activation: [], verification: [] },
+            automaticPreviewIsolation: false,
+          }],
+        },
+      })
+      .returning()
+    await seedPreview({ runGroupId: foreignRunGroup.id })
+
+    const res = await req("/api/previews?org=test-org")
+    const body = await res.json()
+
+    expect(body.data[0].executionContext).toBeNull()
+    expect(JSON.stringify(body)).not.toContain("foreign-secret-digest")
+    expect(JSON.stringify(body)).not.toContain("foreign-do-not-expose")
   })
 
   test("serializes headUpdatedAt from status changes", async () => {
@@ -278,11 +356,78 @@ describe("GET /api/previews/:id/approvals", () => {
   })
 
   test("returns approvals for a preview", async () => {
-    const preview = await seedPreview()
+    const principal = await createPrincipal({ type: "anonymous_session" })
+    const repoBinding = await ensurePrincipalRepoBinding({
+      principalId: principal.id,
+      canonicalRepoNamespace: "test-owner--test-repo",
+      localRepoFingerprint: `approval-${crypto.randomUUID()}`,
+    })
+    const [runGroup] = await db
+      .insert(runGroups)
+      .values({
+        orgId: ctx.org.id,
+        repoBindingId: repoBinding.id,
+        repo: "test-repo",
+        environmentKind: "transient",
+        environmentName: "pr-42",
+        prNumber: 42,
+        ref: "refs/heads/feature/test",
+        headSha: "abc123",
+        selectedWorkspacePaths: ["infra"],
+        trigger: "pr_opened",
+        executionSnapshot: {
+          version: 1,
+          source: {
+            installationId: 1,
+            repositoryId: 2,
+            ownerId: 3,
+            owner: "test-owner",
+            repository: "test-repo",
+            defaultBranch: "main",
+            ref: "refs/heads/feature/test",
+            commitSha: "abc123",
+            baseSha: "base123",
+            actor: { githubId: 4, login: "test-approver" },
+          },
+          configuration: {
+            path: "yaffle.toml",
+            revision: "abc123",
+            digest: "config-digest",
+          },
+          environment: {
+            kind: "transient",
+            name: "pr-42",
+            sourcePullRequestNumber: 42,
+          },
+          workspaces: [{
+            path: "infra",
+            variables: { internal_marker: "do-not-expose" },
+            approval: { required: true, approvers: ["github:user:test-approver"] },
+            lifecycle: {
+              activation: [{
+                key: "deploy",
+                environments: ["pr-42"],
+                kind: "generic",
+                failure: "failed",
+                scopes: [],
+                request: {
+                  url: "https://private-hook.example.test/deploy",
+                  method: "POST",
+                },
+              }],
+              verification: [],
+            },
+            automaticPreviewIsolation: false,
+          }],
+        },
+      })
+      .returning()
+    const preview = await seedPreview({ runGroupId: runGroup.id })
     
     // Seed an approval
     await db.insert(approvals).values({
       deploymentId: preview.id,
+      runGroupId: runGroup.id,
       userId: ctx.user.id,
       approverLogin: "test-approver",
     })
@@ -293,7 +438,22 @@ describe("GET /api/previews/:id/approvals", () => {
     expect(body.data).toHaveLength(1)
     expect(body.data[0]).toHaveProperty("id")
     expect(body.data[0]).toHaveProperty("deploymentId", preview.id)
+    expect(body.data[0]).toHaveProperty("runGroupId", runGroup.id)
     expect(body.data[0]).toHaveProperty("approverLogin", "test-approver")
+    expect(body.data[0].executionContext).toEqual({
+      version: 1,
+      commitSha: "abc123",
+      configurationRevision: "abc123",
+      configurationDigest: "config-digest",
+    })
+    expect(JSON.stringify(body)).not.toContain("do-not-expose")
+    expect(JSON.stringify(body)).not.toContain("private-hook.example.test")
+
+    const listResponse = await req("/api/previews?org=test-org")
+    const listBody = await listResponse.json()
+    expect(listBody.data[0].executionContext).toEqual(body.data[0].executionContext)
+    expect(JSON.stringify(listBody)).not.toContain("do-not-expose")
+    expect(JSON.stringify(listBody)).not.toContain("private-hook.example.test")
   })
 })
 

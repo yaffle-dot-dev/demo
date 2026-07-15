@@ -5,10 +5,21 @@
  */
 
 import { spawnSync } from "node:child_process"
+import { createHash } from "node:crypto"
 import { access, mkdir, rm, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { constants as fsConstants } from "node:fs"
+
+export class WorkspaceArtifactError extends Error {
+  constructor(
+    message: string,
+    public readonly code: "DIGEST_MISMATCH",
+  ) {
+    super(message)
+    this.name = "WorkspaceArtifactError"
+  }
+}
 
 /**
  * Download and extract a workspace from a presigned S3 URL.
@@ -20,21 +31,29 @@ import { constants as fsConstants } from "node:fs"
 export async function downloadWorkspace(
   workspaceUrl: string,
   workspacePath: string,
+  expectedSha256: string,
 ): Promise<string> {
-  // Create a temp directory for the workspace
-  const workDir = join(tmpdir(), `yaffle-runner-${Date.now()}`)
-  await mkdir(workDir, { recursive: true })
-
   // Download the tarball
-  const tarballPath = join(workDir, "workspace.tar.gz")
-
   const response = await fetch(workspaceUrl)
   if (!response.ok) {
     throw new Error(`Failed to download workspace: ${response.status} ${response.statusText}`)
   }
 
   const arrayBuffer = await response.arrayBuffer()
-  await writeFile(tarballPath, Buffer.from(arrayBuffer))
+  const tarball = Buffer.from(arrayBuffer)
+  const actualSha256 = createHash("sha256").update(tarball).digest("hex")
+  if (actualSha256 !== expectedSha256) {
+    throw new WorkspaceArtifactError(
+      "Workspace artifact digest does not match the immutable execution context",
+      "DIGEST_MISMATCH",
+    )
+  }
+
+  // Create a temp directory only after authenticating the downloaded bytes.
+  const workDir = join(tmpdir(), `yaffle-runner-${Date.now()}`)
+  await mkdir(workDir, { recursive: true })
+  const tarballPath = join(workDir, "workspace.tar.gz")
+  await writeFile(tarballPath, tarball)
 
   // Extract the tarball
   const extractDir = join(workDir, "extracted")

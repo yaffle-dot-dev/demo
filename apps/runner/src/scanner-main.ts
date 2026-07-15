@@ -15,7 +15,7 @@
  * this would need to be replaced with a git clone.
  */
 
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { createGunzip, createGzip } from "node:zlib"
 import { Readable } from "node:stream"
 import * as tar from "tar-stream"
@@ -27,12 +27,19 @@ import {
   extractDependenciesFromContent,
   inspectAutomaticPreviewIsolationWorkspace,
   type AutomaticIsolationFinding,
+  type AutomaticIsolationIdentity,
   type AutomaticIsolationPreflight,
   type AutomaticIsolationSourceFile,
   type DependencyScannerVariableBindingsByPath,
 } from "@yaffle/shared"
 
 import { ScannerApiClient } from "./lib/scanner-api-client.ts"
+import {
+  automaticIsolationArtifactPaths,
+  AutomaticIsolationArtifactError,
+  compileAutomaticIsolationArtifact,
+  type CompiledAutomaticIsolationArtifact,
+} from "./lib/automatic-isolation-artifact.ts"
 import { HeartbeatSupervisor } from "./lib/supervisor.ts"
 
 type TarEntryHeader = {
@@ -42,6 +49,10 @@ type TarEntryHeader = {
 }
 
 type TarEntryNext = (error?: Error | null) => void
+
+interface AutomaticIsolationScanContext extends Omit<AutomaticIsolationIdentity, "workspacePath"> {
+  sourceRevision: string
+}
 
 export function findWorkspaceForTerraformPath(
   relativePath: string,
@@ -128,10 +139,12 @@ export async function scanTarball(
   workspaceVariables: DependencyScannerVariableBindingsByPath,
   currentNamespace: string,
   automaticIsolationWorkspacePaths: string[],
+  automaticIsolationContext?: AutomaticIsolationScanContext,
 ): Promise<{
   workspaces: string[]
   edges: [string, string][]
   automaticIsolationPreflight?: AutomaticIsolationPreflight
+  automaticIsolationArtifacts?: CompiledAutomaticIsolationArtifact[]
 }> {
   const knownWorkspaces = new Set(workspacePaths)
   const isolationWorkspaces = new Set(automaticIsolationWorkspacePaths)
@@ -182,11 +195,16 @@ export async function scanTarball(
         }
       }
 
-      // Process Terraform HCL and JSON files within known workspaces.
-      if (
-        header.type === "file" &&
-        (relativePath.endsWith(".tf") || relativePath.endsWith(".tf.json"))
-      ) {
+      const isTerraformSource =
+        relativePath.endsWith(".tf") ||
+        relativePath.endsWith(".tf.json") ||
+        relativePath.endsWith(".tofu") ||
+        relativePath.endsWith(".tofu.json") ||
+        relativePath === ".terraform.lock.hcl" ||
+        relativePath.endsWith("/.terraform.lock.hcl")
+
+      // Process Terraform source and lock files within known workspaces.
+      if (header.type === "file" && isTerraformSource) {
         // Find which workspace this file belongs to
         const matchingWorkspace = findWorkspaceForTerraformPath(relativePath, workspacePaths)
 
@@ -221,7 +239,9 @@ export async function scanTarball(
 
   // Convert to edges
   for (const [workspace, files] of workspaceContents) {
-    const contents = files.filter((file) => file.path.endsWith(".tf")).map((file) => file.content)
+    const contents = files
+      .filter((file) => file.path.endsWith(".tf") || file.path.endsWith(".tofu"))
+      .map((file) => file.content)
     const deps = extractDependenciesFromContent(contents.join("\n\n"), {
       currentNamespace,
       variables: workspaceVariables[workspace],
@@ -233,20 +253,38 @@ export async function scanTarball(
     }
   }
 
+  const automaticIsolationArtifacts: CompiledAutomaticIsolationArtifact[] = []
   const automaticIsolationPreflight =
     isolationWorkspaces.size > 0
       ? combineAutomaticIsolationPreflights(
           [...isolationWorkspaces].map((workspacePath) => {
-            const inspected = inspectAutomaticPreviewIsolationWorkspace(
-              workspacePath,
-              workspaceContents.get(workspacePath) ?? [],
-            )
+            const files = workspaceContents.get(workspacePath) ?? []
+            const compilation = automaticIsolationContext
+              ? compileAutomaticIsolationArtifact({
+                  identity: {
+                    organizationId: automaticIsolationContext.organizationId,
+                    repositoryId: automaticIsolationContext.repositoryId,
+                    workspacePath,
+                    environmentKind: automaticIsolationContext.environmentKind,
+                    environmentName: automaticIsolationContext.environmentName,
+                  },
+                  sourceRevision: automaticIsolationContext.sourceRevision,
+                  files,
+                })
+              : undefined
+            const inspected =
+              compilation?.preflight ??
+              inspectAutomaticPreviewIsolationWorkspace(workspacePath, files)
             const findings = [...inspected.findings, ...(archiveFindings.get(workspacePath) ?? [])]
-            return {
+            const preflight = {
               ...inspected,
               status: deriveAutomaticIsolationWorkspaceStatus(findings),
               findings,
             }
+            if (preflight.status === "ready" && compilation?.artifact) {
+              automaticIsolationArtifacts.push(compilation.artifact)
+            }
+            return preflight
           }),
         )
       : undefined
@@ -256,7 +294,13 @@ export async function scanTarball(
     edgeCount: edges.length,
   })
 
-  return { workspaces: workspacePaths, edges, automaticIsolationPreflight }
+  return {
+    workspaces: workspacePaths,
+    edges,
+    automaticIsolationPreflight,
+    automaticIsolationArtifacts:
+      automaticIsolationArtifacts.length > 0 ? automaticIsolationArtifacts : undefined,
+  }
 }
 
 /**
@@ -265,11 +309,15 @@ export async function scanTarball(
  * GitHub tarballs extract to {owner}-{repo}-{sha}/ — runners expect
  * clean paths (e.g., infra/production/ not yaffle-dot-dev-yaffle-abc123/infra/production/).
  */
-async function repackageTarball(tarballBuffer: Buffer): Promise<Buffer> {
+export async function repackageTarball(
+  tarballBuffer: Buffer,
+  automaticIsolationArtifacts: CompiledAutomaticIsolationArtifact[] = [],
+): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const extract = tar.extract()
     const pack = tar.pack()
     const chunks: Buffer[] = []
+    const sourcePaths = new Set<string>()
     let stripPrefix = ""
 
     extract.on("entry", (header: TarEntryHeader, stream: Readable, next: TarEntryNext) => {
@@ -288,13 +336,65 @@ async function repackageTarball(tarballBuffer: Buffer): Promise<Buffer> {
         return
       }
 
+      sourcePaths.add(newName)
+
       // Write entry with stripped name
       const entry = pack.entry({ ...header, name: newName }, next)
       stream.pipe(entry)
     })
 
     extract.on("finish", () => {
-      pack.finalize()
+      const generatedEntries = automaticIsolationArtifacts.flatMap((artifact) => {
+        const workspacePrefix =
+          artifact.manifest.identity.workspacePath === "."
+            ? ""
+            : `${artifact.manifest.identity.workspacePath}/`
+        return [
+          ...artifact.files.map((file) => ({
+            name: `${workspacePrefix}${file.path}`,
+            content: file.content,
+          })),
+          {
+            name: `${workspacePrefix}${automaticIsolationArtifactPaths.manifest}`,
+            content: `${JSON.stringify(artifact.manifest, null, 2)}\n`,
+          },
+        ]
+      })
+
+      const appendNext = (index: number): void => {
+        const generated = generatedEntries[index]
+        if (!generated) {
+          pack.finalize()
+          return
+        }
+        if (sourcePaths.has(generated.name)) {
+          reject(
+            new AutomaticIsolationArtifactError(
+              `Repository source uses reserved automatic isolation path: ${generated.name}`,
+              "RESERVED_PATH_CONFLICT",
+            ),
+          )
+          return
+        }
+        sourcePaths.add(generated.name)
+        const entry = pack.entry(
+          {
+            name: generated.name,
+            type: "file",
+            size: Buffer.byteLength(generated.content),
+          },
+          (entryError) => {
+            if (entryError) {
+              reject(entryError)
+              return
+            }
+            appendNext(index + 1)
+          },
+        )
+        entry.end(generated.content)
+      }
+
+      appendNext(0)
     })
 
     extract.on("error", reject)
@@ -376,6 +476,7 @@ export async function runScanner(): Promise<void> {
       claimResult.workspaceVariables,
       currentNamespace,
       claimResult.automaticIsolationWorkspacePaths,
+      claimResult.automaticIsolationContext,
     )
     const graph = buildGraphFromInferred(inferredGraph.workspaces, inferredGraph.edges)
 
@@ -421,10 +522,15 @@ export async function runScanner(): Promise<void> {
 
     // 5. Repackage tarball (strip GitHub's prefix dir) and upload to S3
     let workspaceS3Key: string | undefined
+    let workspaceArtifactSha256: string | undefined
     if (claimResult.workspaceUploadUrl) {
       try {
         log("Repackaging tarball (stripping prefix)...")
-        const cleanTarball = await repackageTarball(tarballBuffer)
+        const cleanTarball = await repackageTarball(
+          tarballBuffer,
+          inferredGraph.automaticIsolationArtifacts,
+        )
+        workspaceArtifactSha256 = createHash("sha256").update(cleanTarball).digest("hex")
         log("Uploading workspace to S3", { sizeBytes: cleanTarball.length })
 
         const uploadResponse = await fetch(claimResult.workspaceUploadUrl, {
@@ -437,8 +543,10 @@ export async function runScanner(): Promise<void> {
           throw new Error(`S3 upload failed: ${uploadResponse.status}`)
         }
 
-        const ref = claimResult.ref.replace("refs/heads/", "")
-        workspaceS3Key = `${claimResult.orgSlug}/${ref}/${claimResult.headSha}/workspace.tar.gz`
+        if (!claimResult.workspaceS3Key) {
+          throw new Error("Scanner claim did not include a workspace artifact key")
+        }
+        workspaceS3Key = claimResult.workspaceS3Key
         log("Workspace uploaded successfully")
       } catch (err) {
         error("Workspace upload failed (non-fatal)", { error: String(err) })
@@ -450,7 +558,11 @@ export async function runScanner(): Promise<void> {
       graph: graph.toSerializable(),
       executionOrder: filteredOrder,
       workspaceS3Key,
+      workspaceArtifactSha256,
       automaticIsolationPreflight: inferredGraph.automaticIsolationPreflight,
+      automaticIsolationArtifacts: inferredGraph.automaticIsolationArtifacts?.map(
+        (artifact) => artifact.manifest,
+      ),
     })
 
     log("Scan result reported successfully")

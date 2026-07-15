@@ -6,6 +6,7 @@ export type AutomaticIsolationFindingCode =
   | "hcl_parse_error"
   | "import_not_allowed"
   | "module_review_required"
+  | "override_not_allowed"
   | "prevent_destroy_not_allowed"
   | "provisioner_not_allowed"
   | "removed_not_allowed"
@@ -93,12 +94,29 @@ function inspectResource(
 }
 
 function inspectHclFile(file: AutomaticIsolationSourceFile): AutomaticIsolationFinding[] {
-  if (file.path.endsWith(".tf.json")) {
+  const fileName = file.path.split("/").at(-1) ?? file.path
+  const isJsonSource = file.path.endsWith(".tf.json") || file.path.endsWith(".tofu.json")
+  const isOverride = [".tf", ".tofu", ".tf.json", ".tofu.json"].some(
+    (extension) =>
+      fileName === `override${extension}` || fileName.endsWith(`_override${extension}`),
+  )
+  const findings: AutomaticIsolationFinding[] = isOverride
+    ? [
+        {
+          code: "override_not_allowed",
+          filePath: file.path,
+          message: `${file.path} can override Yaffle's generated isolation configuration and is not allowed in automatically isolated workspaces.`,
+        },
+      ]
+    : []
+
+  if (isJsonSource) {
     return [
+      ...findings,
       {
         code: "tf_json_not_supported",
         filePath: file.path,
-        message: `${file.path} uses Terraform JSON syntax, which automatic preview isolation does not yet inspect.`,
+        message: `${file.path} uses Terraform/OpenTofu JSON syntax, which automatic preview isolation does not yet inspect.`,
       },
     ]
   }
@@ -116,6 +134,7 @@ function inspectHclFile(file: AutomaticIsolationSourceFile): AutomaticIsolationF
 
   if (!document) {
     return [
+      ...findings,
       {
         code: "hcl_parse_error",
         filePath: file.path,
@@ -123,8 +142,6 @@ function inspectHclFile(file: AutomaticIsolationSourceFile): AutomaticIsolationF
       },
     ]
   }
-
-  const findings: AutomaticIsolationFinding[] = []
 
   for (const importBlock of document.import ?? []) {
     const rawTarget = typeof importBlock.to === "string" ? importBlock.to : undefined

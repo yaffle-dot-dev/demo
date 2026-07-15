@@ -1,9 +1,10 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "@yaffle/test"
-import { sql } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
 
-import { createGithubInstallation, createOrg, updateOrg } from "../db/queries/organizations.ts"
+import { createOrg, updateOrg } from "../db/queries/organizations.ts"
+import { createPrincipal, ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
 import { createRunGroup } from "../db/queries/run-groups.ts"
-import { previews, iacJobs } from "../db/schema.ts"
+import { previews, iacJobs, runGroups } from "../db/schema.ts"
 import { db } from "./db.ts"
 import type { ExecutionSnapshotV1 } from "./execution-snapshot.ts"
 
@@ -12,13 +13,7 @@ process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS = "99"
 process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS = "1"
 process.env.BETTER_AUTH_URL = "https://yaffle.local:6969"
 
-const mockCreateCheckRun = mock(async () => 1)
-const mockUpdateCheckRun = mock(async () => {})
-
-mock.module("./github.ts", () => ({
-  createCheckRun: mockCreateCheckRun,
-  updateCheckRun: mockUpdateCheckRun,
-}))
+const mockCompleteRunGroupCheck = mock(async () => {})
 
 const { completeRunGroup } = await import("./run-group-orchestrator.ts")
 
@@ -81,10 +76,8 @@ describe("run-group-orchestrator", () => {
   beforeEach(async () => {
     assertTestDatabase()
 
-    mockCreateCheckRun.mockReset()
-    mockCreateCheckRun.mockImplementation(async () => 1)
-    mockUpdateCheckRun.mockReset()
-    mockUpdateCheckRun.mockImplementation(async () => {})
+    mockCompleteRunGroupCheck.mockReset()
+    mockCompleteRunGroupCheck.mockImplementation(async () => {})
 
     await db.execute(
       sql`TRUNCATE TABLE
@@ -122,13 +115,6 @@ describe("run-group-orchestrator", () => {
       slug: "test-org",
     })
 
-    await createGithubInstallation({
-      orgId: org.id,
-      githubOrgId: 99999,
-      githubOrgLogin: "test-owner",
-      installationId: 12345,
-    })
-
     const runGroup = await createRunGroup({
       orgId: org.id,
       repo: "test-repo",
@@ -148,13 +134,17 @@ describe("run-group-orchestrator", () => {
       status: "pending",
     })
 
-    await completeRunGroup(runGroup.id, {
-      graph: {
-        workspaces: ["infra"],
-        edges: [],
+    await completeRunGroup(
+      runGroup.id,
+      {
+        graph: {
+          workspaces: ["infra"],
+          edges: [],
+        },
+        executionOrder: ["infra"],
       },
-      executionOrder: ["infra"],
-    })
+      { completeRunGroupCheck: mockCompleteRunGroupCheck },
+    )
 
     const deployments = await db.select().from(previews)
     expect(deployments).toHaveLength(1)
@@ -171,19 +161,13 @@ describe("run-group-orchestrator", () => {
     const jobs = await db.select().from(iacJobs)
     expect(jobs).toHaveLength(0)
 
-    expect(mockCreateCheckRun).toHaveBeenCalledTimes(1)
-    expect(mockCreateCheckRun).toHaveBeenCalledWith(12345, {
-      owner: "test-owner",
-      repo: "test-repo",
-      headSha: "abc123def456",
-      name: "Yaffle / run",
-      status: "completed",
+    expect(mockCompleteRunGroupCheck).toHaveBeenCalledTimes(1)
+    expect(mockCompleteRunGroupCheck).toHaveBeenCalledWith({
+      runGroupId: runGroup.id,
       conclusion: "failure",
-      detailsUrl: `https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${runGroup.id}`,
       title: "Failed due to plan limits",
       summary:
-        "Free tier limit: 1 concurrent preview branches. You have 1 active. Upgrade to Pro at https://yaffle.local:6969/test-org/settings/billing for unlimited previews.\n\n" +
-        `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${runGroup.id})`,
+        "Free tier limit: 1 concurrent preview branches. You have 1 active. Upgrade to Pro at https://yaffle.local:6969/test-org/settings/billing for unlimited previews.",
     })
   })
 
@@ -244,9 +228,16 @@ describe("run-group-orchestrator", () => {
       planTier: "pro",
       subscriptionStatus: "active",
     })
+    const principal = await createPrincipal({ type: "anonymous_session" })
+    const repoBinding = await ensurePrincipalRepoBinding({
+      principalId: principal.id,
+      canonicalRepoNamespace: "test-owner--test-repo",
+      localRepoFingerprint: `orchestrator-${crypto.randomUUID()}`,
+    })
 
     const runGroup = await createRunGroup({
       orgId: org.id,
+      repoBindingId: repoBinding.id,
       repo: "test-repo",
       environmentKind: "transient",
       environmentName: "review-42",
@@ -263,6 +254,10 @@ describe("run-group-orchestrator", () => {
       status: "pending",
     })
 
+    await db
+      .update(runGroups)
+      .set({ workspaceS3Key: "test-owner/test-repo/abc123def456/workspace.tar.gz" })
+      .where(eq(runGroups.id, runGroup.id))
     await completeRunGroup(runGroup.id, {
       graph: {
         workspaces: ["infra"],

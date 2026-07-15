@@ -117,4 +117,42 @@ describe("execution snapshot", () => {
       },
     })
   })
+
+  test.each([
+    "https://deploy.example.test?token=do-not-persist",
+    "https://deploy.example.test?sig=do-not-persist",
+    "https://deploy.example.test?code=do-not-persist",
+    "https://user:password@deploy.example.test",
+  ])("rejects lifecycle credentials embedded in request URL %s", (url) => {
+    const unsafeConfig = config()
+    unsafeConfig.workspaces[0].activation![0].request!.url = url
+
+    expect(() => buildExecutionSnapshot({
+      ctx: context,
+      config: unsafeConfig,
+      workspacePaths: ["infra"],
+      workspaceVariables: { infra: {} },
+      environmentKind: "transient",
+      environmentName: "pr-42",
+    })).toThrow("must use a connection instead of URL credentials")
+  })
+
+  test("rejects credentials embedded in a GitHub API URL", () => {
+    const unsafeConfig = config()
+    const hook = unsafeConfig.workspaces[0].activation![0]
+    hook.request = undefined
+    hook.github = {
+      event_type: "deploy",
+      api_url: "https://api.github.test?sig=do-not-persist",
+    }
+
+    expect(() => buildExecutionSnapshot({
+      ctx: context,
+      config: unsafeConfig,
+      workspacePaths: ["infra"],
+      workspaceVariables: { infra: {} },
+      environmentKind: "transient",
+      environmentName: "pr-42",
+    })).toThrow("must use a connection instead of URL credentials")
+  })
 })

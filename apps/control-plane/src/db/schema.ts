@@ -487,6 +487,8 @@ export const approvals = pgTable("approvals", {
   deploymentId: uuid("deployment_id")
     .references(() => workspaceDeployments.id)
     .notNull(),
+  runGroupId: uuid("run_group_id")
+    .references(() => runGroups.id),
   userId: text("user_id")
     .references(() => user.id)
     .notNull(),
@@ -528,7 +530,10 @@ export const jobs = pgTable(
 // IaC Jobs (terraform plan/apply/destroy execution queue)
 // =============================================================================
 
-function buildIacJobColumns() {
+function buildIacJobColumns(runGroupRequired: boolean) {
+  const runGroupId = uuid("run_group_id").references(() => runGroups.id, {
+    onDelete: runGroupRequired ? "cascade" : "set null",
+  })
   return {
     id: uuid("id")
       .primaryKey()
@@ -536,7 +541,7 @@ function buildIacJobColumns() {
     deploymentId: uuid("deployment_id")
       .references(() => workspaceDeployments.id, { onDelete: "cascade" })
       .notNull(),
-    runGroupId: uuid("run_group_id").references(() => runGroups.id, { onDelete: "set null" }),
+    runGroupId: runGroupRequired ? runGroupId.notNull() : runGroupId,
     jobType: iacJobTypeEnum("job_type").notNull(),
     status: iacJobStatusEnum("status").default("queued").notNull(),
     // Worker tracking
@@ -563,7 +568,7 @@ function buildIacJobColumns() {
   }
 }
 
-export const iacJobs = pgTable("iac_jobs", buildIacJobColumns(), (t) => [
+export const iacJobs = pgTable("iac_jobs", buildIacJobColumns(true), (t) => [
   // Index for efficient job queue claiming:
   // - Filters on status='queued'
   // - Orders by job_type (priority) then queued_at
@@ -573,7 +578,7 @@ export const iacJobs = pgTable("iac_jobs", buildIacJobColumns(), (t) => [
   index("iac_jobs_run_group_id_idx").on(t.runGroupId),
 ])
 
-export const iacJobHistory = pgTable("iac_job_history", buildIacJobColumns(), (t) => [
+export const iacJobHistory = pgTable("iac_job_history", buildIacJobColumns(false), (t) => [
   index("iac_job_history_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
   index("iac_job_history_deployment_type_queued_at_idx").on(
     t.deploymentId.asc(),

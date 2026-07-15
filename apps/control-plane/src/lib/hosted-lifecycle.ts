@@ -34,7 +34,11 @@ import { createHmac } from "node:crypto"
 import { findOrgById } from "../db/queries/organizations.ts"
 import { cascadeFailure, notifyDownstreams } from "./deployment-side-effects.ts"
 import { deriveLifecycleConditions, deriveWorkspaceLifecycleState } from "./lifecycle-conditions.ts"
-import { findExecutionSnapshotWorkspace } from "./execution-snapshot.ts"
+import {
+  ExecutionContextAssociationError,
+  findExecutionSnapshotWorkspace,
+  isExecutionContextAssociationValid,
+} from "./execution-snapshot.ts"
 
 export interface HostedLifecycleExecutionResult {
   runId: string | null
@@ -46,22 +50,45 @@ export async function executeHostedLifecycleForDeployment(values: {
     id: string
     orgId: string
     repo: string
+    environmentKind: "named" | "transient"
+    environmentName: string
     workspacePath: string
+    installationId?: number | null
   }
   outputs: Record<string, unknown>
 }): Promise<HostedLifecycleExecutionResult> {
   if (!values.runGroupId) {
-    return { runId: null }
+    throw new ExecutionContextAssociationError(
+      `Deployment ${values.deployment.id} is missing its execution run group`,
+    )
   }
 
   const runGroup = await findRunGroupById(values.runGroupId)
   if (!runGroup?.repoBindingId || !runGroup.executionSnapshot) {
-    return { runId: null }
+    throw new ExecutionContextAssociationError(
+      `Run group ${values.runGroupId} is missing its immutable execution context`,
+    )
+  }
+  if (runGroup.orgId !== values.deployment.orgId) {
+    throw new ExecutionContextAssociationError(
+      `Run group ${runGroup.id} does not own deployment ${values.deployment.id}`,
+    )
   }
 
   const binding = await findPrincipalRepoBindingById(runGroup.repoBindingId)
   if (!binding) {
     throw new Error(`run group ${runGroup.id} is missing its principal repo binding`)
+  }
+  if (!isExecutionContextAssociationValid({
+    snapshot: runGroup.executionSnapshot,
+    runGroup,
+    resource: values.deployment,
+    canonicalRepoNamespace: binding.canonicalRepoNamespace,
+    requireRepoBinding: true,
+  })) {
+    throw new ExecutionContextAssociationError(
+      `Run group ${runGroup.id} does not own deployment ${values.deployment.id}`,
+    )
   }
   const principal = await findPrincipalById(binding.principalId)
   if (!principal) {
@@ -74,7 +101,9 @@ export async function executeHostedLifecycleForDeployment(values: {
     values.deployment.workspacePath,
   )
   if (!workspace) {
-    return { runId: null }
+    throw new ExecutionContextAssociationError(
+      `Run group ${runGroup.id} does not contain workspace ${values.deployment.workspacePath}`,
+    )
   }
 
   const canonicalRepoNamespace = binding.canonicalRepoNamespace
@@ -473,10 +502,20 @@ async function dispatchHostedLifecycle(spec: HostedDispatchSpec, payload: Record
 
   const headers = new Headers({ "content-type": "application/json" })
   if (spec.request.auth?.connection) {
+    const repoNamespace = payload.repo_namespace
+    const environment = payload.environment
+    const workspacePath = payload.workspace_path
+    if (
+      typeof repoNamespace !== "string"
+      || typeof environment !== "string"
+      || typeof workspacePath !== "string"
+    ) {
+      throw new Error("Lifecycle payload is missing its execution scope")
+    }
     const secret = await resolveLifecycleConnectionSecret(
-      String(payload.repo_namespace ?? ""),
-      String(payload.environment ?? ""),
-      String(payload.workspace_path ?? ""),
+      repoNamespace,
+      environment,
+      workspacePath,
       spec.request.auth.connection,
     )
     applyLifecycleConnectionAuth(headers, spec.request.auth.scheme, secret, Buffer.from(JSON.stringify(payload)))

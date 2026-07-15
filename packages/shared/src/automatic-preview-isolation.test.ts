@@ -128,4 +128,25 @@ removed {
       findings: [],
     })
   })
+
+  test("fails closed on OpenTofu JSON and repository override files", () => {
+    const result = inspectAutomaticPreviewIsolationWorkspace("infra", [
+      { path: "infra/escape.tofu.json", content: "{}" },
+      { path: "infra/zz_override.tofu", content: 'resource "local_file" "escape" {}' },
+    ])
+
+    expect(result.status).toBe("blocked")
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "tf_json_not_supported",
+          filePath: "infra/escape.tofu.json",
+        }),
+        expect.objectContaining({
+          code: "override_not_allowed",
+          filePath: "infra/zz_override.tofu",
+        }),
+      ]),
+    )
+  })
 })

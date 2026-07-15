@@ -127,7 +127,11 @@ export async function runClaimedJob(input: {
     })
 
     log("Downloading workspace...", { jobId, workerId })
-    workDir = await downloadWorkspace(context.workspaceUrl, context.workspacePath)
+    workDir = await downloadWorkspace(
+      context.workspaceUrl,
+      context.workspacePath,
+      context.workspaceArtifactSha256,
+    )
     log("Workspace downloaded", { jobId, workerId, workDir })
 
     log(`Executing tofu ${context.command}...`, { jobId, workerId })

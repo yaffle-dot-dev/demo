@@ -5,7 +5,11 @@ import { z } from "zod"
 import { findDeploymentById, listDeployments, pauseDeployment } from "../db/queries/workspace-deployments.ts"
 import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { listApprovals } from "../db/queries/approvals.ts"
-import { getLatestDependencyGraphsForOrg } from "../db/queries/run-groups.ts"
+import {
+  findRunGroupsByIds,
+  getLatestDependencyGraphsForOrg,
+  type RunGroupWithRepoBinding,
+} from "../db/queries/run-groups.ts"
 import { parseEnvironmentGroupProjectionPayload } from "../lib/projections/environment-groups.ts"
 import { logger } from "../lib/telemetry.ts"
 import {
@@ -16,6 +20,10 @@ import {
 import { rerunPreview, triggerApply } from "../lib/webhook-handler.ts"
 import { events, type DeploymentUpdateEvent } from "../lib/events.ts"
 import { isUserAuthorizedApprover } from "../lib/approver.ts"
+import {
+  isExecutionContextAssociationValid,
+  serializeBoundExecutionSnapshotIdentity,
+} from "../lib/execution-snapshot.ts"
 
 const listQuerySchema = z.object({
   repo: z.string().optional(),
@@ -84,6 +92,14 @@ async function buildPreviewOverviewSnapshot(params: {
       .sort((left, right) => right.payload!.updatedAt.localeCompare(left.payload!.updatedAt))
 
     const limitedGroups = params.limit ? filteredGroups.slice(0, params.limit) : filteredGroups
+    const runGroupsById = await findRunGroupsByIds(
+      limitedGroups.flatMap((entry) =>
+        entry.payload!.workspaces.flatMap((workspace) =>
+          workspace.runGroupId ? [workspace.runGroupId] : []
+        )
+      ),
+      params.orgId,
+    )
     const data = limitedGroups.flatMap((entry) => {
       const payload = entry.payload!
       const prNumber = typeof payload.sourceMetadata?.prNumber === "number" ? payload.sourceMetadata.prNumber : null
@@ -106,6 +122,17 @@ async function buildPreviewOverviewSnapshot(params: {
         approvers: workspace.approvers,
         createdAt: workspace.createdAt,
         headUpdatedAt: workspace.headUpdatedAt,
+        executionContext: serializePreviewExecutionContext(
+          {
+            orgId: params.orgId,
+            repo: payload.repo,
+            environmentKind: payload.environmentKind,
+            environmentName: payload.environmentName,
+            workspacePath: workspace.workspacePath,
+            runGroupId: workspace.runGroupId,
+          },
+          workspace.runGroupId ? runGroupsById.get(workspace.runGroupId) : undefined,
+        ),
       }))
     })
 
@@ -144,9 +171,18 @@ async function buildPreviewOverviewSnapshot(params: {
   for (const [key, graph] of dependencyGraphs) {
     graphsObject[key] = graph
   }
+  const runGroupsById = await findRunGroupsByIds(
+    result.items.flatMap((deployment) => deployment.runGroupId ? [deployment.runGroupId] : []),
+    params.orgId,
+  )
 
   return {
-    data: result.items.map(serializePreview),
+    data: result.items.map((deployment) =>
+      serializePreview(
+        deployment,
+        deployment.runGroupId ? runGroupsById.get(deployment.runGroupId) : undefined,
+      )
+    ),
     dependencyGraphs: graphsObject,
     nextCursor: result.nextCursor,
   }
@@ -180,6 +216,10 @@ previewsRoute.get(
       limit,
       cursor,
     })
+    const runGroupsById = await findRunGroupsByIds(
+      result.items.flatMap((deployment) => deployment.runGroupId ? [deployment.runGroupId] : []),
+      auth.orgId,
+    )
 
     logger.debug("list previews", {
       orgId: auth.orgId,
@@ -189,7 +229,12 @@ previewsRoute.get(
     })
 
     return c.json({
-      data: result.items.map(serializePreview),
+      data: result.items.map((deployment) =>
+        serializePreview(
+          deployment,
+          deployment.runGroupId ? runGroupsById.get(deployment.runGroupId) : undefined,
+        )
+      ),
       nextCursor: result.nextCursor,
     })
   },
@@ -343,9 +388,11 @@ previewsRoute.get(
       data: approvals.map((a) => ({
         id: a.id,
         deploymentId: a.deploymentId,
+        runGroupId: a.runGroupId,
         userId: a.userId,
         approverLogin: a.approverLogin ?? null,
         approvedAt: a.approvedAt.toISOString(),
+        executionContext: a.executionContext,
       })),
     })
   },
@@ -675,6 +722,7 @@ interface SerializedPreview {
   approvers: string[] | null
   createdAt: string
   headUpdatedAt: string
+  executionContext: ReturnType<typeof serializeBoundExecutionSnapshotIdentity>
 }
 
 function serializePreview(p: {
@@ -695,7 +743,9 @@ function serializePreview(p: {
   approvers: unknown
   createdAt: Date
   statusChangedAt: Date
-}): SerializedPreview {
+  orgId: string
+  runGroupId: string | null
+}, runGroup?: RunGroupWithRepoBinding): SerializedPreview {
   const approvers = Array.isArray(p.approvers)
     ? p.approvers.filter((entry) => typeof entry === "string")
     : null
@@ -717,5 +767,41 @@ function serializePreview(p: {
     approvers,
     createdAt: p.createdAt.toISOString(),
     headUpdatedAt: p.statusChangedAt.toISOString(),
+    executionContext: serializePreviewExecutionContext(p, runGroup),
   }
+}
+
+function serializePreviewExecutionContext(
+  deployment: {
+    orgId: string
+    repo: string
+    environmentKind: string
+    environmentName: string
+    workspacePath: string
+    runGroupId: string | null
+  },
+  runGroup?: RunGroupWithRepoBinding,
+): ReturnType<typeof serializeBoundExecutionSnapshotIdentity> {
+  if (!deployment.runGroupId || !runGroup || runGroup.id !== deployment.runGroupId) {
+    return null
+  }
+
+  if (
+    deployment.environmentKind === "transient"
+    && !isExecutionContextAssociationValid({
+      snapshot: runGroup.executionSnapshot,
+      runGroup,
+      resource: deployment,
+      canonicalRepoNamespace: runGroup.canonicalRepoNamespace,
+      requireRepoBinding: true,
+    })
+  ) {
+    return null
+  }
+
+  return serializeBoundExecutionSnapshotIdentity({
+    snapshot: runGroup.executionSnapshot,
+    runGroup,
+    resource: deployment,
+  })
 }

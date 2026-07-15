@@ -31,7 +31,18 @@ import { buildStateKey, transientStatePrefix, environmentStatePrefix } from "./r
 import { events } from "./events.ts"
 import { persistRunGroupWorkspaceMetadataFromArchive } from "./run-group-workspace-metadata.ts"
 import { logger } from "./telemetry.ts"
-import { findExecutionSnapshotWorkspace } from "./execution-snapshot.ts"
+import {
+  ExecutionSnapshotInvariantError,
+  findExecutionSnapshotWorkspace,
+} from "./execution-snapshot.ts"
+
+interface RunGroupOrchestratorDependencies {
+  completeRunGroupCheck: typeof completeRunGroupCheck
+}
+
+const defaultDependencies: RunGroupOrchestratorDependencies = {
+  completeRunGroupCheck,
+}
 
 /**
  * Complete a run group after the scanner reports results.
@@ -45,6 +56,7 @@ import { findExecutionSnapshotWorkspace } from "./execution-snapshot.ts"
 export async function completeRunGroup(
   runGroupId: string,
   scanResult: ScanJobResult,
+  dependencies: RunGroupOrchestratorDependencies = defaultDependencies,
 ): Promise<void> {
   const runGroup = await findRunGroupById(runGroupId)
   if (!runGroup) {
@@ -64,7 +76,9 @@ export async function completeRunGroup(
     const selectionChanged = selectedPaths.size !== scanPaths.size
       || [...selectedPaths].some((workspacePath) => !scanPaths.has(workspacePath))
     if (selectionChanged) {
-      throw new Error(`Scanner result does not match run group ${runGroupId} workspace selection`)
+      throw new ExecutionSnapshotInvariantError(
+        `Scanner result does not match run group ${runGroupId} workspace selection`,
+      )
     }
   }
 
@@ -169,7 +183,7 @@ export async function completeRunGroup(
     for (const { deploymentId } of deploymentData) {
       await updateDeploymentStatus(deploymentId, "plan_limited")
     }
-    await completeRunGroupCheck({
+    await dependencies.completeRunGroupCheck({
       runGroupId,
       conclusion: "failure",
       title: "Failed due to plan limits",

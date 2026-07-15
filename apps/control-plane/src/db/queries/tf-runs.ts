@@ -136,7 +136,7 @@ export async function updateRunStatus(
     const [updated] = await db
       .update(tfRuns)
       .set({ status, ...extra })
-      .where(eq(tfRuns.id, runId))
+      .where(and(eq(tfRuns.id, runId), eq(tfRuns.deploymentId, previewId)))
       .returning({ runGroupId: tfRuns.runGroupId, deploymentId: tfRuns.deploymentId })
 
     events.emitRunUpdate(runId, previewId)
@@ -230,7 +230,7 @@ export async function appendRunLog(
     await db
       .update(tfRuns)
       .set({ logOutput: sql`coalesce(${tfRuns.logOutput}, '') || ${chunk}` })
-      .where(eq(tfRuns.id, runId))
+      .where(and(eq(tfRuns.id, runId), eq(tfRuns.deploymentId, previewId)))
     events.emitRunUpdate(runId, previewId)
   })
 }
@@ -248,7 +248,7 @@ export async function replaceRunLog(
     await db
       .update(tfRuns)
       .set({ logOutput: output })
-      .where(eq(tfRuns.id, runId))
+      .where(and(eq(tfRuns.id, runId), eq(tfRuns.deploymentId, previewId)))
     events.emitRunUpdate(runId, previewId)
   })
 }

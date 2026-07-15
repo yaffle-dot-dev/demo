@@ -251,6 +251,9 @@ importers:
       '@yaffle/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      hcl2-parser:
+        specifier: ^1.0.3
+        version: 1.0.3
       tar-stream:
         specifier: ^3.1.8
         version: 3.2.0

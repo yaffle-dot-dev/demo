@@ -23,7 +23,7 @@ import {
 } from "../db/queries/principals.ts"
 import {
   findDeploymentById,
-  findDeploymentsByEnvironment,
+  listDeployments,
   updateDeploymentStatus,
   recordDeploymentApproval,
   resetSkippedDownstreams,
@@ -34,7 +34,11 @@ import {
   findPendingJobsForPreview,
 } from "../db/queries/iac-jobs.ts"
 import { findLatestRun } from "../db/queries/tf-runs.ts"
-import { createRunGroup, type RunGroupTrigger } from "../db/queries/run-groups.ts"
+import {
+  createRunGroup,
+  findRunGroupsByIds,
+  type RunGroupTrigger,
+} from "../db/queries/run-groups.ts"
 import { events } from "./events.ts"
 import { fetchFileContent, getInstallationToken } from "./github.ts"
 import { createPendingRunGroupCheck, surfaceConfigErrorCheck } from "./run-group-checks.ts"
@@ -52,7 +56,11 @@ import { createScanJob } from "../db/queries/scan-jobs.ts"
 import { generateScanJobToken } from "./job-token.ts"
 import { getScheduler } from "./scheduler.ts"
 import type { WorkspaceVariablesByPath } from "./workspace-variables.ts"
-import { buildExecutionSnapshot } from "./execution-snapshot.ts"
+import {
+  buildExecutionSnapshot,
+  ExecutionSnapshotInvariantError,
+  isExecutionContextAssociationValid,
+} from "./execution-snapshot.ts"
 
 /** Default runner for production use. Override via createHandler() for tests. */
 const defaultRunner: Runner = new LocalRunner()
@@ -272,6 +280,9 @@ export async function triggerApply(opts: {
     if (!latestPlan || latestPlan.status !== "success") {
       throw new Error("no successful plan to apply")
     }
+    if (!latestPlan.runGroupId) {
+      throw new ExecutionSnapshotInvariantError("Successful plan is missing its execution snapshot")
+    }
 
     // Check that apply isn't already queued/running/completed for this plan
     const { findPendingJobsForPreview, findLatestIacJob } =
@@ -303,6 +314,7 @@ export async function triggerApply(opts: {
         const { createApproval } = await import("../db/queries/approvals.ts")
         await createApproval({
           deploymentId: preview.id,
+          runGroupId: latestPlan.runGroupId,
           userId: opts.userId,
           approverLogin: opts.approverLogin ?? null,
         })
@@ -381,6 +393,11 @@ export async function queueAutoApply(deploymentId: string): Promise<{ jobId: str
     if (!latestPlan || latestPlan.status !== "success") {
       logger.warn("Auto-apply: no successful plan", { deploymentId })
       return null
+    }
+    if (!latestPlan.runGroupId) {
+      throw new ExecutionSnapshotInvariantError(
+        "Successful auto-apply plan is missing its execution snapshot",
+      )
     }
 
     // Check that apply isn't already queued/running
@@ -873,7 +890,7 @@ async function handlePrOpenedOrUpdated(
 async function handlePrClosed(
   ctx: PullRequestContext,
   _runner: Runner, // Kept for API compatibility; execution now happens via IaC engine
-  configLoader: ConfigLoader,
+  _configLoader: ConfigLoader,
 ): Promise<void> {
   const tag = `${ctx.owner}/${ctx.repo}#${ctx.prNumber}`
   const attrs = contextAttrs(ctx)
@@ -890,47 +907,66 @@ async function handlePrClosed(
     return
   }
 
-  // Load config to know which workspaces to destroy
-  let config: YaffleTomlConfig
-  try {
-    const installationToken = await acquireToken(ctx)
-    config = await configLoader(ctx, installationToken)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    logger.error(`failed to load config for ${tag}: ${msg}`, attrs)
-    getConfigLoadErrorCounter().add(1, { owner: ctx.owner, repo: ctx.repo })
-    await recordConfigLoadFailure(ctx, org.id, msg)
-    await surfaceConfigErrorCheck(ctx, msg)
-    return
-  }
-
-  // Get workspaces that apply to transient environments
   const environmentName = buildPrEnvironmentName(ctx.prNumber)
-  const workspacePaths = getWorkspacesForEnvironment(config, environmentName, true)
-
-  if (workspacePaths.length === 0) {
-    logger.info("no workspaces configured for transient environments", attrs)
-    return
-  }
-
-  logger.info(
-    `config loaded: ${workspacePaths.length} workspace(s) for PR destroy [${workspacePaths.join(", ")}]`,
-    { ...attrs, "yaffle.workspace_count": workspacePaths.length },
+  const candidates = (await listDeployments(org.id, {
+    environmentKind: "transient",
+    prNumber: ctx.prNumber,
+    limit: 250,
+  })).items
+  const runGroupsById = await findRunGroupsByIds(
+    candidates.flatMap((deployment) => deployment.runGroupId ? [deployment.runGroupId] : []),
+    org.id,
   )
-
-  // Get all deployments for this PR environment
-  const deployments = await findDeploymentsByEnvironment(org.id, ctx.repo, environmentName)
+  const deployments = candidates.filter((deployment) => {
+    const runGroup = deployment.runGroupId
+      ? runGroupsById.get(deployment.runGroupId)
+      : undefined
+    const snapshot = runGroup?.executionSnapshot
+    return Boolean(
+      runGroup
+      && snapshot
+      && snapshot.source.installationId === ctx.installationId
+      && snapshot.source.repositoryId === ctx.repoGithubId
+      && snapshot.source.ownerId === ctx.ownerGithubId
+      && snapshot.environment.kind === "transient"
+      && snapshot.environment.sourcePullRequestNumber === ctx.prNumber
+      && deployment.environmentKind === "transient"
+      && deployment.prNumber === ctx.prNumber
+      && isExecutionContextAssociationValid({
+        snapshot,
+        runGroup,
+        resource: deployment,
+      }),
+    )
+  })
 
   if (deployments.length === 0) {
     logger.info("no deployments found for this PR, nothing to destroy", attrs)
     return
   }
+  const missingArtifact = deployments.find((deployment) => {
+    const runGroup = deployment.runGroupId
+      ? runGroupsById.get(deployment.runGroupId)
+      : undefined
+    return !runGroup?.workspaceS3Key
+  })
+  if (missingArtifact) {
+    throw new ExecutionSnapshotInvariantError(
+      `Deployment ${missingArtifact.id} is missing its immutable workspace artifact`,
+    )
+  }
+
+  logger.info(
+    `found ${deployments.length} deployed workspace(s) for PR destroy`,
+    { ...attrs, "yaffle.workspace_count": deployments.length },
+  )
 
   const usingTfcBackend = useTfcBackend()
+  const deploymentRepo = deployments[0].repo
 
   // If using TFC backend, get TFC workspaces to archive
   const tfcWorkspacesToArchive = usingTfcBackend
-    ? await getTransientWorkspacesToArchive(org.id, ctx.repo, buildPrEnvironmentName(ctx.prNumber))
+    ? await getTransientWorkspacesToArchive(org.id, deploymentRepo, environmentName)
     : []
 
   // Identify leaf deployments (those with no downstream dependencies within this PR)
@@ -986,6 +1022,7 @@ async function handlePrClosed(
     const isLeaf = leafDeployments.some((leaf) => leaf.id === deployment.id)
 
     if (isLeaf) {
+      // Destroy from the artifact and immutable inputs that created this deployment.
       const job = await createIacJob({
         deploymentId: deployment.id,
         jobType: "destroy",
@@ -1006,7 +1043,13 @@ async function handlePrClosed(
   // Emit event so UI sees the queued state
   if (deployments.length > 0) {
     const first = deployments[0]
-    events.emitDeploymentUpdate(first.id, org.id, ctx.repo, "transient", environmentName)
+    events.emitDeploymentUpdate(
+      first.id,
+      org.id,
+      first.repo,
+      "transient",
+      first.environmentName,
+    )
   }
 }
 
