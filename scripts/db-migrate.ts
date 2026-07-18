@@ -8,6 +8,26 @@ export interface DbMigrateOptions {
   databaseUrl?: string
 }
 
+export interface MigrationOutcome {
+  expectedMigrationCount: number
+  afterCount: number
+}
+
+export function hasPendingMigrations(
+  expectedMigrationCount: number,
+  appliedCount: number,
+): boolean {
+  return appliedCount < expectedMigrationCount
+}
+
+export function assertMigrationOutcome(outcome: MigrationOutcome): void {
+  if (outcome.afterCount < outcome.expectedMigrationCount) {
+    throw new Error(
+      `Control-plane migrations incomplete: expected ${outcome.expectedMigrationCount}, found ${outcome.afterCount}`,
+    )
+  }
+}
+
 function resolveDatabaseUrl(options: DbMigrateOptions): string {
   const databaseUrl = options.databaseUrl?.trim()
     || process.env.YAFFLE_MIGRATION_DATABASE_URL?.trim()
@@ -27,6 +47,13 @@ export async function dbMigrate(options: DbMigrateOptions = {}) {
   const expectedMigrationCount = await getExpectedMigrationCount()
   const beforeCount = await getAppliedMigrationCount(rootDbUrl)
 
+  if (!hasPendingMigrations(expectedMigrationCount, beforeCount)) {
+    console.log(
+      `Migrations already current (${beforeCount}/${expectedMigrationCount}); skipping migrate`,
+    )
+    return
+  }
+
   // Check if there are pending migrations first
   console.log("Checking for pending migrations...")
   try {
@@ -45,21 +72,23 @@ export async function dbMigrate(options: DbMigrateOptions = {}) {
     await exec(["vp", "exec", "drizzle-kit", "migrate"], {
       cwd: "apps/control-plane",
       env: { DATABASE_URL: rootDbUrl },
+      quiet: true,
     })
-  } catch {
+  } catch (error) {
     migrateFailed = true
-    console.warn("drizzle-kit migrate exited non-zero; checking applied migration state")
-  }
-
-  const afterCount = await getAppliedMigrationCount(rootDbUrl)
-  if (afterCount < expectedMigrationCount) {
-    throw new Error(
-      `Control-plane migrations incomplete: expected ${expectedMigrationCount}, found ${afterCount}`,
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(
+      `drizzle-kit migrate exited non-zero; checking applied migration state\n${message}`,
     )
   }
 
-  if (migrateFailed && afterCount === beforeCount) {
-    throw new Error("Control-plane migrations failed without applying any new migrations")
+  const afterCount = await getAppliedMigrationCount(rootDbUrl)
+  assertMigrationOutcome({ expectedMigrationCount, afterCount })
+
+  if (migrateFailed) {
+    console.warn(
+      `drizzle-kit migrate failed, but another deploy applied all ${expectedMigrationCount} expected migrations; continuing`,
+    )
   }
 
   console.log("Migrations complete")
