@@ -1,0 +1,6 @@
+.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.*
+crash.log
+infra/preview-isolation/yaffle-product-demo*

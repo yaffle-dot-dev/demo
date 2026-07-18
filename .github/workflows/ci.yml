@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up OpenTofu
+        uses: opentofu/setup-opentofu@v1
+
+      - name: Validate demo contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f README.md
+          test -f yaffle.toml
+          test -f infra/preview-isolation/main.tf
+          test -f infra/preview-isolation/.terraform.lock.hcl
+          grep -q '^automatic_preview_isolation = true$' yaffle.toml
+          grep -q '^environments = \["\*"\]$' yaffle.toml
+
+      - name: Check formatting
+        run: tofu -chdir=infra/preview-isolation fmt -check
+
+      - name: Initialize providers
+        run: tofu -chdir=infra/preview-isolation init -backend=false -input=false -lockfile=readonly
+
+      - name: Validate Terraform
+        run: tofu -chdir=infra/preview-isolation validate
