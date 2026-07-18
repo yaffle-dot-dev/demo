@@ -1,0 +1,84 @@
+# Yaffle configuration demo
+
+version = 1
+
+# Named environments. Pull requests use transient pr-{number} environments and
+# do not need to be declared here.
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+
+[[environments]]
+name = "development"
+
+[cloud]
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/main"]
+environment = "production"
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/staging"]
+environment = "staging"
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/develop"]
+environment = "development"
+
+[[cloud.triggers.github.pull_request]]
+branch_patterns = ["*"]
+
+# Production changes to core and database infrastructure require approval from
+# the linked GitHub account for lamalex. Change this to your GitHub login when
+# adapting the demo for another account.
+[[cloud.approvals]]
+workspaces = ["infra/core", "infra/database"]
+environments = ["production"]
+approvers = ["github:user:lamalex"]
+
+# Shared network infrastructure runs only in production. Transient application
+# workspaces consume its immutable output snapshot instead of recreating it.
+[[workspaces]]
+path = "infra/shared"
+environments = ["production"]
+outputs.network_id = { visibility = "internal" }
+outputs.private_subnet_ids = { visibility = "internal" }
+
+[[workspaces]]
+path = "infra/core"
+environments = ["production", "staging"]
+variables.project_name = "yaffle-demo"
+variables.enable_monitoring = true
+variables.retention_days = 30
+
+[[workspaces]]
+path = "infra/database"
+environments = ["production"]
+variables.instance_count = 3
+variables.enable_backups = true
+
+[[workspaces]]
+path = "infra/app"
+environments = ["*"]
+variables.min_instances = 1
+variables.max_instances = 5
+variables.enable_debug = false
+
+[[workspaces]]
+path = "infra/feature-flags"
+environments = ["*"]
+
+[[workspaces]]
+path = "infra/sandbox"
+environments = ["development"]
+variables.sandbox_mode = true
+
+[[workspaces]]
+path = "infra/preview-isolation"
+environments = ["*"]
+automatic_preview_isolation = true
+variables.resource_name = "yaffle-product-demo"
+variables.environment = "{{ environment }}"
+variables.demo_message = "Automatic preview isolation is live"
