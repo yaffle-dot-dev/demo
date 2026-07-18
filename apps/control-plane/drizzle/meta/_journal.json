@@ -232,6 +232,13 @@
       "when": 1783826000000,
       "tag": "0032_immutable_execution_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1784421561973,
+      "tag": "0033_repair_execution_snapshot_schema",
+      "breakpoints": true
     }
   ]
 }

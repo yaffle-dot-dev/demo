@@ -1,28 +1,84 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import { assertMigrationOutcome, hasPendingMigrations } from "./db-migrate.ts"
+import { assertRequiredSchema, dbMigrate, REQUIRED_SCHEMA_COLUMNS } from "./db-migrate.ts"
 
-describe("assertMigrationOutcome", () => {
-  test("skips migrate when every migration was already applied", () => {
-    expect(hasPendingMigrations(42, 42)).toBe(false)
+describe("assertRequiredSchema", () => {
+  test("covers the physical schema required by migrations 0030-0033", () => {
+    expect(REQUIRED_SCHEMA_COLUMNS).toEqual([
+      "approvals.run_group_id",
+      "iac_job_history.run_group_id",
+      "iac_jobs.run_group_id",
+      "run_groups.execution_snapshot",
+      "scan_jobs.automatic_isolation_workspace_paths",
+      "workspaces.environment_kind",
+      "workspaces.environment_name",
+    ])
   })
 
-  test("runs migrate when the database is behind", () => {
-    expect(hasPendingMigrations(42, 41)).toBe(true)
+  test("rejects migration history that does not match the physical schema", () => {
+    expect(() => assertRequiredSchema(["run_groups.execution_snapshot"])).toThrow(
+      "Control-plane schema incomplete: missing run_groups.execution_snapshot",
+    )
   })
 
-  test("accepts a migration completed by another concurrent deploy", () => {
-    expect(() =>
-      assertMigrationOutcome({ expectedMigrationCount: 42, afterCount: 42 }),
-    ).not.toThrow()
+  test("accepts a complete physical schema", () => {
+    expect(() => assertRequiredSchema([])).not.toThrow()
+  })
+})
+
+describe("dbMigrate", () => {
+  test("propagates drizzle migration failures without inspecting migration counts", async () => {
+    await expect(
+      dbMigrate(
+        { databaseUrl: "postgresql://migration.test/postgres" },
+        {
+          run: async () => {
+            throw new Error("drizzle failed")
+          },
+          getMissingRequiredColumns: async () => {
+            throw new Error("schema check must not run")
+          },
+        },
+      ),
+    ).rejects.toThrow("drizzle failed")
   })
 
-  test("rejects a migration attempt that leaves migrations unapplied", () => {
-    expect(() =>
-      assertMigrationOutcome({
-        expectedMigrationCount: 42,
-        afterCount: 41,
-      }),
-    ).toThrow("Control-plane migrations incomplete: expected 42, found 41")
+  test("checks the physical schema after drizzle succeeds", async () => {
+    await expect(
+      dbMigrate(
+        { databaseUrl: "postgresql://migration.test/postgres" },
+        {
+          run: async () => "",
+          getMissingRequiredColumns: async () => ["run_groups.execution_snapshot"],
+        },
+      ),
+    ).rejects.toThrow("Control-plane schema incomplete")
+  })
+
+  test("runs drizzle once with the privileged URL and then checks that database", async () => {
+    const commands: Array<{ command: string[]; databaseUrl: string | undefined }> = []
+    const checkedUrls: string[] = []
+
+    await dbMigrate(
+      { databaseUrl: "postgresql://migration.test/postgres" },
+      {
+        run: async (command, options) => {
+          commands.push({ command, databaseUrl: options?.env?.DATABASE_URL })
+          return ""
+        },
+        getMissingRequiredColumns: async (databaseUrl) => {
+          checkedUrls.push(databaseUrl)
+          return []
+        },
+      },
+    )
+
+    expect(commands).toEqual([
+      {
+        command: ["vp", "exec", "drizzle-kit", "migrate"],
+        databaseUrl: "postgresql://migration.test/postgres",
+      },
+    ])
+    expect(checkedUrls).toEqual(["postgresql://migration.test/postgres"])
   })
 })

@@ -1,11 +1,7 @@
-import { exec } from "../../lib/exec"
-import { listChangedFiles } from "../git"
+import { isAncestorCommit, listChangedFiles } from "../git"
 import type { CiTarget } from "../types"
 
-import type {
-  DeployableArtifactResolution,
-  DiscoveredDeployable,
-} from "./types"
+import type { DeployableArtifactResolution, DiscoveredDeployable } from "./types"
 
 import { imageUri, getConfig } from "../../lib/env"
 import { imageTagExists } from "../../lib/ecr"
@@ -22,24 +18,16 @@ function matchesPath(filePath: string, watchedPath: string): boolean {
   return filePath === watchedPath
 }
 
-function touchedByChanges(deployable: DiscoveredDeployable, changedFiles: string[]): boolean {
-  return changedFiles.some((filePath) =>
-    deployable.watchedPaths.some((watchedPath) => matchesPath(filePath, watchedPath)),
-  )
-}
-
 export async function resolveArtifactPlan(values: {
   deployables: DiscoveredDeployable[]
   target: CiTarget
 }): Promise<Map<string, DeployableArtifactResolution>> {
   const plan = new Map<string, DeployableArtifactResolution>()
-  const changedFiles = await resolveChangedFiles(values.target)
 
   for (const deployable of values.deployables) {
     const resolution = await resolveDeployableArtifact({
       deployable,
       target: values.target,
-      changedFiles,
     })
     if (resolution) {
       plan.set(deployable.name, resolution)
@@ -47,6 +35,45 @@ export async function resolveArtifactPlan(values: {
   }
 
   return plan
+}
+
+const SHA_ARTIFACT_TAG = /:sha-([0-9a-f]{40})$/
+
+export async function hasDeployableChangedSinceArtifact(values: {
+  watchedPaths: string[]
+  targetSha: string
+  currentArtifactRef: string | null
+  isAncestor?: (ancestorSha: string, descendantSha: string) => Promise<boolean>
+  listChangedFiles?: (baseSha: string, headSha: string) => Promise<string[]>
+}): Promise<boolean> {
+  const currentArtifactSha = values.currentArtifactRef?.match(SHA_ARTIFACT_TAG)?.[1]
+  if (!currentArtifactSha) {
+    return true
+  }
+  if (currentArtifactSha === values.targetSha) {
+    return false
+  }
+
+  try {
+    const hasValidLineage = await (values.isAncestor ?? isAncestorCommit)(
+      currentArtifactSha,
+      values.targetSha,
+    )
+    if (!hasValidLineage) {
+      return true
+    }
+
+    const changedFiles = await (values.listChangedFiles ?? listChangedFiles)(
+      currentArtifactSha,
+      values.targetSha,
+    )
+    return changedFiles.some((filePath) =>
+      values.watchedPaths.some((watchedPath) => matchesPath(filePath, watchedPath)),
+    )
+  } catch {
+    // An unparseable or unavailable artifact lineage must never suppress a required build.
+    return true
+  }
 }
 
 export function chooseArtifactStrategy(values: {
@@ -90,21 +117,40 @@ export function chooseArtifactStrategy(values: {
 async function resolveDeployableArtifact(values: {
   deployable: DiscoveredDeployable
   target: CiTarget
-  changedFiles: string[] | null
 }): Promise<DeployableArtifactResolution | null> {
   const artifact = values.deployable.artifact
   if (!artifact || artifact.type !== "container-image") {
     return null
   }
 
-  const { registry, tier, sha, region, shouldPush } = await getConfig()
+  const { registry, tier, region, shouldPush } = await getConfig()
+  const sha = values.target.git.sha
   const artifactRef = `${imageUri(registry, artifact.imageName, tier)}:sha-${sha}`
   const artifactExists = shouldPush ? await imageTagExists(artifactRef, region) : false
-  const changed = values.changedFiles === null ? true : touchedByChanges(values.deployable, values.changedFiles)
+  if (artifactExists) {
+    return chooseArtifactStrategy({
+      deployableName: values.deployable.name,
+      targetSha: sha,
+      artifactRef,
+      artifactExists: true,
+      changed: true,
+      currentArtifactRef: null,
+    })
+  }
 
-  const currentArtifactRef = !changed
-    ? await resolveCurrentArtifactRef(values.deployable)
-    : null
+  const resolvedCurrentArtifactRef = await resolveCurrentArtifactRefOrNull(() =>
+    resolveCurrentArtifactRef(values.deployable),
+  )
+  const currentArtifactRef = await resolveReusableCurrentArtifactRef({
+    currentArtifactRef: resolvedCurrentArtifactRef,
+    shouldPush,
+    region,
+  })
+  const changed = await hasDeployableChangedSinceArtifact({
+    watchedPaths: values.deployable.watchedPaths,
+    targetSha: sha,
+    currentArtifactRef,
+  })
 
   return chooseArtifactStrategy({
     deployableName: values.deployable.name,
@@ -116,9 +162,38 @@ async function resolveDeployableArtifact(values: {
   })
 }
 
-async function resolveCurrentArtifactRef(
-  deployable: DiscoveredDeployable,
+export async function resolveCurrentArtifactRefOrNull(
+  resolve: () => Promise<string | null>,
 ): Promise<string | null> {
+  try {
+    return await resolve()
+  } catch {
+    return null
+  }
+}
+
+export async function resolveReusableCurrentArtifactRef(values: {
+  currentArtifactRef: string | null
+  shouldPush: boolean
+  region: string
+  imageTagExists?: (artifactRef: string, region: string) => Promise<boolean>
+}): Promise<string | null> {
+  if (!values.currentArtifactRef || !values.shouldPush) {
+    return values.currentArtifactRef
+  }
+
+  try {
+    const exists = await (values.imageTagExists ?? imageTagExists)(
+      values.currentArtifactRef,
+      values.region,
+    )
+    return exists ? values.currentArtifactRef : null
+  } catch {
+    return null
+  }
+}
+
+async function resolveCurrentArtifactRef(deployable: DiscoveredDeployable): Promise<string | null> {
   const artifact = deployable.artifact
   if (!artifact || artifact.type !== "container-image") {
     return null
@@ -139,26 +214,5 @@ async function resolveCurrentArtifactRef(
     }
     default:
       return null
-  }
-}
-
-async function resolveChangedFiles(target: CiTarget): Promise<string[] | null> {
-  const baseSha = target.git.baseSha ?? await inferBaseSha(target.git.sha)
-  if (!baseSha || baseSha === target.git.sha) {
-    return null
-  }
-  return listChangedFiles(baseSha, target.git.sha)
-}
-
-async function inferBaseSha(sha: string): Promise<string | undefined> {
-  try {
-    const output = (await exec(["git", "rev-list", "--parents", "-n", "1", sha], {
-      quiet: true,
-      captureStderr: true,
-    })).trim()
-    const parts = output.split(/\s+/).filter(Boolean)
-    return parts.length >= 2 ? parts[1] : undefined
-  } catch {
-    return undefined
   }
 }

@@ -1,37 +1,41 @@
-import { readFile } from "node:fs/promises"
-import { resolve } from "node:path"
-
 import { exec } from "./lib/exec"
-import { importMetaDir, isMain } from "./lib/module"
+import { isMain } from "./lib/module"
 
 export interface DbMigrateOptions {
   databaseUrl?: string
 }
 
-export interface MigrationOutcome {
-  expectedMigrationCount: number
-  afterCount: number
-}
+export const REQUIRED_SCHEMA_COLUMNS = [
+  "approvals.run_group_id",
+  "iac_job_history.run_group_id",
+  "iac_jobs.run_group_id",
+  "run_groups.execution_snapshot",
+  "scan_jobs.automatic_isolation_workspace_paths",
+  "workspaces.environment_kind",
+  "workspaces.environment_name",
+] as const
 
-export function hasPendingMigrations(
-  expectedMigrationCount: number,
-  appliedCount: number,
-): boolean {
-  return appliedCount < expectedMigrationCount
-}
-
-export function assertMigrationOutcome(outcome: MigrationOutcome): void {
-  if (outcome.afterCount < outcome.expectedMigrationCount) {
-    throw new Error(
-      `Control-plane migrations incomplete: expected ${outcome.expectedMigrationCount}, found ${outcome.afterCount}`,
-    )
+export function assertRequiredSchema(missingColumns: string[]): void {
+  if (missingColumns.length > 0) {
+    throw new Error(`Control-plane schema incomplete: missing ${missingColumns.join(", ")}`)
   }
 }
 
+interface DbMigrateDependencies {
+  run: typeof exec
+  getMissingRequiredColumns: (databaseUrl: string) => Promise<string[]>
+}
+
+const defaultDependencies: DbMigrateDependencies = {
+  run: exec,
+  getMissingRequiredColumns,
+}
+
 function resolveDatabaseUrl(options: DbMigrateOptions): string {
-  const databaseUrl = options.databaseUrl?.trim()
-    || process.env.YAFFLE_MIGRATION_DATABASE_URL?.trim()
-    || process.env.ROOT_DATABASE_URL?.trim()
+  const databaseUrl =
+    options.databaseUrl?.trim() ||
+    process.env.YAFFLE_MIGRATION_DATABASE_URL?.trim() ||
+    process.env.ROOT_DATABASE_URL?.trim()
 
   if (!databaseUrl) {
     throw new Error(
@@ -42,74 +46,32 @@ function resolveDatabaseUrl(options: DbMigrateOptions): string {
   return databaseUrl
 }
 
-export async function dbMigrate(options: DbMigrateOptions = {}) {
+export async function dbMigrate(
+  options: DbMigrateOptions = {},
+  dependencies: DbMigrateDependencies = defaultDependencies,
+): Promise<void> {
   const rootDbUrl = resolveDatabaseUrl(options)
-  const expectedMigrationCount = await getExpectedMigrationCount()
-  const beforeCount = await getAppliedMigrationCount(rootDbUrl)
-
-  if (!hasPendingMigrations(expectedMigrationCount, beforeCount)) {
-    console.log(
-      `Migrations already current (${beforeCount}/${expectedMigrationCount}); skipping migrate`,
-    )
-    return
-  }
-
-  // Check if there are pending migrations first
-  console.log("Checking for pending migrations...")
-  try {
-    await exec(["vp", "exec", "drizzle-kit", "check"], {
-      cwd: "apps/control-plane",
-      env: { DATABASE_URL: rootDbUrl },
-      quiet: true,
-    })
-  } catch {
-    // check failed — there may be issues, try to migrate anyway
-  }
 
   console.log("Running database migrations...")
-  let migrateFailed = false
-  try {
-    await exec(["vp", "exec", "drizzle-kit", "migrate"], {
-      cwd: "apps/control-plane",
-      env: { DATABASE_URL: rootDbUrl },
-      quiet: true,
-    })
-  } catch (error) {
-    migrateFailed = true
-    const message = error instanceof Error ? error.message : String(error)
-    console.warn(
-      `drizzle-kit migrate exited non-zero; checking applied migration state\n${message}`,
-    )
-  }
+  await dependencies.run(["vp", "exec", "drizzle-kit", "migrate"], {
+    cwd: "apps/control-plane",
+    env: { DATABASE_URL: rootDbUrl },
+    quiet: true,
+  })
 
-  const afterCount = await getAppliedMigrationCount(rootDbUrl)
-  assertMigrationOutcome({ expectedMigrationCount, afterCount })
-
-  if (migrateFailed) {
-    console.warn(
-      `drizzle-kit migrate failed, but another deploy applied all ${expectedMigrationCount} expected migrations; continuing`,
-    )
-  }
-
+  assertRequiredSchema(await dependencies.getMissingRequiredColumns(rootDbUrl))
   console.log("Migrations complete")
 }
 
-async function getExpectedMigrationCount(): Promise<number> {
-  const journalPath = resolve(importMetaDir(import.meta), "../apps/control-plane/drizzle/meta/_journal.json")
-  const raw = await readFile(journalPath, "utf8")
-  const journal = JSON.parse(raw) as { entries?: unknown[] }
-  return Array.isArray(journal.entries) ? journal.entries.length : 0
-}
-
-async function getAppliedMigrationCount(databaseUrl: string): Promise<number> {
+async function getMissingRequiredColumns(databaseUrl: string): Promise<string[]> {
   const script = [
     'import postgres from "postgres"',
-    'const sql = postgres(process.env.DATABASE_URL)',
-    'const reg = await sql`select to_regclass(${"drizzle.__drizzle_migrations"}) as name`',
-    'if (!reg[0]?.name) { console.log("0"); await sql.end(); process.exit(0) }',
-    'const rows = await sql`select count(*)::int as count from drizzle.__drizzle_migrations`',
-    'console.log(String(rows[0]?.count ?? 0))',
-    'await sql.end()',
+    "const sql = postgres(process.env.DATABASE_URL)",
+    `const required = ${JSON.stringify(REQUIRED_SCHEMA_COLUMNS)}`,
+    "const rows = await sql`select table_name, column_name from information_schema.columns where table_schema = 'public'`",
+    "const existing = new Set(rows.map((row) => `${row.table_name}.${row.column_name}`))",
+    "console.log(JSON.stringify(required.filter((column) => !existing.has(column))))",
+    "await sql.end()",
   ].join("; ")
 
   const output = await exec(["node", "--input-type=module", "-e", script], {
@@ -117,12 +79,10 @@ async function getAppliedMigrationCount(databaseUrl: string): Promise<number> {
     env: { DATABASE_URL: databaseUrl },
     quiet: true,
   })
-
-  const parsed = Number.parseInt(output.trim(), 10)
-  if (Number.isNaN(parsed)) {
-    throw new Error(`Unable to determine applied migration count from output: ${output.trim()}`)
+  const parsed = JSON.parse(output.trim()) as unknown
+  if (!Array.isArray(parsed) || !parsed.every((value) => typeof value === "string")) {
+    throw new Error(`Unable to determine required schema columns from output: ${output.trim()}`)
   }
-
   return parsed
 }
 

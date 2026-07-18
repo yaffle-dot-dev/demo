@@ -20,6 +20,12 @@ export interface ConvergeEnvironmentOptions {
 }
 
 export type DeployableLifecyclePhase = "activation" | "verification"
+export type DeployableLifecycleStep =
+  | "prepare"
+  | "wait-for-workspaces"
+  | "build"
+  | "deploy"
+  | "verify"
 
 export interface RunDeployableLifecyclePhaseOptions {
   deployable: DiscoveredDeployable
@@ -59,6 +65,14 @@ export function lifecycleWorkspaceWaitCondition(
   phase: DeployableLifecyclePhase,
 ): WorkspaceWaitCondition {
   return phase === "activation" ? "outputs" : "usable"
+}
+
+export function deployableLifecycleSteps(
+  phase: DeployableLifecyclePhase,
+): DeployableLifecycleStep[] {
+  return phase === "activation"
+    ? ["prepare", "wait-for-workspaces", "build", "deploy"]
+    : ["wait-for-workspaces", "verify"]
 }
 
 async function waitForWorkspaces(
@@ -292,20 +306,30 @@ export async function runDeployableLifecyclePhase(
       deployables: [options.deployable],
       target: options.target,
     })
-    await waitForWorkspaces(
-      workspaces,
-      options.target,
-      lifecycleWorkspaceWaitCondition(options.phase),
-    )
 
-    if (options.phase === "activation") {
-      await prepareDeployables([options.deployable], options.target, dryRun)
-      await buildDeployables([options.deployable], options.target, dryRun, artifactPlan)
-      await deployDeployables([options.deployable], options.target, dryRun, artifactPlan)
-      return
+    for (const step of deployableLifecycleSteps(options.phase)) {
+      switch (step) {
+        case "prepare":
+          await prepareDeployables([options.deployable], options.target, dryRun)
+          break
+        case "wait-for-workspaces":
+          await waitForWorkspaces(
+            workspaces,
+            options.target,
+            lifecycleWorkspaceWaitCondition(options.phase),
+          )
+          break
+        case "build":
+          await buildDeployables([options.deployable], options.target, dryRun, artifactPlan)
+          break
+        case "deploy":
+          await deployDeployables([options.deployable], options.target, dryRun, artifactPlan)
+          break
+        case "verify":
+          await verifyDeployables([options.deployable], options.target, dryRun)
+          break
+      }
     }
-
-    await verifyDeployables([options.deployable], options.target, dryRun)
   })
 }
 
