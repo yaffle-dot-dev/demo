@@ -7,7 +7,7 @@ settings:
 importers:
 
   .:
-    dependencies:
+    devDependencies:
       '@aws-sdk/client-ecr':
         specifier: ^3.1019.0
         version: 3.1045.0
@@ -20,16 +20,6 @@ importers:
       '@aws-sdk/client-ssm':
         specifier: ^3.1019.0
         version: 3.1045.0
-      drizzle-kit:
-        specifier: ^0.31.10
-        version: 0.31.10
-      drizzle-orm:
-        specifier: ^0.45.1
-        version: 0.45.2(@cloudflare/workers-types@4.20260509.1)(@opentelemetry/api@1.9.1)(bun-types@1.3.14)(kysely@0.28.17)(postgres@3.4.9)
-      playwriter:
-        specifier: ^0.0.80
-        version: 0.0.80(@types/react@19.2.14)(react@19.2.6)(use-sync-external-store@1.6.0(react@19.2.6))
-    devDependencies:
       '@dotenvx/dotenvx':
         specifier: ^1.57.0
         version: 1.65.0
@@ -39,9 +29,18 @@ importers:
       '@yaffle/test':
         specifier: workspace:*
         version: link:packages/test
+      drizzle-kit:
+        specifier: ^0.31.10
+        version: 0.31.10
+      drizzle-orm:
+        specifier: ^0.45.1
+        version: 0.45.2(@cloudflare/workers-types@4.20260509.1)(@opentelemetry/api@1.9.1)(bun-types@1.3.14)(kysely@0.28.17)(postgres@3.4.9)
       esbuild:
         specifier: ^0.28.0
         version: 0.28.0
+      playwriter:
+        specifier: ^0.0.80
+        version: 0.0.80(@types/react@19.2.14)(react@19.2.6)(use-sync-external-store@1.6.0(react@19.2.6))
       tar-stream:
         specifier: ^3.1.8
         version: 3.2.0
@@ -340,6 +339,18 @@ importers:
       '@better-auth/api-key':
         specifier: 1.5.6
         version: 1.5.6(@better-auth/core@1.5.6(@better-auth/utils@0.3.1)(@better-fetch/fetch@1.1.21)(@cloudflare/workers-types@4.20260509.1)(@opentelemetry/api@1.9.1)(better-call@1.3.2(zod@4.4.3))(jose@6.2.3)(kysely@0.28.17)(nanostores@1.3.0))(@better-auth/utils@0.3.1)(better-auth@1.5.6(@cloudflare/workers-types@4.20260509.1)(@opentelemetry/api@1.9.1)(@sveltejs/kit@2.59.1(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))(svelte@5.55.5)(typescript@5.9.3)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260509.1)(@opentelemetry/api@1.9.1)(bun-types@1.3.14)(kysely@0.28.17)(postgres@3.4.9))(react@19.2.6)(svelte@5.55.5)(vitest@4.1.5(@opentelemetry/api@1.9.1)(@types/node@25.6.2)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))))
+      '@sveltejs/adapter-node':
+        specifier: ^5.2.0
+        version: 5.5.4(@sveltejs/kit@2.59.1(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))(svelte@5.55.5)(typescript@5.9.3)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))
+      '@sveltejs/kit':
+        specifier: ^2.15.0
+        version: 2.59.1(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))(svelte@5.55.5)(typescript@5.9.3)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      '@sveltejs/vite-plugin-svelte':
+        specifier: ^5.0.0
+        version: 5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      '@tailwindcss/vite':
+        specifier: ^4.0.0
+        version: 4.3.0(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
       '@xterm/addon-fit':
         specifier: ^0.11.0
         version: 0.11.0
@@ -355,6 +366,15 @@ importers:
       better-auth:
         specifier: 1.5.6
         version: 1.5.6(@cloudflare/workers-types@4.20260509.1)(@opentelemetry/api@1.9.1)(@sveltejs/kit@2.59.1(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))(svelte@5.55.5)(typescript@5.9.3)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@cloudflare/workers-types@4.20260509.1)(@opentelemetry/api@1.9.1)(bun-types@1.3.14)(kysely@0.28.17)(postgres@3.4.9))(react@19.2.6)(svelte@5.55.5)(vitest@4.1.5(@opentelemetry/api@1.9.1)(@types/node@25.6.2)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))
+      svelte:
+        specifier: ^5.0.0
+        version: 5.55.5
+      tailwindcss:
+        specifier: ^4.0.0
+        version: 4.3.0
+      vite:
+        specifier: ^6.0.0
+        version: 6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
       xterm:
         specifier: ^5.3.0
         version: 5.3.0
@@ -362,36 +382,15 @@ importers:
       '@playwright/test':
         specifier: ^1.59.1
         version: 1.59.1
-      '@sveltejs/adapter-node':
-        specifier: ^5.2.0
-        version: 5.5.4(@sveltejs/kit@2.59.1(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))(svelte@5.55.5)(typescript@5.9.3)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))
-      '@sveltejs/kit':
-        specifier: ^2.15.0
-        version: 2.59.1(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)))(svelte@5.55.5)(typescript@5.9.3)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
-      '@sveltejs/vite-plugin-svelte':
-        specifier: ^5.0.0
-        version: 5.1.1(svelte@5.55.5)(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
-      '@tailwindcss/vite':
-        specifier: ^4.0.0
-        version: 4.3.0(vite@6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
       '@yaffle/test':
         specifier: workspace:*
         version: link:../../packages/test
-      svelte:
-        specifier: ^5.0.0
-        version: 5.55.5
       svelte-check:
         specifier: ^4.0.0
         version: 4.4.8(picomatch@4.0.4)(svelte@5.55.5)(typescript@5.9.3)
-      tailwindcss:
-        specifier: ^4.0.0
-        version: 4.3.0
       typescript:
         specifier: ^5.7.0
         version: 5.9.3
-      vite:
-        specifier: ^6.0.0
-        version: 6.4.2(@types/node@25.6.2)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
   packages/cli:
     dependencies:

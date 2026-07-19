@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process"
 import tailwindcss from "@tailwindcss/vite"
 import { sveltekit } from "@sveltejs/kit/vite"
-import { defineConfig } from "vite-plus"
+import { defineConfig } from "vite"
 
 // Get build identifier at build time (works with both jj and git)
 function getBuildId(): string {
@@ -27,6 +27,12 @@ function getBuildId(): string {
   }
 }
 
+function getBuildTime(): string {
+  const sourceDateEpoch = Number(process.env.SOURCE_DATE_EPOCH)
+  const timestamp = Number.isFinite(sourceDateEpoch) ? sourceDateEpoch * 1000 : Date.now()
+  return new Date(timestamp).toISOString()
+}
+
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
   ssr: {
@@ -36,7 +42,7 @@ export default defineConfig({
   },
   define: {
     __BUILD_SHA__: JSON.stringify(getBuildId()),
-    __BUILD_TIME__: JSON.stringify(new Date().toISOString()),
+    __BUILD_TIME__: JSON.stringify(getBuildTime()),
   },
   server: {
     port: 5173,

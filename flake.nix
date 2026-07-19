@@ -19,6 +19,7 @@
             system = "aarch64-linux";
           };
           lib = pkgs.lib;
+          imagePnpm = pkgs.pnpm_10;
           repoRoot = ./.;
           repoRootString = toString repoRoot;
 
@@ -110,19 +111,48 @@
             ++ workspaceManifestPaths
           );
 
-          pnpmDeps = pkgs.fetchPnpmDeps {
-            pname = "yaffle";
+          mkPnpmDeps = name: pnpmWorkspaces: pnpmInstallFlags: hash: pkgs.fetchPnpmDeps {
+            pname = "yaffle-${name}";
             version = "0.1.0";
             src = pnpmDepsSource;
-            pnpm = pkgs.pnpm;
+            pnpm = imagePnpm;
+            inherit pnpmInstallFlags pnpmWorkspaces;
             fetcherVersion = 3;
-            hash = "sha256-ApxFab2Rq41WomzKFu233hIvPrkEbUCsWTSrkXp7iJY=";
+            inherit hash;
           };
+
+          controlPlaneWorkspaces = [ "@yaffle/control-plane" "@yaffle/shared" ];
+          webWorkspaces = [ "@yaffle/web" "@yaffle/design" "@yaffle/shared" ];
+          runnerWorkspaces = [ "@yaffle/runner" "@yaffle/shared" ];
+          productionInstallFlags = [
+            "--child-concurrency=1"
+            "--network-concurrency=4"
+            "--prod"
+          ];
+
+          controlPlanePnpmDeps = mkPnpmDeps
+            "control-plane"
+            controlPlaneWorkspaces
+            productionInstallFlags
+            "sha256-j07c6tTmqKILgD/Aan0SvMSDxgxQrXdLlgAzg8x6AAs=";
+          webPnpmDeps = mkPnpmDeps
+            "web"
+            webWorkspaces
+            productionInstallFlags
+            "sha256-hUSkUJgnorhqtbXBeL+6/DwB2dbWWp59m29+pWLhtX8=";
+          runnerPnpmDeps = mkPnpmDeps
+            "runner"
+            runnerWorkspaces
+            productionInstallFlags
+            "sha256-SvPN6i6GexDEUL1pzPBdrAh5g1rbEkhx/1XT6EXtrCg=";
 
           mkPnpmWorkspaceBuild = {
             name,
             srcTree,
+            pnpmDeps,
+            pnpmInstallFlags ? [ ],
             pnpmWorkspaces,
+            extraNativeBuildInputs ? [ ],
             buildCommands,
             installCommands,
           }:
@@ -131,13 +161,18 @@
               version = "0.1.0";
               src = srcTree;
               inherit pnpmDeps pnpmWorkspaces;
+              prePnpmInstall = ''
+                pnpmInstallFlags+=(
+                  ${lib.concatMapStringsSep "\n" lib.escapeShellArg pnpmInstallFlags}
+                )
+              '';
 
               nativeBuildInputs = [
                 pkgs.nodejs_26
-                pkgs.pnpm
+                imagePnpm
                 pkgs.pnpmConfigHook
                 pkgs.cacert
-              ];
+              ] ++ extraNativeBuildInputs;
 
               configurePhase = ''
                 runHook preConfigure
@@ -146,7 +181,7 @@
                 cd "$NIX_BUILD_TOP/$sourceRoot"
                 echo "=== ${name}: configurePhase start $(date -Iseconds) ==="
                 echo "${name}: node version $(node --version)"
-                echo "${name}: pnpm version $(pnpm --version)"
+                echo "${name}: pnpm version ${imagePnpm.version}"
                 echo "=== ${name}: configurePhase end $(date -Iseconds) ==="
                 runHook postConfigure
               '';
@@ -211,9 +246,20 @@
           controlPlaneBundle = mkPnpmWorkspaceBuild {
             name = "control-plane-bundle";
             srcTree = controlPlaneSource;
-            pnpmWorkspaces = [ "@yaffle/control-plane" "@yaffle/shared" ];
+            pnpmDeps = controlPlanePnpmDeps;
+            pnpmInstallFlags = productionInstallFlags;
+            pnpmWorkspaces = controlPlaneWorkspaces;
+            extraNativeBuildInputs = [ pkgs.esbuild ];
             buildCommands = ''
-              pnpm --filter @yaffle/control-plane run build
+              esbuild apps/control-plane/src/index.ts \
+                --bundle \
+                --external:minijinja-js \
+                --format=esm \
+                --out-extension:.js=.mjs \
+                --outdir=apps/control-plane/dist \
+                --platform=node \
+                --splitting \
+                --target=node25
             '';
             installCommands = ''
               mkdir -p "$out/dist" "$out/node_modules"
@@ -225,9 +271,11 @@
           webBundle = mkPnpmWorkspaceBuild {
             name = "web-bundle";
             srcTree = webSource;
-            pnpmWorkspaces = [ "@yaffle/web" "@yaffle/design" "@yaffle/shared" ];
+            pnpmDeps = webPnpmDeps;
+            pnpmInstallFlags = productionInstallFlags;
+            pnpmWorkspaces = webWorkspaces;
             buildCommands = ''
-              pnpm --filter @yaffle/web run build
+              pnpm --filter @yaffle/web exec vite build
             '';
             installCommands = ''
               mkdir -p "$out"
@@ -238,9 +286,23 @@
           runnerBundle = mkPnpmWorkspaceBuild {
             name = "runner-bundle";
             srcTree = runnerSource;
-            pnpmWorkspaces = [ "@yaffle/runner" "@yaffle/shared" ];
+            pnpmDeps = runnerPnpmDeps;
+            pnpmInstallFlags = productionInstallFlags;
+            pnpmWorkspaces = runnerWorkspaces;
+            extraNativeBuildInputs = [ pkgs.esbuild ];
             buildCommands = ''
-              pnpm --filter @yaffle/runner run build
+              esbuild \
+                apps/runner/src/worker.ts \
+                apps/runner/src/warm-runner.ts \
+                apps/runner/src/scanner.ts \
+                apps/runner/src/scanner-lambda.ts \
+                --bundle \
+                --format=esm \
+                --out-extension:.js=.mjs \
+                --outdir=apps/runner/dist \
+                --platform=node \
+                --splitting \
+                --target=node25
             '';
             installCommands = ''
               mkdir -p "$out/dist"

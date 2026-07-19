@@ -58,9 +58,7 @@
     "typescript": "^5.9.3",
     "tsx": "^4.21.0",
     "vite-plus": "^0.1.20",
-    "vitest": "^4.1.5"
-  },
-  "dependencies": {
+    "vitest": "^4.1.5",
     "@aws-sdk/client-ecr": "^3.1019.0",
     "@aws-sdk/client-ecs": "^3.1019.0",
     "@aws-sdk/client-lambda": "^3.1019.0",
@@ -68,5 +66,6 @@
     "drizzle-kit": "^0.31.10",
     "drizzle-orm": "^0.45.1",
     "playwriter": "^0.0.80"
-  }
+  },
+  "dependencies": {}
 }

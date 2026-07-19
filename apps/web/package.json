@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vp dev",
-    "build": "vp build",
+    "build": "vite build",
     "preview": "vp preview",
     "smoke": "playwright test",
     "test": "vp test",
@@ -15,22 +15,22 @@
     "@better-auth/api-key": "1.5.6",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-web-links": "^0.12.0",
-    "@yaffle/design": "workspace:*",
-    "@yaffle/shared": "workspace:*",
-    "better-auth": "1.5.6",
-    "xterm": "^5.3.0"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.59.1",
     "@sveltejs/adapter-node": "^5.2.0",
     "@sveltejs/kit": "^2.15.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4.0.0",
-    "@yaffle/test": "workspace:*",
+    "@yaffle/design": "workspace:*",
+    "@yaffle/shared": "workspace:*",
+    "better-auth": "1.5.6",
     "svelte": "^5.0.0",
-    "svelte-check": "^4.0.0",
     "tailwindcss": "^4.0.0",
-    "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "xterm": "^5.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1",
+    "@yaffle/test": "workspace:*",
+    "svelte-check": "^4.0.0",
+    "typescript": "^5.7.0"
   }
 }
