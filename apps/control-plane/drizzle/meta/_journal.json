@@ -239,6 +239,13 @@
       "when": 1784421561973,
       "tag": "0033_repair_execution_snapshot_schema",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1784431283676,
+      "tag": "0034_merge_impact_plans",
+      "breakpoints": true
     }
   ]
 }

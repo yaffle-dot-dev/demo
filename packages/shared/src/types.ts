@@ -43,6 +43,8 @@ export interface PullRequestContext {
   action: PullRequestAction
   headSha: string
   baseSha?: string
+  baseBranch?: string
+  headRepoGithubId?: number
   branch: string
   /** GitHub user ID (stable identifier) */
   authorGithubId: number

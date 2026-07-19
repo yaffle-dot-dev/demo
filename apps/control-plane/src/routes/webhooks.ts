@@ -1,12 +1,7 @@
 import { Hono } from "hono"
 import { SpanKind } from "@opentelemetry/api"
 
-import type {
-  PullRequestAction,
-  PullRequestContext,
-  PushContext,
-  RefType,
-} from "@yaffle/shared"
+import type { PullRequestAction, PullRequestContext, PushContext, RefType } from "@yaffle/shared"
 
 import { getEnv } from "../lib/env.ts"
 import {
@@ -40,12 +35,7 @@ const GITHUB_WEBHOOK_RATE_LIMIT = {
   windowMs: 60_000,
 } as const
 
-const SUPPORTED_PR_ACTIONS: PullRequestAction[] = [
-  "opened",
-  "synchronize",
-  "closed",
-  "reopened",
-]
+const SUPPORTED_PR_ACTIONS: PullRequestAction[] = ["opened", "synchronize", "closed", "reopened"]
 
 // Simple in-memory deduplication for webhook deliveries
 // Prevents duplicate processing if GitHub retries or sends twice
@@ -64,7 +54,12 @@ function markDeliveryProcessed(deliveryId: string): boolean {
 // Deduplicate PR events by repo+pr+action+sha (GitHub sometimes sends duplicates with different delivery IDs)
 const recentPrEvents = new Set<string>()
 
-function markPrEventProcessed(repo: string, prNumber: number, action: string, sha: string): boolean {
+function markPrEventProcessed(
+  repo: string,
+  prNumber: number,
+  action: string,
+  sha: string,
+): boolean {
   const key = `${repo}:${prNumber}:${action}:${sha}`
   if (recentPrEvents.has(key)) {
     return false // Already processed this exact event
@@ -191,7 +186,7 @@ webhooksRoute.post("/github", async (c) => {
     verifiedRequest = await verifyWebhookRequest(body, c.req.raw.headers)
   } catch (err) {
     logger.error("webhook verification failed", {
-      "error": err instanceof Error ? err.message : String(err),
+      error: err instanceof Error ? err.message : String(err),
     })
     return c.json(
       { error: { code: "WEBHOOK_VERIFICATION_FAILED", message: "invalid signature" } },
@@ -256,7 +251,9 @@ webhooksRoute.post("/github", async (c) => {
 
     // Deduplicate by repo+pr+action+sha (GitHub sometimes sends duplicate webhooks)
     if (!markPrEventProcessed(repoName, prNumber, action, headSha)) {
-      console.log(`[webhook] duplicate PR event ignored: ${repoName}#${prNumber} ${action} ${headSha}`)
+      console.log(
+        `[webhook] duplicate PR event ignored: ${repoName}#${prNumber} ${action} ${headSha}`,
+      )
       return c.json({ data: { ignored: true, reason: "duplicate PR event" } })
     }
 
@@ -271,6 +268,8 @@ webhooksRoute.post("/github", async (c) => {
       action: action as PullRequestAction,
       headSha,
       baseSha: payload.pull_request.base?.sha,
+      baseBranch: payload.pull_request.base?.ref,
+      headRepoGithubId: payload.pull_request.head?.repo?.id,
       branch: payload.pull_request.head.ref,
       authorGithubId: payload.pull_request.user?.id ?? 0,
       authorLogin: payload.pull_request.user?.login ?? "unknown",
@@ -280,7 +279,7 @@ webhooksRoute.post("/github", async (c) => {
 
     // Fire-and-forget but wrapped in a span for trace context propagation
     // All logs emitted during handling will have trace_id set
-    withSpan(
+    void withSpan(
       `webhook.process.pull_request.${action}`,
       async (span) => {
         span.setAttributes({
@@ -300,15 +299,21 @@ webhooksRoute.post("/github", async (c) => {
             "pr.number": prNumber,
           })
         } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
-          span.recordException(err instanceof Error ? err : new Error(String(err)))
-          logger.error(`error handling PR event for ${context.owner}/${context.repo}#${context.prNumber}`, {
-            "webhook.delivery_id": deliveryId ?? "unknown",
-            "yaffle.owner": context.owner,
-            "yaffle.repo": context.repo,
-            "yaffle.pr_number": context.prNumber,
-            "error": err instanceof Error ? err.message : String(err),
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: err instanceof Error ? err.message : String(err),
           })
+          span.recordException(err instanceof Error ? err : new Error(String(err)))
+          logger.error(
+            `error handling PR event for ${context.owner}/${context.repo}#${context.prNumber}`,
+            {
+              "webhook.delivery_id": deliveryId ?? "unknown",
+              "yaffle.owner": context.owner,
+              "yaffle.repo": context.repo,
+              "yaffle.pr_number": context.prNumber,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          )
         }
       },
       { kind: SpanKind.CONSUMER },
@@ -337,7 +342,9 @@ webhooksRoute.post("/github", async (c) => {
     const afterSha = payload.after as string
     const headCommitSha = payload.head_commit?.id as string | undefined
     const beforeSha = payload.before as string
-    console.log(`[webhook] push event: ref=${ref} refType=${refType} after=${afterSha} head_commit=${headCommitSha} before=${beforeSha}`)
+    console.log(
+      `[webhook] push event: ref=${ref} refType=${refType} after=${afterSha} head_commit=${headCommitSha} before=${beforeSha}`,
+    )
     logger.info(`push webhook received`, {
       "webhook.ref": ref,
       "webhook.ref_type": refType,
@@ -371,7 +378,7 @@ webhooksRoute.post("/github", async (c) => {
     }
 
     // Fire-and-forget but wrapped in a span for trace context propagation
-    withSpan(
+    void withSpan(
       "webhook.process.push",
       async (span) => {
         span.setAttributes({
@@ -391,15 +398,21 @@ webhooksRoute.post("/github", async (c) => {
             "git.ref": ref,
           })
         } catch (err) {
-          span.setStatus({ code: SpanStatusCode.ERROR, message: err instanceof Error ? err.message : String(err) })
-          span.recordException(err instanceof Error ? err : new Error(String(err)))
-          logger.error(`error handling push event for ${context.owner}/${context.repo}@${context.ref}`, {
-            "webhook.delivery_id": deliveryId ?? "unknown",
-            "yaffle.owner": context.owner,
-            "yaffle.repo": context.repo,
-            "yaffle.ref": context.ref,
-            "error": err instanceof Error ? err.message : String(err),
+          span.setStatus({
+            code: SpanStatusCode.ERROR,
+            message: err instanceof Error ? err.message : String(err),
           })
+          span.recordException(err instanceof Error ? err : new Error(String(err)))
+          logger.error(
+            `error handling push event for ${context.owner}/${context.repo}@${context.ref}`,
+            {
+              "webhook.delivery_id": deliveryId ?? "unknown",
+              "yaffle.owner": context.owner,
+              "yaffle.repo": context.repo,
+              "yaffle.ref": context.ref,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          )
         }
       },
       { kind: SpanKind.CONSUMER },
@@ -431,7 +444,11 @@ webhooksRoute.post("/github", async (c) => {
     if (action === "created") {
       // App was installed — update installation inventory and track repos
       // Org creation is now handled separately via POST /api/orgs
-      await upsertGithubInstallation({ githubOrgId: githubId, githubOrgLogin: login, installationId })
+      await upsertGithubInstallation({
+        githubOrgId: githubId,
+        githubOrgLogin: login,
+        installationId,
+      })
 
       // Track initial repositories as inventory
       const repos = payload.repositories ?? []
@@ -526,16 +543,21 @@ webhooksRoute.post("/github", async (c) => {
       const removedRepos = payload.repositories_removed ?? []
       await deactivateRepos(removedRepos.map((r: { id: number }) => r.id))
 
-      logger.info(`repos removed from installation: github_org=${login} count=${removedRepos.length}`, {
-        "yaffle.github_org": login,
-        "yaffle.installation_id": installationId,
-        "yaffle.repo_count": removedRepos.length,
-      })
+      logger.info(
+        `repos removed from installation: github_org=${login} count=${removedRepos.length}`,
+        {
+          "yaffle.github_org": login,
+          "yaffle.installation_id": installationId,
+          "yaffle.repo_count": removedRepos.length,
+        },
+      )
 
       return c.json({ data: { received: true, action: "repos_removed" } })
     }
 
-    return c.json({ data: { ignored: true, reason: `unhandled installation_repositories action: ${action}` } })
+    return c.json({
+      data: { ignored: true, reason: `unhandled installation_repositories action: ${action}` },
+    })
   }
 
   return c.json({ data: { ignored: true, reason: `unhandled event: ${event}` } })

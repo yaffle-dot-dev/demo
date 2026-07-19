@@ -7,11 +7,20 @@ describe("assertRequiredSchema", () => {
     expect(REQUIRED_SCHEMA_COLUMNS).toEqual([
       "approvals.run_group_id",
       "iac_job_history.run_group_id",
+      "iac_job_history.plan_purpose",
+      "iac_job_history.target_state_version_id",
+      "iac_job_history.target_workspace_id",
       "iac_jobs.run_group_id",
+      "iac_jobs.plan_purpose",
+      "iac_jobs.target_state_version_id",
+      "iac_jobs.target_workspace_id",
       "run_groups.execution_snapshot",
       "scan_jobs.automatic_isolation_workspace_paths",
       "workspaces.environment_kind",
       "workspaces.environment_name",
+      "tf_runs.plan_purpose",
+      "tf_runs.target_state_version_id",
+      "tf_runs.target_workspace_id",
     ])
   })
 

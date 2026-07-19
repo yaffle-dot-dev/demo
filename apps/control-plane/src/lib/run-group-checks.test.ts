@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from "@yaffle/test"
-import { sql } from "drizzle-orm"
+import { eq, sql } from "drizzle-orm"
+import { vi } from "vitest"
 
 import type {
   PullRequestContext,
@@ -12,7 +13,6 @@ import type { YaffleTomlConfig } from "./config-toml.ts"
 import { getRunGroupCheckSummary } from "./run-group-check-copy.ts"
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
 import { setRepoMapping } from "../db/queries/repo-mappings.ts"
-import { completeJob } from "../db/queries/iac-jobs.ts"
 import { ensureAccountPrincipal, ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
 import { claimScanJob, completeScanJob, createScanJob } from "../db/queries/scan-jobs.ts"
 import { iacJobs, lifecycleItems, lifecycleRuns, previews, runGroups } from "../db/schema.ts"
@@ -28,7 +28,7 @@ const mockUpdateCheckRun = mock(async () => {})
 const mockCheckTeamMembership = mock(async () => false)
 const mockUpsertPrComment = mock(async () => 1)
 
-mock.module("./github.ts", () => ({
+vi.mock("./github.ts", () => ({
   fetchFileContent: mockFetchFileContent,
   getInstallationToken: mockGetInstallationToken,
   createCheckRun: mockCreateCheckRun,
@@ -40,6 +40,7 @@ mock.module("./github.ts", () => ({
 const { createHandler } = await import("./webhook-handler.ts")
 const { completeRunGroup } = await import("./run-group-orchestrator.ts")
 const { updateDeploymentStatus } = await import("../db/queries/workspace-deployments.ts")
+const { completeJob } = await import("../db/queries/iac-jobs.ts")
 
 class FakeRunner implements Runner {
   async run(_opts: RunOpts): Promise<TerraformResult> {
@@ -60,7 +61,9 @@ const DEFAULT_CONFIG: YaffleTomlConfig = {
   cloud: {
     triggers: {
       github: {
-        push: [{ ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" }],
+        push: [
+          { ref_patterns: ["refs/heads/main"], exclude_ref_patterns: [], environment: "main" },
+        ],
         pull_request: [{ branch_patterns: ["*"], exclude_branch_patterns: [] }],
       },
     },
@@ -113,6 +116,10 @@ async function fakeScanDispatcher(
     throw new Error(`Failed to complete fake scan job ${scanJob.id}`)
   }
 
+  await db
+    .update(runGroups)
+    .set({ workspaceS3Key: `${orgSlug}/${ctx.repo}/${ctx.headSha}/workspace.tar.gz` })
+    .where(eq(runGroups.id, runGroupId))
   await completeRunGroup(runGroupId, result)
 }
 
@@ -163,7 +170,7 @@ function assertTestDatabase(): void {
   if (!dbUrl.includes("_test")) {
     throw new Error(
       `FATAL: Test attempted to truncate tables but DATABASE_URL doesn't contain '_test'. ` +
-      `Current URL: ${dbUrl.replace(/\/\/[^@]+@/, "//***@")}`,
+        `Current URL: ${dbUrl.replace(/\/\/[^@]+@/, "//***@")}`,
     )
   }
 }
@@ -379,14 +386,17 @@ describe("run-group-checks", () => {
       localRepoFingerprint: "repo-fingerprint-1",
     })
 
-    const [run] = await db.insert(lifecycleRuns).values({
-      principalId: principal.id,
-      repoBindingId: binding.id,
-      runGroupId: groups[0].id,
-      environmentName: "pr-42",
-      executionMode: "cloud",
-      status: "running",
-    }).returning()
+    const [run] = await db
+      .insert(lifecycleRuns)
+      .values({
+        principalId: principal.id,
+        repoBindingId: binding.id,
+        runGroupId: groups[0].id,
+        environmentName: "pr-42",
+        executionMode: "cloud",
+        status: "running",
+      })
+      .returning()
 
     await db.insert(lifecycleItems).values([
       {
@@ -444,15 +454,18 @@ describe("run-group-checks", () => {
       localRepoFingerprint: "repo-fingerprint-2",
     })
 
-    const [run] = await db.insert(lifecycleRuns).values({
-      principalId: principal.id,
-      repoBindingId: binding.id,
-      runGroupId: groups[0].id,
-      environmentName: "pr-42",
-      executionMode: "cloud",
-      status: "degraded",
-      finishedAt: new Date(),
-    }).returning()
+    const [run] = await db
+      .insert(lifecycleRuns)
+      .values({
+        principalId: principal.id,
+        repoBindingId: binding.id,
+        runGroupId: groups[0].id,
+        environmentName: "pr-42",
+        executionMode: "cloud",
+        status: "degraded",
+        finishedAt: new Date(),
+      })
+      .returning()
 
     await db.insert(lifecycleItems).values([
       {
@@ -493,8 +506,8 @@ describe("run-group-checks", () => {
         "https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=" + groups[0].id,
       title: "Settled with degradation",
       summary:
-        "Yaffle finished the infrastructure changes for this commit, but an acceptable lifecycle check settled degraded.\n\n"
-        + `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${groups[0].id})`,
+        "Yaffle finished the infrastructure changes for this commit, but an acceptable lifecycle check settled degraded.\n\n" +
+        `[View more details at yaffle.local](https://yaffle.local:6969/app/test-org/test-repo/env/pr-42?runGroupId=${groups[0].id})`,
     })
   })
 

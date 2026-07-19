@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, type SQL } from "drizzle-orm"
+import { and, desc, eq, gt, inArray, type SQL } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { organizations, workspaces } from "../schema.ts"
@@ -23,11 +23,7 @@ export interface ListWorkspacesOptions {
  */
 export async function findWorkspaceById(id: string): Promise<Workspace | undefined> {
   return withDbSpan("select", "workspaces", async () => {
-    const rows = await db
-      .select()
-      .from(workspaces)
-      .where(eq(workspaces.id, id))
-      .limit(1)
+    const rows = await db.select().from(workspaces).where(eq(workspaces.id, id)).limit(1)
     return rows[0]
   })
 }
@@ -37,11 +33,7 @@ export async function findWorkspaceById(id: string): Promise<Workspace | undefin
  */
 export async function findWorkspaceByLockId(lockId: string): Promise<Workspace | undefined> {
   return withDbSpan("select", "workspaces", async () => {
-    const rows = await db
-      .select()
-      .from(workspaces)
-      .where(eq(workspaces.lockId, lockId))
-      .limit(1)
+    const rows = await db.select().from(workspaces).where(eq(workspaces.lockId, lockId)).limit(1)
     return rows[0]
   })
 }
@@ -152,12 +144,30 @@ export async function updateWorkspaceStatus(
 }
 
 /**
+ * Mark a workspace as destroying only when no backend operation holds its lock.
+ * The destroy runner acquires the actual backend lock through the TFC interface.
+ */
+export async function markWorkspaceDestroying(workspaceId: string): Promise<Workspace | undefined> {
+  return withDbSpan("update", "workspaces", async () => {
+    const rows = await db
+      .update(workspaces)
+      .set({ status: "destroying" })
+      .where(
+        and(eq(workspaces.id, workspaceId), inArray(workspaces.status, ["active", "destroying"])),
+      )
+      .returning()
+    return rows[0]
+  })
+}
+
+/**
  * Lock a workspace. Returns the updated workspace if successful, undefined if already locked.
  */
 export async function lockWorkspace(
   workspaceId: string,
   lockedBy: string,
   reason?: string,
+  options?: { allowDestroying?: boolean },
 ): Promise<Workspace | undefined> {
   return withDbSpan("update", "workspaces", async () => {
     const workspace = await findWorkspaceById(workspaceId)
@@ -177,7 +187,11 @@ export async function lockWorkspace(
 
     const lockId = buildWorkspaceLockId(orgSlug, workspace.name)
 
-    // Use a conditional update to atomically check and lock
+    const allowedStatus = options?.allowDestroying
+      ? inArray(workspaces.status, ["active", "destroying"])
+      : eq(workspaces.status, "active")
+
+    // Use a conditional update to atomically check status and acquire the lock.
     const rows = await db
       .update(workspaces)
       .set({
@@ -187,7 +201,7 @@ export async function lockWorkspace(
         lockReason: reason,
         lockId,
       })
-      .where(and(eq(workspaces.id, workspaceId), eq(workspaces.locked, false)))
+      .where(and(eq(workspaces.id, workspaceId), eq(workspaces.locked, false), allowedStatus))
       .returning()
     return rows[0]
   })
@@ -244,10 +258,7 @@ export async function updateWorkspaceCurrentState(
   currentStateVersionId: string,
 ): Promise<void> {
   return withDbSpan("update", "workspaces", async () => {
-    await db
-      .update(workspaces)
-      .set({ currentStateVersionId })
-      .where(eq(workspaces.id, workspaceId))
+    await db.update(workspaces).set({ currentStateVersionId }).where(eq(workspaces.id, workspaceId))
   })
 }
 
@@ -269,7 +280,8 @@ export function buildWorkspaceName(
   workspacePath: string,
 ): string {
   const slugify = (s: string): string =>
-    s.toLowerCase()
+    s
+      .toLowerCase()
       .replace(/[^a-z0-9-]/g, "-")
       .replace(/-+/g, "-")
       .replace(/^-|-$/g, "")
@@ -280,12 +292,9 @@ export function buildWorkspaceName(
   // Extract ref name (strip refs/heads/ or refs/tags/ prefix)
   const refName = ref.replace(/^refs\/(heads|tags)\//, "")
 
-  return [
-    slugify(repoName),
-    slugify(environment),
-    slugify(refName),
-    slugify(workspacePath),
-  ].join("-")
+  return [slugify(repoName), slugify(environment), slugify(refName), slugify(workspacePath)].join(
+    "-",
+  )
 }
 
 /**
@@ -341,12 +350,37 @@ export async function archiveWorkspace(workspaceId: string): Promise<Workspace |
   })
 }
 
+/** Archive only after a destroy operation has released its backend lock. */
+export async function archiveWorkspaceAfterDestroy(
+  workspaceId: string,
+): Promise<Workspace | undefined> {
+  return withDbSpan("update", "workspaces", async () => {
+    const rows = await db
+      .update(workspaces)
+      .set({
+        status: "archived",
+        locked: false,
+        lockedBy: null,
+        lockedAt: null,
+        lockReason: null,
+        lockId: null,
+      })
+      .where(
+        and(
+          eq(workspaces.id, workspaceId),
+          eq(workspaces.status, "destroying"),
+          eq(workspaces.locked, false),
+        ),
+      )
+      .returning()
+    return rows[0]
+  })
+}
+
 /**
  * Find all transient workspaces that are in a failed state (for admin cleanup).
  */
-export async function findFailedWorkspaces(
-  orgId: string,
-): Promise<Workspace[]> {
+export async function findFailedWorkspaces(orgId: string): Promise<Workspace[]> {
   return withDbSpan("select", "workspaces", async () => {
     return db
       .select()

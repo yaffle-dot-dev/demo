@@ -249,48 +249,52 @@ export const previews = workspaceDeployments
 // Run Groups (groups related runs across workspaces)
 // =============================================================================
 
-export const runGroups = pgTable("run_groups", {
-  id: uuid("id")
-    .primaryKey()
-    .$defaultFn(() => uuidv7()),
-  orgId: uuid("org_id")
-    .references(() => organizations.id, { onDelete: "cascade" })
-    .notNull(),
-  repoBindingId: uuid("repo_binding_id").references(() => principalRepoBindings.id, {
-    onDelete: "set null",
-  }),
-  repo: text("repo").notNull(),
-  // Environment identification (new canonical discriminator)
-  environmentKind: text("environment_kind").$type<"named" | "transient">().notNull(),
-  environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
-  // PR number as metadata (nullable, not a discriminator)
-  prNumber: integer("pr_number"), // GitHub PR number when that is the source; otherwise NULL
-  ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
-  headSha: text("head_sha").notNull(),
-  selectedWorkspacePaths: jsonb("selected_workspace_paths")
-    .default(sql`'[]'::jsonb`)
-    .notNull(),
-  executionSnapshot: jsonb("execution_snapshot").$type<ExecutionSnapshotV1>(),
-  checkRunId: bigint("check_run_id", { mode: "number" }),
-  checkCompletedAt: timestamp("check_completed_at", { withTimezone: true }),
-  trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
-  triggeredByUserId: text("triggered_by_user_id").references(() => user.id, {
-    onDelete: "set null",
-  }),
-  triggeredByLogin: text("triggered_by_login"),
-  status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
-  // Inferred dependency graph for this run group
-  // Structure: { workspaces: string[], edges: [string, string][] }
-  dependencyGraph: jsonb("dependency_graph"),
-  // S3 key for cached workspace tarball: {org}/{repo}/{sha}/workspace.tar.gz
-  // Uploaded during webhook processing, downloaded by runners
-  workspaceS3Key: text("workspace_s3_key"),
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-  startedAt: timestamp("started_at", { withTimezone: true }),
-  completedAt: timestamp("completed_at", { withTimezone: true }),
-}, (t) => [
-  check("run_groups_environment_kind_check", sql`${t.environmentKind} IN ('named', 'transient')`),
-])
+export const runGroups = pgTable(
+  "run_groups",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    orgId: uuid("org_id")
+      .references(() => organizations.id, { onDelete: "cascade" })
+      .notNull(),
+    repoBindingId: uuid("repo_binding_id").references(() => principalRepoBindings.id, {
+      onDelete: "set null",
+    }),
+    repo: text("repo").notNull(),
+    // Environment identification (new canonical discriminator)
+    environmentKind: text("environment_kind").$type<"named" | "transient">().notNull(),
+    environmentName: text("environment_name").notNull(), // 'main', 'staging', 'pr-123', etc.
+    // PR number as metadata (nullable, not a discriminator)
+    prNumber: integer("pr_number"), // GitHub PR number when that is the source; otherwise NULL
+    ref: text("ref").notNull(), // Full git ref: refs/heads/main, refs/tags/v1.0.0
+    headSha: text("head_sha").notNull(),
+    selectedWorkspacePaths: jsonb("selected_workspace_paths")
+      .default(sql`'[]'::jsonb`)
+      .notNull(),
+    executionSnapshot: jsonb("execution_snapshot").$type<ExecutionSnapshotV1>(),
+    checkRunId: bigint("check_run_id", { mode: "number" }),
+    checkCompletedAt: timestamp("check_completed_at", { withTimezone: true }),
+    trigger: text("trigger").notNull(), // 'pr_opened' | 'pr_sync' | 'push' | 'manual'
+    triggeredByUserId: text("triggered_by_user_id").references(() => user.id, {
+      onDelete: "set null",
+    }),
+    triggeredByLogin: text("triggered_by_login"),
+    status: text("status").default("pending").notNull(), // 'pending' | 'running' | 'success' | 'failed' | 'partial'
+    // Inferred dependency graph for this run group
+    // Structure: { workspaces: string[], edges: [string, string][] }
+    dependencyGraph: jsonb("dependency_graph"),
+    // S3 key for cached workspace tarball: {org}/{repo}/{sha}/workspace.tar.gz
+    // Uploaded during webhook processing, downloaded by runners
+    workspaceS3Key: text("workspace_s3_key"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    check("run_groups_environment_kind_check", sql`${t.environmentKind} IN ('named', 'transient')`),
+  ],
+)
 
 export const runGroupWorkspaceMetadata = pgTable(
   "run_group_workspace_metadata",
@@ -430,6 +434,9 @@ export const tfRuns = pgTable(
       .notNull(),
     runGroupId: uuid("run_group_id").references(() => runGroups.id, { onDelete: "set null" }),
     runType: text("run_type").notNull(),
+    planPurpose: text("plan_purpose").default("environment").notNull(),
+    targetWorkspaceId: uuid("target_workspace_id").references(() => workspaces.id),
+    targetStateVersionId: uuid("target_state_version_id"),
     status: text("status").notNull(),
     checkRunId: bigint("check_run_id", { mode: "number" }),
     ecsTaskArn: text("ecs_task_arn"),
@@ -443,7 +450,14 @@ export const tfRuns = pgTable(
     completedAt: timestamp("completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [index("tf_runs_deployment_id_idx").on(t.deploymentId, t.createdAt.desc())],
+  (t) => [
+    index("tf_runs_deployment_id_idx").on(t.deploymentId, t.createdAt.desc()),
+    index("tf_runs_target_workspace_id_idx").on(t.targetWorkspaceId),
+    check(
+      "tf_runs_plan_target_check",
+      sql`(${t.planPurpose} = 'environment' AND ${t.targetWorkspaceId} IS NULL AND ${t.targetStateVersionId} IS NULL) OR (${t.runType} = 'plan' AND ${t.planPurpose} = 'merge_impact' AND ${t.targetWorkspaceId} IS NOT NULL AND ${t.targetStateVersionId} IS NOT NULL)`,
+    ),
+  ],
 )
 
 // =============================================================================
@@ -487,8 +501,7 @@ export const approvals = pgTable("approvals", {
   deploymentId: uuid("deployment_id")
     .references(() => workspaceDeployments.id)
     .notNull(),
-  runGroupId: uuid("run_group_id")
-    .references(() => runGroups.id),
+  runGroupId: uuid("run_group_id").references(() => runGroups.id),
   userId: text("user_id")
     .references(() => user.id)
     .notNull(),
@@ -543,6 +556,9 @@ function buildIacJobColumns(runGroupRequired: boolean) {
       .notNull(),
     runGroupId: runGroupRequired ? runGroupId.notNull() : runGroupId,
     jobType: iacJobTypeEnum("job_type").notNull(),
+    planPurpose: text("plan_purpose").default("environment").notNull(),
+    targetWorkspaceId: uuid("target_workspace_id").references(() => workspaces.id),
+    targetStateVersionId: uuid("target_state_version_id").references(() => stateVersions.id),
     status: iacJobStatusEnum("status").default("queued").notNull(),
     // Worker tracking
     workerId: text("worker_id"),
@@ -576,6 +592,11 @@ export const iacJobs = pgTable("iac_jobs", buildIacJobColumns(true), (t) => [
   index("iac_jobs_spawn_lease_idx").on(t.status, t.spawnLeaseExpiresAt),
   index("iac_jobs_deployment_queued_at_idx").on(t.deploymentId.asc(), t.queuedAt.desc()),
   index("iac_jobs_run_group_id_idx").on(t.runGroupId),
+  index("iac_jobs_target_workspace_id_idx").on(t.targetWorkspaceId),
+  check(
+    "iac_jobs_plan_target_check",
+    sql`(${t.planPurpose} = 'environment' AND ${t.targetWorkspaceId} IS NULL AND ${t.targetStateVersionId} IS NULL) OR (${t.jobType} = 'plan' AND ${t.planPurpose} = 'merge_impact' AND ${t.targetWorkspaceId} IS NOT NULL AND ${t.targetStateVersionId} IS NOT NULL)`,
+  ),
 ])
 
 export const iacJobHistory = pgTable("iac_job_history", buildIacJobColumns(false), (t) => [
@@ -587,6 +608,11 @@ export const iacJobHistory = pgTable("iac_job_history", buildIacJobColumns(false
   ),
   index("iac_job_history_completed_at_idx").on(t.completedAt.desc()),
   index("iac_job_history_run_group_id_idx").on(t.runGroupId),
+  index("iac_job_history_target_workspace_id_idx").on(t.targetWorkspaceId),
+  check(
+    "iac_job_history_plan_target_check",
+    sql`(${t.planPurpose} = 'environment' AND ${t.targetWorkspaceId} IS NULL AND ${t.targetStateVersionId} IS NULL) OR (${t.jobType} = 'plan' AND ${t.planPurpose} = 'merge_impact' AND ${t.targetWorkspaceId} IS NOT NULL AND ${t.targetStateVersionId} IS NOT NULL)`,
+  ),
 ])
 
 // =============================================================================

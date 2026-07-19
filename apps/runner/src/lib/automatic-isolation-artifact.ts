@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { readFile } from "node:fs/promises"
+import { readFile, rm } from "node:fs/promises"
 import { join, resolve, sep } from "node:path"
 
 import * as hcl from "hcl2-parser"
@@ -460,6 +460,25 @@ export async function verifyAutomaticIsolationArtifact(
   }
 
   return manifest
+}
+
+export async function removeAutomaticIsolationArtifact(
+  workDir: string,
+  expectedManifest: AutomaticIsolationArtifactManifest,
+): Promise<void> {
+  const manifest = await verifyAutomaticIsolationArtifact(workDir, true, expectedManifest)
+  const workspaceRoot = `${resolve(workDir)}${sep}`
+  for (const file of manifest!.files) {
+    const filePath = resolve(workDir, file.path)
+    if (!filePath.startsWith(workspaceRoot)) {
+      throw new AutomaticIsolationArtifactError(
+        `Automatic preview isolation artifact path escapes workspace: ${file.path}`,
+        "GENERATED_FILE_INVALID",
+      )
+    }
+    await rm(filePath)
+  }
+  await rm(join(workDir, MANIFEST_PATH))
 }
 
 export const automaticIsolationArtifactPaths = {

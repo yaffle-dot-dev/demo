@@ -7,4 +7,7 @@ export default defineConfig({
       neverBundle: ["minijinja-js"],
     },
   },
+  test: {
+    setupFiles: ["./src/test-utils/setup.ts"],
+  },
 })

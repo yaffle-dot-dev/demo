@@ -12,7 +12,10 @@ import { spawn } from "node:child_process"
 import type { Readable } from "node:stream"
 
 import type { ExecutionContext } from "./api-client.ts"
-import { verifyAutomaticIsolationArtifact } from "./automatic-isolation-artifact.ts"
+import {
+  removeAutomaticIsolationArtifact,
+  verifyAutomaticIsolationArtifact,
+} from "./automatic-isolation-artifact.ts"
 import { log } from "./runner-log.ts"
 import { ResourceSpanParser, type ResourceSpanEvent } from "./span-parser.ts"
 
@@ -44,6 +47,21 @@ export interface ExecutorOptions {
   traceparent?: string
 }
 
+export function buildPlanCommand(context: Pick<ExecutionContext, "lockState">): string[] {
+  return [
+    "tofu",
+    "plan",
+    "-input=false",
+    ...(context.lockState === false ? ["-lock=false"] : []),
+    "-out=tfplan",
+    "-detailed-exitcode",
+  ]
+}
+
+export function buildDestroyCommand(): string[] {
+  return ["tofu", "destroy", "-input=false", "-auto-approve", "-lock-timeout=5m"]
+}
+
 /**
  * Execute terraform command.
  */
@@ -66,11 +84,15 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
   }
 
   try {
-    await verifyAutomaticIsolationArtifact(
-      workDir,
-      context.automaticIsolationRequired,
-      context.automaticIsolationManifest,
-    )
+    if (context.automaticIsolationCleanupManifest) {
+      await removeAutomaticIsolationArtifact(workDir, context.automaticIsolationCleanupManifest)
+    } else {
+      await verifyAutomaticIsolationArtifact(
+        workDir,
+        context.automaticIsolationRequired,
+        context.automaticIsolationManifest,
+      )
+    }
 
     // Configure backend
     const backendEnv = await configureBackend(workDir, context)
@@ -112,7 +134,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       case "plan": {
         result = await runCommand(
           workDir,
-          ["tofu", "plan", "-input=false", "-out=tfplan", "-detailed-exitcode"],
+          buildPlanCommand(context),
           wrappedOnOutput,
           combinedEnv,
           onProcess,
@@ -203,7 +225,7 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       case "destroy": {
         result = await runCommand(
           workDir,
-          ["tofu", "destroy", "-input=false", "-auto-approve"],
+          buildDestroyCommand(),
           wrappedOnOutput,
           combinedEnv,
           onProcess,
@@ -226,7 +248,9 @@ export async function executeTerraform(opts: ExecutorOptions): Promise<Terraform
       planSummary,
       planJson,
       planFilePath:
-        context.command === "plan" && result.success ? join(workDir, "tfplan") : undefined,
+        context.command === "plan" && result.success && context.persistPlanFile !== false
+          ? join(workDir, "tfplan")
+          : undefined,
       outputs,
       errorMessage: result.success ? undefined : result.output,
       durationMs: Date.now() - startTime,

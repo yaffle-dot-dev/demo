@@ -9,6 +9,9 @@ const config = {
     paths: {
       base: "/app",
     },
+    version: {
+      name: process.env.YAFFLE_BUILD_ID ?? "development",
+    },
   },
 }
 

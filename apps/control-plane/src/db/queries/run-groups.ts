@@ -61,9 +61,9 @@ export function deriveRunGroupStatusFromRunStatuses(statuses: string[]): {
  */
 export async function createRunGroup(values: NewRunGroup): Promise<RunGroup> {
   if (
-    values.environmentKind === "transient"
-    && values.status !== "failed"
-    && !values.executionSnapshot
+    values.environmentKind === "transient" &&
+    values.status !== "failed" &&
+    !values.executionSnapshot
   ) {
     throw new ExecutionSnapshotInvariantError(
       "Transient run groups require an immutable execution snapshot",
@@ -100,11 +100,7 @@ export async function updateRunGroupStatus(
  */
 export async function findRunGroupById(runGroupId: string): Promise<RunGroup | undefined> {
   return withDbSpan("select", "run_groups", async () => {
-    const rows = await db
-      .select()
-      .from(runGroups)
-      .where(eq(runGroups.id, runGroupId))
-      .limit(1)
+    const rows = await db.select().from(runGroups).where(eq(runGroups.id, runGroupId)).limit(1)
     return rows[0]
   })
 }
@@ -128,15 +124,16 @@ export async function findRunGroupsByIds(
       })
       .from(runGroups)
       .leftJoin(principalRepoBindings, eq(runGroups.repoBindingId, principalRepoBindings.id))
-      .where(and(
-        inArray(runGroups.id, runGroupIds),
-        ...(orgId ? [eq(runGroups.orgId, orgId)] : []),
-      ))
+      .where(
+        and(inArray(runGroups.id, runGroupIds), ...(orgId ? [eq(runGroups.orgId, orgId)] : [])),
+      )
 
-    return new Map(rows.map(({ runGroup, canonicalRepoNamespace }) => [
-      runGroup.id,
-      { ...runGroup, canonicalRepoNamespace },
-    ]))
+    return new Map(
+      rows.map(({ runGroup, canonicalRepoNamespace }) => [
+        runGroup.id,
+        { ...runGroup, canonicalRepoNamespace },
+      ]),
+    )
   })
 }
 
@@ -154,11 +151,7 @@ export async function listRunGroupsForPr(
       .select()
       .from(runGroups)
       .where(
-        and(
-          eq(runGroups.orgId, orgId),
-          eq(runGroups.repo, repo),
-          eq(runGroups.prNumber, prNumber),
-        ),
+        and(eq(runGroups.orgId, orgId), eq(runGroups.repo, repo), eq(runGroups.prNumber, prNumber)),
       )
       .orderBy(desc(runGroups.createdAt))
       .limit(limit)
@@ -233,11 +226,7 @@ export async function getLatestRunGroupForPr(
       .select()
       .from(runGroups)
       .where(
-        and(
-          eq(runGroups.orgId, orgId),
-          eq(runGroups.repo, repo),
-          eq(runGroups.prNumber, prNumber),
-        ),
+        and(eq(runGroups.orgId, orgId), eq(runGroups.repo, repo), eq(runGroups.prNumber, prNumber)),
       )
       .orderBy(desc(runGroups.createdAt))
       .limit(1)
@@ -280,10 +269,7 @@ export async function updateRunGroupDependencyGraph(
   dependencyGraph: SerializableDependencyGraph,
 ): Promise<void> {
   return withDbSpan("update", "run_groups", async () => {
-    await db
-      .update(runGroups)
-      .set({ dependencyGraph })
-      .where(eq(runGroups.id, runGroupId))
+    await db.update(runGroups).set({ dependencyGraph }).where(eq(runGroups.id, runGroupId))
   })
 }
 
@@ -295,10 +281,7 @@ export async function updateRunGroupWorkspaceS3Key(
   workspaceS3Key: string,
 ): Promise<void> {
   return withDbSpan("update", "run_groups", async () => {
-    await db
-      .update(runGroups)
-      .set({ workspaceS3Key })
-      .where(eq(runGroups.id, runGroupId))
+    await db.update(runGroups).set({ workspaceS3Key }).where(eq(runGroups.id, runGroupId))
   })
 }
 
@@ -312,7 +295,7 @@ export async function recomputeRunGroupStatus(runGroupId: string): Promise<void>
     const runs = await db
       .select({ status: tfRuns.status })
       .from(tfRuns)
-      .where(eq(tfRuns.runGroupId, runGroupId))
+      .where(and(eq(tfRuns.runGroupId, runGroupId), eq(tfRuns.planPurpose, "environment")))
 
     if (runs.length === 0) return
 

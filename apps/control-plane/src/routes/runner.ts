@@ -48,25 +48,33 @@ import {
   findRunById,
   findLatestSuccessfulRun,
 } from "../db/queries/tf-runs.ts"
-import { insertResourceSpan, completeResourceSpan, closeOrphanedSpans } from "../db/queries/resource-spans.ts"
+import {
+  insertResourceSpan,
+  completeResourceSpan,
+  closeOrphanedSpans,
+} from "../db/queries/resource-spans.ts"
 import {
   buildWorkspaceName,
+  findWorkspaceById,
   findWorkspaceByName,
-  forceUnlockWorkspace,
+  unlockWorkspace,
 } from "../db/queries/workspaces.ts"
 import { events } from "../lib/events.ts"
-import {
-  type EnvironmentKind,
-} from "../lib/config-toml.ts"
+import { type EnvironmentKind } from "../lib/config-toml.ts"
 import { useTfcBackend } from "../lib/tfc-backend.ts"
-import { ensureTransientWorkspace, ensureNamedWorkspace } from "../lib/workspace-service.ts"
-import { generateRunToken } from "../lib/run-token.ts"
+import {
+  completeWorkspaceArchive,
+  ensureTransientWorkspace,
+  ensureNamedWorkspace,
+} from "../lib/workspace-service.ts"
+import {
+  generateRunToken,
+  getMergeImpactRunTokenScopes,
+  getRunTokenScopes,
+} from "../lib/run-token.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
 import { getRunnerCredentialHosts, getRunnerReachableTfcHost } from "../lib/tfc-host.ts"
-import {
-  cascadeFailure,
-  notifyDestroyComplete,
-} from "../lib/deployment-side-effects.ts"
+import { cascadeFailure, notifyDestroyComplete } from "../lib/deployment-side-effects.ts"
 import { resolveExecutionCredentialsForDeployment } from "../lib/execution-credentials.ts"
 import { validateAutomaticIsolationExecutionContext } from "../lib/automatic-isolation-execution-context.ts"
 import { publishHostedOutputModuleForRunGroupBinding } from "../lib/hosted-output-modules.ts"
@@ -76,8 +84,10 @@ import {
 } from "../lib/hosted-lifecycle.ts"
 import { getConfiguredSchedulerConcurrencyLimits } from "../lib/scheduler.ts"
 import { isWarmRunnerWorkspaceExcluded } from "../lib/warm-runner.ts"
+import { syncPrCommentForRunGroup } from "../lib/pr-comment-sync.ts"
 import {
   buildExecutionVariables,
+  buildMergeImpactVariables,
   ExecutionContextAssociationError,
   findExecutionSnapshotWorkspace,
 } from "../lib/execution-snapshot.ts"
@@ -98,26 +108,32 @@ type JobContext = Awaited<ReturnType<typeof getJobWithContext>>
 
 function hasHostedExecutionContext(jobContext: JobContext): boolean {
   return Boolean(
-    jobContext?.deployment
-    && jobContext.runGroup?.executionSnapshot
-    && jobContext.runGroup.workspaceS3Key,
+    jobContext?.deployment &&
+    jobContext.runGroup?.executionSnapshot &&
+    jobContext.runGroup.workspaceS3Key,
   )
 }
 
-function jobTokenMatchesContext(token: JobTokenPayload, jobContext: NonNullable<JobContext>): boolean {
-  return token.job_id === jobContext.id
-    && token.deployment_id === jobContext.deployment.id
-    && token.org_id === jobContext.deployment.orgId
+function jobTokenMatchesContext(
+  token: JobTokenPayload,
+  jobContext: NonNullable<JobContext>,
+): boolean {
+  return (
+    token.job_id === jobContext.id &&
+    token.deployment_id === jobContext.deployment.id &&
+    token.org_id === jobContext.deployment.orgId
+  )
 }
 
 async function runMatchesJob(runId: string, jobContext: NonNullable<JobContext>): Promise<boolean> {
   const run = await findRunById(runId)
   return Boolean(
-    run
-    && run.deploymentId === jobContext.deployment.id
-    && run.runGroupId === jobContext.runGroup?.id
-    && run.runType === jobContext.jobType
-    && run.status === "running",
+    run &&
+    run.deploymentId === jobContext.deployment.id &&
+    run.runGroupId === jobContext.runGroup?.id &&
+    run.runType === jobContext.jobType &&
+    run.planPurpose === jobContext.planPurpose &&
+    run.status === "running",
   )
 }
 
@@ -139,16 +155,22 @@ const DEFAULT_WARM_RUNNER_POLL_INTERVAL_MS = 1_000
 const DEFAULT_WARM_RUNNER_IDLE_SHUTDOWN_MS = 120_000
 const DEFAULT_WARM_RUNNER_STALE_AFTER_MS = 30_000
 
-type ClaimResponseDeployment = NonNullable<Awaited<ReturnType<typeof getJobWithContext>>>["deployment"]
+type ClaimResponseDeployment = NonNullable<
+  Awaited<ReturnType<typeof getJobWithContext>>
+>["deployment"]
 
-async function releaseWorkspaceLockForDeployment(deployment: {
-  orgId: string
-  repo: string
-  environmentName: string
-  ref: string
-  workspacePath: string
-  id: string
-}): Promise<void> {
+async function releaseWorkspaceLockForDeployment(
+  deployment: {
+    orgId: string
+    repo: string
+    environmentName: string
+    ref: string
+    workspacePath: string
+    id: string
+  },
+  runId: string,
+  archive: boolean = false,
+): Promise<void> {
   const workspaceName = buildWorkspaceName(
     deployment.repo,
     deployment.environmentName,
@@ -157,13 +179,52 @@ async function releaseWorkspaceLockForDeployment(deployment: {
   )
 
   const workspace = await findWorkspaceByName(deployment.orgId, workspaceName)
-  if (!workspace?.locked) {
+  if (!workspace) {
     return
   }
 
-  await forceUnlockWorkspace(workspace.id)
-  logger.info("runner.workspace_force_unlocked", {
+  if (archive) {
+    let archived = await completeWorkspaceArchive(workspace.id)
+    if (!archived && workspace.lockedBy === `run:${runId}`) {
+      await unlockWorkspace(workspace.id, `run:${runId}`)
+      archived = await completeWorkspaceArchive(workspace.id)
+    }
+    if (!archived) {
+      logger.warn("runner.workspace_archive_deferred", {
+        "deployment.id": deployment.id,
+        "run.id": runId,
+        "workspace.id": workspace.id,
+        "workspace.name": workspace.name,
+        "workspace.locked_by": workspace.lockedBy ?? "unknown",
+      })
+      return
+    }
+    logger.info("runner.workspace_archived", {
+      "deployment.id": deployment.id,
+      "workspace.id": workspace.id,
+      "workspace.name": workspace.name,
+    })
+    return
+  }
+
+  if (!workspace.locked) {
+    return
+  }
+
+  const unlocked = await unlockWorkspace(workspace.id, `run:${runId}`)
+  if (!unlocked) {
+    logger.warn("runner.workspace_unlock_rejected", {
+      "deployment.id": deployment.id,
+      "run.id": runId,
+      "workspace.id": workspace.id,
+      "workspace.name": workspace.name,
+      "workspace.locked_by": workspace.lockedBy ?? "unknown",
+    })
+    return
+  }
+  logger.info("runner.workspace_unlocked", {
     "deployment.id": deployment.id,
+    "run.id": runId,
     "workspace.id": workspace.id,
     "workspace.name": workspace.name,
     "workspace.locked_by": workspace.lockedBy ?? "unknown",
@@ -180,7 +241,9 @@ function extractBearerToken(authHeader: string | undefined): string | null {
   return authHeader.slice(7)
 }
 
-function parsePlanSummaryCounts(summary: string): { add: number; change: number; destroy: number } | null {
+function parsePlanSummaryCounts(
+  summary: string,
+): { add: number; change: number; destroy: number } | null {
   const canonical = summary.match(/^\s*\+(\d+)\s*,\s*~(\d+)\s*,\s*-(\d+)\s*$/)
   if (canonical) {
     return {
@@ -230,15 +293,18 @@ function getWarmRunnerSettings(): {
 } {
   return {
     heartbeatIntervalMs: Number.parseInt(
-      process.env.YAFFLE_WARM_RUNNER_HEARTBEAT_INTERVAL_MS ?? String(DEFAULT_WARM_RUNNER_HEARTBEAT_INTERVAL_MS),
+      process.env.YAFFLE_WARM_RUNNER_HEARTBEAT_INTERVAL_MS ??
+        String(DEFAULT_WARM_RUNNER_HEARTBEAT_INTERVAL_MS),
       10,
     ),
     pollIntervalMs: Number.parseInt(
-      process.env.YAFFLE_WARM_RUNNER_POLL_INTERVAL_MS ?? String(DEFAULT_WARM_RUNNER_POLL_INTERVAL_MS),
+      process.env.YAFFLE_WARM_RUNNER_POLL_INTERVAL_MS ??
+        String(DEFAULT_WARM_RUNNER_POLL_INTERVAL_MS),
       10,
     ),
     idleShutdownMs: Number.parseInt(
-      process.env.YAFFLE_WARM_RUNNER_IDLE_SHUTDOWN_MS ?? String(DEFAULT_WARM_RUNNER_IDLE_SHUTDOWN_MS),
+      process.env.YAFFLE_WARM_RUNNER_IDLE_SHUTDOWN_MS ??
+        String(DEFAULT_WARM_RUNNER_IDLE_SHUTDOWN_MS),
       10,
     ),
     staleAfterMs: Number.parseInt(
@@ -255,6 +321,9 @@ async function createClaimResponse(
     deploymentId: string
     queuedAt: Date
     startedAt: Date | null
+    planPurpose: string
+    targetWorkspaceId: string | null
+    targetStateVersionId: string | null
   },
   issueJobToken: boolean,
 ): Promise<{
@@ -283,17 +352,23 @@ async function createClaimResponse(
     deploymentId: deployment.id,
     runGroupId: jobContext.runGroup?.id ?? undefined,
     runType: job.jobType,
+    planPurpose: job.planPurpose,
+    targetWorkspaceId: job.targetWorkspaceId,
+    targetStateVersionId: job.targetStateVersionId,
     status: "running",
     startedAt: new Date(),
   })
   events.emitRunUpdate(tfRun.id, deployment.id)
+  if (jobContext.runGroup?.id) {
+    void syncPrCommentForRunGroup(jobContext.runGroup.id)
+  }
 
   const statusMap: Record<string, "planning" | "applying" | "destroying"> = {
     plan: "planning",
     apply: "applying",
     destroy: "destroying",
   }
-  const deploymentStatus = statusMap[job.jobType]
+  const deploymentStatus = job.planPurpose === "environment" ? statusMap[job.jobType] : undefined
   if (deploymentStatus) {
     await updateDeploymentStatus(deployment.id, deploymentStatus)
   }
@@ -346,18 +421,12 @@ runnerJobRoute.use("*", async (c, next) => {
   const token = extractBearerToken(c.req.header("authorization"))
 
   if (!token) {
-    return c.json(
-      { error: { code: "UNAUTHORIZED", message: "Job token required" } },
-      401,
-    )
+    return c.json({ error: { code: "UNAUTHORIZED", message: "Job token required" } }, 401)
   }
 
   const payload = await verifyJobToken(token)
   if (!payload) {
-    return c.json(
-      { error: { code: "UNAUTHORIZED", message: "Invalid or expired job token" } },
-      401,
-    )
+    return c.json({ error: { code: "UNAUTHORIZED", message: "Invalid or expired job token" } }, 401)
   }
 
   c.set("runnerAuth", { jobToken: payload } as RunnerAuthContext)
@@ -368,10 +437,7 @@ warmRunnerRoute.use("*", async (c, next) => {
   const token = extractBearerToken(c.req.header("authorization"))
 
   if (!token) {
-    return c.json(
-      { error: { code: "UNAUTHORIZED", message: "Warm runner token required" } },
-      401,
-    )
+    return c.json({ error: { code: "UNAUTHORIZED", message: "Warm runner token required" } }, 401)
   }
 
   const payload = await verifyWarmRunnerToken(token)
@@ -399,7 +465,13 @@ warmRunnerRoute.post("/register", async (c) => {
 
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -438,7 +510,13 @@ warmRunnerRoute.post("/heartbeat", async (c) => {
 
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -453,10 +531,7 @@ warmRunnerRoute.post("/heartbeat", async (c) => {
   )
 
   if (!session) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: "Warm runner session not found" } },
-      404,
-    )
+    return c.json({ error: { code: "NOT_FOUND", message: "Warm runner session not found" } }, 404)
   }
 
   return c.json({ data: { success: true } })
@@ -475,7 +550,13 @@ warmRunnerRoute.post("/claim-next", async (c) => {
 
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -490,10 +571,7 @@ warmRunnerRoute.post("/claim-next", async (c) => {
   )
 
   if (!heartbeat) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: "Warm runner session not found" } },
-      404,
-    )
+    return c.json({ error: { code: "NOT_FOUND", message: "Warm runner session not found" } }, 404)
   }
 
   const { maxConcurrentJobs, maxJobsPerRunGroup } = getConfiguredSchedulerConcurrencyLimits()
@@ -504,28 +582,26 @@ warmRunnerRoute.post("/claim-next", async (c) => {
   )
 
   if (!currentSession) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: "Warm runner session not found" } },
-      404,
-    )
+    return c.json({ error: { code: "NOT_FOUND", message: "Warm runner session not found" } }, 404)
   }
 
-  const availableSlots = Math.max(1, Math.min(
-    parsed.data.availableSlots,
-    currentSession.maxSlots,
-  ))
+  const availableSlots = Math.max(1, Math.min(parsed.data.availableSlots, currentSession.maxSlots))
 
-  const candidates = await findQueuedJobsForWarmRunner(auth.runnerToken.org_id, {
-    maxTotal: maxConcurrentJobs,
-    maxPerRunGroup: maxJobsPerRunGroup,
-  }, availableSlots)
+  const candidates = await findQueuedJobsForWarmRunner(
+    auth.runnerToken.org_id,
+    {
+      maxTotal: maxConcurrentJobs,
+      maxPerRunGroup: maxJobsPerRunGroup,
+    },
+    availableSlots,
+  )
 
   for (const candidate of candidates) {
     const jobContext = await getJobWithContext(candidate.id)
     if (
-      !jobContext?.deployment
-      || jobContext.deployment.orgId !== auth.runnerToken.org_id
-      || !hasHostedExecutionContext(jobContext)
+      !jobContext?.deployment ||
+      jobContext.deployment.orgId !== auth.runnerToken.org_id ||
+      !hasHostedExecutionContext(jobContext)
     ) {
       continue
     }
@@ -617,7 +693,13 @@ runnerJobRoute.post("/claim", async (c) => {
   const parsed = claimBodySchema.safeParse(body)
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -630,10 +712,7 @@ runnerJobRoute.post("/claim", async (c) => {
       "job.id.token": auth.jobToken.job_id,
       "job.id.requested": jobId,
     })
-    return c.json(
-      { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
-      403,
-    )
+    return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
 
   const jobContext = await getJobWithContext(jobId)
@@ -698,7 +777,13 @@ runnerJobRoute.post("/logs", async (c) => {
   const parsed = logsBodySchema.safeParse(body)
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -707,17 +792,14 @@ runnerJobRoute.post("/logs", async (c) => {
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
-    return c.json(
-      { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
-      403,
-    )
+    return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
   const jobContext = await getJobWithContext(jobId)
   if (
-    !jobContext
-    || !jobTokenMatchesContext(auth.jobToken, jobContext)
-    || !hasHostedExecutionContext(jobContext)
-    || !(await runMatchesJob(runId, jobContext))
+    !jobContext ||
+    !jobTokenMatchesContext(auth.jobToken, jobContext) ||
+    !hasHostedExecutionContext(jobContext) ||
+    !(await runMatchesJob(runId, jobContext))
   ) {
     return c.json(
       { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
@@ -728,9 +810,7 @@ runnerJobRoute.post("/logs", async (c) => {
   // Format chunk with source prefix if stderr
   const formattedChunk = source === "stderr" ? `[stderr] ${chunk}` : chunk
 
-  let firstOutputState:
-    | { runType: string; startedAt: Date | null }
-    | undefined
+  let firstOutputState: { runType: string; startedAt: Date | null } | undefined
 
   if (!firstOutputSeenRuns.has(runId)) {
     const runState = await getRunLogState(runId)
@@ -803,7 +883,13 @@ runnerJobRoute.post("/spans", async (c) => {
   const parsed = spansBodySchema.safeParse(body)
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -811,17 +897,14 @@ runnerJobRoute.post("/spans", async (c) => {
   const { jobId, runId, events: spanEvents } = parsed.data
 
   if (auth.jobToken.job_id !== jobId) {
-    return c.json(
-      { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
-      403,
-    )
+    return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
   const jobContext = await getJobWithContext(jobId)
   if (
-    !jobContext
-    || !jobTokenMatchesContext(auth.jobToken, jobContext)
-    || !hasHostedExecutionContext(jobContext)
-    || !(await runMatchesJob(runId, jobContext))
+    !jobContext ||
+    !jobTokenMatchesContext(auth.jobToken, jobContext) ||
+    !hasHostedExecutionContext(jobContext) ||
+    !(await runMatchesJob(runId, jobContext))
   ) {
     return c.json(
       { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
@@ -866,10 +949,7 @@ runnerJobRoute.post("/spans", async (c) => {
 /**
  * Emit a resource span to Axiom via OTel tracer.
  */
-function emitResourceOtelSpan(
-  runId: string,
-  event: z.infer<typeof spanEventSchema>,
-): void {
+function emitResourceOtelSpan(runId: string, event: z.infer<typeof spanEventSchema>): void {
   try {
     const span = tracer.startSpan(`tofu.resource.${event.action}`, {
       startTime: new Date(event.timestamp),
@@ -914,7 +994,13 @@ runnerJobRoute.post("/heartbeat", async (c) => {
   const parsed = heartbeatBodySchema.safeParse(body)
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -923,10 +1009,7 @@ runnerJobRoute.post("/heartbeat", async (c) => {
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
-    return c.json(
-      { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
-      403,
-    )
+    return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
 
   const result = await heartbeatJob(jobId)
@@ -935,7 +1018,7 @@ runnerJobRoute.post("/heartbeat", async (c) => {
     // Job is no longer in running state (completed, failed, or reclaimed)
     logger.warn("runner.heartbeat.rejected", {
       "job.id": jobId,
-      "reason": "job_not_running",
+      reason: "job_not_running",
     })
     return c.json({
       data: { success: false, reason: "Job is no longer in running state" },
@@ -971,7 +1054,13 @@ runnerJobRoute.post("/complete", async (c) => {
   const parsed = completeBodySchema.safeParse(body)
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid request body", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid request body",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -980,19 +1069,13 @@ runnerJobRoute.post("/complete", async (c) => {
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
-    return c.json(
-      { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
-      403,
-    )
+    return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
 
   let success: boolean
   const jobContext = await getJobWithContext(jobId)
   if (!jobContext?.deployment) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: "Job context not found" } },
-      404,
-    )
+    return c.json({ error: { code: "NOT_FOUND", message: "Job context not found" } }, 404)
   }
   if (!jobTokenMatchesContext(auth.jobToken, jobContext)) {
     return c.json(
@@ -1016,6 +1099,7 @@ runnerJobRoute.post("/complete", async (c) => {
   const { deployment } = jobContext
   const executionRunGroupId = jobContext.runGroup?.id ?? null
   const jobType = jobContext.jobType
+  const isMergeImpact = jobContext.planPurpose === "merge_impact"
 
   if (status === "completed") {
     const completeResult = await completeJobFromRunner(jobId, result ?? {})
@@ -1027,7 +1111,10 @@ runnerJobRoute.post("/complete", async (c) => {
         await replaceRunLog(runId, deployment.id, logOutput)
       }
       const planSummary = typeof result?.planSummary === "string" ? result.planSummary : undefined
-      const planFileS3Key = typeof result?.planFileS3Key === "string" ? result.planFileS3Key : undefined
+      const planFileS3Key =
+        !isMergeImpact && typeof result?.planFileS3Key === "string"
+          ? result.planFileS3Key
+          : undefined
       await updateRunStatus(runId, deployment.id, "success", {
         completedAt: now,
         planSummary,
@@ -1039,8 +1126,9 @@ runnerJobRoute.post("/complete", async (c) => {
       // Close any orphaned spans (refresh/read ops that don't emit completion lines)
       await closeOrphanedSpans(runId, now)
 
-      if (jobType === "plan") {
-        const reportedHasChanges = typeof result?.hasChanges === "boolean" ? result.hasChanges : null
+      if (!isMergeImpact && jobType === "plan") {
+        const reportedHasChanges =
+          typeof result?.hasChanges === "boolean" ? result.hasChanges : null
         const derivedHasChanges = deriveHasChangesFromSummary(planSummary)
         const hasChanges = reportedHasChanges ?? derivedHasChanges ?? false
 
@@ -1066,9 +1154,10 @@ runnerJobRoute.post("/complete", async (c) => {
             events.emitRunUpdate(skippedApply.id, deployment.id)
 
             const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-            const latestOutputs = latestApply?.outputs && typeof latestApply.outputs === "object"
-              ? latestApply.outputs as Record<string, unknown>
-              : null
+            const latestOutputs =
+              latestApply?.outputs && typeof latestApply.outputs === "object"
+                ? (latestApply.outputs as Record<string, unknown>)
+                : null
 
             await publishHostedOutputModuleForRunGroupBinding({
               runGroupId: executionRunGroupId,
@@ -1114,9 +1203,10 @@ runnerJobRoute.post("/complete", async (c) => {
             runGroupId: executionRunGroupId,
             environmentName: deployment.environmentName,
             workspacePath: deployment.workspacePath,
-            outputs: (result?.outputs && typeof result.outputs === "object")
-              ? result.outputs as Record<string, unknown>
-              : null,
+            outputs:
+              result?.outputs && typeof result.outputs === "object"
+                ? (result.outputs as Record<string, unknown>)
+                : null,
           })
           const lifecycle = await executeHostedLifecycleForDeployment({
             runGroupId: executionRunGroupId,
@@ -1129,9 +1219,10 @@ runnerJobRoute.post("/complete", async (c) => {
               workspacePath: deployment.workspacePath,
               installationId: deployment.installationId,
             },
-            outputs: (result?.outputs && typeof result.outputs === "object")
-              ? result.outputs as Record<string, unknown>
-              : {},
+            outputs:
+              result?.outputs && typeof result.outputs === "object"
+                ? (result.outputs as Record<string, unknown>)
+                : {},
           })
           await reconcileHostedDeploymentState({
             deploymentId: deployment.id,
@@ -1156,7 +1247,9 @@ runnerJobRoute.post("/complete", async (c) => {
         await notifyDestroyComplete(deployment.id)
       }
 
-      await releaseWorkspaceLockForDeployment(deployment)
+      if (!isMergeImpact) {
+        await releaseWorkspaceLockForDeployment(deployment, runId, jobType === "destroy")
+      }
     }
   } else {
     const failResult = await failJobFromRunner(jobId, errorMessage ?? "Unknown error")
@@ -1174,9 +1267,11 @@ runnerJobRoute.post("/complete", async (c) => {
 
       // Close any orphaned spans
       await closeOrphanedSpans(runId, failedAt)
-      await updateDeploymentStatus(deployment.id, "failed")
-      await cascadeFailure(deployment.id)
-      await releaseWorkspaceLockForDeployment(deployment)
+      if (!isMergeImpact) {
+        await updateDeploymentStatus(deployment.id, "failed")
+        await cascadeFailure(deployment.id)
+        await releaseWorkspaceLockForDeployment(deployment, runId)
+      }
     }
   }
 
@@ -1184,12 +1279,9 @@ runnerJobRoute.post("/complete", async (c) => {
     logger.warn("runner.complete.conflict", {
       "job.id": jobId,
       "job.status.requested": status,
-      "reason": "job_not_running",
+      reason: "job_not_running",
     })
-    return c.json(
-      { error: { code: "CONFLICT", message: "Job is not in running state" } },
-      409,
-    )
+    return c.json({ error: { code: "CONFLICT", message: "Job is not in running state" } }, 409)
   }
 
   // Note: lifecycle log "job.completed" or "job.failed" is emitted by the DB functions
@@ -1209,6 +1301,9 @@ runnerJobRoute.post("/complete", async (c) => {
   )
 
   firstOutputSeenRuns.delete(runId)
+  if (executionRunGroupId) {
+    void syncPrCommentForRunGroup(executionRunGroupId)
+  }
 
   return c.json({ data: { success: true } })
 })
@@ -1228,18 +1323,12 @@ runnerJobRoute.get("/job/:jobId", async (c) => {
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
-    return c.json(
-      { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
-      403,
-    )
+    return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
 
   const jobContext = await getJobWithContext(jobId)
   if (!jobContext) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: "Job not found" } },
-      404,
-    )
+    return c.json({ error: { code: "NOT_FOUND", message: "Job not found" } }, 404)
   }
   if (!jobTokenMatchesContext(auth.jobToken, jobContext)) {
     return c.json(
@@ -1284,17 +1373,20 @@ runnerJobRoute.post("/plan-file-url", async (c) => {
   const { runId } = body
 
   if (!runId || typeof runId !== "string") {
-    return c.json(
-      { error: { code: "BAD_REQUEST", message: "runId is required" } },
-      400,
-    )
+    return c.json({ error: { code: "BAD_REQUEST", message: "runId is required" } }, 400)
   }
   const jobContext = await getJobWithContext(auth.jobToken.job_id)
+  if (jobContext?.planPurpose === "merge_impact") {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Merge-impact plans cannot be persisted for apply" } },
+      403,
+    )
+  }
   if (
-    !jobContext
-    || !jobTokenMatchesContext(auth.jobToken, jobContext)
-    || !hasHostedExecutionContext(jobContext)
-    || !(await runMatchesJob(runId, jobContext))
+    !jobContext ||
+    !jobTokenMatchesContext(auth.jobToken, jobContext) ||
+    !hasHostedExecutionContext(jobContext) ||
+    !(await runMatchesJob(runId, jobContext))
   ) {
     return c.json(
       { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
@@ -1345,21 +1437,16 @@ runnerJobRoute.post("/plan-file-url", async (c) => {
 runnerJobRoute.get("/job/:jobId/context", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
   const jobId = c.req.param("jobId")
+  const requestedRunId = c.req.query("runId")
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
-    return c.json(
-      { error: { code: "FORBIDDEN", message: "Job token does not match job ID" } },
-      403,
-    )
+    return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
 
   const jobContext = await getJobWithContext(jobId)
   if (!jobContext) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: "Job not found" } },
-      404,
-    )
+    return c.json({ error: { code: "NOT_FOUND", message: "Job not found" } }, 404)
   }
   if (!jobTokenMatchesContext(auth.jobToken, jobContext)) {
     return c.json(
@@ -1370,13 +1457,24 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
 
   const { deployment, runGroup, ...job } = jobContext
 
+  if (job.jobType === "destroy" && !requestedRunId) {
+    return c.json(
+      { error: { code: "RUN_ID_REQUIRED", message: "Destroy context requires a run ID" } },
+      400,
+    )
+  }
+
+  if (requestedRunId && !(await runMatchesJob(requestedRunId, jobContext))) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
+      403,
+    )
+  }
+
   // Get organization
   const org = await findOrgById(deployment.orgId)
   if (!org) {
-    return c.json(
-      { error: { code: "NOT_FOUND", message: "Organization not found" } },
-      404,
-    )
+    return c.json({ error: { code: "NOT_FOUND", message: "Organization not found" } }, 404)
   }
 
   if (!runGroup?.executionSnapshot) {
@@ -1402,6 +1500,37 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
         error: {
           code: "WORKSPACE_SNAPSHOT_MISSING",
           message: "Workspace is not present in the job execution snapshot",
+        },
+      },
+      409,
+    )
+  }
+  const isMergeImpact = job.planPurpose === "merge_impact"
+  const mergeImpact = executionSnapshot.mergeImpact
+  const targetWorkspace =
+    isMergeImpact && job.targetWorkspaceId
+      ? await findWorkspaceById(job.targetWorkspaceId)
+      : undefined
+  if (
+    isMergeImpact &&
+    (job.jobType !== "plan" ||
+      !mergeImpact ||
+      !job.targetStateVersionId ||
+      !targetWorkspace ||
+      targetWorkspace.orgId !== deployment.orgId ||
+      targetWorkspace.repo !== deployment.repo ||
+      targetWorkspace.workspacePath !== deployment.workspacePath ||
+      targetWorkspace.environmentKind !== "named" ||
+      targetWorkspace.environmentName !== mergeImpact.environmentName ||
+      targetWorkspace.ref !== mergeImpact.ref ||
+      targetWorkspace.status !== "active" ||
+      targetWorkspace.currentStateVersionId !== job.targetStateVersionId)
+  ) {
+    return c.json(
+      {
+        error: {
+          code: "MERGE_IMPACT_TARGET_STALE",
+          message: "Merge-impact target state is unavailable or changed",
         },
       },
       409,
@@ -1456,8 +1585,13 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
     )
   }
 
-  const { kind: environmentKind, name: environmentName } = executionSnapshot.environment
-  const variables = buildExecutionVariables(executionSnapshot, deployment.workspacePath)
+  const environmentKind = isMergeImpact ? "named" : executionSnapshot.environment.kind
+  const environmentName = isMergeImpact
+    ? mergeImpact!.environmentName
+    : executionSnapshot.environment.name
+  const variables = isMergeImpact
+    ? buildMergeImpactVariables(executionSnapshot, deployment.workspacePath)
+    : buildExecutionVariables(executionSnapshot, deployment.workspacePath)
   if (!variables) {
     return c.json(
       { error: { code: "WORKSPACE_SNAPSHOT_MISSING", message: "Workspace variables unavailable" } },
@@ -1487,13 +1621,17 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       parts.push(`missing connections for: ${credentialResolution.missingProviders.join(", ")}`)
     }
     if (credentialResolution.conflictProviders.length > 0) {
-      parts.push(`conflicting connections for: ${credentialResolution.conflictProviders.join(", ")}`)
+      parts.push(
+        `conflicting connections for: ${credentialResolution.conflictProviders.join(", ")}`,
+      )
     }
 
     return c.json(
       {
         error: {
-          code: credentialResolution.degradation ? "WORKSPACE_METADATA_UNAVAILABLE" : "CONNECTIONS_NOT_READY",
+          code: credentialResolution.degradation
+            ? "WORKSPACE_METADATA_UNAVAILABLE"
+            : "CONNECTIONS_NOT_READY",
           message: parts.join("; "),
         },
       },
@@ -1512,23 +1650,25 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
   })
 
   if (useTfcBackend()) {
-    const tfcWorkspace = environmentKind === "transient"
-      ? await ensureTransientWorkspace({
-          orgId: org.id,
-          orgSlug: org.slug,
-          repo: executionSnapshot.source.repository,
-          environment: environmentName,
-          workspacePath: deployment.workspacePath,
-          ref: executionSnapshot.source.ref,
-        })
-      : await ensureNamedWorkspace({
-          orgId: org.id,
-          orgSlug: org.slug,
-          repo: executionSnapshot.source.repository,
-          environment: environmentName,
-          ref: executionSnapshot.source.ref,
-          workspacePath: deployment.workspacePath,
-        })
+    const tfcWorkspace = isMergeImpact
+      ? targetWorkspace!
+      : environmentKind === "transient"
+        ? await ensureTransientWorkspace({
+            orgId: org.id,
+            orgSlug: org.slug,
+            repo: executionSnapshot.source.repository,
+            environment: environmentName,
+            workspacePath: deployment.workspacePath,
+            ref: executionSnapshot.source.ref,
+          })
+        : await ensureNamedWorkspace({
+            orgId: org.id,
+            orgSlug: org.slug,
+            repo: executionSnapshot.source.repository,
+            environment: environmentName,
+            ref: executionSnapshot.source.ref,
+            workspacePath: deployment.workspacePath,
+          })
 
     backendConfig = {
       hostname: getRunnerReachableTfcHost(),
@@ -1536,7 +1676,12 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       workspaceName: tfcWorkspace.name,
       credentialHosts: getRunnerCredentialHosts(),
     }
-    tfcToken = await generateRunToken(deployment.id, tfcWorkspace.id, org.id)
+    tfcToken = await generateRunToken(
+      requestedRunId ?? deployment.id,
+      tfcWorkspace.id,
+      org.id,
+      isMergeImpact ? getMergeImpactRunTokenScopes() : getRunTokenScopes(job.jobType),
+    )
   }
 
   // For apply jobs, look up the saved plan file from the latest successful plan
@@ -1568,12 +1713,21 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       command: job.jobType as "plan" | "apply" | "destroy",
       workspacePath: deployment.workspacePath,
       workspaceArtifactSha256: isolationContext.workspaceArtifactSha256,
-      automaticIsolationRequired: isolationContext.automaticIsolationRequired,
-      automaticIsolationManifest: isolationContext.automaticIsolationManifest,
+      automaticIsolationRequired: isMergeImpact
+        ? false
+        : isolationContext.automaticIsolationRequired,
+      automaticIsolationManifest: isMergeImpact
+        ? undefined
+        : isolationContext.automaticIsolationManifest,
+      automaticIsolationCleanupManifest: isMergeImpact
+        ? isolationContext.automaticIsolationManifest
+        : undefined,
       variables,
       executionEnv,
       backendConfig,
       tfcToken,
+      lockState: isMergeImpact ? false : undefined,
+      persistPlanFile: isMergeImpact ? false : undefined,
       planFileUrl,
     },
   })

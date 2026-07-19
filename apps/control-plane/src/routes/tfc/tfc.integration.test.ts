@@ -5,7 +5,7 @@ import { createHash } from "node:crypto"
 import { tfcRoute } from "./index.ts"
 import { wellKnownRoute } from "../well-known.ts"
 import { auth } from "../../lib/better-auth.ts"
-import { generateRunToken } from "../../lib/run-token.ts"
+import { generateRunToken, getRunTokenScopes } from "../../lib/run-token.ts"
 import {
   createApiToken,
   getDefaultTfcScopesForRole,
@@ -1067,6 +1067,76 @@ describe("Workspace Locking", () => {
     const body = await res.json()
     expect(body.data.attributes.locked).toBe(true)
     expect(body.data.attributes["locked-by"]).toBe("run:test-run-lock")
+  })
+
+  test("rejects user locks while a workspace is being destroyed", async () => {
+    const createRes = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
+        },
+      }),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+    await updateWorkspaceStatus(testWorkspaceId!, "destroying")
+
+    const res = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, testUserToken),
+    )
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).errors[0].title).toBe("Workspace is being destroyed")
+  })
+
+  test("rejects non-destroy run locks while a workspace is being destroyed", async () => {
+    const createRes = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
+        },
+      }),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+    await updateWorkspaceStatus(testWorkspaceId!, "destroying")
+    const runToken = await generateRunToken("test-plan-lock", testWorkspaceId!, testOrgId)
+
+    const res = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
+    )
+
+    expect(res.status).toBe(409)
+    expect((await res.json()).errors[0].title).toBe("Workspace is being destroyed")
+  })
+
+  test("allows a destroy run to lock a workspace being destroyed", async () => {
+    const createRes = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
+        },
+      }),
+    )
+    const createBody = await createRes.json()
+    testWorkspaceId = createBody.data.id
+    await updateWorkspaceStatus(testWorkspaceId!, "destroying")
+    const runToken = await generateRunToken(
+      "test-destroy-lock",
+      testWorkspaceId!,
+      testOrgId,
+      getRunTokenScopes("destroy"),
+    )
+
+    const res = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
+    )
+
+    expect(res.status).toBe(200)
+    expect((await res.json()).data.attributes["locked-by"]).toBe("run:test-destroy-lock")
   })
 
   test("rejects lock on already locked workspace", async () => {

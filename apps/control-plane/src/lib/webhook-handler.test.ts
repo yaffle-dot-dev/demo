@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, test } from "@yaffle/test"
+import { Hono } from "hono"
 
 import type {
   PullRequestContext,
@@ -14,14 +15,28 @@ import { eq, sql } from "drizzle-orm"
 import { db } from "./db.ts"
 import { createGithubInstallation, createOrg } from "../db/queries/organizations.ts"
 import { setRepoMapping } from "../db/queries/repo-mappings.ts"
-import { getJobWithContext } from "../db/queries/iac-jobs.ts"
+import { createIacJob, getJobWithContext } from "../db/queries/iac-jobs.ts"
 import { claimScanJob, completeScanJob, createScanJob } from "../db/queries/scan-jobs.ts"
-import { iacJobHistory, iacJobs, previews, runGroups, tfRuns } from "../db/schema.ts"
+import {
+  iacJobHistory,
+  iacJobs,
+  organizations,
+  previews,
+  runGroups,
+  stateVersions,
+  tfRuns,
+  workspaces,
+} from "../db/schema.ts"
 import { KeyedMutex } from "./mutex.ts"
 import { completeRunGroup } from "./run-group-orchestrator.ts"
 import { createHandler, queueAutoApply } from "./webhook-handler.ts"
 import type { Runner, RunOpts } from "./runner.ts"
 import { ExecutionSnapshotInvariantError } from "./execution-snapshot.ts"
+import { generateJobToken } from "./job-token.ts"
+import { runnerRoute } from "../routes/runner.ts"
+
+const runnerApp = new Hono()
+runnerApp.route("/api/runner", runnerRoute)
 
 /** A fake runner that records calls and returns canned results. */
 class FakeRunner implements Runner {
@@ -226,6 +241,9 @@ function makePrContext(overrides?: Partial<PullRequestContext>): PullRequestCont
     prNumber: 42,
     action: "opened",
     headSha: "abc123def456",
+    baseSha: "base123def456",
+    baseBranch: "main",
+    headRepoGithubId: 123456,
     branch: "feature/test",
     authorGithubId: 12345,
     authorLogin: "octocat",
@@ -402,6 +420,141 @@ describe("webhook-handler", () => {
     expect(lastAutomaticIsolationWorkspacePaths).toEqual([])
   })
 
+  test("PR opened: queues an independent merge-impact plan when target state exists", async () => {
+    const [org] = await db.select().from(organizations)
+    const [targetWorkspace] = await db
+      .insert(workspaces)
+      .values({
+        orgId: org.id,
+        name: "test-repo-main-main-infra",
+        repo: "test-repo",
+        workspacePath: "infra",
+        environmentKind: "named",
+        environmentName: "main",
+        ref: "refs/heads/main",
+      })
+      .returning()
+    const [targetState] = await db
+      .insert(stateVersions)
+      .values({
+        workspaceId: targetWorkspace.id,
+        serial: 7,
+        md5: "target-state-md5",
+        size: 42,
+        s3Key: "states/target.tfstate",
+        status: "finalized",
+      })
+      .returning()
+    await db
+      .update(workspaces)
+      .set({ currentStateVersionId: targetState.id })
+      .where(eq(workspaces.id, targetWorkspace.id))
+
+    await handler.handleWebhookEvent(makePrContext())
+
+    const jobs = await getQueuedJobs()
+    expect(jobs.map((job) => job.planPurpose).sort()).toEqual(["environment", "merge_impact"])
+    expect(jobs.find((job) => job.planPurpose === "merge_impact")).toMatchObject({
+      targetWorkspaceId: targetWorkspace.id,
+      targetStateVersionId: targetState.id,
+    })
+    const [runGroup] = await db.select().from(runGroups)
+    expect(runGroup.executionSnapshot?.mergeImpact).toMatchObject({
+      environmentName: "main",
+      ref: "refs/heads/main",
+      configurationRevision: "base123def456",
+      workspaces: [{ path: "infra", variables: {} }],
+    })
+
+    const [deployment] = await db.select().from(previews)
+    const foreignOrg = await createOrg({ name: "Foreign Org", slug: "foreign-org" })
+    const [foreignWorkspace] = await db
+      .insert(workspaces)
+      .values({
+        orgId: foreignOrg.id,
+        name: "foreign-main-infra",
+        repo: "test-repo",
+        workspacePath: "infra",
+        environmentKind: "named",
+        environmentName: "main",
+        ref: "refs/heads/main",
+      })
+      .returning()
+    const [foreignState] = await db
+      .insert(stateVersions)
+      .values({
+        workspaceId: foreignWorkspace.id,
+        serial: 1,
+        md5: "foreign-state",
+        size: 1,
+        s3Key: "states/foreign.tfstate",
+        status: "finalized",
+      })
+      .returning()
+    await db
+      .update(workspaces)
+      .set({ currentStateVersionId: foreignState.id })
+      .where(eq(workspaces.id, foreignWorkspace.id))
+
+    await expect(
+      createIacJob({
+        deploymentId: deployment.id,
+        jobType: "plan",
+        planPurpose: "merge_impact",
+        targetWorkspaceId: foreignWorkspace.id,
+        targetStateVersionId: foreignState.id,
+      }),
+    ).rejects.toThrow("Merge-impact target does not belong")
+
+    const mergeJob = jobs.find((job) => job.planPurpose === "merge_impact")!
+    const token = await generateJobToken(mergeJob.id, deployment.id, org.id)
+    const headers = { authorization: `Bearer ${token}`, "content-type": "application/json" }
+    const claimResponse = await runnerApp.request("/api/runner/claim", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ jobId: mergeJob.id, workerId: "merge-worker" }),
+    })
+    expect(claimResponse.status).toBe(200)
+    const claim = (await claimResponse.json()) as { data: { runId: string } }
+    expect((await db.select().from(previews).where(eq(previews.id, deployment.id)))[0].status).toBe(
+      "pending",
+    )
+
+    const planFileResponse = await runnerApp.request("/api/runner/plan-file-url", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ runId: claim.data.runId }),
+    })
+    expect(planFileResponse.status).toBe(403)
+
+    const completeResponse = await runnerApp.request("/api/runner/complete", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        jobId: mergeJob.id,
+        runId: claim.data.runId,
+        status: "failed",
+        errorMessage: "speculative plan failed",
+      }),
+    })
+    expect(completeResponse.status).toBe(200)
+    expect((await db.select().from(previews).where(eq(previews.id, deployment.id)))[0].status).toBe(
+      "pending",
+    )
+    expect((await db.select().from(runGroups).where(eq(runGroups.id, runGroup.id)))[0].status).toBe(
+      "running",
+    )
+  })
+
+  test("PR opened: does not expose named state to fork pull requests", async () => {
+    await handler.handleWebhookEvent(makePrContext({ headRepoGithubId: 999999 }))
+
+    const [runGroup] = await db.select().from(runGroups)
+    expect(runGroup.executionSnapshot?.mergeImpact).toBeUndefined()
+    const jobs = await getQueuedJobs()
+    expect(jobs.map((job) => job.planPurpose)).toEqual(["environment"])
+  })
+
   test("later repository config does not mutate an existing run or job", async () => {
     let config: YaffleTomlConfig = {
       ...DEFAULT_CONFIG,
@@ -465,10 +618,12 @@ describe("webhook-handler", () => {
         },
       ],
     }
-    await handler.handleWebhookEvent(makePrContext({
-      action: "synchronize",
-      headSha: "sha-second",
-    }))
+    await handler.handleWebhookEvent(
+      makePrContext({
+        action: "synchronize",
+        headSha: "sha-second",
+      }),
+    )
 
     const persistedFirstGroup = (await db.select().from(runGroups)).find(
       (group) => group.id === firstGroup?.id,
@@ -621,7 +776,7 @@ describe("webhook-handler", () => {
     await closeHandler.handleWebhookEvent(makePrContext({ action: "closed", merged: false }))
 
     const destroyJobs = (await getAllJobs()).filter((job) => job.jobType === "destroy")
-    expect(configLoadCount).toBe(1)
+    expect(configLoadCount).toBe(2)
     expect(destroyJobs).toHaveLength(1)
     expect(destroyJobs[0].runGroupId).toBe(openGroup.id)
   })
@@ -629,10 +784,7 @@ describe("webhook-handler", () => {
   test("PR close rejects a deployment whose immutable artifact is missing", async () => {
     await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
     const [openGroup] = await db.select().from(runGroups)
-    await db
-      .update(runGroups)
-      .set({ workspaceS3Key: null })
-      .where(eq(runGroups.id, openGroup.id))
+    await db.update(runGroups).set({ workspaceS3Key: null }).where(eq(runGroups.id, openGroup.id))
 
     await expect(
       handler.handleWebhookEvent(makePrContext({ action: "closed", merged: false })),
@@ -648,11 +800,13 @@ describe("webhook-handler", () => {
       githubRepoId: 654321,
     })
 
-    await handler.handleWebhookEvent(makePrContext({
-      action: "closed",
-      merged: false,
-      repoGithubId: 654321,
-    }))
+    await handler.handleWebhookEvent(
+      makePrContext({
+        action: "closed",
+        merged: false,
+        repoGithubId: 654321,
+      }),
+    )
 
     expect((await getAllJobs()).filter((job) => job.jobType === "destroy")).toHaveLength(0)
   })

@@ -8,6 +8,7 @@ import {
   checkRunUrl,
   createCommentManager,
   renderComment,
+  renderRunGroupComment,
 } from "./pr-comment.ts"
 
 const SHA = "abc123def456"
@@ -23,6 +24,23 @@ const CTX: PrCommentContext = {
 
 const planCheck = { id: 111, url: "https://github.com/lamalex/yaffle/runs/111" }
 const applyCheck = { id: 222, url: "https://github.com/lamalex/yaffle/runs/222" }
+
+test("renders preview and merge-impact plans as independent PR lanes", () => {
+  expect(
+    renderRunGroupComment({
+      headSha: SHA,
+      targetEnvironment: "production",
+      detailsUrl: "https://yaffle.dev/app/acme/demo/env/pr-42",
+      workspaces: [
+        {
+          path: "infra",
+          preview: { status: "ready", planSummary: "+1, ~0, -0" },
+          mergeImpact: { status: "success", planSummary: "+0, ~1, -0" },
+        },
+      ],
+    }),
+  ).toContain("| `infra` | Ready (+1, ~0, -0) | production: +0, ~1, -0 |")
+})
 
 // ---------------------------------------------------------------------------
 // checkRunUrl
@@ -257,7 +275,9 @@ describe("PrCommentManager", () => {
   test("calls writer with rendered comment on each update", async () => {
     const writes: string[] = []
     const manager = new PrCommentManager(CTX, {
-      writer: async (_ctx, body, _marker) => { writes.push(body) },
+      writer: async (_ctx, body, _marker) => {
+        writes.push(body)
+      },
     })
 
     await manager.update("infra", { phase: "planning" })
@@ -272,7 +292,9 @@ describe("PrCommentManager", () => {
   test("accumulates workspace states across updates", async () => {
     const writes: string[] = []
     const manager = new PrCommentManager(CTX, {
-      writer: async (_ctx, body, _marker) => { writes.push(body) },
+      writer: async (_ctx, body, _marker) => {
+        writes.push(body)
+      },
     })
 
     await manager.update("infra", { phase: "ready" })
@@ -342,8 +364,8 @@ describe("PrCommentManager", () => {
       },
     })
 
-    manager.update("infra", { phase: "planning" })
-    manager.update("infra", { phase: "ready" })
+    void manager.update("infra", { phase: "planning" })
+    void manager.update("infra", { phase: "ready" })
 
     await manager.flush()
     expect(results).toEqual(["done", "done"])

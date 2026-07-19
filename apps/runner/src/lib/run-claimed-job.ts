@@ -113,7 +113,7 @@ export async function runClaimedJob(input: {
 
   try {
     log("Fetching execution context...", { jobId, workerId })
-    const context = await apiClient.getContext()
+    const context = await apiClient.getContext(runId)
 
     log("Execution context received", {
       jobId,
@@ -173,10 +173,7 @@ export async function runClaimedJob(input: {
           const planData = await readFile(result.planFilePath)
           await apiClient.uploadPlanFile(
             uploadUrl,
-            planData.buffer.slice(
-              planData.byteOffset,
-              planData.byteOffset + planData.byteLength,
-            ),
+            planData.buffer.slice(planData.byteOffset, planData.byteOffset + planData.byteLength),
           )
           planFileS3Key = s3Key
           log("Plan file uploaded to S3", { jobId, workerId, s3Key })

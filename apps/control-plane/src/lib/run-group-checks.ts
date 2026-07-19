@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm"
+import { and, eq } from "drizzle-orm"
 
 import type { WebhookContext } from "@yaffle/shared"
 
@@ -130,9 +130,8 @@ export async function completeRunGroupCheck(params: {
   const repoRecord = snapshot
     ? null
     : await findRepoByInstallationAndName(installation.installationId, repo)
-  const owner = snapshot?.source.owner
-    ?? repoRecord?.fullName.split("/")[0]
-    ?? installation.githubOrgLogin
+  const owner =
+    snapshot?.source.owner ?? repoRecord?.fullName.split("/")[0] ?? installation.githubOrgLogin
   const title = params.title ?? defaultTitleForConclusion(params.conclusion)
   const detailsUrl = params.detailsUrl ?? buildRunGroupDetailsUrl(context)
   const summary = formatCheckSummary(
@@ -214,7 +213,7 @@ export async function syncRunGroupCheckFromDeployments(runGroupId: string): Prom
   const activeJobs = await db
     .select({ id: iacJobs.id })
     .from(iacJobs)
-    .where(eq(iacJobs.runGroupId, runGroupId))
+    .where(and(eq(iacJobs.runGroupId, runGroupId), eq(iacJobs.planPurpose, "environment")))
     .limit(1)
 
   if (activeJobs.length > 0) {

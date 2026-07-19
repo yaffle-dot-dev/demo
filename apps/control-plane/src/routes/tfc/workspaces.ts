@@ -77,12 +77,12 @@ interface JsonApiWorkspace {
     "created-at": string
     // Additional fields required by Terraform/OpenTofu cloud backend
     "execution-mode": string
-    "operations": boolean
-    "permissions": WorkspacePermissions
+    operations: boolean
+    permissions: WorkspacePermissions
     "auto-apply": boolean
     "speculative-enabled": boolean
     "structured-run-output-enabled": boolean
-    "source"?: string
+    source?: string
     "source-name"?: string
     "source-url"?: string
     "working-directory"?: string
@@ -114,9 +114,9 @@ function toJsonApiWorkspace(ws: Workspace): JsonApiWorkspace {
       // Yaffle uses local execution mode - plans run locally, state stored remotely
       "execution-mode": "local",
       // Enable operations (required for cloud backend)
-      "operations": true,
+      operations: true,
       // Allow all operations - Yaffle manages auth via tokens
-      "permissions": {
+      permissions: {
         "can-destroy": true,
         "can-force-unlock": true,
         "can-lock": true,
@@ -132,7 +132,7 @@ function toJsonApiWorkspace(ws: Workspace): JsonApiWorkspace {
       "auto-apply": false,
       "speculative-enabled": true,
       "structured-run-output-enabled": true,
-      "source": "yaffle",
+      source: "yaffle",
       "source-name": "Yaffle",
       "source-url": "",
       "working-directory": "",
@@ -188,10 +188,10 @@ workspacesRoute.get(
         attributes: {
           "external-id": org.id,
           "created-at": org.createdAt.toISOString(),
-          "name": org.slug,
+          name: org.slug,
           "cost-estimation-enabled": false,
           "default-execution-mode": "local",
-          "permissions": {
+          permissions: {
             "can-update": true,
             "can-destroy": false,
             "can-create-workspace": true,
@@ -250,13 +250,13 @@ workspacesRoute.get(
         id: org.id,
         type: "entitlement-sets",
         attributes: {
-          "agents": false,
+          agents: false,
           "audit-logging": false,
           "configuration-designer": true,
           "cost-estimation": false,
           "global-run-tasks": false,
           "module-tests-generation": false,
-          "operations": true,
+          operations: true,
           "policy-enforcement": false,
           "policy-limit": null,
           "policy-mandatory-enforcement-limit": null,
@@ -267,10 +267,10 @@ workspacesRoute.get(
           "run-task-workspace-limit": null,
           "run-tasks": false,
           "self-serve-billing": true,
-          "sentinel": false,
-          "sso": false,
+          sentinel: false,
+          sso: false,
           "state-storage": true,
-          "teams": false,
+          teams: false,
           "usage-reporting": false,
           "user-limit": null,
           "vcs-integrations": true,
@@ -354,7 +354,7 @@ workspacesRoute.get(
     }
 
     const response = { data: toJsonApiWorkspace(ws) }
-    
+
     // Always log key fields for debugging TFC compatibility
     log.info("TFC: workspace fetched by name", {
       "tfc.workspace": wsName,
@@ -432,10 +432,7 @@ workspacesRoute.post(
     // Check if workspace already exists
     const existing = await findWorkspaceByName(org.id, attrs.name)
     if (existing) {
-      return c.json(
-        { errors: [{ status: "409", title: "Workspace already exists" }] },
-        409,
-      )
+      return c.json({ errors: [{ status: "409", title: "Workspace already exists" }] }, 409)
     }
 
     const existingIdentity = await findWorkspaceByIdentity(
@@ -491,7 +488,7 @@ workspacesRoute.get(
     const { workspace: ws } = access
 
     const response = { data: toJsonApiWorkspace(ws) }
-    
+
     // Always log key fields for debugging TFC compatibility
     log.info("TFC: workspace fetched by ID", {
       "tfc.workspace_id": wsId,
@@ -527,6 +524,23 @@ workspacesRoute.post(
 
     const { auth } = access
 
+    const isDestroyRun = auth.type === "run" && auth.scopes.includes(TFC_SCOPES.workspaceDestroy)
+
+    if (access.workspace.status === "destroying" && !isDestroyRun) {
+      return c.json(
+        {
+          errors: [
+            {
+              status: "409",
+              title: "Workspace is being destroyed",
+              detail: "Only the authorized destroy run may lock this workspace",
+            },
+          ],
+        },
+        409,
+      )
+    }
+
     // Parse optional lock reason
     let reason: string | undefined
     try {
@@ -539,10 +553,26 @@ workspacesRoute.post(
     // Determine lock owner
     const lockedBy = auth.type === "run" ? `run:${auth.runId}` : `user:${auth.userId}`
 
-    const locked = await lockWorkspace(wsId, lockedBy, reason)
+    const locked = await lockWorkspace(wsId, lockedBy, reason, {
+      allowDestroying: isDestroyRun,
+    })
     if (!locked) {
       // Workspace is already locked
       const current = await findWorkspaceById(wsId)
+      if (current?.status === "destroying" && !isDestroyRun) {
+        return c.json(
+          {
+            errors: [
+              {
+                status: "409",
+                title: "Workspace is being destroyed",
+                detail: "Only the authorized destroy run may lock this workspace",
+              },
+            ],
+          },
+          409,
+        )
+      }
       return c.json(
         {
           errors: [
@@ -590,10 +620,7 @@ workspacesRoute.post(
     const { auth, workspace: ws } = access
 
     if (!ws.locked) {
-      return c.json(
-        { errors: [{ status: "409", title: "Workspace is not locked" }] },
-        409,
-      )
+      return c.json({ errors: [{ status: "409", title: "Workspace is not locked" }] }, 409)
     }
 
     // Determine expected lock owner
@@ -647,19 +674,13 @@ workspacesRoute.post(
     const { workspace: ws } = access
 
     if (!ws.locked) {
-      return c.json(
-        { errors: [{ status: "409", title: "Workspace is not locked" }] },
-        409,
-      )
+      return c.json({ errors: [{ status: "409", title: "Workspace is not locked" }] }, 409)
     }
 
     const previousOwner = ws.lockedBy
     const unlocked = await forceUnlockWorkspace(ws.id)
     if (!unlocked) {
-      return c.json(
-        { errors: [{ status: "500", title: "Failed to force unlock workspace" }] },
-        500,
-      )
+      return c.json({ errors: [{ status: "500", title: "Failed to force unlock workspace" }] }, 500)
     }
 
     log.info("Workspace force unlocked", {

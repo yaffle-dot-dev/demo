@@ -20,6 +20,8 @@
           };
           lib = pkgs.lib;
           imagePnpm = pkgs.pnpm_10;
+          imageBuildId = self.rev or "dirty";
+          imageBuildTimestamp = if self ? rev then toString self.lastModified else "0";
           repoRoot = ./.;
           repoRootString = toString repoRoot;
 
@@ -251,9 +253,10 @@
             pnpmWorkspaces = controlPlaneWorkspaces;
             extraNativeBuildInputs = [ pkgs.esbuild ];
             buildCommands = ''
-              esbuild apps/control-plane/src/index.ts \
-                --bundle \
-                --external:minijinja-js \
+               esbuild apps/control-plane/src/index.ts \
+                 --banner:js='import { createRequire as __yaffleCreateRequire } from "node:module"; const require = __yaffleCreateRequire(import.meta.url);' \
+                 --bundle \
+                 --external:minijinja-js \
                 --format=esm \
                 --out-extension:.js=.mjs \
                 --outdir=apps/control-plane/dist \
@@ -275,11 +278,18 @@
             pnpmInstallFlags = productionInstallFlags;
             pnpmWorkspaces = webWorkspaces;
             buildCommands = ''
+              export SOURCE_DATE_EPOCH=${lib.escapeShellArg imageBuildTimestamp}
+              export YAFFLE_BUILD_ID=${lib.escapeShellArg imageBuildId}
               pnpm --filter @yaffle/web exec vite build
             '';
             installCommands = ''
-              mkdir -p "$out"
+              kitPath="$(readlink -f apps/web/node_modules/@sveltejs/kit)"
+              kitDependencies="$(dirname "$(dirname "$kitPath")")"
+              mkdir -p "$out/node_modules/@sveltejs"
               cp -R apps/web/build/. "$out/"
+              cp -RL "$kitPath" "$out/node_modules/@sveltejs/kit"
+              rm -rf "$out/node_modules/@sveltejs/kit/node_modules"
+              cp -RL "$kitDependencies/esm-env" "$out/node_modules/esm-env"
             '';
           };
 

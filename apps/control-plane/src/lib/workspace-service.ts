@@ -1,10 +1,11 @@
 import {
+  archiveWorkspaceAfterDestroy,
   archiveWorkspace,
   findTransientWorkspaces,
   findWorkspaceById,
   findWorkspaceByIdentity,
   forceUnlockWorkspace,
-  lockWorkspace,
+  markWorkspaceDestroying,
   updateWorkspaceStatus,
   type Workspace,
 } from "../db/queries/workspaces.ts"
@@ -17,17 +18,15 @@ import { logger } from "./telemetry.ts"
  * The actual terraform destroy happens separately in the webhook handler.
  *
  * Flow:
- * 1. Lock workspace with "system:cleanup" to prevent concurrent operations
- * 2. Set status to "destroying"
- * 3. (Caller runs terraform destroy)
- * 4. Set status to "archived" and unlock
+ * 1. Record destroy intent while preserving any existing backend lock
+ * 2. Set status to "destroying" without taking a new backend lock
+ * 3. The IaC engine acquires the backend lock and runs terraform destroy
+ * 4. Set status to "archived" after destroy succeeds
  *
- * If destroy fails, status is set to "destroying" and the workspace remains locked.
- * Admin can retry or force-archive later.
+ * If destroy fails, status remains "destroying" so it can be retried or
+ * force-archived later.
  */
-export async function beginWorkspaceArchive(
-  workspaceId: string,
-): Promise<Workspace | null> {
+export async function beginWorkspaceArchive(workspaceId: string): Promise<Workspace | null> {
   const workspace = await findWorkspaceById(workspaceId)
   if (!workspace) {
     logger.warn("Cannot archive workspace: not found", { workspaceId })
@@ -39,34 +38,25 @@ export async function beginWorkspaceArchive(
     return workspace
   }
 
-  // Lock the workspace for cleanup
-  const locked = await lockWorkspace(workspaceId, "system:cleanup", "Destroying transient environment")
-  if (!locked) {
-    // Already locked - check if it's us from a previous attempt
-    if (workspace.lockedBy === "system:cleanup") {
-      logger.info("Workspace already locked for cleanup, resuming", { workspaceId })
-      return workspace
-    }
-
-    logger.warn("Cannot lock workspace for archive: already locked", {
+  const destroying = await markWorkspaceDestroying(workspaceId)
+  if (!destroying) {
+    logger.warn("Cannot begin workspace archive from current state", {
       workspaceId,
-      lockedBy: workspace.lockedBy ?? undefined,
+      status: workspace.status,
     })
     return null
   }
 
-  // Set status to destroying
-  await updateWorkspaceStatus(workspaceId, "destroying")
-  logger.info("Workspace locked for destruction", { workspaceId })
+  logger.info("Workspace marked for destruction", { workspaceId })
 
-  return locked
+  return destroying
 }
 
 /**
  * Complete the archive after successful destroy.
  */
 export async function completeWorkspaceArchive(workspaceId: string): Promise<Workspace | null> {
-  const archived = await archiveWorkspace(workspaceId)
+  const archived = await archiveWorkspaceAfterDestroy(workspaceId)
   if (!archived) {
     logger.error("Failed to archive workspace", { workspaceId })
     return null
@@ -78,14 +68,13 @@ export async function completeWorkspaceArchive(workspaceId: string): Promise<Wor
 
 /**
  * Mark workspace archive as failed.
- * Leaves the workspace locked so it can be retried or force-archived.
+ * Leaves the workspace in the destroying state so it can be retried or force-archived.
  */
 export async function failWorkspaceArchive(
   workspaceId: string,
   errorMessage: string,
 ): Promise<void> {
-  // Status stays as "destroying" but we log the failure
-  // The lock remains so admins can investigate
+  // Status stays as "destroying" but we log the failure.
   logger.error("Workspace archive failed", { workspaceId, error: errorMessage })
 }
 

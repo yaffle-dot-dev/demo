@@ -11,8 +11,10 @@ import {
   organizations,
   principalRepoBindings,
   runGroups,
+  stateVersions,
   tfRuns,
   workspaceDeployments,
+  workspaces,
 } from "../schema.ts"
 import {
   withDbSpan,
@@ -71,11 +73,13 @@ function runGroupMatchesDeployment(
   canonicalRepoNamespace: string | null,
 ): boolean {
   if (!runGroup.executionSnapshot) {
-    return deployment.environmentKind !== "transient"
-      && runGroup.orgId === deployment.orgId
-      && runGroup.repo === deployment.repo
-      && runGroup.environmentKind === deployment.environmentKind
-      && runGroup.environmentName === deployment.environmentName
+    return (
+      deployment.environmentKind !== "transient" &&
+      runGroup.orgId === deployment.orgId &&
+      runGroup.repo === deployment.repo &&
+      runGroup.environmentKind === deployment.environmentKind &&
+      runGroup.environmentName === deployment.environmentName
+    )
   }
   if (deployment.environmentKind === "transient" && !runGroup.workspaceS3Key) {
     return false
@@ -113,9 +117,7 @@ async function resolveRunGroupIdForDeployment(
     throw new ExecutionContextAssociationError(`Deployment ${deploymentId} does not exist`)
   }
 
-  const runGroupId = requestedRunGroupId === undefined
-    ? deployment.runGroupId
-    : requestedRunGroupId
+  const runGroupId = requestedRunGroupId === undefined ? deployment.runGroupId : requestedRunGroupId
   if (!runGroupId) {
     throw new ExecutionContextAssociationError(
       `Deployment ${deploymentId} is missing its execution run group`,
@@ -135,12 +137,8 @@ async function resolveRunGroupIdForDeployment(
   )[0]
 
   if (
-    !result
-    || !runGroupMatchesDeployment(
-      result.runGroup,
-      deployment,
-      result.canonicalRepoNamespace,
-    )
+    !result ||
+    !runGroupMatchesDeployment(result.runGroup, deployment, result.canonicalRepoNamespace)
   ) {
     throw new ExecutionContextAssociationError(
       `Run group ${runGroupId} does not own deployment ${deploymentId}`,
@@ -148,6 +146,56 @@ async function resolveRunGroupIdForDeployment(
   }
 
   return runGroupId
+}
+
+async function assertMergeImpactTarget(values: {
+  deploymentId: string
+  runGroupId: string
+  targetWorkspaceId: string
+  targetStateVersionId: string
+}): Promise<void> {
+  const result = (
+    await db
+      .select({
+        deployment: workspaceDeployments,
+        runGroup: runGroups,
+        workspace: workspaces,
+        stateVersion: stateVersions,
+      })
+      .from(workspaceDeployments)
+      .innerJoin(runGroups, eq(runGroups.id, values.runGroupId))
+      .innerJoin(workspaces, eq(workspaces.id, values.targetWorkspaceId))
+      .innerJoin(stateVersions, eq(stateVersions.id, values.targetStateVersionId))
+      .where(eq(workspaceDeployments.id, values.deploymentId))
+      .limit(1)
+  )[0]
+  const target = result?.runGroup.executionSnapshot?.mergeImpact
+  const targetWorkspace = target?.workspaces.find(
+    (workspace) => workspace.path === result?.deployment.workspacePath,
+  )
+  if (
+    !result ||
+    !target ||
+    !targetWorkspace ||
+    result.runGroup.id !== values.runGroupId ||
+    result.deployment.runGroupId !== values.runGroupId ||
+    result.runGroup.orgId !== result.deployment.orgId ||
+    result.runGroup.repo !== result.deployment.repo ||
+    result.workspace.orgId !== result.deployment.orgId ||
+    result.workspace.repo !== result.deployment.repo ||
+    result.workspace.workspacePath !== result.deployment.workspacePath ||
+    result.workspace.environmentKind !== "named" ||
+    result.workspace.environmentName !== target.environmentName ||
+    result.workspace.ref !== target.ref ||
+    result.workspace.status !== "active" ||
+    result.workspace.currentStateVersionId !== result.stateVersion.id ||
+    result.stateVersion.workspaceId !== result.workspace.id ||
+    result.stateVersion.status !== "finalized"
+  ) {
+    throw new ExecutionContextAssociationError(
+      `Merge-impact target does not belong to deployment ${values.deploymentId}`,
+    )
+  }
 }
 
 const SPAWN_LEASE_AVAILABLE_SQL = sql`${iacJobs.spawnLeaseExpiresAt} IS NULL OR ${iacJobs.spawnLeaseExpiresAt} < NOW()`
@@ -170,7 +218,12 @@ async function archiveIacJobs(tx: DbTransaction, jobsToArchive: IacJob[]): Promi
   }
 
   await tx.insert(iacJobHistory).values(jobsToArchive)
-  await tx.delete(iacJobs).where(inArray(iacJobs.id, jobsToArchive.map((job) => job.id)))
+  await tx.delete(iacJobs).where(
+    inArray(
+      iacJobs.id,
+      jobsToArchive.map((job) => job.id),
+    ),
+  )
 }
 
 /**
@@ -182,6 +235,9 @@ export async function createIacJob(values: {
   deploymentId?: string
   runGroupId?: string | null
   jobType: IacJobType
+  planPurpose?: "environment" | "merge_impact"
+  targetWorkspaceId?: string
+  targetStateVersionId?: string
 }): Promise<IacJob> {
   const deploymentId = values.deploymentId ?? values.previewId
   if (!deploymentId) {
@@ -190,12 +246,32 @@ export async function createIacJob(values: {
 
   return withDbSpan("insert", "iac_jobs", async () => {
     const runGroupId = await resolveRunGroupIdForDeployment(deploymentId, values.runGroupId)
+    const planPurpose = values.planPurpose ?? "environment"
+    if (planPurpose === "merge_impact") {
+      if (
+        values.jobType !== "plan" ||
+        !runGroupId ||
+        !values.targetWorkspaceId ||
+        !values.targetStateVersionId
+      ) {
+        throw new ExecutionContextAssociationError("Merge-impact jobs require a pinned plan target")
+      }
+      await assertMergeImpactTarget({
+        deploymentId,
+        runGroupId,
+        targetWorkspaceId: values.targetWorkspaceId,
+        targetStateVersionId: values.targetStateVersionId,
+      })
+    }
     const rows = await db
       .insert(iacJobs)
       .values({
         deploymentId,
         runGroupId,
         jobType: values.jobType,
+        planPurpose,
+        targetWorkspaceId: values.targetWorkspaceId,
+        targetStateVersionId: values.targetStateVersionId,
         status: "queued",
         blockedAt: null,
         blockedReason: null,
@@ -224,10 +300,7 @@ export async function createIacJob(values: {
   })
 }
 
-export async function markJobBlocked(
-  jobId: string,
-  reason: string,
-): Promise<void> {
+export async function markJobBlocked(jobId: string, reason: string): Promise<void> {
   return withDbSpan("update", "iac_jobs", async () => {
     const rows = await db
       .update(iacJobs)
@@ -255,10 +328,12 @@ export async function clearJobBlocked(jobId: string): Promise<void> {
         blockedAt: null,
         blockedReason: null,
       })
-      .where(and(
-        eq(iacJobs.id, jobId),
-        sql`${iacJobs.blockedAt} IS NOT NULL OR ${iacJobs.blockedReason} IS NOT NULL`,
-      ))
+      .where(
+        and(
+          eq(iacJobs.id, jobId),
+          sql`${iacJobs.blockedAt} IS NOT NULL OR ${iacJobs.blockedReason} IS NOT NULL`,
+        ),
+      )
       .returning({
         deploymentId: iacJobs.deploymentId,
       })
@@ -275,11 +350,7 @@ export async function clearJobBlocked(jobId: string): Promise<void> {
  */
 export async function findIacJobById(id: string): Promise<IacJob | undefined> {
   return withDbSpan("select", "iac_jobs", async () => {
-    const activeRows = await db
-      .select()
-      .from(iacJobs)
-      .where(eq(iacJobs.id, id))
-      .limit(1)
+    const activeRows = await db.select().from(iacJobs).where(eq(iacJobs.id, id)).limit(1)
 
     if (activeRows[0]) {
       return activeRows[0]
@@ -306,14 +377,26 @@ export async function findLatestIacJob(
     const activeRows = await db
       .select()
       .from(iacJobs)
-      .where(and(eq(iacJobs.deploymentId, deploymentId), eq(iacJobs.jobType, jobType)))
+      .where(
+        and(
+          eq(iacJobs.deploymentId, deploymentId),
+          eq(iacJobs.jobType, jobType),
+          eq(iacJobs.planPurpose, "environment"),
+        ),
+      )
       .orderBy(sql`${iacJobs.queuedAt} DESC`)
       .limit(1)
 
     const historyRows = await db
       .select()
       .from(iacJobHistory)
-      .where(and(eq(iacJobHistory.deploymentId, deploymentId), eq(iacJobHistory.jobType, jobType)))
+      .where(
+        and(
+          eq(iacJobHistory.deploymentId, deploymentId),
+          eq(iacJobHistory.jobType, jobType),
+          eq(iacJobHistory.planPurpose, "environment"),
+        ),
+      )
       .orderBy(sql`${iacJobHistory.queuedAt} DESC`)
       .limit(1)
 
@@ -328,14 +411,19 @@ export async function findLatestJobForDeployment(
     const activeRows = await db
       .select()
       .from(iacJobs)
-      .where(eq(iacJobs.deploymentId, deploymentId))
+      .where(and(eq(iacJobs.deploymentId, deploymentId), eq(iacJobs.planPurpose, "environment")))
       .orderBy(sql`${iacJobs.queuedAt} DESC`)
       .limit(1)
 
     const historyRows = await db
       .select()
       .from(iacJobHistory)
-      .where(eq(iacJobHistory.deploymentId, deploymentId))
+      .where(
+        and(
+          eq(iacJobHistory.deploymentId, deploymentId),
+          eq(iacJobHistory.planPurpose, "environment"),
+        ),
+      )
       .orderBy(sql`${iacJobHistory.queuedAt} DESC`)
       .limit(1)
 
@@ -358,7 +446,9 @@ export async function findLatestJobsForDeployments(
         job: iacJobs,
       })
       .from(iacJobs)
-      .where(inArray(iacJobs.deploymentId, deploymentIds))
+      .where(
+        and(inArray(iacJobs.deploymentId, deploymentIds), eq(iacJobs.planPurpose, "environment")),
+      )
       .orderBy(iacJobs.deploymentId, desc(iacJobs.queuedAt), desc(iacJobs.id))
 
     const historyRows = await db
@@ -366,7 +456,12 @@ export async function findLatestJobsForDeployments(
         job: iacJobHistory,
       })
       .from(iacJobHistory)
-      .where(inArray(iacJobHistory.deploymentId, deploymentIds))
+      .where(
+        and(
+          inArray(iacJobHistory.deploymentId, deploymentIds),
+          eq(iacJobHistory.planPurpose, "environment"),
+        ),
+      )
       .orderBy(iacJobHistory.deploymentId, desc(iacJobHistory.queuedAt), desc(iacJobHistory.id))
 
     const map = new Map<string, IacJob>()
@@ -395,11 +490,14 @@ export async function cancelRunningJobForDeploymentAndType(
           status: "cancelled",
           completedAt: new Date(),
         })
-        .where(and(
-          eq(iacJobs.deploymentId, deploymentId),
-          eq(iacJobs.jobType, jobType),
-          eq(iacJobs.status, "running"),
-        ))
+        .where(
+          and(
+            eq(iacJobs.deploymentId, deploymentId),
+            eq(iacJobs.jobType, jobType),
+            eq(iacJobs.planPurpose, "environment"),
+            eq(iacJobs.status, "running"),
+          ),
+        )
         .returning()
 
       const updatedJob = rows[0]
@@ -442,10 +540,7 @@ export async function cancelRunningJobForDeploymentAndType(
  * @deprecated In the new runner architecture, ECS workers claim jobs via API.
  * This is kept for backward compatibility during migration.
  */
-export async function updateJobEcsTask(
-  jobId: string,
-  taskArn: string,
-): Promise<void> {
+export async function updateJobEcsTask(jobId: string, taskArn: string): Promise<void> {
   return withDbSpan("update", "iac_jobs", async () => {
     await db
       .update(iacJobs)
@@ -512,10 +607,7 @@ export async function acquireJobSpawnLease(
 /**
  * Release a spawn lease after a fast spawn failure.
  */
-export async function releaseJobSpawnLease(
-  jobId: string,
-  leaseToken: string,
-): Promise<void> {
+export async function releaseJobSpawnLease(jobId: string, leaseToken: string): Promise<void> {
   return withDbSpan("update", "iac_jobs", async () => {
     await db
       .update(iacJobs)
@@ -540,10 +632,7 @@ export async function releaseJobSpawnLease(
  * Jobs remain in `queued` state until a runner claims them, but this timestamp
  * lets us measure startup and task-lifetime proxy metrics.
  */
-export async function markJobDispatched(
-  jobId: string,
-  leaseToken: string,
-): Promise<void> {
+export async function markJobDispatched(jobId: string, leaseToken: string): Promise<void> {
   return withDbSpan("update", "iac_jobs", async () => {
     await db
       .update(iacJobs)
@@ -598,10 +687,7 @@ export async function completeJob(
 /**
  * Mark a job as failed with error message.
  */
-export async function failJob(
-  jobId: string,
-  errorMessage: string,
-): Promise<IacJob | undefined> {
+export async function failJob(jobId: string, errorMessage: string): Promise<IacJob | undefined> {
   return withDbSpan("update", "iac_jobs", async () => {
     const job = await db.transaction(async (tx) => {
       const rows = await tx
@@ -639,9 +725,7 @@ export async function failJob(
  *
  * @param staleThresholdMs - How long without heartbeat before considered stale (default 5 min)
  */
-export async function findStaleJobs(
-  staleThresholdMs: number = 5 * 60 * 1000,
-): Promise<IacJob[]> {
+export async function findStaleJobs(staleThresholdMs: number = 5 * 60 * 1000): Promise<IacJob[]> {
   return withDbSpan("select", "iac_jobs", async () => {
     const threshold = new Date(Date.now() - staleThresholdMs).toISOString()
 
@@ -662,21 +746,19 @@ export async function findStaleJobs(
 
 /**
  * Mark a stale job as system_error.
- * 
+ *
  * System errors are distinct from user-caused failures (bad terraform config).
  * They represent Yaffle infrastructure issues (worker crash, stale timeout, etc.)
  * and may be automatically retried.
- * 
+ *
  * We intentionally do NOT auto-requeue stale jobs because:
  * 1. Terraform operations can legitimately take 10+ minutes without heartbeats
  * 2. Auto-requeuing can cause duplicate runs and state lock conflicts
  * 3. If a job is truly stuck, it's safer to fail and let humans investigate
- * 
+ *
  * Users can manually retry failed jobs via the UI "Run Again" button.
  */
-export async function failStaleJob(
-  jobId: string,
-): Promise<{ failed: boolean }> {
+export async function failStaleJob(jobId: string): Promise<{ failed: boolean }> {
   return withDbSpan("update", "iac_jobs", async () => {
     // Use a transaction with FOR UPDATE to lock the row and prevent races
     return db.transaction(async (tx) => {
@@ -699,8 +781,8 @@ export async function failStaleJob(
       }
 
       // Double-check it's still stale (worker might have heartbeated while we waited for lock)
-      const isStillStale = !job.lastHeartbeat ||
-        (Date.now() - job.lastHeartbeat.getTime()) > 5 * 60 * 1000
+      const isStillStale =
+        !job.lastHeartbeat || Date.now() - job.lastHeartbeat.getTime() > 5 * 60 * 1000
 
       if (!isStillStale) {
         // Job is no longer stale - worker is alive
@@ -714,7 +796,8 @@ export async function failStaleJob(
         .set({
           status: "system_error",
           completedAt,
-          errorMessage: "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry.",
+          errorMessage:
+            "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry.",
         })
         .where(eq(iacJobs.id, jobId))
         .returning()
@@ -760,11 +843,13 @@ export async function failStaleJob(
   }).then(async (result) => {
     // Update deployment status outside the transaction to avoid circular import issues
     if (result.failed && result.job) {
-      const errorMessage = "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry."
+      const errorMessage =
+        "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry."
 
       const runningRunConditions = [
         eq(tfRuns.deploymentId, result.job.deploymentId),
         eq(tfRuns.status, "running"),
+        eq(tfRuns.planPurpose, result.job.planPurpose),
       ]
       if (result.job.runGroupId) {
         runningRunConditions.push(eq(tfRuns.runGroupId, result.job.runGroupId))
@@ -787,8 +872,10 @@ export async function failStaleJob(
         await recomputeRunGroupStatus(result.job.runGroupId)
       }
 
-      await updateDeploymentStatus(result.job.deploymentId, "system_error")
-      await cascadeFailure(result.job.deploymentId)
+      if (result.job.planPurpose === "environment") {
+        await updateDeploymentStatus(result.job.deploymentId, "system_error")
+        await cascadeFailure(result.job.deploymentId)
+      }
     }
     return result
   })
@@ -897,10 +984,10 @@ export async function getJobWithContext(jobId: string): Promise<
 
     if (activeRows.length > 0) {
       const { job, deployment, runGroup, canonicalRepoNamespace } = activeRows[0]
-      const validatedRunGroup = runGroup
-        && runGroupMatchesDeployment(runGroup, deployment, canonicalRepoNamespace)
-        ? runGroup
-        : null
+      const validatedRunGroup =
+        runGroup && runGroupMatchesDeployment(runGroup, deployment, canonicalRepoNamespace)
+          ? runGroup
+          : null
       // Provide backward-compatible preview alias
       return { ...job, deployment, runGroup: validatedRunGroup, preview: deployment }
     }
@@ -958,10 +1045,10 @@ export async function getJobWithContext(jobId: string): Promise<
     if (historyRows.length === 0) return undefined
 
     const { job, deployment, runGroup, canonicalRepoNamespace } = historyRows[0]
-    const validatedRunGroup = runGroup
-      && runGroupMatchesDeployment(runGroup, deployment, canonicalRepoNamespace)
-      ? runGroup
-      : null
+    const validatedRunGroup =
+      runGroup && runGroupMatchesDeployment(runGroup, deployment, canonicalRepoNamespace)
+        ? runGroup
+        : null
     return { ...job, deployment, runGroup: validatedRunGroup, preview: deployment }
   })
 }
@@ -984,7 +1071,10 @@ export async function findPendingJobsForDeployment(
       conditions.push(eq(iacJobs.jobType, jobType))
     }
 
-    return db.select().from(iacJobs).where(and(...conditions))
+    return db
+      .select()
+      .from(iacJobs)
+      .where(and(...conditions))
   })
 }
 
@@ -1166,12 +1256,12 @@ export async function claimJobForRunner(
       events.emitJobUpdate(job.id, job.deploymentId)
 
       // Calculate queue wait time
-      const queueWaitMs = job.startedAt && job.queuedAt
-        ? job.startedAt.getTime() - job.queuedAt.getTime()
-        : 0
-      const dispatchToClaimMs = job.startedAt && job.dispatchedAt
-        ? job.startedAt.getTime() - job.dispatchedAt.getTime()
-        : null
+      const queueWaitMs =
+        job.startedAt && job.queuedAt ? job.startedAt.getTime() - job.queuedAt.getTime() : 0
+      const dispatchToClaimMs =
+        job.startedAt && job.dispatchedAt
+          ? job.startedAt.getTime() - job.dispatchedAt.getTime()
+          : null
 
       // Record metrics
       getJobQueueWaitHistogram().record(queueWaitMs, { job_type: job.jobType })
@@ -1217,12 +1307,7 @@ export async function heartbeatJob(jobId: string): Promise<{ success: boolean }>
     const rows = await db
       .update(iacJobs)
       .set({ lastHeartbeat: new Date() })
-      .where(
-        and(
-          eq(iacJobs.id, jobId),
-          eq(iacJobs.status, "running"),
-        ),
-      )
+      .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "running")))
       .returning({ id: iacJobs.id })
 
     if (rows.length > 0) {
@@ -1253,12 +1338,7 @@ export async function completeJobFromRunner(
           completedAt: new Date(),
           result,
         })
-        .where(
-          and(
-            eq(iacJobs.id, jobId),
-            eq(iacJobs.status, "running"),
-          ),
-        )
+        .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "running")))
         .returning()
 
       const updatedJob = rows[0]
@@ -1274,12 +1354,12 @@ export async function completeJobFromRunner(
       events.emitJobUpdate(job.id, job.deploymentId)
 
       // Calculate run duration
-      const runDurationMs = job.completedAt && job.startedAt
-        ? job.completedAt.getTime() - job.startedAt.getTime()
-        : 0
-      const taskDurationMs = job.completedAt && job.dispatchedAt
-        ? job.completedAt.getTime() - job.dispatchedAt.getTime()
-        : null
+      const runDurationMs =
+        job.completedAt && job.startedAt ? job.completedAt.getTime() - job.startedAt.getTime() : 0
+      const taskDurationMs =
+        job.completedAt && job.dispatchedAt
+          ? job.completedAt.getTime() - job.dispatchedAt.getTime()
+          : null
 
       // Record metrics
       getJobRunDurationHistogram().record(runDurationMs, {
@@ -1336,12 +1416,7 @@ export async function failJobFromRunner(
           completedAt: new Date(),
           errorMessage,
         })
-        .where(
-          and(
-            eq(iacJobs.id, jobId),
-            eq(iacJobs.status, "running"),
-          ),
-        )
+        .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "running")))
         .returning()
 
       const updatedJob = rows[0]
@@ -1357,12 +1432,12 @@ export async function failJobFromRunner(
       events.emitJobUpdate(job.id, job.deploymentId)
 
       // Calculate run duration
-      const runDurationMs = job.completedAt && job.startedAt
-        ? job.completedAt.getTime() - job.startedAt.getTime()
-        : 0
-      const taskDurationMs = job.completedAt && job.dispatchedAt
-        ? job.completedAt.getTime() - job.dispatchedAt.getTime()
-        : null
+      const runDurationMs =
+        job.completedAt && job.startedAt ? job.completedAt.getTime() - job.startedAt.getTime() : 0
+      const taskDurationMs =
+        job.completedAt && job.dispatchedAt
+          ? job.completedAt.getTime() - job.dispatchedAt.getTime()
+          : null
 
       // Record metrics
       getJobRunDurationHistogram().record(runDurationMs, {
@@ -1429,6 +1504,14 @@ const JOB_BLOCK_PRIORITY_SQL = sql<number>`
   CASE
     WHEN ${iacJobs.blockedAt} IS NULL THEN 0
     ELSE 1
+  END
+`
+
+const JOB_PURPOSE_PRIORITY_SQL = sql<number>`
+  CASE ${iacJobs.planPurpose}
+    WHEN 'environment' THEN 0
+    WHEN 'merge_impact' THEN 1
+    ELSE 2
   END
 `
 
@@ -1504,9 +1587,7 @@ function roundRobinSelectJobs(
  * 4. For each group with capacity, select top N jobs ordered by priority
  * 5. Round-robin interleave results from all groups
  */
-export async function findQueuedJobsForSpawning(
-  limits: ConcurrencyLimits,
-): Promise<SpawnResult> {
+export async function findQueuedJobsForSpawning(limits: ConcurrencyLimits): Promise<SpawnResult> {
   return withDbSpan("select", "iac_jobs", async () => {
     // 1. Count current active jobs (only running, not dispatched anymore)
     const activeCountResult = await db
@@ -1593,12 +1674,15 @@ export async function findQueuedJobsForSpawning(
           and(
             eq(iacJobs.status, "queued"),
             sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
-            runGroupId
-              ? eq(iacJobs.runGroupId, runGroupId)
-              : sql`${iacJobs.runGroupId} IS NULL`,
+            runGroupId ? eq(iacJobs.runGroupId, runGroupId) : sql`${iacJobs.runGroupId} IS NULL`,
           ),
         )
-        .orderBy(JOB_BLOCK_PRIORITY_SQL, JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
+        .orderBy(
+          JOB_BLOCK_PRIORITY_SQL,
+          JOB_PURPOSE_PRIORITY_SQL,
+          JOB_TYPE_PRIORITY_SQL,
+          iacJobs.queuedAt,
+        )
         .limit(groupCapacity)
 
       const jobs: IacJob[] = groupJobs.map((row) => row.iac_jobs)
@@ -1688,12 +1772,7 @@ export async function findQueuedJobsForWarmRunner(
       })
       .from(iacJobs)
       .innerJoin(workspaceDeployments, eq(iacJobs.deploymentId, workspaceDeployments.id))
-      .where(
-        and(
-          eq(iacJobs.status, "running"),
-          eq(workspaceDeployments.orgId, orgId),
-        ),
-      )
+      .where(and(eq(iacJobs.status, "running"), eq(workspaceDeployments.orgId, orgId)))
       .groupBy(iacJobs.runGroupId)
 
     const activeByGroup = new Map<string, number>()
@@ -1721,12 +1800,15 @@ export async function findQueuedJobsForWarmRunner(
             eq(iacJobs.status, "queued"),
             eq(workspaceDeployments.orgId, orgId),
             sql`(${SPAWN_LEASE_AVAILABLE_SQL})`,
-            runGroupId
-              ? eq(iacJobs.runGroupId, runGroupId)
-              : sql`${iacJobs.runGroupId} IS NULL`,
+            runGroupId ? eq(iacJobs.runGroupId, runGroupId) : sql`${iacJobs.runGroupId} IS NULL`,
           ),
         )
-        .orderBy(JOB_BLOCK_PRIORITY_SQL, JOB_TYPE_PRIORITY_SQL, iacJobs.queuedAt)
+        .orderBy(
+          JOB_BLOCK_PRIORITY_SQL,
+          JOB_PURPOSE_PRIORITY_SQL,
+          JOB_TYPE_PRIORITY_SQL,
+          iacJobs.queuedAt,
+        )
         .limit(groupCapacity)
 
       const jobs = groupJobs.map((row) => row.iac_jobs)

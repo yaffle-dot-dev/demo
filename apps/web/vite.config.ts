@@ -5,6 +5,11 @@ import { defineConfig } from "vite"
 
 // Get build identifier at build time (works with both jj and git)
 function getBuildId(): string {
+  const configuredBuildId = process.env.YAFFLE_BUILD_ID?.trim()
+  if (configuredBuildId) {
+    return configuredBuildId
+  }
+
   // Try jj first - use change ID (more useful in jj workflow)
   try {
     const changeId = execSync("jj log -r @ --no-graph -T 'change_id.short(8)'", {

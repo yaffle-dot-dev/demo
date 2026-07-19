@@ -74,7 +74,7 @@ export interface PrCommentContext {
 // ---------------------------------------------------------------------------
 
 /** The single HTML marker for the consolidated Yaffle PR comment. */
-const PR_COMMENT_MARKER = "<!-- yaffle:pr -->"
+export const PR_COMMENT_MARKER = "<!-- yaffle:pr -->"
 
 // ---------------------------------------------------------------------------
 // PrCommentManager
@@ -133,7 +133,7 @@ export class PrCommentManager {
           "yaffle.pr_number": this.ctx.prNumber,
           "yaffle.workspace_path": workspacePath,
           "yaffle.comment_phase": state.phase,
-          "error": err instanceof Error ? err.message : String(err),
+          error: err instanceof Error ? err.message : String(err),
         })
       }
     })
@@ -170,7 +170,14 @@ export type CommentManager = PrCommentManager | NoopCommentManager
  * NoopCommentManager otherwise.
  */
 export function createCommentManager(
-  ctx: { kind: string; installationId?: number; owner: string; repo: string; headSha: string; prNumber?: number },
+  ctx: {
+    kind: string
+    installationId?: number
+    owner: string
+    repo: string
+    headSha: string
+    prNumber?: number
+  },
   opts?: { writer?: (ctx: PrCommentContext, body: string, marker: string) => Promise<void> },
 ): CommentManager {
   if (ctx.kind === "pull_request" && ctx.installationId && ctx.prNumber != null) {
@@ -192,19 +199,8 @@ export function createCommentManager(
 // Default writer (calls GitHub API)
 // ---------------------------------------------------------------------------
 
-async function defaultWriter(
-  ctx: PrCommentContext,
-  body: string,
-  marker: string,
-): Promise<void> {
-  await upsertPrComment(
-    ctx.installationId,
-    ctx.owner,
-    ctx.repo,
-    ctx.prNumber,
-    body,
-    marker,
-  )
+async function defaultWriter(ctx: PrCommentContext, body: string, marker: string): Promise<void> {
+  await upsertPrComment(ctx.installationId, ctx.owner, ctx.repo, ctx.prNumber, body, marker)
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +256,43 @@ export function renderComment(
   return lines.join("\n")
 }
 
+interface RunGroupCommentPlan {
+  status: string
+  planSummary: string | null
+}
+
+export interface RunGroupCommentWorkspace {
+  path: string
+  preview: RunGroupCommentPlan
+  mergeImpact: RunGroupCommentPlan | null
+}
+
+export function renderRunGroupComment(values: {
+  headSha: string
+  targetEnvironment: string | null
+  detailsUrl: string
+  workspaces: RunGroupCommentWorkspace[]
+}): string {
+  const lines = [
+    PR_COMMENT_MARKER,
+    `### Yaffle \`${values.headSha.slice(0, 7)}\``,
+    "",
+    "| Workspace | Preview | Merge impact |",
+    "|-----------|---------|--------------|",
+  ]
+  for (const workspace of values.workspaces) {
+    const previewSummary = workspace.preview.planSummary
+      ? `${workspace.preview.status === "ready" ? "Ready" : workspace.preview.status} (${workspace.preview.planSummary})`
+      : workspace.preview.status
+    const mergeSummary = workspace.mergeImpact
+      ? `${values.targetEnvironment ?? "target"}: ${workspace.mergeImpact.planSummary ?? workspace.mergeImpact.status}`
+      : "Not available"
+    lines.push(`| \`${workspace.path}\` | ${previewSummary} | ${mergeSummary} |`)
+  }
+  lines.push("", `[View run details](${values.detailsUrl})`)
+  return lines.join("\n")
+}
+
 // ---------------------------------------------------------------------------
 // Rendering helpers
 // ---------------------------------------------------------------------------
@@ -271,13 +304,19 @@ function phaseDisplay(state: WorkspaceState): { icon: string; label: string } {
     case "plan_success":
       return { icon: "\u2705", label: `Plan: ${state.planSummary ?? "complete"}` }
     case "plan_failed":
-      return { icon: "\u274c", label: `Plan failed${state.errorMessage ? `: ${state.errorMessage}` : ""}` }
+      return {
+        icon: "\u274c",
+        label: `Plan failed${state.errorMessage ? `: ${state.errorMessage}` : ""}`,
+      }
     case "applying":
       return { icon: "\u23f3", label: `Applying (${state.planSummary ?? "..."})` }
     case "ready":
       return { icon: "\u2705", label: "Preview ready" }
     case "apply_failed":
-      return { icon: "\u274c", label: `Apply failed${state.errorMessage ? `: ${state.errorMessage}` : ""}` }
+      return {
+        icon: "\u274c",
+        label: `Apply failed${state.errorMessage ? `: ${state.errorMessage}` : ""}`,
+      }
     case "destroying":
       return { icon: "\ud83d\uddd1\ufe0f", label: "Destroying..." }
     case "destroyed":
@@ -315,9 +354,7 @@ function renderOutputsSection(
     .sort(([a], [b]) => a.localeCompare(b))
     .forEach(([name, raw]) => {
       const output = raw as TerraformOutput
-      const value = output.sensitive
-        ? "*(sensitive)*"
-        : formatValue(output.value)
+      const value = output.sensitive ? "*(sensitive)*" : formatValue(output.value)
       lines.push(`| \`${name}\` | ${value} |`)
     })
 

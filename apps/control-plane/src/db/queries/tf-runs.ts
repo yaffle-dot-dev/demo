@@ -19,6 +19,7 @@ export type TfRunListItem = Pick<
   | "deploymentId"
   | "runGroupId"
   | "runType"
+  | "planPurpose"
   | "status"
   | "checkRunId"
   | "planSummary"
@@ -31,21 +32,11 @@ export type TfRunListItem = Pick<
 
 export type TfRunLatestSummaryItem = Pick<
   TfRun,
-  | "id"
-  | "deploymentId"
-  | "runType"
-  | "status"
-  | "planSummary"
-  | "completedAt"
+  "id" | "deploymentId" | "runType" | "planPurpose" | "status" | "planSummary" | "completedAt"
 >
 export type TfRunOutputsItem = Pick<
   TfRun,
-  | "id"
-  | "deploymentId"
-  | "runType"
-  | "status"
-  | "outputs"
-  | "createdAt"
+  "id" | "deploymentId" | "runType" | "status" | "outputs" | "createdAt"
 >
 
 function selectRunListFields() {
@@ -54,6 +45,7 @@ function selectRunListFields() {
     deploymentId: tfRuns.deploymentId,
     runGroupId: tfRuns.runGroupId,
     runType: tfRuns.runType,
+    planPurpose: tfRuns.planPurpose,
     status: tfRuns.status,
     checkRunId: tfRuns.checkRunId,
     planSummary: tfRuns.planSummary,
@@ -70,6 +62,7 @@ function selectLatestRunSummaryFields() {
     id: tfRuns.id,
     deploymentId: tfRuns.deploymentId,
     runType: tfRuns.runType,
+    planPurpose: tfRuns.planPurpose,
     status: tfRuns.status,
     planSummary: tfRuns.planSummary,
     completedAt: tfRuns.completedAt,
@@ -141,7 +134,9 @@ export async function updateRunStatus(
 
     events.emitRunUpdate(runId, previewId)
 
-    const deployment = updated?.deploymentId ? await findDeploymentById(updated.deploymentId) : undefined
+    const deployment = updated?.deploymentId
+      ? await findDeploymentById(updated.deploymentId)
+      : undefined
     if (deployment) {
       await enqueueEnvironmentGroupProjectionRebuild({
         orgId: deployment.orgId,
@@ -163,11 +158,14 @@ export async function updateRunStatus(
  * Used to detect the first runner output chunk without issuing an extra query
  * for every subsequent log append.
  */
-export async function getRunLogState(runId: string): Promise<{
-  startedAt: Date | null
-  runType: string
-  hasLogOutput: boolean
-} | undefined> {
+export async function getRunLogState(runId: string): Promise<
+  | {
+      startedAt: Date | null
+      runType: string
+      hasLogOutput: boolean
+    }
+  | undefined
+> {
   return withDbSpan("select", "tf_runs", async () => {
     const rows = await db
       .select({
@@ -192,10 +190,13 @@ export async function getRunLogState(runId: string): Promise<{
   })
 }
 
-export async function getRunLogSnapshot(runId: string): Promise<{
-  status: RunStatus
-  logOutput: string | null
-} | undefined> {
+export async function getRunLogSnapshot(runId: string): Promise<
+  | {
+      status: RunStatus
+      logOutput: string | null
+    }
+  | undefined
+> {
   return withDbSpan("select", "tf_runs", async () => {
     const rows = await db
       .select({
@@ -221,11 +222,7 @@ export async function getRunLogSnapshot(runId: string): Promise<{
 /**
  * Append log output to a run.
  */
-export async function appendRunLog(
-  runId: string,
-  previewId: string,
-  chunk: string,
-): Promise<void> {
+export async function appendRunLog(runId: string, previewId: string, chunk: string): Promise<void> {
   return withDbSpan("update", "tf_runs", async () => {
     await db
       .update(tfRuns)
@@ -267,7 +264,10 @@ export async function findLatestRunsForDeployments(
   if (deploymentIds.length === 0) return new Map()
 
   return withDbSpan("select", "tf_runs", async () => {
-    const conditions = [inArray(tfRuns.deploymentId, deploymentIds)]
+    const conditions = [
+      inArray(tfRuns.deploymentId, deploymentIds),
+      eq(tfRuns.planPurpose, "environment"),
+    ]
     if (runType) {
       conditions.push(eq(tfRuns.runType, runType))
     }
@@ -305,7 +305,10 @@ export async function listRunsForDeployments(
   }
 
   return withDbSpan("select", "tf_runs", async () => {
-    const conditions = [inArray(tfRuns.deploymentId, deploymentIds)]
+    const conditions = [
+      inArray(tfRuns.deploymentId, deploymentIds),
+      eq(tfRuns.planPurpose, "environment"),
+    ]
 
     if (opts?.runGroupIds) {
       conditions.push(inArray(tfRuns.runGroupId, opts.runGroupIds))
@@ -336,6 +339,7 @@ export async function findLatestSuccessfulRunsForDeployments(
     const conditions = [
       inArray(tfRuns.deploymentId, deploymentIds),
       eq(tfRuns.status, "success"),
+      eq(tfRuns.planPurpose, "environment"),
     ]
 
     if (runType) {
@@ -373,7 +377,10 @@ export async function findLatestRun(
   runType?: RunType,
 ): Promise<TfRun | undefined> {
   return withDbSpan("select", "tf_runs", async () => {
-    const conditions = [eq(tfRuns.deploymentId, deploymentId)]
+    const conditions = [
+      eq(tfRuns.deploymentId, deploymentId),
+      eq(tfRuns.planPurpose, "environment"),
+    ]
     if (runType) {
       conditions.push(eq(tfRuns.runType, runType))
     }
@@ -401,6 +408,7 @@ export async function findLatestSuccessfulRun(
     const conditions = [
       eq(tfRuns.deploymentId, deploymentId),
       eq(tfRuns.status, "success"),
+      eq(tfRuns.planPurpose, "environment"),
     ]
     if (runType) {
       conditions.push(eq(tfRuns.runType, runType))
@@ -428,7 +436,7 @@ export async function listRunsForDeployment(deploymentId: string): Promise<TfRun
     return db
       .select(selectRunListFields())
       .from(tfRuns)
-      .where(eq(tfRuns.deploymentId, deploymentId))
+      .where(and(eq(tfRuns.deploymentId, deploymentId), eq(tfRuns.planPurpose, "environment")))
       .orderBy(desc(tfRuns.createdAt))
   })
 }
@@ -439,15 +447,9 @@ export const listRunsForPreview = listRunsForDeployment
 /**
  * Find a single run by its UUID.
  */
-export async function findRunById(
-  runId: string,
-): Promise<TfRun | undefined> {
+export async function findRunById(runId: string): Promise<TfRun | undefined> {
   return withDbSpan("select", "tf_runs", async () => {
-    const rows = await db
-      .select()
-      .from(tfRuns)
-      .where(eq(tfRuns.id, runId))
-      .limit(1)
+    const rows = await db.select().from(tfRuns).where(eq(tfRuns.id, runId)).limit(1)
     return rows[0]
   })
 }

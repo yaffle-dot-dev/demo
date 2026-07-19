@@ -24,6 +24,8 @@ import {
   markRemovedWorkspacesDestroyed,
 } from "../db/queries/workspace-deployments.ts"
 import { createIacJob, cancelJobsForPreview } from "../db/queries/iac-jobs.ts"
+import { getCurrentStateVersion } from "../db/queries/state-versions.ts"
+import { findWorkspaceByIdentity } from "../db/queries/workspaces.ts"
 import { checkOrgEntitlements } from "./entitlements.ts"
 import { getEnv } from "./env.ts"
 import { completeRunGroupCheck } from "./run-group-checks.ts"
@@ -31,6 +33,7 @@ import { buildStateKey, transientStatePrefix, environmentStatePrefix } from "./r
 import { events } from "./events.ts"
 import { persistRunGroupWorkspaceMetadataFromArchive } from "./run-group-workspace-metadata.ts"
 import { logger } from "./telemetry.ts"
+import { syncPrCommentForRunGroup } from "./pr-comment-sync.ts"
 import {
   ExecutionSnapshotInvariantError,
   findExecutionSnapshotWorkspace,
@@ -73,8 +76,9 @@ export async function completeRunGroup(
   if (executionSnapshot) {
     const selectedPaths = new Set(executionSnapshot.workspaces.map((workspace) => workspace.path))
     const scanPaths = new Set(executionOrder)
-    const selectionChanged = selectedPaths.size !== scanPaths.size
-      || [...selectedPaths].some((workspacePath) => !scanPaths.has(workspacePath))
+    const selectionChanged =
+      selectedPaths.size !== scanPaths.size ||
+      [...selectedPaths].some((workspacePath) => !scanPaths.has(workspacePath))
     if (selectionChanged) {
       throw new ExecutionSnapshotInvariantError(
         `Scanner result does not match run group ${runGroupId} workspace selection`,
@@ -110,9 +114,10 @@ export async function completeRunGroup(
   // Build state prefix based on environment kind
   const environmentKind = executionSnapshot?.environment.kind ?? runGroup.environmentKind
   const environmentName = executionSnapshot?.environment.name ?? runGroup.environmentName
-  const statePrefix = environmentKind === "transient"
-    ? transientStatePrefix(environmentName)
-    : environmentStatePrefix(environmentName)
+  const statePrefix =
+    environmentKind === "transient"
+      ? transientStatePrefix(environmentName)
+      : environmentStatePrefix(environmentName)
 
   // Build dependency maps
   const workspaceDeps = new Map<string, Set<string>>()
@@ -144,7 +149,8 @@ export async function completeRunGroup(
       repo: source?.repository ?? runGroup.repo,
       environmentKind,
       environmentName,
-      prNumber: executionSnapshot?.environment.sourcePullRequestNumber ?? runGroup.prNumber ?? undefined,
+      prNumber:
+        executionSnapshot?.environment.sourcePullRequestNumber ?? runGroup.prNumber ?? undefined,
       workspacePath: wsPath,
       ref: source?.ref ?? runGroup.ref,
       headSha: source?.commitSha ?? runGroup.headSha,
@@ -209,6 +215,38 @@ export async function completeRunGroup(
           jobId: job.id,
         })
       }
+
+      const mergeImpact = executionSnapshot?.mergeImpact
+      if (mergeImpact?.workspaces.some((workspace) => workspace.path === workspacePath)) {
+        const targetWorkspace = await findWorkspaceByIdentity(
+          org.id,
+          executionSnapshot?.source.repository ?? runGroup.repo,
+          workspacePath,
+          "named",
+          mergeImpact.environmentName,
+        )
+        const targetState =
+          targetWorkspace?.status === "active"
+            ? await getCurrentStateVersion(targetWorkspace.id)
+            : undefined
+        if (targetWorkspace && targetState?.status === "finalized") {
+          const mergeJob = await createIacJob({
+            deploymentId,
+            runGroupId,
+            jobType: "plan",
+            planPurpose: "merge_impact",
+            targetWorkspaceId: targetWorkspace.id,
+            targetStateVersionId: targetState.id,
+          })
+          logger.info("Queued merge-impact plan", {
+            runGroupId,
+            workspacePath,
+            targetEnvironment: mergeImpact.environmentName,
+            targetStateVersionId: targetState.id,
+            jobId: mergeJob.id,
+          })
+        }
+      }
     }
   }
 
@@ -244,6 +282,7 @@ export async function completeRunGroup(
     deploymentCount: deploymentData.length,
     rootCount: deploymentData.filter((d) => d.isRoot).length,
   })
+  void syncPrCommentForRunGroup(runGroupId)
 }
 
 function buildBillingUrl(orgSlug: string): string | undefined {

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -7,6 +7,7 @@ import { describe, expect, test } from "@yaffle/test"
 import {
   automaticIsolationArtifactPaths,
   compileAutomaticIsolationArtifact,
+  removeAutomaticIsolationArtifact,
   verifyAutomaticIsolationArtifact,
 } from "./automatic-isolation-artifact.ts"
 
@@ -439,6 +440,33 @@ resource "local_file" "preview" {
       await expect(verifyAutomaticIsolationArtifact(workDir, true)).rejects.toThrow(
         /not bound to execution context/,
       )
+    } finally {
+      await rm(workDir, { recursive: true, force: true })
+    }
+  })
+
+  test("removes a verified preview transform before merge-impact execution", async () => {
+    const workDir = await mkdtemp(join(tmpdir(), "yaffle-isolation-artifact-"))
+    try {
+      const artifact = compile().artifact!
+      await mkdir(join(workDir, ".yaffle"), { recursive: true })
+      await writeFile(
+        join(workDir, automaticIsolationArtifactPaths.manifest),
+        JSON.stringify(artifact.manifest),
+      )
+      await writeFile(
+        join(workDir, automaticIsolationArtifactPaths.generated),
+        artifact.files[0]!.content,
+      )
+
+      await removeAutomaticIsolationArtifact(workDir, artifact.manifest)
+
+      await expect(
+        readFile(join(workDir, automaticIsolationArtifactPaths.generated)),
+      ).rejects.toThrow()
+      await expect(
+        readFile(join(workDir, automaticIsolationArtifactPaths.manifest)),
+      ).rejects.toThrow()
     } finally {
       await rm(workDir, { recursive: true, force: true })
     }

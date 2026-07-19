@@ -10,6 +10,7 @@ import {
   ConfigError,
   findPushTriggerEnvironment,
   getAutomaticIsolationWorkspacePaths,
+  getEnvironmentKind,
   getWorkspacesForEnvironment,
   matchesPullRequestTrigger,
   parseYaffleToml,
@@ -58,6 +59,7 @@ import { getScheduler } from "./scheduler.ts"
 import type { WorkspaceVariablesByPath } from "./workspace-variables.ts"
 import {
   buildExecutionSnapshot,
+  executionConfigurationDigest,
   ExecutionSnapshotInvariantError,
   isExecutionContextAssociationValid,
 } from "./execution-snapshot.ts"
@@ -116,7 +118,11 @@ function contextAttrs(ctx: WebhookContext): Record<string, string | number> {
  * In production, we fetch config via the GitHub API.
  * In tests, we inject a fake loader.
  */
-type ConfigLoader = (ctx: WebhookContext, token?: string) => Promise<YaffleTomlConfig>
+type ConfigLoader = (
+  ctx: WebhookContext,
+  token?: string,
+  revision?: string,
+) => Promise<YaffleTomlConfig>
 type ScanDispatcher = (
   ctx: WebhookContext,
   orgId: string,
@@ -501,8 +507,12 @@ export async function rerunPreview(opts: {
 /**
  * Fetch config from the repo via the GitHub Contents API.
  */
-async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<YaffleTomlConfig> {
-  const raw = await fetchRawConfig(ctx)
+async function fetchConfig(
+  ctx: WebhookContext,
+  _token?: string,
+  revision: string = ctx.headSha,
+): Promise<YaffleTomlConfig> {
+  const raw = await fetchRawConfig(ctx, revision)
 
   if (!raw) {
     throw new ConfigError(
@@ -513,13 +523,16 @@ async function fetchConfig(ctx: WebhookContext, _token?: string): Promise<Yaffle
   return parseYaffleToml(raw)
 }
 
-async function fetchRawConfig(ctx: WebhookContext): Promise<string | null> {
+async function fetchRawConfig(
+  ctx: WebhookContext,
+  revision: string = ctx.headSha,
+): Promise<string | null> {
   if (!ctx.installationId) {
     throw new ConfigError("Cannot fetch config without a GitHub App installation")
   }
 
   return (
-    (await fetchFileContent(ctx.installationId, ctx.owner, ctx.repo, "yaffle.toml", ctx.headSha)) ??
+    (await fetchFileContent(ctx.installationId, ctx.owner, ctx.repo, "yaffle.toml", revision)) ??
     null
   )
 }
@@ -717,6 +730,63 @@ async function handleEvent(
 // Pull request events
 // ---------------------------------------------------------------------------
 
+async function resolveMergeImpactSnapshot(values: {
+  ctx: PullRequestContext
+  configLoader: ConfigLoader
+  installationToken?: string
+  workspacePaths: string[]
+}): Promise<Parameters<typeof buildExecutionSnapshot>[0]["mergeImpact"]> {
+  const { ctx } = values
+  if (
+    !ctx.baseSha ||
+    !ctx.baseBranch ||
+    ctx.headRepoGithubId == null ||
+    ctx.headRepoGithubId !== ctx.repoGithubId
+  ) {
+    return undefined
+  }
+
+  try {
+    const baseConfig = await values.configLoader(ctx, values.installationToken, ctx.baseSha)
+    const targetRef = `refs/heads/${ctx.baseBranch}`
+    const environmentName = findPushTriggerEnvironment(baseConfig, targetRef)
+    if (!environmentName || getEnvironmentKind(baseConfig, environmentName) !== "named") {
+      return undefined
+    }
+
+    const selectedPaths = new Set(values.workspacePaths)
+    const targetWorkspacePaths = getWorkspacesForEnvironment(
+      baseConfig,
+      environmentName,
+      false,
+    ).filter((path) => selectedPaths.has(path))
+    if (targetWorkspacePaths.length === 0) {
+      return undefined
+    }
+
+    return {
+      environmentName,
+      ref: targetRef,
+      configurationRevision: ctx.baseSha,
+      configurationDigest: executionConfigurationDigest(baseConfig),
+      workspacePaths: targetWorkspacePaths,
+      workspaceVariables: buildWorkspaceVariablesByPath(
+        baseConfig,
+        targetWorkspacePaths,
+        ctx,
+        environmentName,
+        "named",
+      ),
+    }
+  } catch (error) {
+    logger.warn("merge-impact target unavailable", {
+      ...contextAttrs(ctx),
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return undefined
+  }
+}
+
 async function handlePullRequestEvent(
   ctx: PullRequestContext,
   runner: Runner,
@@ -838,6 +908,12 @@ async function handlePrOpenedOrUpdated(
     workspaceVariables,
     environmentKind: "transient",
     environmentName,
+    mergeImpact: await resolveMergeImpactSnapshot({
+      ctx,
+      configLoader,
+      installationToken,
+      workspacePaths,
+    }),
   })
   const runGroup = await createRunGroup({
     orgId: org.id,
@@ -908,31 +984,31 @@ async function handlePrClosed(
   }
 
   const environmentName = buildPrEnvironmentName(ctx.prNumber)
-  const candidates = (await listDeployments(org.id, {
-    environmentKind: "transient",
-    prNumber: ctx.prNumber,
-    limit: 250,
-  })).items
+  const candidates = (
+    await listDeployments(org.id, {
+      environmentKind: "transient",
+      prNumber: ctx.prNumber,
+      limit: 250,
+    })
+  ).items
   const runGroupsById = await findRunGroupsByIds(
-    candidates.flatMap((deployment) => deployment.runGroupId ? [deployment.runGroupId] : []),
+    candidates.flatMap((deployment) => (deployment.runGroupId ? [deployment.runGroupId] : [])),
     org.id,
   )
   const deployments = candidates.filter((deployment) => {
-    const runGroup = deployment.runGroupId
-      ? runGroupsById.get(deployment.runGroupId)
-      : undefined
+    const runGroup = deployment.runGroupId ? runGroupsById.get(deployment.runGroupId) : undefined
     const snapshot = runGroup?.executionSnapshot
     return Boolean(
-      runGroup
-      && snapshot
-      && snapshot.source.installationId === ctx.installationId
-      && snapshot.source.repositoryId === ctx.repoGithubId
-      && snapshot.source.ownerId === ctx.ownerGithubId
-      && snapshot.environment.kind === "transient"
-      && snapshot.environment.sourcePullRequestNumber === ctx.prNumber
-      && deployment.environmentKind === "transient"
-      && deployment.prNumber === ctx.prNumber
-      && isExecutionContextAssociationValid({
+      runGroup &&
+      snapshot &&
+      snapshot.source.installationId === ctx.installationId &&
+      snapshot.source.repositoryId === ctx.repoGithubId &&
+      snapshot.source.ownerId === ctx.ownerGithubId &&
+      snapshot.environment.kind === "transient" &&
+      snapshot.environment.sourcePullRequestNumber === ctx.prNumber &&
+      deployment.environmentKind === "transient" &&
+      deployment.prNumber === ctx.prNumber &&
+      isExecutionContextAssociationValid({
         snapshot,
         runGroup,
         resource: deployment,
@@ -945,9 +1021,7 @@ async function handlePrClosed(
     return
   }
   const missingArtifact = deployments.find((deployment) => {
-    const runGroup = deployment.runGroupId
-      ? runGroupsById.get(deployment.runGroupId)
-      : undefined
+    const runGroup = deployment.runGroupId ? runGroupsById.get(deployment.runGroupId) : undefined
     return !runGroup?.workspaceS3Key
   })
   if (missingArtifact) {
@@ -956,10 +1030,10 @@ async function handlePrClosed(
     )
   }
 
-  logger.info(
-    `found ${deployments.length} deployed workspace(s) for PR destroy`,
-    { ...attrs, "yaffle.workspace_count": deployments.length },
-  )
+  logger.info(`found ${deployments.length} deployed workspace(s) for PR destroy`, {
+    ...attrs,
+    "yaffle.workspace_count": deployments.length,
+  })
 
   const usingTfcBackend = useTfcBackend()
   const deploymentRepo = deployments[0].repo
@@ -1003,9 +1077,9 @@ async function handlePrClosed(
     )
 
     if (tfcWorkspace) {
-      const locked = await beginWorkspaceArchive(tfcWorkspace.id)
-      if (!locked) {
-        logger.warn("Could not lock TFC workspace for archive, skipping destroy", {
+      const readyForDestroy = await beginWorkspaceArchive(tfcWorkspace.id)
+      if (!readyForDestroy) {
+        logger.warn("Could not prepare TFC workspace for archive, skipping destroy", {
           ...wsAttrs,
           tfcWorkspaceId: tfcWorkspace.id,
         })
@@ -1043,13 +1117,7 @@ async function handlePrClosed(
   // Emit event so UI sees the queued state
   if (deployments.length > 0) {
     const first = deployments[0]
-    events.emitDeploymentUpdate(
-      first.id,
-      org.id,
-      first.repo,
-      "transient",
-      first.environmentName,
-    )
+    events.emitDeploymentUpdate(first.id, org.id, first.repo, "transient", first.environmentName)
   }
 }
 

@@ -6,6 +6,7 @@ import type { YaffleTomlConfig } from "./config-toml.ts"
 import {
   buildExecutionSnapshot,
   buildExecutionVariables,
+  buildMergeImpactVariables,
   findExecutionSnapshotWorkspace,
 } from "./execution-snapshot.ts"
 
@@ -118,6 +119,38 @@ describe("execution snapshot", () => {
     })
   })
 
+  test("carries an immutable named target for merge-impact planning", () => {
+    const snapshot = buildExecutionSnapshot({
+      ctx: context,
+      config: config(),
+      workspacePaths: ["infra"],
+      workspaceVariables: { infra: { release: "preview-value" } },
+      environmentKind: "transient",
+      environmentName: "pr-42",
+      mergeImpact: {
+        environmentName: "production",
+        ref: "refs/heads/main",
+        configurationRevision: "base-sha",
+        configurationDigest: "base-config-digest",
+        workspacePaths: ["infra"],
+        workspaceVariables: { infra: { release: "production-value" } },
+      },
+    })
+
+    expect(snapshot.mergeImpact).toEqual({
+      environmentName: "production",
+      ref: "refs/heads/main",
+      configurationRevision: "base-sha",
+      configurationDigest: "base-config-digest",
+      workspaces: [{ path: "infra", variables: { release: "production-value" } }],
+    })
+    expect(buildMergeImpactVariables(snapshot, "infra")).toEqual({
+      environment: "production",
+      environment_kind: "named",
+      release: "production-value",
+    })
+  })
+
   test.each([
     "https://deploy.example.test?token=do-not-persist",
     "https://deploy.example.test?sig=do-not-persist",
@@ -127,14 +160,16 @@ describe("execution snapshot", () => {
     const unsafeConfig = config()
     unsafeConfig.workspaces[0].activation![0].request!.url = url
 
-    expect(() => buildExecutionSnapshot({
-      ctx: context,
-      config: unsafeConfig,
-      workspacePaths: ["infra"],
-      workspaceVariables: { infra: {} },
-      environmentKind: "transient",
-      environmentName: "pr-42",
-    })).toThrow("must use a connection instead of URL credentials")
+    expect(() =>
+      buildExecutionSnapshot({
+        ctx: context,
+        config: unsafeConfig,
+        workspacePaths: ["infra"],
+        workspaceVariables: { infra: {} },
+        environmentKind: "transient",
+        environmentName: "pr-42",
+      }),
+    ).toThrow("must use a connection instead of URL credentials")
   })
 
   test("rejects credentials embedded in a GitHub API URL", () => {
@@ -146,13 +181,15 @@ describe("execution snapshot", () => {
       api_url: "https://api.github.test?sig=do-not-persist",
     }
 
-    expect(() => buildExecutionSnapshot({
-      ctx: context,
-      config: unsafeConfig,
-      workspacePaths: ["infra"],
-      workspaceVariables: { infra: {} },
-      environmentKind: "transient",
-      environmentName: "pr-42",
-    })).toThrow("must use a connection instead of URL credentials")
+    expect(() =>
+      buildExecutionSnapshot({
+        ctx: context,
+        config: unsafeConfig,
+        workspacePaths: ["infra"],
+        workspaceVariables: { infra: {} },
+        environmentKind: "transient",
+        environmentName: "pr-42",
+      }),
+    ).toThrow("must use a connection instead of URL credentials")
   })
 })

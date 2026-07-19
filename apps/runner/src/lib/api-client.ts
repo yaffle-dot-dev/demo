@@ -40,7 +40,7 @@ export interface DeploymentDetails {
 export interface ClaimResponse {
   claimed: boolean
   job?: JobDetails
-  runId?: string  // tf_run ID for log streaming
+  runId?: string // tf_run ID for log streaming
   deployment?: DeploymentDetails
 }
 
@@ -51,6 +51,7 @@ export interface ExecutionContext {
   workspacePath: string
   automaticIsolationRequired: boolean
   automaticIsolationManifest?: AutomaticIsolationArtifactManifest
+  automaticIsolationCleanupManifest?: AutomaticIsolationArtifactManifest
   variables: Record<string, string | boolean | number>
   executionEnv?: Record<string, string>
   backendConfig?: {
@@ -60,6 +61,10 @@ export interface ExecutionContext {
     credentialHosts?: string[]
   }
   tfcToken?: string
+  /** Merge-impact plans read named state without taking its workspace lock. */
+  lockState?: boolean
+  /** False for speculative plans that must never be eligible for apply. */
+  persistPlanFile?: boolean
   /** Presigned URL to download the saved plan file (apply only) */
   planFileUrl?: string
 }
@@ -101,7 +106,7 @@ export class RunnerApiClient {
 
   private get headers(): Record<string, string> {
     return {
-      "Authorization": `Bearer ${this.config.jobToken}`,
+      Authorization: `Bearer ${this.config.jobToken}`,
       "Content-Type": "application/json",
     }
   }
@@ -238,8 +243,10 @@ export class RunnerApiClient {
    * Get execution context for the job.
    * Returns workspace URL, variables, backend config, etc.
    */
-  async getContext(): Promise<ExecutionContext> {
-    const response = await fetch(`${this.config.apiUrl}/api/runner/job/${this.config.jobId}/context`, {
+  async getContext(runId: string): Promise<ExecutionContext> {
+    const url = new URL(`${this.config.apiUrl}/api/runner/job/${this.config.jobId}/context`)
+    url.searchParams.set("runId", runId)
+    const response = await fetch(url, {
       method: "GET",
       headers: this.headers,
     })
@@ -319,7 +326,11 @@ export class RunnerApiClient {
    * @param chunk - Log text
    * @param source - "stdout" or "stderr"
    */
-  async sendLogs(runId: string, chunk: string, source: "stdout" | "stderr" = "stdout"): Promise<LogsResponse> {
+  async sendLogs(
+    runId: string,
+    chunk: string,
+    source: "stdout" | "stderr" = "stdout",
+  ): Promise<LogsResponse> {
     const response = await fetch(`${this.config.apiUrl}/api/runner/logs`, {
       method: "POST",
       headers: this.headers,

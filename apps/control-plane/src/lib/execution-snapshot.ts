@@ -27,6 +27,17 @@ export interface ExecutionSnapshotWorkspace {
   automaticPreviewIsolation: boolean
 }
 
+export interface MergeImpactSnapshot {
+  environmentName: string
+  ref: string
+  configurationRevision: string
+  configurationDigest: string
+  workspaces: Array<{
+    path: string
+    variables: Record<string, VariableValue>
+  }>
+}
+
 export interface ExecutionSnapshotV1 {
   version: 1
   source: {
@@ -55,6 +66,7 @@ export interface ExecutionSnapshotV1 {
     sourcePullRequestNumber: number | null
   }
   workspaces: ExecutionSnapshotWorkspace[]
+  mergeImpact?: MergeImpactSnapshot
 }
 
 export class ExecutionSnapshotInvariantError extends Error {
@@ -86,6 +98,10 @@ function stableJson(value: unknown): string {
     return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${stableJson(entry)}`).join(",")}}`
   }
   return JSON.stringify(value)
+}
+
+export function executionConfigurationDigest(config: YaffleTomlConfig): string {
+  return createHash("sha256").update(stableJson(config)).digest("hex")
 }
 
 function sourceRef(ctx: WebhookContext): string {
@@ -122,6 +138,14 @@ export function buildExecutionSnapshot(values: {
   workspaceVariables: WorkspaceVariablesByPath
   environmentKind: EnvironmentKind
   environmentName: string
+  mergeImpact?: {
+    environmentName: string
+    ref: string
+    configurationRevision: string
+    configurationDigest: string
+    workspacePaths: string[]
+    workspaceVariables: WorkspaceVariablesByPath
+  }
 }): ExecutionSnapshotV1 {
   const selectedPaths = new Set(values.workspacePaths)
   const workspaces = values.config.workspaces
@@ -164,7 +188,7 @@ export function buildExecutionSnapshot(values: {
     configuration: {
       path: "yaffle.toml",
       revision: values.ctx.headSha,
-      digest: createHash("sha256").update(stableJson(values.config)).digest("hex"),
+      digest: executionConfigurationDigest(values.config),
     },
     environment: {
       kind: values.environmentKind,
@@ -172,6 +196,18 @@ export function buildExecutionSnapshot(values: {
       sourcePullRequestNumber: values.ctx.kind === "pull_request" ? values.ctx.prNumber : null,
     },
     workspaces,
+    mergeImpact: values.mergeImpact
+      ? {
+          environmentName: values.mergeImpact.environmentName,
+          ref: values.mergeImpact.ref,
+          configurationRevision: values.mergeImpact.configurationRevision,
+          configurationDigest: values.mergeImpact.configurationDigest,
+          workspaces: values.mergeImpact.workspacePaths.map((path) => ({
+            path,
+            variables: structuredClone(values.mergeImpact?.workspaceVariables[path] ?? {}),
+          })),
+        }
+      : undefined,
   }
 }
 
@@ -196,6 +232,22 @@ export function buildExecutionVariables(
   return {
     environment: snapshot.environment.name,
     environment_kind: snapshot.environment.kind,
+    ...workspace.variables,
+  }
+}
+
+export function buildMergeImpactVariables(
+  snapshot: ExecutionSnapshotV1,
+  workspacePath: string,
+): Record<string, VariableValue> | undefined {
+  const target = snapshot.mergeImpact
+  const workspace = target?.workspaces.find((candidate) => candidate.path === workspacePath)
+  if (!target || !workspace) {
+    return undefined
+  }
+  return {
+    environment: target.environmentName,
+    environment_kind: "named",
     ...workspace.variables,
   }
 }
@@ -271,33 +323,27 @@ export function isExecutionContextAssociationValid(values: {
   const selectedWorkspacePaths = Array.isArray(runGroup.selectedWorkspacePaths)
     ? runGroup.selectedWorkspacePaths.filter((path): path is string => typeof path === "string")
     : null
-  const workspaceMatches = resource.workspacePath === undefined
-    || (
-      findExecutionSnapshotWorkspace(snapshot, resource.workspacePath) !== undefined
-      && (selectedWorkspacePaths === null || selectedWorkspacePaths.includes(resource.workspacePath))
-    )
+  const workspaceMatches =
+    resource.workspacePath === undefined ||
+    (findExecutionSnapshotWorkspace(snapshot, resource.workspacePath) !== undefined &&
+      (selectedWorkspacePaths === null || selectedWorkspacePaths.includes(resource.workspacePath)))
   const canonicalRepoNamespace = `${snapshot.source.owner}--${snapshot.source.repository}`
 
-  return runGroup.orgId === resource.orgId
-    && runGroup.repo === resource.repo
-    && runGroup.environmentKind === resource.environmentKind
-    && runGroup.environmentName === resource.environmentName
-    && snapshot.source.repository === resource.repo
-    && snapshot.environment.kind === resource.environmentKind
-    && snapshot.environment.name === resource.environmentName
-    && (runGroup.ref === undefined || runGroup.ref === snapshot.source.ref)
-    && (runGroup.headSha === undefined || runGroup.headSha === snapshot.source.commitSha)
-    && (
-      resource.installationId === undefined
-      || resource.installationId === null
-      || resource.installationId === snapshot.source.installationId
-    )
-    && workspaceMatches
-    && (
-      !values.requireRepoBinding
-      || (
-        Boolean(runGroup.repoBindingId)
-        && values.canonicalRepoNamespace === canonicalRepoNamespace
-      )
-    )
+  return (
+    runGroup.orgId === resource.orgId &&
+    runGroup.repo === resource.repo &&
+    runGroup.environmentKind === resource.environmentKind &&
+    runGroup.environmentName === resource.environmentName &&
+    snapshot.source.repository === resource.repo &&
+    snapshot.environment.kind === resource.environmentKind &&
+    snapshot.environment.name === resource.environmentName &&
+    (runGroup.ref === undefined || runGroup.ref === snapshot.source.ref) &&
+    (runGroup.headSha === undefined || runGroup.headSha === snapshot.source.commitSha) &&
+    (resource.installationId === undefined ||
+      resource.installationId === null ||
+      resource.installationId === snapshot.source.installationId) &&
+    workspaceMatches &&
+    (!values.requireRepoBinding ||
+      (Boolean(runGroup.repoBindingId) && values.canonicalRepoNamespace === canonicalRepoNamespace))
+  )
 }

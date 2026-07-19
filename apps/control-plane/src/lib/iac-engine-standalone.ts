@@ -20,18 +20,14 @@ import {
   markDeploymentSkipped,
   updateDeploymentStatus,
 } from "../db/queries/workspace-deployments.ts"
-import {
-  appendRunLog,
-  createTfRun,
-  updateRunStatus,
-} from "../db/queries/tf-runs.ts"
+import { appendRunLog, createTfRun, updateRunStatus } from "../db/queries/tf-runs.ts"
 import { createIacJob } from "../db/queries/iac-jobs.ts"
 import { events } from "./events.ts"
 import { logger } from "./telemetry.ts"
 import { LocalRunner } from "./local-runner.ts"
 import type { Runner } from "./runner.ts"
 import { useTfcBackend } from "./tfc-backend.ts"
-import { generateRunToken } from "./run-token.ts"
+import { generateRunToken, getRunTokenScopes } from "./run-token.ts"
 import { getInstallationToken, upsertPrComment } from "./github.ts"
 import {
   completeWorkspaceArchive,
@@ -135,7 +131,9 @@ export async function executeJobStandalone(
  */
 async function executeJobWork(
   job: Awaited<ReturnType<typeof getJobWithContext>> extends infer T
-    ? T extends undefined ? never : Omit<NonNullable<T>, "deployment" | "preview" | "runGroup">
+    ? T extends undefined
+      ? never
+      : Omit<NonNullable<T>, "deployment" | "preview" | "runGroup">
     : never,
   deployment: NonNullable<Awaited<ReturnType<typeof getJobWithContext>>>["deployment"],
   executionSnapshot: ExecutionSnapshotV1,
@@ -155,9 +153,10 @@ async function executeJobWork(
 
   // Check org provisioning status - block runs until AWS resources are ready
   if (org.provisioningStatus !== "active") {
-    const errorMessage = org.provisioningStatus === "failed"
-      ? "Organization provisioning failed. Support has been notified and will contact you shortly."
-      : `Organization is being set up (status: ${org.provisioningStatus}). Please wait a moment and try again.`
+    const errorMessage =
+      org.provisioningStatus === "failed"
+        ? "Organization provisioning failed. Support has been notified and will contact you shortly."
+        : `Organization is being set up (status: ${org.provisioningStatus}). Please wait a moment and try again.`
 
     return {
       success: false,
@@ -208,28 +207,34 @@ async function executeJobWork(
   let tfcToken: string | undefined
 
   if (useTfcBackend()) {
-    const tfcWorkspace = environmentKind === "transient"
-      ? await ensureTransientWorkspace({
-          orgId: org.id,
-          orgSlug: org.slug,
-          repo: source.repository,
-          environment: environmentName,
-          workspacePath: deployment.workspacePath,
-          ref: source.ref,
-        })
-      : await ensureNamedWorkspace({
-          orgId: org.id,
-          orgSlug: org.slug,
-          repo: source.repository,
-          environment: environmentName,
-          ref: source.ref,
-          workspacePath: deployment.workspacePath,
-        })
+    const tfcWorkspace =
+      environmentKind === "transient"
+        ? await ensureTransientWorkspace({
+            orgId: org.id,
+            orgSlug: org.slug,
+            repo: source.repository,
+            environment: environmentName,
+            workspacePath: deployment.workspacePath,
+            ref: source.ref,
+          })
+        : await ensureNamedWorkspace({
+            orgId: org.id,
+            orgSlug: org.slug,
+            repo: source.repository,
+            environment: environmentName,
+            ref: source.ref,
+            workspacePath: deployment.workspacePath,
+          })
 
     tfcWorkspaceId = tfcWorkspace.id
     tfcWorkspaceName = tfcWorkspace.name
     tfcOrganization = org.slug
-    tfcToken = await generateRunToken(deployment.id, tfcWorkspace.id, org.id)
+    tfcToken = await generateRunToken(
+      deployment.id,
+      tfcWorkspace.id,
+      org.id,
+      getRunTokenScopes(job.jobType),
+    )
   }
 
   // Create a tf_run record
@@ -247,7 +252,10 @@ async function executeJobWork(
     apply: "applying",
     destroy: "destroying",
   }
-  await updateDeploymentStatus(deployment.id, statusMap[job.jobType] as Parameters<typeof updateDeploymentStatus>[1])
+  await updateDeploymentStatus(
+    deployment.id,
+    statusMap[job.jobType] as Parameters<typeof updateDeploymentStatus>[1],
+  )
 
   // Execute terraform
   let logBuffer = ""
@@ -465,9 +473,7 @@ async function cascadeFailure(previewId: string): Promise<void> {
   }
 }
 
-async function notifyDestroyComplete(
-  deploymentId: string,
-): Promise<void> {
+async function notifyDestroyComplete(deploymentId: string): Promise<void> {
   const deployment = await findDeploymentById(deploymentId)
   if (!deployment) return
 
@@ -552,9 +558,15 @@ function statusToPhase(status: string, latestRunType?: string): CommentPhase {
   }
 }
 
-async function updatePrCommentFromDb(
-  deployment: { id: string; orgId: string; repo: string; prNumber: number | null; installationId: number | null; environmentName: string; headSha: string },
-): Promise<void> {
+async function updatePrCommentFromDb(deployment: {
+  id: string
+  orgId: string
+  repo: string
+  prNumber: number | null
+  installationId: number | null
+  environmentName: string
+  headSha: string
+}): Promise<void> {
   if (!deployment.prNumber || !deployment.installationId) {
     return
   }
@@ -652,20 +664,29 @@ function renderCommentFromStates(
   return lines.join("\n")
 }
 
-function phaseDisplay(ws: { phase: CommentPhase; planSummary?: string; errorMessage?: string }): { icon: string; label: string } {
+function phaseDisplay(ws: { phase: CommentPhase; planSummary?: string; errorMessage?: string }): {
+  icon: string
+  label: string
+} {
   switch (ws.phase) {
     case "planning":
       return { icon: "\u23f3", label: "Planning..." }
     case "plan_success":
       return { icon: "\u2705", label: `Plan: ${ws.planSummary ?? "complete"}` }
     case "plan_failed":
-      return { icon: "\u274c", label: `Plan failed${ws.errorMessage ? `: ${ws.errorMessage}` : ""}` }
+      return {
+        icon: "\u274c",
+        label: `Plan failed${ws.errorMessage ? `: ${ws.errorMessage}` : ""}`,
+      }
     case "applying":
       return { icon: "\u23f3", label: `Applying (${ws.planSummary ?? "..."})` }
     case "ready":
       return { icon: "\u2705", label: "Preview ready" }
     case "apply_failed":
-      return { icon: "\u274c", label: `Apply failed${ws.errorMessage ? `: ${ws.errorMessage}` : ""}` }
+      return {
+        icon: "\u274c",
+        label: `Apply failed${ws.errorMessage ? `: ${ws.errorMessage}` : ""}`,
+      }
     case "destroying":
       return { icon: "\ud83d\uddd1\ufe0f", label: "Destroying..." }
     case "destroyed":
@@ -698,9 +719,7 @@ function renderOutputsSection(
     .sort(([a], [b]) => a.localeCompare(b))
     .forEach(([name, raw]) => {
       const output = raw as TerraformOutput
-      const value = output.sensitive
-        ? "*(sensitive)*"
-        : formatValue(output.value)
+      const value = output.sensitive ? "*(sensitive)*" : formatValue(output.value)
       lines.push(`| \`${name}\` | ${value} |`)
     })
 

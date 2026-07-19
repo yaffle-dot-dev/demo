@@ -151,10 +151,7 @@ export async function tfPlan(
 ): Promise<{ output: string; planJson: unknown; summary: string }> {
   // Write variables file if provided
   if (variables && Object.keys(variables).length > 0) {
-    await writeFile(
-      join(workDir, "terraform.tfvars.json"),
-      JSON.stringify(variables, null, 2),
-    )
+    await writeFile(join(workDir, "terraform.tfvars.json"), JSON.stringify(variables, null, 2))
   }
 
   const planFile = join(workDir, "tfplan")
@@ -203,10 +200,7 @@ export async function tfApply(
   runId?: string,
 ): Promise<{ output: string; outputs: Record<string, unknown> }> {
   if (variables && Object.keys(variables).length > 0) {
-    await writeFile(
-      join(workDir, "terraform.tfvars.json"),
-      JSON.stringify(variables, null, 2),
-    )
+    await writeFile(join(workDir, "terraform.tfvars.json"), JSON.stringify(variables, null, 2))
   }
 
   const result = await execTf(
@@ -229,7 +223,9 @@ export async function tfApply(
       outputs = JSON.parse(outputResult.stdout)
       logger.info("parsed terraform outputs", { outputCount: Object.keys(outputs).length })
     } catch (err) {
-      logger.warn("failed to parse outputs JSON", { error: err instanceof Error ? err.message : String(err) })
+      logger.warn("failed to parse outputs JSON", {
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   } else if (outputResult.exitCode !== 0) {
     logger.warn("terraform output command failed", {
@@ -251,7 +247,7 @@ export async function tfDestroy(
   runId?: string,
 ): Promise<{ output: string }> {
   const result = await execTf(
-    ["destroy", "-auto-approve", "-input=false"],
+    ["destroy", "-auto-approve", "-input=false", "-lock-timeout=5m"],
     workDir,
     extraEnv,
     onOutput,
@@ -314,7 +310,13 @@ export async function runTerraform(opts: {
       }
 
       case "apply": {
-        const { output, outputs } = await tfApply(opts.workDir, opts.variables, opts.onOutput, opts.extraEnv, opts.runId)
+        const { output, outputs } = await tfApply(
+          opts.workDir,
+          opts.variables,
+          opts.onOutput,
+          opts.extraEnv,
+          opts.runId,
+        )
         return {
           success: true,
           command: "apply",
@@ -372,9 +374,7 @@ export function parsePlanSummary(output: string): string {
   const clean = stripAnsi(output)
 
   // Match "Plan: X to add, Y to change, Z to destroy."
-  const planMatch = clean.match(
-    /Plan:\s*(\d+)\s*to add,\s*(\d+)\s*to change,\s*(\d+)\s*to destroy/,
-  )
+  const planMatch = clean.match(/Plan:\s*(\d+)\s*to add,\s*(\d+)\s*to change,\s*(\d+)\s*to destroy/)
   if (planMatch) {
     return `+${planMatch[1]}, ~${planMatch[2]}, -${planMatch[3]}`
   }

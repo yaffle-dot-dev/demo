@@ -4,6 +4,7 @@ import { Hono } from "hono"
 import { sql } from "drizzle-orm"
 
 import { createOrg } from "../db/queries/organizations.ts"
+import { createRunGroup } from "../db/queries/run-groups.ts"
 import { iacJobs, previews } from "../db/schema.ts"
 import { cleanupTestData } from "../test-utils/auth.ts"
 import { db } from "../lib/db.ts"
@@ -42,9 +43,20 @@ test("does not expose or claim a transient job without a valid execution context
     })
     .returning()
   const jobId = crypto.randomUUID()
+  const runGroup = await createRunGroup({
+    orgId: org.id,
+    repo: deployment.repo,
+    environmentKind: "transient",
+    environmentName: deployment.environmentName,
+    prNumber: deployment.prNumber,
+    ref: deployment.ref,
+    headSha: deployment.headSha,
+    trigger: "pr_opened",
+    status: "failed",
+  })
   await db.execute(sql`
     INSERT INTO iac_jobs (id, deployment_id, run_group_id, job_type, status)
-    VALUES (${jobId}, ${deployment.id}, NULL, 'plan', 'queued')
+    VALUES (${jobId}, ${deployment.id}, ${runGroup.id}, 'plan', 'queued')
   `)
   const token = await generateJobToken(jobId, deployment.id, org.id)
   const headers = { authorization: `Bearer ${token}` }

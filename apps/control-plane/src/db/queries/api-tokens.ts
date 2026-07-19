@@ -19,6 +19,7 @@ export const TFC_SCOPES = {
   workspaceRead: "workspace:read",
   workspaceWrite: "workspace:write",
   workspaceLock: "workspace:lock",
+  workspaceDestroy: "workspace:destroy",
   stateRead: "state:read",
   stateWrite: "state:write",
   stateDownload: "state:download",
@@ -83,11 +84,7 @@ export function generateToken(): { token: string; hash: string } {
  */
 export async function findApiTokenById(id: string): Promise<ApiToken | undefined> {
   return withDbSpan("select", "api_tokens", async () => {
-    const rows = await db
-      .select()
-      .from(apiTokens)
-      .where(eq(apiTokens.id, id))
-      .limit(1)
+    const rows = await db.select().from(apiTokens).where(eq(apiTokens.id, id)).limit(1)
     return rows[0]
   })
 }

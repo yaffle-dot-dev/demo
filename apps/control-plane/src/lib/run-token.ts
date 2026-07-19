@@ -1,7 +1,26 @@
 import { SignJWT, jwtVerify, type JWTPayload } from "jose"
 
+import { TFC_SCOPES } from "../db/queries/api-tokens.ts"
 import { getEnv } from "./env.ts"
 import { logger as log } from "./telemetry.ts"
+
+const DEFAULT_RUN_TOKEN_SCOPES = [
+  TFC_SCOPES.workspaceRead,
+  TFC_SCOPES.stateRead,
+  TFC_SCOPES.stateWrite,
+  TFC_SCOPES.stateDownload,
+  TFC_SCOPES.workspaceLock,
+]
+
+export function getRunTokenScopes(runType: "plan" | "apply" | "destroy"): string[] {
+  return runType === "destroy"
+    ? [...DEFAULT_RUN_TOKEN_SCOPES, TFC_SCOPES.workspaceDestroy]
+    : [...DEFAULT_RUN_TOKEN_SCOPES]
+}
+
+export function getMergeImpactRunTokenScopes(): string[] {
+  return [TFC_SCOPES.workspaceRead, TFC_SCOPES.stateRead, TFC_SCOPES.stateDownload]
+}
 
 /**
  * Run token payload structure.
@@ -39,13 +58,7 @@ export async function generateRunToken(
   runId: string,
   workspaceId: string,
   orgId: string,
-  scopes: string[] = [
-    "workspace:read",
-    "state:read",
-    "state:write",
-    "state:download",
-    "workspace:lock",
-  ],
+  scopes: string[] = DEFAULT_RUN_TOKEN_SCOPES,
   ttlHours: number = 4,
 ): Promise<string> {
   const secret = getJwtSecret()
