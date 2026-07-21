@@ -261,7 +261,6 @@
                 --out-extension:.js=.mjs \
                 --outdir=apps/control-plane/dist \
                 --platform=node \
-                --splitting \
                 --target=node25
             '';
             installCommands = ''
