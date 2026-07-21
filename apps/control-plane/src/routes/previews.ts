@@ -44,7 +44,6 @@ const listQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(250).optional(),
   cursor: z.string().datetime().optional(),
   org: z.string().min(1),
-  token: z.string().optional(), // For SSE auth (EventSource can't send headers)
 })
 
 const uuidParam = z.string().uuid()
@@ -276,95 +275,91 @@ previewsRoute.get(
  *
  * Server-sent events stream for preview list updates.
  */
-previewsRoute.get(
-  "/stream",
-  requireOrgAccess({ orgSource: "query", orgKey: "org", allowQueryToken: true }),
-  async (c) => {
-    const parsed = listQuerySchema.safeParse(c.req.query())
-    if (!parsed.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0].message } },
-        400,
-      )
+previewsRoute.get("/stream", requireOrgAccess({ orgSource: "query", orgKey: "org" }), async (c) => {
+  const parsed = listQuerySchema.safeParse(c.req.query())
+  if (!parsed.success) {
+    return c.json(
+      { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0].message } },
+      400,
+    )
+  }
+
+  const { repo, status, pr_number, limit, cursor } = parsed.data
+  const auth = getAuth(c)
+
+  return streamSSE(c, async (stream) => {
+    let lastPayload = ""
+    let inFlight = false
+    let pendingUpdate = false
+
+    const sendSnapshot = async (): Promise<void> => {
+      if (inFlight) {
+        pendingUpdate = true
+        return
+      }
+      inFlight = true
+      pendingUpdate = false
+      try {
+        const payload = JSON.stringify(
+          await buildPreviewOverviewSnapshot({
+            orgId: auth.orgId,
+            repo,
+            status,
+            prNumber: pr_number,
+            limit,
+            cursor,
+          }),
+        )
+
+        if (payload !== lastPayload) {
+          lastPayload = payload
+          await stream.writeSSE({ event: "update", data: payload })
+        }
+      } finally {
+        inFlight = false
+        if (pendingUpdate) {
+          await sendSnapshot()
+        }
+      }
     }
 
-    const { repo, status, pr_number, limit, cursor } = parsed.data
-    const auth = getAuth(c)
+    // Send initial snapshot
+    await sendSnapshot()
 
-    return streamSSE(c, async (stream) => {
-      let lastPayload = ""
-      let inFlight = false
-      let pendingUpdate = false
-
-      const sendSnapshot = async (): Promise<void> => {
-        if (inFlight) {
-          pendingUpdate = true
-          return
-        }
-        inFlight = true
-        pendingUpdate = false
-        try {
-          const payload = JSON.stringify(
-            await buildPreviewOverviewSnapshot({
-              orgId: auth.orgId,
-              repo,
-              status,
-              prNumber: pr_number,
-              limit,
-              cursor,
-            }),
+    // Listen for deployment updates matching this org (and optionally repo)
+    const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
+      if (event.orgId === auth.orgId) {
+        // If filtering by repo, only refresh when that repo changes
+        if (!repo || event.repo === repo) {
+          sendSnapshot().catch((err) =>
+            console.error(`[sse:previews] error in handleDeploymentUpdate:`, err),
           )
-
-          if (payload !== lastPayload) {
-            lastPayload = payload
-            await stream.writeSSE({ event: "update", data: payload })
-          }
-        } finally {
-          inFlight = false
-          if (pendingUpdate) {
-            await sendSnapshot()
-          }
         }
       }
+    }
 
-      // Send initial snapshot
-      await sendSnapshot()
+    events.onDeploymentUpdate(handleDeploymentUpdate)
 
-      // Listen for deployment updates matching this org (and optionally repo)
-      const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
-        if (event.orgId === auth.orgId) {
-          // If filtering by repo, only refresh when that repo changes
-          if (!repo || event.repo === repo) {
-            sendSnapshot().catch((err) =>
-              console.error(`[sse:previews] error in handleDeploymentUpdate:`, err),
-            )
-          }
-        }
-      }
-
-      events.onDeploymentUpdate(handleDeploymentUpdate)
-
-      // Heartbeat to keep connection alive
-      const heartbeat = setInterval(() => {
-        stream
-          .writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
-          .catch(() => {
-            /* connection likely closed */
-          })
-      }, 30_000)
-
-      // Block the callback so Hono doesn't call stream.close() in its
-      // finally block.  Resolves only when the client disconnects.
-      await new Promise<void>((resolve) => {
-        stream.onAbort(() => {
-          clearInterval(heartbeat)
-          events.offDeploymentUpdate(handleDeploymentUpdate)
-          resolve()
+    // Heartbeat to keep connection alive
+    const heartbeat = setInterval(() => {
+      stream
+        .writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+        .catch(() => {
+          /* connection likely closed */
         })
+    }, 30_000)
+
+    // Block the callback so Hono doesn't call stream.close() in its
+    // finally block.  Resolves only when the client disconnects.
+    await new Promise<void>((resolve) => {
+      stream.onAbort(() => {
+        clearInterval(heartbeat)
+        events.offDeploymentUpdate(handleDeploymentUpdate)
+        resolve()
       })
     })
-  },
-)
+  })
+})
 
 // Helper to get preview orgId for resource-based auth
 async function getPreviewOrgId(c: {

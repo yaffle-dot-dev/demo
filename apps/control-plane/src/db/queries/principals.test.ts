@@ -16,7 +16,9 @@ import {
   ensurePrincipalRepoBinding,
   expireInactiveAnonymousSessions,
   findAnonymousSessionById,
+  findHostedOutputModuleVersion,
   findPrincipalById,
+  listHostedOutputModuleVersions,
   publishHostedOutputModule,
 } from "./principals.ts"
 
@@ -131,5 +133,55 @@ describe("principal local-first lifecycle queries", () => {
     expect(remainingBindingRows).toHaveLength(0)
     expect(remainingModuleRows).toHaveLength(0)
     expect(await findPrincipalById(freshPrincipal.id)).toBeTruthy()
+  })
+
+  test("isolates hosted output modules by principal repository binding", async () => {
+    const firstPrincipal = await createPrincipal({ type: "anonymous_session" })
+    const secondPrincipal = await createPrincipal({ type: "anonymous_session" })
+    const firstBinding = await ensurePrincipalRepoBinding({
+      principalId: firstPrincipal.id,
+      canonicalRepoNamespace: "test-org--shared-name",
+      localRepoFingerprint: "first-fingerprint",
+    })
+    const secondBinding = await ensurePrincipalRepoBinding({
+      principalId: secondPrincipal.id,
+      canonicalRepoNamespace: "test-org--shared-name",
+      localRepoFingerprint: "second-fingerprint",
+    })
+    const firstModule = await publishHostedOutputModule({
+      principalId: firstPrincipal.id,
+      repoBindingId: firstBinding.id,
+      canonicalRepoNamespace: "test-org--shared-name",
+      environmentName: "main",
+      workspacePath: "infra",
+      stateFingerprint: "first-state",
+      outputs: { endpoint: { value: "first", sensitive: false } },
+    })
+    await publishHostedOutputModule({
+      principalId: secondPrincipal.id,
+      repoBindingId: secondBinding.id,
+      canonicalRepoNamespace: "test-org--shared-name",
+      environmentName: "main",
+      workspacePath: "infra",
+      stateFingerprint: "second-state",
+      outputs: { endpoint: { value: "second", sensitive: false } },
+    })
+
+    const versions = await listHostedOutputModuleVersions({
+      repoBindingId: firstBinding.id,
+      canonicalRepoNamespace: "test-org--shared-name",
+      environmentName: "main",
+      workspacePath: "infra",
+    })
+    expect(versions.map((version) => version.id)).toEqual([firstModule.id])
+    expect(
+      await findHostedOutputModuleVersion({
+        repoBindingId: secondBinding.id,
+        canonicalRepoNamespace: "test-org--shared-name",
+        environmentName: "main",
+        workspacePath: "infra",
+        versionSerial: firstModule.versionSerial,
+      }),
+    ).toBeUndefined()
   })
 })

@@ -117,12 +117,14 @@ Examples:
 
 ## Internal vs public outputs
 
-A workspace can expose two different output surfaces:
+A workspace explicitly selects the outputs that may leave its viewer surface:
 
 - `internal` outputs are available only to downstream workspaces in the same repo
 - `public` outputs are available to explicitly allowlisted workspaces in other repositories in the same Yaffle org during beta
 
-Outputs are internal by default. You only need to configure the outputs you want to make public.
+Unconfigured outputs remain in Terraform state and are visible only through authorized viewer
+surfaces, with sensitive values redacted. They are not copied into modules, Actions, lifecycle
+payloads, or shared snapshots.
 
 The beta shared-output contract uses immutable, versioned snapshots rather than a mutable
 live record. Each snapshot includes a stable snapshot ID and publication version,
@@ -142,11 +144,12 @@ environments = ["main"]
 
 outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:applications:apps/*"] }
 outputs.cluster_ca = { visibility = "public", consumers = ["acme:applications:apps/*"] }
+outputs.cluster_name = { visibility = "internal" }
 ```
 
 This means:
 
-- workspaces in the same repo can still consume the full module surface
+- workspaces in the same repo can consume explicitly selected `internal` and `public` outputs
 - allowlisted external consumers only see the `public` outputs
 - each consumer selector includes the target Yaffle org slug, repo slug, and workspace pattern
 
@@ -155,8 +158,9 @@ This means:
   out of that surface.
 </Aside>
 
-The contract requires sensitive values to be redacted before a snapshot exists. Publish
-a secret reference such as an ARN instead of the secret value itself.
+Sensitive values are redacted in viewer APIs and rejected from modules, Actions, lifecycle
+payloads, and public policies. Publish a secret reference such as an ARN instead of the secret
+value itself.
 
 ## Intra-repo vs cross-repo modules
 

@@ -49,6 +49,16 @@ function formatError(error: unknown): string {
   return JSON.stringify(error) ?? "Unknown error"
 }
 
+function createAuthenticatedEventSource(url: string, token: string): EventSource {
+  return new EventSource(url, {
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers)
+      headers.set("Authorization", `Bearer ${token}`)
+      return fetch(input, { ...init, headers })
+    },
+  })
+}
+
 export class YaffleClient {
   private apiUrl: string
   private auth: AuthProvider
@@ -159,10 +169,8 @@ export class YaffleClient {
     outputs: Record<string, TerraformOutput> | null
   }> {
     try {
-      const path =
-        target.type === "pr"
-          ? `/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${target.prNumber}`
-          : `/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(target.name)}`
+      const environmentName = target.type === "pr" ? `pr-${target.prNumber}` : target.name
+      const path = `/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environmentName)}?output_audience=automation`
 
       const data = await this.request<
         ApiResponse<{
@@ -234,11 +242,11 @@ export class YaffleClient {
 
     return new Promise((resolve, reject) => {
       const timeoutMs = timeoutSeconds * 1000
-      const url = `${this.apiUrl}/api/previews/${previewId}/stream?token=${encodeURIComponent(credentials.accessToken)}`
+      const url = `${this.apiUrl}/api/previews/${previewId}/stream`
 
       this.log.info(`Waiting for preview ${previewId}...`)
 
-      const es = new EventSource(url)
+      const es = createAuthenticatedEventSource(url, credentials.accessToken)
       let resolved = false
 
       const timeout = setTimeout(() => {
@@ -348,7 +356,9 @@ export class YaffleClient {
       try {
         const result = await this.waitForPreviewOutputs(preview.id, waitTimeout)
         status = result.preview?.status ?? status
-        outputs = result.outputs
+        const details = await this.getWorkspaceDetails(org, repo, target, workspace)
+        latestRun = this.getLatestRun(details.runs)
+        outputs = details.outputs
       } catch {
         const details = await this.getWorkspaceDetails(org, repo, target, workspace)
         latestRun = this.getLatestRun(details.runs)
@@ -425,11 +435,11 @@ export class YaffleClient {
 
     return new Promise((resolve, reject) => {
       const timeoutMs = timeoutSeconds * 1000
-      const url = `${this.apiUrl}/api/previews/${previewId}/stream?token=${encodeURIComponent(credentials.accessToken)}`
+      const url = `${this.apiUrl}/api/previews/${previewId}/stream`
 
       this.log.info(`Waiting for preview ${previewId} outputs...`)
 
-      const es = new EventSource(url)
+      const es = createAuthenticatedEventSource(url, credentials.accessToken)
       let resolved = false
 
       const timeout = setTimeout(() => {

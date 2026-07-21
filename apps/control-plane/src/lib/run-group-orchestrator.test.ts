@@ -56,6 +56,7 @@ function transientSnapshot(values: {
           approvers: ["github:user:reviewer"],
         },
         lifecycle: { activation: [], verification: [] },
+        outputs: {},
         automaticPreviewIsolation: false,
       },
     ],

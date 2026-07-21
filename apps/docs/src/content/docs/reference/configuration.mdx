@@ -264,7 +264,9 @@ variables.domain = "{{ environment }}.example.com"
 
 #### Outputs
 
-Outputs are internal by default for same-repo consumers. Use `outputs.<name>` to make specific outputs public for allowlisted external consumers.
+Output sharing is opt-in. Declare every output that another workspace, an Action, a lifecycle hook,
+or a shared snapshot may consume. Use `internal` for same-repo consumers and `public` for
+allowlisted external consumers.
 
 ```toml
 version = 1
@@ -281,6 +283,7 @@ environments = ["production", "staging"]
 
 outputs.connection_string = { visibility = "public", consumers = ["acme:applications:apps/*"] }
 outputs.secret_arn = { visibility = "public", consumers = ["acme:applications:apps/*"] }
+outputs.database_name = { visibility = "internal" }
 ```
 
 `outputs.<name>` fields:
@@ -295,13 +298,13 @@ Rules:
 - `internal` outputs are only available to downstream workspaces in the same repo
 - `public` outputs are available only to explicitly allowlisted workspaces in other repositories in the same Yaffle org during beta
 - cross-organization sharing is unsupported in beta and planned as a post-beta enterprise capability
-- same-repo consumers can still read the full module surface
+- same-repo consumers can read only explicitly selected `internal` and `public` outputs
 - consumer selectors match Yaffle org slug, repo slug, and workspace path
 
 <Aside type="note">
-  Public exports are for stable platform APIs. If a Terraform output is marked `sensitive = true`,
-  don't export it publicly. Store the value in Secrets Manager or SSM, export the ARN or name
-  instead, and grant consumers IAM access to read it directly.
+  Sensitive Terraform values are redacted in viewer APIs and rejected from output modules, Actions,
+  lifecycle payloads, and public policies. Store the value in Secrets Manager or SSM, export the ARN
+  or name instead, and grant consumers IAM access to read it directly.
 </Aside>
 
 ### `[[cloud.approvals]]`

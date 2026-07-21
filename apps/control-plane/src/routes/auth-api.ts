@@ -17,6 +17,7 @@ export const authApiRoute = new Hono()
 const createApiKeySchema = z.object({
   name: z.string().min(1).max(64),
   orgId: z.string().uuid(),
+  repo: z.string().min(1).max(255).optional(),
   access: z.enum(["read", "write"]),
   expiresIn: z
     .number()
@@ -201,6 +202,7 @@ authApiRoute.get("/api-keys", async (c) => {
         orgId: scopedOrgId,
         orgSlug: typeof metadata.orgSlug === "string" ? metadata.orgSlug : (org?.slug ?? null),
         orgName: typeof metadata.orgName === "string" ? metadata.orgName : (org?.name ?? null),
+        repo: typeof metadata.repo === "string" ? metadata.repo : null,
       }
     })
 
@@ -250,6 +252,7 @@ authApiRoute.post("/api-keys", async (c) => {
           orgId: org.id,
           orgSlug: org.slug,
           orgName: org.name,
+          repo: parsed.data.repo,
           createdByFlow: "user_settings",
         },
         permissions,
@@ -267,6 +270,7 @@ authApiRoute.post("/api-keys", async (c) => {
           orgId: org.id,
           orgSlug: org.slug,
           orgName: org.name,
+          repo: parsed.data.repo ?? null,
         },
       },
       201,

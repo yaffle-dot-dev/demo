@@ -15,19 +15,8 @@
 
   const STORAGE_KEY = "yaffle:outputs-view-format"
   let showJson = $state(typeof localStorage !== "undefined" && localStorage.getItem(STORAGE_KEY) === "json")
-  let revealedKeys = $state<Set<string>>(new Set())
   let copiedKey = $state<string | null>(null)
   let copiedJson = $state(false)
-
-  function toggleReveal(key: string) {
-    const next = new Set(revealedKeys)
-    if (next.has(key)) {
-      next.delete(key)
-    } else {
-      next.add(key)
-    }
-    revealedKeys = next
-  }
 
   function formatValue(value: unknown): string {
     if (value === null) return "null"
@@ -126,7 +115,6 @@
         <tbody class="divide-y divide-border-subtle">
           {#each outputEntries as [key, output] (key)}
             {@const isSensitive = output.sensitive === true}
-            {@const isRevealed = revealedKeys.has(key)}
             {@const multiline = isMultiline(output.value)}
             <tr class="hover:bg-surface-raised/50 transition-colors align-top">
               <td class="px-4 py-2.5 font-mono text-xs text-text">
@@ -140,7 +128,7 @@
                 </div>
               </td>
               <td class="px-4 py-2.5 font-mono text-xs text-text-muted">
-                {#if isSensitive && !isRevealed}
+                {#if isSensitive}
                   <span class="text-text-dim italic">********</span>
                 {:else if multiline}
                   <pre class="whitespace-pre-wrap break-all max-w-lg">{formatValue(output.value)}</pre>
@@ -150,20 +138,11 @@
               </td>
               <td class="px-4 py-2.5">
                 <div class="flex items-center gap-1">
-                  {#if isSensitive}
-                    <button
-                      class="text-xs text-text-dim hover:text-text transition-colors px-1.5 py-0.5 rounded hover:bg-surface-overlay"
-                      onclick={() => toggleReveal(key)}
-                      title={isRevealed ? "Hide value" : "Reveal value"}
-                    >
-                      {isRevealed ? "hide" : "show"}
-                    </button>
-                  {/if}
                   <button
                     class="text-text-dim hover:text-text transition-colors p-1 rounded hover:bg-surface-overlay disabled:opacity-50 disabled:cursor-not-allowed"
                     onclick={() => copyValue(key, output.value)}
                     title="Copy value"
-                    disabled={isSensitive && !isRevealed}
+                    disabled={isSensitive}
                   >
                     {#if copiedKey === key}
                       <svg class="w-3.5 h-3.5 text-status-ready" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">

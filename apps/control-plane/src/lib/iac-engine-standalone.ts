@@ -43,6 +43,7 @@ import {
   findExecutionSnapshotWorkspace,
   type ExecutionSnapshotV1,
 } from "./execution-snapshot.ts"
+import { redactSensitiveOutputValues, selectTerraformOutputs } from "./output-selection.ts"
 
 /**
  * Execute a job standalone (for external worker processes).
@@ -275,50 +276,47 @@ async function executeJobWork(
 
   // Execute terraform
   let logBuffer = ""
-  const flushLogs = async (): Promise<void> => {
-    if (!logBuffer) return
-    const chunk = logBuffer
-    logBuffer = ""
-    try {
-      await appendRunLog(tfRun.id, deployment.id, chunk)
-    } catch (err) {
-      logger.warn("Failed to append run logs", {
-        runId: tfRun.id,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
+  const result = await runner.run({
+    owner,
+    repo,
+    headSha: source.commitSha,
+    command: job.jobType as "plan" | "apply" | "destroy",
+    workspacePath: deployment.workspacePath,
+    stateKey: deployment.stateKey,
+    variables,
+    installationToken,
+    runId: tfRun.id,
+    prNumber: environment.sourcePullRequestNumber ?? undefined,
+    tfcWorkspaceId,
+    tfcWorkspaceName,
+    tfcOrganization,
+    tfcToken,
+    onOutput: (chunk, source) => {
+      const entry = source === "stderr" ? `[stderr] ${chunk}` : chunk
+      logBuffer += entry
+    },
+  })
+  const reportedOutputs =
+    result.outputs && typeof result.outputs === "object"
+      ? (result.outputs as Record<string, unknown>)
+      : null
+  const safeOutputs =
+    selectTerraformOutputs({
+      outputs: reportedOutputs ?? {},
+      selection: { kind: "all" },
+      sensitive: "redact",
+    }) ?? undefined
+  const safeLogOutput = redactSensitiveOutputValues(logBuffer, reportedOutputs) ?? undefined
+  const safeErrorMessage = result.errorMessage ? "Terraform run failed" : undefined
+  const safeResult = {
+    ...result,
+    output: safeLogOutput ?? "",
+    outputs: safeOutputs,
+    planJson: undefined,
+    errorMessage: safeErrorMessage,
   }
-
-  // Set up periodic log flushing
-  const flushInterval = setInterval(() => {
-    flushLogs().catch(() => {})
-  }, 100)
-
-  let result: TerraformResult
-  try {
-    result = await runner.run({
-      owner,
-      repo,
-      headSha: source.commitSha,
-      command: job.jobType as "plan" | "apply" | "destroy",
-      workspacePath: deployment.workspacePath,
-      stateKey: deployment.stateKey,
-      variables,
-      installationToken,
-      runId: tfRun.id,
-      prNumber: environment.sourcePullRequestNumber ?? undefined,
-      tfcWorkspaceId,
-      tfcWorkspaceName,
-      tfcOrganization,
-      tfcToken,
-      onOutput: (chunk, source) => {
-        const entry = source === "stderr" ? `[stderr] ${chunk}` : chunk
-        logBuffer += entry
-      },
-    })
-  } finally {
-    clearInterval(flushInterval)
-    await flushLogs()
+  if (safeLogOutput) {
+    await appendRunLog(tfRun.id, deployment.id, safeLogOutput)
   }
 
   // Update tf_run record
@@ -330,13 +328,12 @@ async function executeJobWork(
       {
         completedAt: new Date(),
         planSummary: result.planSummary,
-        planJson: result.planJson,
-        outputs: result.outputs,
+        outputs: safeOutputs,
       },
       "running",
     )
     if (!settled) {
-      return result
+      return safeResult
     }
 
     // Update deployment status based on job type
@@ -379,23 +376,23 @@ async function executeJobWork(
       "failed",
       {
         completedAt: new Date(),
-        errorMessage: result.errorMessage,
+        errorMessage: safeErrorMessage,
       },
       "running",
     )
     if (!settled) {
-      return result
+      return safeResult
     }
     await updateDeploymentStatus(deployment.id, "failed")
 
     if (job.jobType === "destroy" && tfcWorkspaceId) {
-      await failWorkspaceArchive(tfcWorkspaceId, result.errorMessage ?? "destroy failed")
+      await failWorkspaceArchive(tfcWorkspaceId, safeErrorMessage ?? "Terraform destroy failed")
     }
 
     await updatePrCommentFromDb(deployment)
   }
 
-  return result
+  return safeResult
 }
 
 // ---------------------------------------------------------------------------

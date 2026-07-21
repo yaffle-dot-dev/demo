@@ -28,6 +28,7 @@ export interface ApiKeyMetadata {
   orgSlug?: string
   orgName?: string
   access?: "read" | "write"
+  repo?: string
   createdByFlow?: string
 }
 
@@ -172,7 +173,7 @@ async function verifyApiKey(
         image: foundUser.image ?? null,
         orgId: "",
         role: "",
-        apiKeyId: storedApiKey?.id,
+        apiKeyId: result.key.id,
         apiKeyMetadata: parseJsonObject<ApiKeyMetadata>(storedApiKey?.metadata),
         apiKeyPermissions: parseJsonObject<ApiKeyPermissions>(storedApiKey?.permissions),
       }

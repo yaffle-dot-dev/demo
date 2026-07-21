@@ -197,6 +197,7 @@ describe("GET /api/environments", () => {
                 ],
                 verification: [],
               },
+              outputs: {},
               automaticPreviewIsolation: false,
             },
           ],

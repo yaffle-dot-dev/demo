@@ -137,6 +137,9 @@ test("dispatches lifecycle hooks from the immutable snapshot", async () => {
             ],
             verification: [],
           },
+          outputs: {
+            endpoint: { visibility: "internal" },
+          },
           automaticPreviewIsolation: false,
         },
       ],
@@ -159,7 +162,18 @@ test("dispatches lifecycle hooks from the immutable snapshot", async () => {
   await executeHostedLifecycleForDeployment({
     runGroupId: runGroup.id,
     deployment,
-    outputs: { endpoint: "https://service.example.test" },
+    outputs: {
+      endpoint: {
+        value: "https://service.example.test",
+        type: "string",
+        sensitive: false,
+      },
+      database_password: {
+        value: "do-not-dispatch",
+        type: "string",
+        sensitive: true,
+      },
+    },
   })
 
   expect(requests).toHaveLength(1)
@@ -170,6 +184,13 @@ test("dispatches lifecycle hooks from the immutable snapshot", async () => {
       git_base_sha: "base-sha",
       environment: "pr-7",
       workspace_path: "infra",
+      outputs: {
+        endpoint: {
+          value: "https://service.example.test",
+          type: "string",
+          sensitive: false,
+        },
+      },
     },
   })
 

@@ -518,6 +518,7 @@ environments = ["main"]
                 ],
                 verification: [],
               },
+              outputs: {},
               automaticPreviewIsolation: false,
             },
           ],

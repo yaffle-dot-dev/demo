@@ -82,7 +82,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
           localRepoFingerprint: "repo-fingerprint-1",
           environmentName: "pr-42",
           workspacePath: "infra/shared",
-          stateFingerprint: "state-md5-v1",
+          selectedOutputNames: ["service_name"],
           outputs: {
             service_name: {
               value: "shared-v1",
@@ -108,7 +108,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
           localRepoFingerprint: "repo-fingerprint-1",
           environmentName: "pr-42",
           workspacePath: "infra/shared",
-          stateFingerprint: "state-md5-v2",
+          selectedOutputNames: ["features", "service_name"],
           outputs: {
             service_name: {
               value: "shared-v2",
@@ -128,6 +128,35 @@ describe("localFirstRoute + execution-backed module registry", () => {
     expect(publishV2.status).toBe(201)
     expect((await publishV2.json()) as { data: { version: string } }).toEqual({
       data: expect.objectContaining({ version: "1.0.2" }),
+    })
+
+    const sensitivePublish = await app.fetch(
+      new Request("http://localhost/api/output-modules", {
+        method: "PUT",
+        headers: publishHeaders,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "pr-42",
+          workspacePath: "infra/shared",
+          selectedOutputNames: ["database_password"],
+          outputs: {
+            database_password: {
+              value: "do-not-publish",
+              type: "string",
+              sensitive: true,
+            },
+          },
+        }),
+      }),
+    )
+
+    expect(sensitivePublish.status).toBe(422)
+    expect(await sensitivePublish.json()).toMatchObject({
+      error: {
+        code: "SENSITIVE_OUTPUT_NOT_ALLOWED",
+        outputNames: ["database_password"],
+      },
     })
 
     const executionTokenRes = await app.fetch(
@@ -217,7 +246,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
           localRepoFingerprint: "repo-fingerprint-1",
           environmentName: "main",
           workspacePath: "infra/shared",
-          stateFingerprint: "state-md5-v1",
+          selectedOutputNames: [],
           outputs: {},
         }),
       }),
@@ -338,7 +367,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
           localRepoFingerprint: "repo-fingerprint-1",
           environmentName: "main",
           workspacePath: "infra/shared",
-          stateFingerprint: "state-md5-v1",
+          selectedOutputNames: [],
           outputs: {},
         }),
       }),
@@ -433,7 +462,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
             localRepoFingerprint: "repo-fingerprint-1",
             environmentName: "main",
             workspacePath: "infra/shared",
-            stateFingerprint: `state-md5-${index}`,
+            selectedOutputNames: [],
             outputs: {},
           }),
         }),
@@ -451,7 +480,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
           localRepoFingerprint: "repo-fingerprint-1",
           environmentName: "main",
           workspacePath: "infra/shared",
-          stateFingerprint: "state-md5-rate-limited",
+          selectedOutputNames: [],
           outputs: {},
         }),
       }),

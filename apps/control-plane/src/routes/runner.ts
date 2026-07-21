@@ -44,7 +44,6 @@ import { findOrgById } from "../db/queries/organizations.ts"
 import { findLatestScanJobByRunGroup, type ScanJobResult } from "../db/queries/scan-jobs.ts"
 import {
   createTfRun,
-  appendRunLogFromRunner,
   getRunLogState,
   findRunById,
   findLatestSuccessfulRun,
@@ -86,6 +85,11 @@ import {
 import { getConfiguredSchedulerConcurrencyLimits } from "../lib/scheduler.ts"
 import { isWarmRunnerWorkspaceExcluded } from "../lib/warm-runner.ts"
 import { syncPrCommentForRunGroup } from "../lib/pr-comment-sync.ts"
+import {
+  OutputSelectionError,
+  redactSensitiveOutputValues,
+  selectTerraformOutputs,
+} from "../lib/output-selection.ts"
 import {
   buildExecutionVariables,
   buildMergeImpactVariables,
@@ -326,6 +330,17 @@ function deriveHasChangesFromSummary(summary: string | undefined): boolean | nul
     return null
   }
   return counts.add > 0 || counts.change > 0 || counts.destroy > 0
+}
+
+function sanitizePlanSummary(summary: unknown): string | undefined {
+  if (summary === "no changes") {
+    return summary
+  }
+  if (typeof summary !== "string") {
+    return undefined
+  }
+  const counts = parsePlanSummaryCounts(summary)
+  return counts ? `+${counts.add}, ~${counts.change}, -${counts.destroy}` : undefined
 }
 
 function getWarmRunnerSettings(): {
@@ -838,9 +853,11 @@ const logsBodySchema = z.object({
 })
 
 /**
- * Stream log chunk from worker.
+ * Accept a worker log chunk for liveness telemetry.
  *
- * Appends log output to the tf_run record and emits SSE event for UI.
+ * Chunks are not persisted or streamed because output sensitivity metadata is
+ * unavailable until completion. The worker submits the complete log with its
+ * outputs, allowing the completion path to redact before persistence.
  */
 runnerJobRoute.post("/logs", async (c) => {
   const auth = c.get("runnerAuth") as RunnerAuthContext
@@ -860,7 +877,7 @@ runnerJobRoute.post("/logs", async (c) => {
     )
   }
 
-  const { jobId, runId, chunk, source } = parsed.data
+  const { jobId, runId, source } = parsed.data
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
@@ -880,9 +897,6 @@ runnerJobRoute.post("/logs", async (c) => {
     )
   }
 
-  // Format chunk with source prefix if stderr
-  const formattedChunk = source === "stderr" ? `[stderr] ${chunk}` : chunk
-
   let firstOutputState: { runType: string; startedAt: Date | null } | undefined
 
   if (!firstOutputSeenRuns.has(runId)) {
@@ -896,24 +910,6 @@ runnerJobRoute.post("/logs", async (c) => {
         }
       }
     }
-  }
-
-  // Append to run logs
-  const appended = await appendRunLogFromRunner(
-    {
-      runId,
-      jobId,
-      deploymentId: jobContext.deployment.id,
-      runGroupId: jobContext.runGroup!.id,
-    },
-    formattedChunk,
-  )
-  if (!appended) {
-    logRunnerCapabilityDenial(auth.jobToken, "db_capability_predicate_failed", jobId)
-    return c.json(
-      { error: { code: "FORBIDDEN", message: "Job capability is no longer active" } },
-      403,
-    )
   }
 
   if (firstOutputState?.startedAt) {
@@ -1193,7 +1189,7 @@ runnerJobRoute.post("/complete", async (c) => {
     )
   }
 
-  const { jobId, runId, status, result, errorMessage, logOutput } = parsed.data
+  const { jobId, runId, status, result, logOutput } = parsed.data
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
@@ -1244,7 +1240,7 @@ runnerJobRoute.post("/complete", async (c) => {
 
   if (status === "completed") {
     const now = new Date()
-    const planSummary = typeof result?.planSummary === "string" ? result.planSummary : undefined
+    const planSummary = sanitizePlanSummary(result?.planSummary)
     const reportedPlanFileS3Key =
       !isMergeImpact && typeof result?.planFileS3Key === "string" ? result.planFileS3Key : undefined
     if (
@@ -1303,18 +1299,63 @@ runnerJobRoute.post("/complete", async (c) => {
         )
       }
     }
+    const reportedOutputs =
+      result?.outputs && typeof result.outputs === "object"
+        ? (result.outputs as Record<string, unknown>)
+        : null
+    let storedOutputs: Record<string, unknown> | null = null
+    try {
+      storedOutputs = selectTerraformOutputs({
+        outputs: reportedOutputs ?? {},
+        selection: { kind: "all" },
+        sensitive: "redact",
+      })
+    } catch (error) {
+      if (error instanceof OutputSelectionError) {
+        const failedAt = new Date()
+        const failureMessage = "Runner returned invalid Terraform output metadata"
+        const settlement = await settleJobAndRunFromRunner({
+          capability,
+          jobStatus: "failed",
+          jobErrorMessage: failureMessage,
+          runStatus: "failed",
+          runUpdates: { completedAt: failedAt, errorMessage: failureMessage },
+        })
+        if (settlement.success) {
+          await closeOrphanedSpans(runId, failedAt)
+          if (!isMergeImpact) {
+            if (await updateDeploymentStatus(deployment.id, "failed", capability.runGroupId)) {
+              await cascadeFailure(deployment.id, capability.runGroupId)
+            }
+            await releaseWorkspaceLockForDeployment(deployment, runId)
+          }
+        }
+        return c.json(
+          { error: { code: error.code, message: error.message, outputNames: error.outputNames } },
+          422,
+        )
+      }
+      throw error
+    }
+    const storedResult = {
+      success: true,
+      command: jobType,
+      hasChanges: reportedHasChanges ?? derivedHasChanges ?? undefined,
+      planSummary,
+      planFileS3Key: reportedPlanFileS3Key,
+      outputs: storedOutputs,
+    }
     const settlement = await settleJobAndRunFromRunner({
       capability,
       jobStatus: "completed",
-      jobResult: result ?? {},
+      jobResult: storedResult,
       runStatus: "success",
       runUpdates: {
         completedAt: now,
-        logOutput,
+        logOutput: redactSensitiveOutputValues(logOutput, reportedOutputs) ?? undefined,
         planSummary,
-        planJson: result?.planJson,
         planFileS3Key: reportedPlanFileS3Key,
-        outputs: result?.outputs,
+        outputs: storedOutputs,
       },
     })
     success = settlement.success
@@ -1455,16 +1496,29 @@ runnerJobRoute.post("/complete", async (c) => {
     }
   } else {
     const failedAt = new Date()
-    const failureMessage = errorMessage ?? "Unknown error"
+    const failureOutputs =
+      result?.outputs && typeof result.outputs === "object"
+        ? (result.outputs as Record<string, unknown>)
+        : null
+    let storedFailureMessage = "Terraform run failed"
+    let storedFailureLog: string | undefined
+    try {
+      storedFailureLog = redactSensitiveOutputValues(logOutput, failureOutputs) ?? undefined
+    } catch (error) {
+      if (!(error instanceof OutputSelectionError)) {
+        throw error
+      }
+      storedFailureMessage = "Terraform run failed; output metadata was invalid"
+    }
     const settlement = await settleJobAndRunFromRunner({
       capability,
       jobStatus: "failed",
-      jobErrorMessage: failureMessage,
+      jobErrorMessage: storedFailureMessage,
       runStatus: "failed",
       runUpdates: {
         completedAt: failedAt,
-        logOutput,
-        errorMessage: failureMessage,
+        logOutput: storedFailureLog,
+        errorMessage: storedFailureMessage,
       },
     })
     success = settlement.success

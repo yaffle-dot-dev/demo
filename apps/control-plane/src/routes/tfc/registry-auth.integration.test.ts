@@ -295,7 +295,7 @@ beforeEach(async () => {
   })
 })
 
-describe("Module Registry cross-org auth", () => {
+describe("Module Registry cross-org isolation", () => {
   const producerState = JSON.stringify({
     version: 4,
     terraform_version: "1.12.0",
@@ -305,16 +305,18 @@ describe("Module Registry cross-org auth", () => {
       connection_string: {
         value: "postgres://example",
         type: "string",
+        sensitive: false,
       },
       internal_only: {
         value: "hidden",
         type: "string",
+        sensitive: false,
       },
     },
     resources: [],
   })
 
-  test("allows allowlisted cross-org consumers to download a module", async () => {
+  test("denies allowlisted cross-org consumers during beta", async () => {
     mockFetchFileContent.mockImplementation(
       async () => `
 version = 1
@@ -365,18 +367,9 @@ outputs.connection_string = { visibility = "public", consumers = ["${CONSUMER_OR
       ),
     )
 
-    expect(downloadRes.status).toBe(204)
-    const archiveUrl = downloadRes.headers.get("X-Terraform-Get")
-    expect(archiveUrl).toBeTruthy()
-
-    const archiveRes = await app.fetch(
-      new Request(`http://localhost${archiveUrl}`, {
-        method: "GET",
-      }),
-    )
-
-    expect(archiveRes.status).toBe(200)
-    expect(archiveRes.headers.get("Content-Type")).toBe("application/gzip")
+    expect(downloadRes.status).toBe(403)
+    const body = await downloadRes.json()
+    expect(body.errors[0].title).toBe("Cross-organization output sharing is unavailable")
   })
 
   test("denies cross-org consumers that are not allowlisted", async () => {
@@ -432,6 +425,6 @@ outputs.connection_string = { visibility = "public", consumers = ["another-org:o
 
     expect(versionsRes.status).toBe(403)
     const body = await versionsRes.json()
-    expect(body.errors[0].title).toBe("Module not exported to this workspace")
+    expect(body.errors[0].title).toBe("Cross-organization output sharing is unavailable")
   })
 })

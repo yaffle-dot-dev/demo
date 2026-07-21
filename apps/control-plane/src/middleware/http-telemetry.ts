@@ -11,6 +11,11 @@ const STATE_UPLOAD_CAPABILITY_PATH = /(\/state-versions\/[^/]+\/upload(?:-json)?
 export function redactHttpUrl(rawUrl: string): { url: string; path: string } {
   const parsed = new URL(rawUrl)
   parsed.pathname = parsed.pathname.replace(STATE_UPLOAD_CAPABILITY_PATH, "$1:capability")
+  for (const name of ["token", "access_token", "api_key"]) {
+    if (parsed.searchParams.has(name)) {
+      parsed.searchParams.set(name, ":capability")
+    }
+  }
   return { url: parsed.toString(), path: parsed.pathname }
 }
 

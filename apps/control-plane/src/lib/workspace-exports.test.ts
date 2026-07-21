@@ -58,7 +58,7 @@ function makeCrossOrgConsumer(
 }
 
 describe("resolveModuleAccessDecision", () => {
-  test("allows legacy user-token access when no output policies exist", () => {
+  test("denies user-token access without consumer workspace context", () => {
     const decision = resolveModuleAccessDecision({
       authType: "user",
       producerWorkspace: makeWorkspace(),
@@ -67,13 +67,11 @@ describe("resolveModuleAccessDecision", () => {
       consumerWorkspace: null,
     })
 
-    expect(decision).toEqual({
-      allowed: true,
-      allowedOutputs: null,
-    })
+    expect(decision.allowed).toBe(false)
+    expect(decision.errorTitle).toBe("Workspace-scoped token required")
   })
 
-  test("allows same-repo workspace consumers to read all outputs", () => {
+  test("allows same-repo workspace consumers to read selected outputs", () => {
     const producerWorkspace = makeWorkspace()
     const config = parseYaffleToml(`
 version = 1
@@ -103,8 +101,27 @@ outputs.cluster_endpoint = { visibility = "public", consumers = ["consumer-org:y
 
     expect(decision).toEqual({
       allowed: true,
-      allowedOutputs: null,
+      allowedOutputs: ["cluster_endpoint"],
     })
+  })
+
+  test("allows a run to read its own workspace outputs", () => {
+    const producerWorkspace = makeWorkspace()
+    const decision = resolveModuleAccessDecision({
+      authType: "run",
+      producerWorkspace,
+      producerConfigState: "missing",
+      producerConfig: null,
+      consumerWorkspace: makeConsumer({
+        orgId: producerWorkspace.orgId,
+        repo: producerWorkspace.repo,
+        workspacePath: producerWorkspace.workspacePath,
+        environmentKind: producerWorkspace.environmentKind,
+        environmentName: producerWorkspace.environmentName,
+      }),
+    })
+
+    expect(decision).toEqual({ allowed: true, allowedOutputs: null })
   })
 
   test("denies cross-repo consumers when no output policies exist", () => {
@@ -129,7 +146,23 @@ environments = ["main"]
     expect(decision.errorTitle).toMatch(/Module not exported/)
   })
 
-  test("allows allowlisted cross-org consumers", () => {
+  test("does not treat matching repository basenames as the same repository", () => {
+    const decision = resolveModuleAccessDecision({
+      authType: "run",
+      producerWorkspace: makeWorkspace({ repo: "producer/platform" }),
+      producerConfigState: "missing",
+      producerConfig: null,
+      consumerWorkspace: makeConsumer({
+        orgId: "org-producer",
+        repo: "consumer/platform",
+      }),
+    })
+
+    expect(decision.allowed).toBe(false)
+    expect(decision.errorTitle).toBe("Module not exported to this workspace")
+  })
+
+  test("denies allowlisted cross-org consumers during beta", () => {
     const config = parseYaffleToml(`
 version = 1
 
@@ -153,10 +186,8 @@ outputs.internal_secret_arn = { visibility = "internal" }
       consumerWorkspace: makeCrossOrgConsumer(),
     })
 
-    expect(decision).toEqual({
-      allowed: true,
-      allowedOutputs: ["cluster_ca", "cluster_endpoint"],
-    })
+    expect(decision.allowed).toBe(false)
+    expect(decision.errorTitle).toBe("Cross-organization output sharing is unavailable")
   })
 
   test("denies user-token access for workspaces with explicit output policies", () => {
@@ -264,7 +295,7 @@ outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-do
     })
 
     expect(decision.allowed).toBe(false)
-    expect(decision.errorTitle).toMatch(/Module not exported/)
+    expect(decision.errorTitle).toBe("Cross-organization output sharing is unavailable")
   })
 
   test("denies run tokens whose consumer workspace cannot be resolved", () => {
@@ -296,8 +327,8 @@ outputs.cluster_endpoint = { visibility = "public", consumers = ["acme:yaffle-do
 
 describe("output filtering", () => {
   const outputs = {
-    cluster_endpoint: { value: "https://example", type: "string" },
-    cluster_ca: { value: "base64", type: "string" },
+    cluster_endpoint: { value: "https://example", type: "string", sensitive: false },
+    cluster_ca: { value: "base64", type: "string", sensitive: false },
     token: { value: "secret", type: "string", sensitive: true },
   }
 
@@ -310,5 +341,9 @@ describe("output filtering", () => {
 
   test("detects sensitive outputs in the authorized public subset", () => {
     expect(findSensitiveExportedOutputs(outputs, ["cluster_endpoint", "token"])).toEqual(["token"])
+  })
+
+  test("detects sensitive outputs in a producer workspace module", () => {
+    expect(findSensitiveExportedOutputs(outputs, null)).toEqual(["token"])
   })
 })

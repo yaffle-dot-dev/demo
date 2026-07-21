@@ -40,7 +40,8 @@ PR #42 creates `myapp-pr-42`. No collision with PR #99 or production.
 
 ## Outputs
 
-After apply, outputs are available:
+After apply, non-sensitive outputs are available to authorized viewers. Sensitive values are
+structurally redacted, and automation receives only outputs explicitly selected in `yaffle.toml`.
 
 **In the GitHub check:**
 

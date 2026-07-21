@@ -38,6 +38,9 @@ function config(): YaffleTomlConfig {
         environments: "*",
         automaticPreviewIsolation: true,
         variables: { release: "source-template" },
+        outputs: {
+          endpoint: { visibility: "internal" },
+        },
         activation: [
           {
             key: "deploy",
@@ -94,6 +97,9 @@ describe("execution snapshot", () => {
         ],
         verification: [],
       },
+      outputs: {
+        endpoint: { visibility: "internal" },
+      },
     })
   })
 
@@ -110,12 +116,15 @@ describe("execution snapshot", () => {
 
     mutableConfig.workspaces[0].activation![0].request!.url = "https://changed.example.test"
     mutableConfig.cloud.approvals[0].approvers[0] = "github:user:changed"
+    mutableConfig.workspaces[0].outputs!.endpoint.visibility = "public"
+    mutableConfig.workspaces[0].outputs!.endpoint.consumers = ["other:repo:infra"]
 
     expect(findExecutionSnapshotWorkspace(snapshot, "infra")).toMatchObject({
       approval: { approvers: ["github:user:reviewer"] },
       lifecycle: {
         activation: [{ request: { url: "https://deploy.example.test" } }],
       },
+      outputs: { endpoint: { visibility: "internal" } },
     })
   })
 

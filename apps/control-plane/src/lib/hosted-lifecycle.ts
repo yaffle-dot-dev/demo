@@ -37,6 +37,7 @@ import {
   findExecutionSnapshotWorkspace,
   isExecutionContextAssociationValid,
 } from "./execution-snapshot.ts"
+import { selectTerraformOutputs } from "./output-selection.ts"
 
 export interface HostedLifecycleExecutionResult {
   runId: string | null
@@ -114,6 +115,12 @@ export async function executeHostedLifecycleForDeployment(values: {
   const canonicalRepoNamespace = binding.canonicalRepoNamespace
   const environmentName = executionSnapshot.environment.name
   const source = executionSnapshot.source
+  const selectedOutputs =
+    selectTerraformOutputs({
+      outputs: values.outputs,
+      selection: { kind: "policy", policies: workspace.outputs },
+      sensitive: "reject",
+    }) ?? {}
 
   const activationHooks = lifecycleHooksForEnvironment(
     workspace.lifecycle.activation,
@@ -153,7 +160,7 @@ export async function executeHostedLifecycleForDeployment(values: {
       headSha: source.commitSha,
       baseSha: source.baseSha ?? undefined,
       installationId: source.installationId,
-      outputs: values.outputs,
+      outputs: selectedOutputs,
     })
     pendingDispatches.push({ itemId: item.id })
   }
@@ -170,7 +177,7 @@ export async function executeHostedLifecycleForDeployment(values: {
       headSha: source.commitSha,
       baseSha: source.baseSha ?? undefined,
       installationId: source.installationId,
-      outputs: values.outputs,
+      outputs: selectedOutputs,
     })
   }
 

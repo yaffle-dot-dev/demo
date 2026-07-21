@@ -69,6 +69,7 @@ function executionSnapshot(input: {
         variables: {},
         approval: { required: false, approvers: [] },
         lifecycle: { activation: [], verification: [] },
+        outputs: {},
         automaticPreviewIsolation: false,
       },
     ],
@@ -480,6 +481,22 @@ test("atomically settles the exact job and run through the completion endpoint",
     "content-type": "application/json",
   }
 
+  const liveLogResponse = await app.request("/api/runner/logs", {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      jobId: capability.jobId,
+      runId: capability.runId,
+      chunk: "password=do-not-persist",
+    }),
+  })
+  expect(liveLogResponse.status).toBe(200)
+  const [runningRun] = await db
+    .select({ logOutput: tfRuns.logOutput })
+    .from(tfRuns)
+    .where(eq(tfRuns.id, capability.runId))
+  expect(runningRun.logOutput).toBeNull()
+
   const foreignArtifactResponse = await app.request("/api/runner/complete", {
     method: "POST",
     headers,
@@ -530,27 +547,89 @@ test("atomically settles the exact job and run through the completion endpoint",
       result: {
         planSummary: "+0, ~0, -0",
         hasChanges: false,
+        output: "password=do-not-persist",
+        unexpectedSecret: "do-not-persist",
+        planJson: { planned_values: { outputs: { password: { value: "do-not-persist" } } } },
+        outputs: {
+          endpoint: { value: "https://api.example.test", sensitive: false },
+          password: { value: "do-not-persist", sensitive: true },
+        },
       },
-      logOutput: "plan completed",
+      logOutput: "plan completed password=do-not-persist",
     }),
   })
 
   expect(response.status).toBe(200)
   expect(await db.select().from(iacJobs).where(eq(iacJobs.id, capability.jobId))).toHaveLength(0)
   const [archivedJob] = await db
-    .select({ status: iacJobHistory.status })
+    .select({ status: iacJobHistory.status, result: iacJobHistory.result })
     .from(iacJobHistory)
     .where(eq(iacJobHistory.id, capability.jobId))
   expect(archivedJob.status).toBe("completed")
+  expect(JSON.stringify(archivedJob.result)).not.toContain("do-not-persist")
   const [settledRun] = await db
-    .select({ status: tfRuns.status, jobId: tfRuns.jobId, logOutput: tfRuns.logOutput })
+    .select({
+      status: tfRuns.status,
+      jobId: tfRuns.jobId,
+      logOutput: tfRuns.logOutput,
+      outputs: tfRuns.outputs,
+      planJson: tfRuns.planJson,
+    })
     .from(tfRuns)
     .where(eq(tfRuns.id, capability.runId))
   expect(settledRun).toEqual({
     status: "success",
     jobId: capability.jobId,
-    logOutput: "plan completed",
+    logOutput: "[Log output withheld because this run produced sensitive Terraform outputs]",
+    outputs: {
+      endpoint: { value: "https://api.example.test", sensitive: false },
+      password: { value: null, sensitive: true },
+    },
+    planJson: null,
   })
+})
+
+test("withholds failed runner details when output metadata is unavailable", async () => {
+  const org = await createOrg({
+    name: "Runner Failure Redaction",
+    slug: `runner-failure-redaction-${crypto.randomUUID()}`,
+  })
+  const workspace = await ensureNamedWorkspace({
+    orgId: org.id,
+    orgSlug: org.slug,
+    repo: "failure-redaction-fixture",
+    environment: "staging",
+    ref: "refs/heads/main",
+    workspacePath: "infra",
+  })
+  const capability = await createTestRunCapability("runner-failure-redaction", workspace.id, org.id)
+  const token = await generateJobToken(capability.jobId, capability.deploymentId, org.id)
+  const response = await app.request("/api/runner/complete", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      jobId: capability.jobId,
+      runId: capability.runId,
+      status: "failed",
+      errorMessage: "provider failed with password=do-not-persist",
+      logOutput: "provider failed with password=do-not-persist",
+    }),
+  })
+
+  expect(response.status).toBe(200)
+  const [archivedJob] = await db
+    .select({ errorMessage: iacJobHistory.errorMessage })
+    .from(iacJobHistory)
+    .where(eq(iacJobHistory.id, capability.jobId))
+  expect(archivedJob.errorMessage).toBe("Terraform run failed")
+  const [settledRun] = await db
+    .select({ errorMessage: tfRuns.errorMessage, logOutput: tfRuns.logOutput })
+    .from(tfRuns)
+    .where(eq(tfRuns.id, capability.runId))
+  expect(settledRun).toEqual({ errorMessage: "Terraform run failed", logOutput: null })
 })
 
 test("rejects cross-tenant mutation on every runner callback", async () => {

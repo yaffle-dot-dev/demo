@@ -73,6 +73,7 @@ function snapshotForWorkspace(workspace: typeof workspaces.$inferSelect): Execut
         variables: {},
         approval: { required: false, approvers: [] },
         lifecycle: { activation: [], verification: [] },
+        outputs: {},
         automaticPreviewIsolation: false,
       },
     ],

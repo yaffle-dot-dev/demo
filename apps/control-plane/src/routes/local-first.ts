@@ -1,5 +1,5 @@
 import { Hono, type MiddlewareHandler } from "hono"
-import { timingSafeEqual } from "node:crypto"
+import { createHash, timingSafeEqual } from "node:crypto"
 import { z } from "zod"
 
 import {
@@ -26,6 +26,7 @@ import {
   getLocalFirstOperationsCounter,
   getLocalFirstPayloadBytesHistogram,
 } from "../lib/telemetry.ts"
+import { OutputSelectionError, selectTerraformOutputs } from "../lib/output-selection.ts"
 
 type PrincipalVariables = {
   principalAuth: PrincipalAuthContext
@@ -71,7 +72,7 @@ const publishOutputModuleSchema = z.object({
   localRepoFingerprint: z.string().min(1),
   environmentName: z.string().min(1),
   workspacePath: z.string().min(1),
-  stateFingerprint: z.string().min(1),
+  selectedOutputNames: z.array(z.string().min(1)),
   outputs: z.record(z.unknown()),
 })
 
@@ -231,7 +232,26 @@ localFirstRoute.put("/output-modules", async (c) => {
   }
 
   const body = parseResult.data
-  const outputBytes = Buffer.byteLength(JSON.stringify(body.outputs), "utf8")
+  let selectedOutputs: Record<string, unknown>
+  try {
+    selectedOutputs =
+      selectTerraformOutputs({
+        outputs: body.outputs,
+        selection: { kind: "names", names: body.selectedOutputNames },
+        sensitive: "reject",
+      }) ?? {}
+  } catch (error) {
+    if (error instanceof OutputSelectionError) {
+      recordLocalFirstOperation("output_module_publish", "invalid_request")
+      return c.json(
+        { error: { code: error.code, message: error.message, outputNames: error.outputNames } },
+        422,
+      )
+    }
+    throw error
+  }
+  const outputJson = JSON.stringify(selectedOutputs)
+  const outputBytes = Buffer.byteLength(outputJson, "utf8")
   const binding = await ensurePrincipalRepoBinding({
     principalId: principal.principalId,
     canonicalRepoNamespace: body.canonicalRepoNamespace,
@@ -243,8 +263,8 @@ localFirstRoute.put("/output-modules", async (c) => {
     canonicalRepoNamespace: body.canonicalRepoNamespace,
     environmentName: body.environmentName,
     workspacePath: body.workspacePath,
-    stateFingerprint: body.stateFingerprint,
-    outputs: body.outputs,
+    stateFingerprint: createHash("sha256").update(outputJson).digest("hex"),
+    outputs: selectedOutputs,
   })
   getLocalFirstPayloadBytesHistogram().record(outputBytes, {
     operation: "output_module_publish",

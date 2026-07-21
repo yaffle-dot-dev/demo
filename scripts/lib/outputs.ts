@@ -113,6 +113,11 @@ export async function fetchOutputs(opts: FetchOutputsOptions): Promise<Record<st
 
     const flat: Record<string, unknown> = {}
     for (const [key, out] of Object.entries(result.outputs)) {
+      if (out.sensitive === true) {
+        throw new Error(
+          `Yaffle redacted sensitive output ${opts.workspace}.${key}; export a secret reference instead`,
+        )
+      }
       flat[key] = out.value
     }
 

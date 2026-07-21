@@ -7,6 +7,7 @@ import {
   type EnvironmentKind,
   type LifecycleHook,
   type VariableValue,
+  type WorkspaceOutputPolicy,
   type YaffleTomlConfig,
 } from "./config-toml.ts"
 import type { WorkspaceVariablesByPath } from "./workspace-variables.ts"
@@ -24,6 +25,7 @@ export interface ExecutionSnapshotWorkspace {
     activation: LifecycleHook[]
     verification: LifecycleHook[]
   }
+  outputs: Record<string, WorkspaceOutputPolicy>
   automaticPreviewIsolation: boolean
 }
 
@@ -167,6 +169,7 @@ export function buildExecutionSnapshot(values: {
           activation: structuredClone(workspace.activation ?? []),
           verification: structuredClone(workspace.verification ?? []),
         },
+        outputs: structuredClone(workspace.outputs ?? {}),
         automaticPreviewIsolation: workspace.automaticPreviewIsolation,
       }
     })

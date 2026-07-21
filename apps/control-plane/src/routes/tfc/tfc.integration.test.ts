@@ -561,6 +561,62 @@ describe("OAuth and Public URL Security", () => {
       restoreEnv("YAFFLE_RUNNER_TFC_API_HOST", originalRunnerTfcApiHost)
     }
   })
+
+  test("rejects state outputs without explicit sensitivity metadata", async () => {
+    const workspaceRes = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
+        },
+      }),
+    )
+    expect(workspaceRes.status).toBe(201)
+    const workspaceBody = await workspaceRes.json()
+    const workspaceId = workspaceBody.data.id as string
+    const lockRes = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/actions/lock`, testUserToken),
+    )
+    expect(lockRes.status).toBe(200)
+
+    const statePayload = JSON.stringify({
+      version: 4,
+      terraform_version: "1.7.0",
+      serial: 2,
+      lineage: "12345678-1234-1234-1234-123456789012",
+      outputs: {
+        endpoint: { value: "https://api.example.test", type: "string" },
+      },
+      resources: [],
+    })
+    const createRes = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/state-versions`, testUserToken, {
+        data: {
+          type: "state-versions",
+          attributes: { serial: 2, md5: md5(statePayload) },
+        },
+      }),
+    )
+    expect(createRes.status).toBe(201)
+    const createBody = await createRes.json()
+    const uploadPath = new URL(createBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    const uploadRes = await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${testUserToken}`,
+          "Content-Type": "application/json",
+        },
+        body: statePayload,
+      }),
+    )
+
+    expect(uploadRes.status).toBe(422)
+    const body = await uploadRes.json()
+    expect(body.errors[0].detail).toContain("endpoint")
+    expect(JSON.stringify(body)).not.toContain("https://api.example.test")
+  })
 })
 
 // =============================================================================
@@ -677,7 +733,7 @@ describe("Authentication", () => {
       serial: 1,
       lineage: "12345678-1234-1234-1234-123456789012",
       outputs: {
-        example: { value: "hello", type: "string" },
+        example: { value: "hello", type: "string", sensitive: false },
       },
       resources: [],
     })
@@ -1448,7 +1504,7 @@ describe("Tenant Isolation", () => {
       serial: 1,
       lineage: "12345678-1234-1234-1234-123456789012",
       outputs: {
-        example: { value: "hello", type: "string" },
+        example: { value: "hello", type: "string", sensitive: false },
       },
       resources: [],
     })
@@ -1518,7 +1574,7 @@ describe("Tenant Isolation", () => {
       serial: 1,
       lineage: "12345678-1234-1234-1234-123456789012",
       outputs: {
-        example: { value: "hello", type: "string" },
+        example: { value: "hello", type: "string", sensitive: false },
       },
       resources: [],
     })
@@ -1590,7 +1646,7 @@ describe("State Versions", () => {
     serial: 1,
     lineage: "12345678-1234-1234-1234-123456789012",
     outputs: {
-      example: { value: "hello", type: "string" },
+      example: { value: "hello", type: "string", sensitive: false },
     },
     resources: [],
   })
@@ -2295,9 +2351,13 @@ describe("Module Registry", () => {
     serial: 1,
     lineage: "12345678-1234-1234-1234-123456789012",
     outputs: {
-      vpc_id: { value: "vpc-0123456789abcdef0", type: "string" },
-      private_subnet_ids: { value: ["subnet-aaa", "subnet-bbb"], type: ["list", "string"] },
-      is_production: { value: true, type: "bool" },
+      vpc_id: { value: "vpc-0123456789abcdef0", type: "string", sensitive: false },
+      private_subnet_ids: {
+        value: ["subnet-aaa", "subnet-bbb"],
+        type: ["list", "string"],
+        sensitive: false,
+      },
+      is_production: { value: true, type: "bool", sensitive: false },
     },
     resources: [],
   })
@@ -2627,11 +2687,19 @@ describe("Module Registry", () => {
     )
 
     // Request module download
+    if (!testWorkspaceId) {
+      throw new Error("test workspace was not created")
+    }
+    const runToken = await generateTestRunToken(
+      "module-download-own-workspace",
+      testWorkspaceId,
+      testOrgId,
+    )
     const res = await app.fetch(
       authRequest(
         "GET",
         `/tfc/registry/v1/modules/${TEST_NAMESPACE}/infra--networking/yaffle/1.0.1/download`,
-        testUserToken,
+        runToken,
       ),
     )
 
@@ -2643,7 +2711,7 @@ describe("Module Registry", () => {
     )
   })
 
-  test("download falls back to named state when transient workspace has no finalized state", async () => {
+  test("denies unscoped download fallback to named state", async () => {
     const workspacePath = "platform/runtime"
     const mainWorkspaceId = await createModuleWorkspace({
       name: TEST_MAIN_WORKSPACE_NAME,
@@ -2668,18 +2736,39 @@ describe("Module Registry", () => {
       ),
     )
 
-    expect(downloadRes.status).toBe(204)
-    const archiveUrl = downloadRes.headers.get("X-Terraform-Get")
-    expect(archiveUrl).toBeTruthy()
+    expect(downloadRes.status).toBe(403)
+  })
 
-    const archiveRes = await app.fetch(
-      new Request(`http://localhost${archiveUrl}`, {
-        method: "GET",
-      }),
+  test("rejects sensitive outputs from generated modules", async () => {
+    const workspaceId = await createModuleWorkspace({
+      name: TEST_MAIN_WORKSPACE_NAME,
+      workspacePath: "platform/secrets",
+      environmentKind: "named",
+      environmentName: "main",
+    })
+    const sensitiveState = JSON.parse(testState) as {
+      outputs: Record<string, { value: unknown; type: unknown; sensitive?: boolean }>
+    }
+    sensitiveState.outputs.is_production = {
+      value: "do-not-export",
+      type: "string",
+      sensitive: true,
+    }
+    await uploadModuleState(workspaceId, JSON.stringify(sensitiveState))
+    const runToken = await generateTestRunToken("sensitive-module-output", workspaceId, testOrgId)
+
+    const response = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/platform--secrets/yaffle/latest/download`,
+        runToken,
+      ),
     )
 
-    expect(archiveRes.status).toBe(200)
-    expect(archiveRes.headers.get("Content-Type")).toBe("application/gzip")
+    expect(response.status).toBe(422)
+    const body = await response.json()
+    expect(body.errors[0].title).toBe("Sensitive outputs cannot be included in modules")
+    expect(JSON.stringify(body)).not.toContain("do-not-export")
   })
 
   test("archive returns valid tar.gz with generated module", async () => {
@@ -2740,11 +2829,19 @@ describe("Module Registry", () => {
     )
 
     // First get the download URL to get a signed token
+    if (!testWorkspaceId) {
+      throw new Error("test workspace was not created")
+    }
+    const runToken = await generateTestRunToken(
+      "module-archive-own-workspace",
+      testWorkspaceId,
+      testOrgId,
+    )
     const downloadRes = await app.fetch(
       authRequest(
         "GET",
         `/tfc/registry/v1/modules/${TEST_NAMESPACE}/test--outputs/yaffle/1.0.1/download`,
-        testUserToken,
+        runToken,
       ),
     )
     expect(downloadRes.status).toBe(204)

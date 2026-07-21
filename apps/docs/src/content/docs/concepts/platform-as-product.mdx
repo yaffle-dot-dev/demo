@@ -128,7 +128,7 @@ outputs.secret_arn = { visibility = "public", consumers = ["acme:applications:ap
 
 That gives the platform team a clean product boundary:
 
-- same-repo platform workspaces can still consume all outputs
+- same-repo platform workspaces can consume explicitly selected outputs
 - cross-repo product teams in the same Yaffle org only see the curated `public` outputs
 - cross-org output sharing is unsupported in beta and planned as a post-beta enterprise capability
 

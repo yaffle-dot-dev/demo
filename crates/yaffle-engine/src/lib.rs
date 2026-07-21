@@ -18,7 +18,7 @@ use reqwest::blocking::Client;
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use yaffle_contracts::{
     DiagnosticLevel, DiagnosticMessage, EngineOperation, EngineResponse, EnvironmentSnapshot,
     OperationResult, OperationResultKind, TerraformOutput, WorkspaceSnapshot,
@@ -561,7 +561,8 @@ fn execute_outputs_operation(
             "tofu_output_failed",
         )?;
         let outputs = parse_terraform_outputs(request, workspace_path, &output.stdout)?;
-        workspace_outputs.insert(workspace_path.clone(), outputs.clone());
+        let safe_outputs = redact_sensitive_outputs(request, &outputs)?;
+        workspace_outputs.insert(workspace_path.clone(), safe_outputs);
 
         diagnostics.push(DiagnosticMessage {
             level: DiagnosticLevel::Info,
@@ -1443,11 +1444,17 @@ fn execute_single_workspace_converge(
         "tofu_output_failed",
     )?;
     let outputs = parse_terraform_outputs(request, &workspace_path, &output.stdout)?;
+    let safe_outputs = redact_sensitive_outputs(request, &outputs)?;
+    let selected_outputs = if local_first_feature_token_configured() {
+        select_workspace_outputs(request, &workspace, &outputs)?
+    } else {
+        BTreeMap::new()
+    };
     emit_progress_via_channel(
         &progress_tx,
         EngineProgressEvent::WorkspaceOutputs {
             workspace_path: workspace_path.clone(),
-            outputs: outputs.clone(),
+            outputs: safe_outputs.clone(),
         },
     );
 
@@ -1458,9 +1465,13 @@ fn execute_single_workspace_converge(
             phase: ConvergeWorkspacePhase::PublishingOutputs,
         },
     );
-    if let Some(published_version) =
-        maybe_publish_hosted_output_module(request, repo_context, &workspace_path, &outputs)?
-    {
+    if let Some(published_version) = maybe_publish_hosted_output_module(
+        request,
+        repo_context,
+        &workspace_path,
+        &workspace.outputs.keys().cloned().collect::<Vec<_>>(),
+        &selected_outputs,
+    )? {
         diagnostics.push(DiagnosticMessage {
             level: DiagnosticLevel::Info,
             code: Some("hosted_output_module_published".to_string()),
@@ -1485,7 +1496,7 @@ fn execute_single_workspace_converge(
 
     Ok(WorkspaceConvergeOutcome {
         workspace_path,
-        outputs,
+        outputs: safe_outputs,
         diagnostics,
     })
 }
@@ -3658,10 +3669,97 @@ fn render_output_value(output: &TerraformOutput) -> String {
     }
 }
 
+fn select_workspace_outputs(
+    request: &EngineRequest,
+    workspace: &yaffle_config::Workspace,
+    outputs: &BTreeMap<String, TerraformOutput>,
+) -> Result<BTreeMap<String, TerraformOutput>, EngineError> {
+    let mut selected = BTreeMap::new();
+    let mut sensitive = Vec::new();
+    let mut invalid = Vec::new();
+
+    for name in workspace.outputs.keys() {
+        let Some(output) = outputs.get(name) else {
+            continue;
+        };
+        match output.sensitive {
+            Some(true) => {
+                sensitive.push(name.clone());
+                continue;
+            }
+            Some(false) => {}
+            None => {
+                invalid.push(name.clone());
+                continue;
+            }
+        }
+        selected.insert(name.clone(), output.clone());
+    }
+
+    if !invalid.is_empty() {
+        return Err(request_error(
+            request,
+            "invalid_output_metadata",
+            format!(
+                "Terraform outputs require explicit sensitivity metadata: {}",
+                invalid.join(", ")
+            ),
+        ));
+    }
+
+    if !sensitive.is_empty() {
+        return Err(request_error(
+            request,
+            "sensitive_output_not_allowed",
+            format!(
+                "Sensitive Terraform outputs cannot cross this trust boundary: {}. Store the secret in a secret manager and export only its ARN or identifier.",
+                sensitive.join(", ")
+            ),
+        ));
+    }
+
+    Ok(selected)
+}
+
+fn redact_sensitive_outputs(
+    request: &EngineRequest,
+    outputs: &BTreeMap<String, TerraformOutput>,
+) -> Result<BTreeMap<String, TerraformOutput>, EngineError> {
+    let mut safe_outputs = BTreeMap::new();
+    let mut invalid = Vec::new();
+
+    for (name, output) in outputs {
+        let mut safe_output = output.clone();
+        match output.sensitive {
+            Some(true) => safe_output.value = Value::Null,
+            Some(false) => {}
+            None => {
+                invalid.push(name.clone());
+                continue;
+            }
+        }
+        safe_outputs.insert(name.clone(), safe_output);
+    }
+
+    if !invalid.is_empty() {
+        return Err(request_error(
+            request,
+            "invalid_output_metadata",
+            format!(
+                "Terraform outputs require explicit sensitivity metadata: {}",
+                invalid.join(", ")
+            ),
+        ));
+    }
+
+    Ok(safe_outputs)
+}
+
 fn maybe_publish_hosted_output_module(
     request: &EngineRequest,
     repo_context: &RepoContext,
     workspace_path: &str,
+    selected_output_names: &[String],
     outputs: &BTreeMap<String, TerraformOutput>,
 ) -> Result<Option<String>, EngineError> {
     if !local_first_feature_token_configured() {
@@ -3680,14 +3778,6 @@ fn maybe_publish_hosted_output_module(
     let local_repo_fingerprint = compute_local_repo_fingerprint(&repo_context.repo_root)
         .map_err(|error| local_first_error(request, "repo_fingerprint_failed", error))?;
     let outputs_json = terraform_outputs_json(request, outputs)?;
-    let state_fingerprint = sha256_hex(serde_json::to_vec(&outputs_json).map_err(|error| {
-        request_error(
-            request,
-            "outputs_serialize_failed",
-            format!("Failed to serialize outputs for publication: {error}"),
-        )
-    })?);
-
     let published = publish_hosted_output_module(
         &principal,
         &HostedOutputModulePublishRequest {
@@ -3699,7 +3789,7 @@ fn maybe_publish_hosted_output_module(
                 .map(|target| target.environment.as_str())
                 .unwrap_or("unknown"),
             workspace_path,
-            state_fingerprint: &state_fingerprint,
+            selected_output_names,
             outputs: &outputs_json,
         },
     )
@@ -3875,7 +3965,9 @@ fn execute_lifecycle_hooks_for_workspace(
 
     let context =
         ensure_lifecycle_dispatch_context(request, repo_context, environment_name, run_context)?;
-    let outputs_json = terraform_outputs_json(request, outputs)?;
+    let selected_outputs = select_workspace_outputs(request, workspace, outputs)?;
+    let outputs_json = terraform_outputs_json(request, &selected_outputs)?;
+    let selected_output_names = workspace.outputs.keys().cloned().collect::<Vec<_>>();
     let mut results = Vec::new();
 
     for hook in hooks {
@@ -3894,6 +3986,7 @@ fn execute_lifecycle_hooks_for_workspace(
                 destination_url: &destination_url,
                 destination_class: &destination_class,
                 dispatch_mode: "local",
+                selected_output_names: &selected_output_names,
                 summary: Some(match phase {
                     "activation" => "Waiting for activation webhook completion",
                     "verification" => "Waiting for verification webhook completion",
@@ -5155,16 +5248,6 @@ fn utf8_trimmed(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim().to_string()
 }
 
-fn sha256_hex(bytes: Vec<u8>) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
-}
-
 fn shell_single_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -5982,6 +6065,84 @@ mod tests {
     use super::*;
 
     static TOFU_OVERRIDE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+    #[test]
+    fn selects_configured_non_sensitive_outputs_for_egress() {
+        let config = parse_yaffle_toml(
+            r#"version = 1
+
+[[workspaces]]
+path = "infra"
+environments = "*"
+outputs.endpoint = { visibility = "internal" }
+outputs.password = { visibility = "internal" }
+"#,
+        )
+        .expect("config should parse");
+        let workspace = &config.workspaces[0];
+        let request = EngineRequest {
+            operation: EngineOperation::Outputs,
+            target: None,
+            selection: WorkspaceSelection::default(),
+            wait_for: None,
+        };
+        let outputs = BTreeMap::from([
+            (
+                "endpoint".to_string(),
+                TerraformOutput {
+                    value: json!("https://api.example.test"),
+                    type_name: Some("string".to_string()),
+                    sensitive: Some(false),
+                },
+            ),
+            (
+                "unselected".to_string(),
+                TerraformOutput {
+                    value: json!("private"),
+                    type_name: Some("string".to_string()),
+                    sensitive: Some(false),
+                },
+            ),
+        ]);
+
+        let selected = select_workspace_outputs(&request, workspace, &outputs)
+            .expect("non-sensitive selected output should pass");
+        assert_eq!(
+            selected.keys().cloned().collect::<Vec<_>>(),
+            vec!["endpoint"]
+        );
+
+        let sensitive_outputs = BTreeMap::from([(
+            "password".to_string(),
+            TerraformOutput {
+                value: json!("do-not-publish"),
+                type_name: Some("string".to_string()),
+                sensitive: Some(true),
+            },
+        )]);
+        let error = select_workspace_outputs(&request, workspace, &sensitive_outputs)
+            .expect_err("sensitive selected output should fail closed");
+        assert!(error.error.message.contains("password"));
+        assert!(!error.error.message.contains("do-not-publish"));
+
+        let redacted = redact_sensitive_outputs(&request, &sensitive_outputs)
+            .expect("viewer output should be structurally redacted");
+        assert_eq!(redacted["password"].value, Value::Null);
+        assert_eq!(redacted["password"].sensitive, Some(true));
+
+        let invalid_outputs = BTreeMap::from([(
+            "password".to_string(),
+            TerraformOutput {
+                value: json!("do-not-publish"),
+                type_name: Some("string".to_string()),
+                sensitive: None,
+            },
+        )]);
+        let error = select_workspace_outputs(&request, workspace, &invalid_outputs)
+            .expect_err("missing sensitivity metadata should fail closed");
+        assert!(error.error.message.contains("password"));
+        assert!(!error.error.message.contains("do-not-publish"));
+    }
 
     #[test]
     fn executes_graph_from_nested_workspace_directory() {

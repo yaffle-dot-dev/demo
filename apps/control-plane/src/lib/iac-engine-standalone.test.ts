@@ -121,6 +121,7 @@ test("passes snapshotted variables and revision to the runner", async () => {
           variables: { release: "snapshotted" },
           approval: { required: false, approvers: [] },
           lifecycle: { activation: [], verification: [] },
+          outputs: {},
           automaticPreviewIsolation: false,
         },
       ],

@@ -403,8 +403,8 @@ export async function migrateAnonymousPrincipalToAccount(values: {
 }
 
 export async function publishHostedOutputModule(values: {
-  principalId?: string | null
-  repoBindingId?: string | null
+  principalId: string
+  repoBindingId: string
   canonicalRepoNamespace: string
   environmentName: string
   workspacePath: string
@@ -437,6 +437,7 @@ export async function publishHostedOutputModule(values: {
 }
 
 export async function listHostedOutputModuleVersions(values: {
+  repoBindingId: string
   canonicalRepoNamespace: string
   environmentName: string
   workspacePath: string
@@ -448,6 +449,7 @@ export async function listHostedOutputModuleVersions(values: {
       .where(
         and(
           eq(hostedOutputModules.canonicalRepoNamespace, values.canonicalRepoNamespace),
+          eq(hostedOutputModules.repoBindingId, values.repoBindingId),
           eq(hostedOutputModules.environmentName, values.environmentName),
           eq(hostedOutputModules.workspacePath, values.workspacePath),
         ),
@@ -457,6 +459,7 @@ export async function listHostedOutputModuleVersions(values: {
 }
 
 export async function findHostedOutputModuleVersion(values: {
+  repoBindingId: string
   canonicalRepoNamespace: string
   environmentName: string
   workspacePath: string
@@ -469,6 +472,7 @@ export async function findHostedOutputModuleVersion(values: {
       .where(
         and(
           eq(hostedOutputModules.canonicalRepoNamespace, values.canonicalRepoNamespace),
+          eq(hostedOutputModules.repoBindingId, values.repoBindingId),
           eq(hostedOutputModules.environmentName, values.environmentName),
           eq(hostedOutputModules.workspacePath, values.workspacePath),
           eq(hostedOutputModules.versionSerial, values.versionSerial),

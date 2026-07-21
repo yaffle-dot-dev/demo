@@ -25,6 +25,7 @@
   let newKeyName = $state("")
   let newKeyExpiration = $state("90") // days
   let newKeyOrgId = $state("")
+  let newKeyRepo = $state("")
   let newKeyAccess = $state<"read" | "write">("read")
   let creating = $state(false)
   let newlyCreatedKey = $state<string | null>(null)
@@ -77,6 +78,7 @@
     orgId: string | null
     orgSlug: string | null
     orgName: string | null
+    repo: string | null
   }
 
   interface UserOrg {
@@ -203,6 +205,7 @@
           name: newKeyName.trim(),
           orgId: newKeyOrgId,
           access: newKeyAccess,
+          repo: newKeyRepo.trim() || undefined,
           expiresIn,
         }),
       })
@@ -219,6 +222,7 @@
         newKeyName = ""
         newKeyExpiration = "90"
         newKeyAccess = "read"
+        newKeyRepo = ""
         await loadApiKeys()
       }
     } catch (e) {
@@ -261,6 +265,7 @@
     newlyCreatedSummary = null
     newKeyName = ""
     newKeyAccess = "read"
+    newKeyRepo = ""
     keyCopied = false
   }
 
@@ -641,6 +646,22 @@
               placeholder="e.g., MacBook CLI, GitHub Actions"
               class="w-full px-3 py-2 bg-surface border border-border rounded text-text placeholder:text-text-dim focus:outline-none focus:ring-2 focus:ring-yaffle-500/50 focus:border-yaffle-500"
             />
+          </div>
+
+          <div>
+            <label for="keyRepo" class="block text-sm font-medium text-text mb-1">
+              Repository scope <span class="font-normal text-text-dim">(optional)</span>
+            </label>
+            <input
+              id="keyRepo"
+              type="text"
+              bind:value={newKeyRepo}
+              placeholder="e.g., yaffle"
+              class="w-full px-3 py-2 bg-surface border border-border rounded text-text placeholder:text-text-dim focus:outline-none focus:ring-2 focus:ring-yaffle-500/50 focus:border-yaffle-500"
+            />
+            <p class="mt-2 text-xs text-text-dim">
+              Required when this key fetches outputs through the Outputs Action.
+            </p>
           </div>
 
           <div>

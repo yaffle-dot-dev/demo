@@ -30,7 +30,7 @@ import {
   listRunGroupsForEnvironment,
   type RunGroup,
 } from "../db/queries/run-groups.ts"
-import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
+import { requireOrgAccess, getAuth, type OrgAuthContext } from "../middleware/org-auth.ts"
 import {
   events,
   type DeploymentUpdateEvent,
@@ -64,15 +64,18 @@ import {
   runViewCorrelationQueryFields,
 } from "../lib/run-view-monitoring.ts"
 import {
+  findExecutionSnapshotWorkspace,
   isExecutionContextAssociationValid,
   serializeBoundExecutionSnapshotIdentity,
 } from "../lib/execution-snapshot.ts"
+import { selectTerraformOutputs } from "../lib/output-selection.ts"
+import type { WorkspaceOutputPolicy } from "../lib/config-toml.ts"
 
 const prNumberParam = z.coerce.number().int().positive()
 const environmentQuerySchema = z.object({
   head_sha: z.string().min(7).max(64).optional(),
-  token: z.string().optional(),
   view: z.enum(["full", "dag"]).optional(),
+  output_audience: z.enum(["viewer", "automation"]).optional(),
   ...runViewCorrelationQueryFields,
 })
 const runViewTelemetryEventSchema = z.object({
@@ -184,11 +187,12 @@ reposRoute.get(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
         const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-        const outputs = latestApply?.outputs ?? null
+        const outputAudience = outputAudienceForAuth(auth)
+        const outputs = selectEnvironmentOutputs(latestApply?.outputs, outputAudience, {})
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
         return {
           preview: serializePreview(deployment, connectionReadiness),
-          runs: runs.map(serializeRun),
+          runs: runs.map((run) => serializeRun(run, outputAudience, {})),
           outputs,
         }
       }),
@@ -220,7 +224,7 @@ reposRoute.get(
  */
 reposRoute.get(
   "/:org/repos/:repo/pr/:prNumber/stream",
-  requireOrgAccess({ orgSource: "param", orgKey: "org", allowQueryToken: true }),
+  requireOrgAccess({ orgSource: "param", orgKey: "org" }),
   async (c) => {
     const auth = getAuth(c)
     const repo = c.req.param("repo")
@@ -287,7 +291,8 @@ reposRoute.get(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
               const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-              const outputs = latestApply?.outputs ?? null
+              const outputAudience = outputAudienceForAuth(auth)
+              const outputs = selectEnvironmentOutputs(latestApply?.outputs, outputAudience, {})
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
 
               // Include resource spans for running deployments
@@ -302,7 +307,7 @@ reposRoute.get(
 
               return {
                 preview: serializePreview(deployment, connectionReadiness),
-                runs: runs.map(serializeRun),
+                runs: runs.map((run) => serializeRun(run, outputAudience, {})),
                 outputs,
                 ...(resourceSpans ? { resourceSpans } : {}),
               }
@@ -467,11 +472,12 @@ reposRoute.get(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
         const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-        const outputs = latestApply?.outputs ?? null
+        const outputAudience = outputAudienceForAuth(auth)
+        const outputs = selectEnvironmentOutputs(latestApply?.outputs, outputAudience, {})
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
         return {
           preview: serializePreview(deployment, connectionReadiness),
-          runs: runs.map(serializeRun),
+          runs: runs.map((run) => serializeRun(run, outputAudience, {})),
           outputs,
         }
       }),
@@ -499,7 +505,7 @@ reposRoute.get(
  */
 reposRoute.get(
   "/:org/repos/:repo/env/:branch/stream",
-  requireOrgAccess({ orgSource: "param", orgKey: "org", allowQueryToken: true }),
+  requireOrgAccess({ orgSource: "param", orgKey: "org" }),
   async (c) => {
     const auth = getAuth(c)
     const repo = c.req.param("repo")
@@ -559,7 +565,8 @@ reposRoute.get(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
               const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
-              const outputs = latestApply?.outputs ?? null
+              const outputAudience = outputAudienceForAuth(auth)
+              const outputs = selectEnvironmentOutputs(latestApply?.outputs, outputAudience, {})
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
 
               // Include resource spans for running deployments
@@ -574,7 +581,7 @@ reposRoute.get(
 
               return {
                 preview: serializePreview(deployment, connectionReadiness),
-                runs: runs.map(serializeRun),
+                runs: runs.map((run) => serializeRun(run, outputAudience, {})),
                 outputs,
                 ...(resourceSpans ? { resourceSpans } : {}),
               }
@@ -760,6 +767,7 @@ async function buildEnvironmentSnapshotData(params: {
   headSha?: string
   detailLevel?: "full" | "dag"
   includeResourceSpans?: boolean
+  outputAudience?: "viewer" | "automation"
 }): Promise<EnvironmentSnapshotData | null> {
   const repoRecord = await findRepoByName(params.orgId, params.repo)
   const canonicalRepoNamespace = repoRecord?.fullName
@@ -791,6 +799,7 @@ async function buildEnvironmentSnapshotData(params: {
 
   const deployments = filterDeploymentsByHeadSha(allDeployments, params.headSha)
   const runGroupsData = filterRunGroupsByHeadSha(allRunGroups, params.headSha)
+  const runGroupsById = new Map(allRunGroups.map((runGroup) => [runGroup.id, runGroup]))
   const serializedRunGroups = await serializeRunGroupsWithLifecycle(runGroupsData)
 
   if (deployments.length === 0) {
@@ -943,6 +952,18 @@ async function buildEnvironmentSnapshotData(params: {
   const workspaces = deployments.map((deployment) => {
     const runs = runsByDeployment.get(deployment.id) ?? []
     const latestApply = latestApplyByDeployment.get(deployment.id)
+    const outputPoliciesForRunGroup = (
+      runGroupId: string | null | undefined,
+    ): Record<string, WorkspaceOutputPolicy> => {
+      const runGroup = runGroupId ? runGroupsById.get(runGroupId) : undefined
+      return (
+        findExecutionSnapshotWorkspace(
+          runGroup?.executionSnapshot ?? null,
+          deployment.workspacePath,
+        )?.outputs ?? {}
+      )
+    }
+    const outputAudience = params.outputAudience ?? "viewer"
     const connectionReadiness = readinessByDeployment.get(deployment.id) ?? defaultReadiness
     const runningRun = params.includeResourceSpans
       ? runs.find((run) => run.status === "running")
@@ -951,8 +972,14 @@ async function buildEnvironmentSnapshotData(params: {
 
     return {
       preview: serializePreview(deployment, connectionReadiness),
-      runs: runs.map(serializeRun),
-      outputs: latestApply?.outputs ?? null,
+      runs: runs.map((run) =>
+        serializeRun(run, outputAudience, outputPoliciesForRunGroup(run.runGroupId)),
+      ),
+      outputs: selectEnvironmentOutputs(
+        latestApply?.outputs,
+        outputAudience,
+        outputPoliciesForRunGroup(latestApply?.runGroupId),
+      ),
       ...(resourceSpans && resourceSpans.length > 0 ? { resourceSpans } : {}),
     }
   })
@@ -1083,6 +1110,18 @@ reposRoute.get(
 
     const headSha = parsedQuery.data.head_sha
     const detailLevel = parsedQuery.data.view ?? "full"
+    const outputAudience = outputAudienceForAuth(auth, parsedQuery.data.output_audience)
+    if (!apiKeyCanAccessOutputRepo(auth, repo)) {
+      return c.json(
+        {
+          error: {
+            code: "FORBIDDEN",
+            message: "API key is not scoped to this output repository",
+          },
+        },
+        403,
+      )
+    }
 
     const snapshot = await buildEnvironmentSnapshotData({
       orgId: auth.orgId,
@@ -1091,6 +1130,7 @@ reposRoute.get(
       environmentName,
       headSha,
       detailLevel,
+      outputAudience,
     })
 
     if (!snapshot) {
@@ -1200,7 +1240,7 @@ reposRoute.post(
  */
 reposRoute.get(
   "/:org/repos/:repo/environment/:name/stream",
-  requireOrgAccess({ orgSource: "param", orgKey: "org", allowQueryToken: true }),
+  requireOrgAccess({ orgSource: "param", orgKey: "org" }),
   async (c) => {
     const auth = getAuth(c)
     const org = c.req.param("org")
@@ -1232,6 +1272,18 @@ reposRoute.get(
     }
 
     const headSha = parsedQuery.data.head_sha
+    const outputAudience = outputAudienceForAuth(auth, parsedQuery.data.output_audience)
+    if (!apiKeyCanAccessOutputRepo(auth, repo)) {
+      return c.json(
+        {
+          error: {
+            code: "FORBIDDEN",
+            message: "API key is not scoped to this output repository",
+          },
+        },
+        403,
+      )
+    }
     const correlation = parseRunViewCorrelation(parsedQuery.data)
 
     return streamSSE(c, async (stream) => {
@@ -1281,6 +1333,7 @@ reposRoute.get(
             environmentName,
             headSha,
             includeResourceSpans: true,
+            outputAudience,
           })
           deploymentIds = new Set(
             snapshot?.workspaces.map((workspace) => workspace.preview.id) ?? [],
@@ -1501,20 +1554,24 @@ interface SerializedRun {
   createdAt: string
 }
 
-function serializeRun(r: {
-  id: string
-  deploymentId: string
-  runGroupId: string | null
-  runType: string
-  status: string
-  checkRunId: number | null
-  planSummary: string | null
-  outputs: unknown
-  errorMessage: string | null
-  startedAt: Date | null
-  completedAt: Date | null
-  createdAt: Date
-}): SerializedRun {
+function serializeRun(
+  r: {
+    id: string
+    deploymentId: string
+    runGroupId: string | null
+    runType: string
+    status: string
+    checkRunId: number | null
+    planSummary: string | null
+    outputs: unknown
+    errorMessage: string | null
+    startedAt: Date | null
+    completedAt: Date | null
+    createdAt: Date
+  },
+  outputAudience: "viewer" | "automation",
+  outputPolicies: Record<string, WorkspaceOutputPolicy>,
+): SerializedRun {
   return {
     id: r.id,
     deploymentId: r.deploymentId,
@@ -1523,12 +1580,39 @@ function serializeRun(r: {
     status: r.status,
     checkRunId: r.checkRunId,
     planSummary: r.planSummary,
-    outputs: r.outputs,
+    outputs: selectEnvironmentOutputs(r.outputs, outputAudience, outputPolicies),
     errorMessage: r.errorMessage,
     startedAt: r.startedAt?.toISOString() ?? null,
     completedAt: r.completedAt?.toISOString() ?? null,
     createdAt: r.createdAt.toISOString(),
   }
+}
+
+function selectEnvironmentOutputs(
+  outputs: unknown,
+  audience: "viewer" | "automation",
+  policies: Record<string, WorkspaceOutputPolicy>,
+): ReturnType<typeof selectTerraformOutputs> {
+  if (!outputs || typeof outputs !== "object" || Array.isArray(outputs)) {
+    return null
+  }
+
+  return selectTerraformOutputs({
+    outputs: outputs as Record<string, unknown>,
+    selection: audience === "viewer" ? { kind: "all" } : { kind: "policy", policies },
+    sensitive: "redact",
+  })
+}
+
+function outputAudienceForAuth(
+  auth: OrgAuthContext,
+  requested: "viewer" | "automation" = "viewer",
+): "viewer" | "automation" {
+  return auth.apiKeyId ? "automation" : requested
+}
+
+function apiKeyCanAccessOutputRepo(auth: OrgAuthContext, repo: string): boolean {
+  return !auth.apiKeyId || auth.apiKeyMetadata?.repo === repo
 }
 
 interface SerializedResourceSpan {

@@ -246,7 +246,7 @@ environmentsRoute.get("/", requireOrgAccess({ orgSource: "query", orgKey: "org" 
  */
 environmentsRoute.get(
   "/stream",
-  requireOrgAccess({ orgSource: "query", orgKey: "org", allowQueryToken: true }),
+  requireOrgAccess({ orgSource: "query", orgKey: "org" }),
   async (c) => {
     const parsed = listQuerySchema.safeParse(c.req.query())
     if (!parsed.success) {

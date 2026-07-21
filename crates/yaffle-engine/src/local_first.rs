@@ -68,7 +68,7 @@ pub struct HostedOutputModulePublishRequest<'a> {
     pub local_repo_fingerprint: &'a str,
     pub environment_name: &'a str,
     pub workspace_path: &'a str,
-    pub state_fingerprint: &'a str,
+    pub selected_output_names: &'a [String],
     pub outputs: &'a serde_json::Map<String, serde_json::Value>,
 }
 
@@ -362,6 +362,7 @@ pub struct LifecycleItemRequest<'a> {
     pub destination_url: &'a str,
     pub destination_class: &'a str,
     pub dispatch_mode: &'a str,
+    pub selected_output_names: &'a [String],
     pub summary: Option<&'a str>,
     pub metadata: &'a serde_json::Map<String, serde_json::Value>,
     pub callback_ttl_minutes: u64,
@@ -579,7 +580,7 @@ pub fn publish_hosted_output_module(
             "localRepoFingerprint": request.local_repo_fingerprint,
             "environmentName": request.environment_name,
             "workspacePath": request.workspace_path,
-            "stateFingerprint": request.state_fingerprint,
+            "selectedOutputNames": request.selected_output_names,
             "outputs": request.outputs,
         }))
         .send()
@@ -671,6 +672,7 @@ pub fn create_lifecycle_item(
             "destinationUrl": request.destination_url,
             "destinationClass": request.destination_class,
             "dispatchMode": request.dispatch_mode,
+            "selectedOutputNames": request.selected_output_names,
             "summary": request.summary,
             "metadata": request.metadata,
             "callbackTtlMinutes": request.callback_ttl_minutes,
@@ -1250,7 +1252,7 @@ mod tests {
                 local_repo_fingerprint: "repo-fingerprint-1",
                 environment_name: "pr-42",
                 workspace_path: "infra/shared",
-                state_fingerprint: "fingerprint-1",
+                selected_output_names: &["service_name".to_string()],
                 outputs: &serde_json::Map::from_iter([(
                     "service_name".to_string(),
                     serde_json::json!({

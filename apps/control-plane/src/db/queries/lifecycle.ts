@@ -87,6 +87,17 @@ export async function updateLifecycleItem(
   })
 }
 
+export async function claimLifecycleItemForDispatch(itemId: string): Promise<boolean> {
+  return withDbSpan("update", "lifecycle_items", async () => {
+    const rows = await db
+      .update(lifecycleItems)
+      .set({ state: "running", startedAt: new Date(), updatedAt: new Date() })
+      .where(and(eq(lifecycleItems.id, itemId), eq(lifecycleItems.state, "pending")))
+      .returning({ id: lifecycleItems.id })
+    return rows.length === 1
+  })
+}
+
 export async function createLifecycleEvent(
   values: typeof lifecycleEvents.$inferInsert,
 ): Promise<LifecycleEvent> {

@@ -1,5 +1,6 @@
+import { createHmac, timingSafeEqual } from "node:crypto"
+
 import { Hono } from "hono"
-import { createHmac } from "node:crypto"
 
 import { logger as log } from "../../lib/telemetry.ts"
 import { getEnv } from "../../lib/env.ts"
@@ -90,8 +91,7 @@ interface ArchiveTokenPayload {
  * Token format: {expiry_timestamp}.{hmac_signature}
  */
 function signArchiveUrl(path: string, payload: Omit<ArchiveTokenPayload, "exp">): string {
-  const env = getEnv()
-  const secret = env.betterAuthSecret || "dev-secret"
+  const secret = archiveSigningSecret()
   const encodedPayload = Buffer.from(
     JSON.stringify({
       ...payload,
@@ -108,8 +108,7 @@ function signArchiveUrl(path: string, payload: Omit<ArchiveTokenPayload, "exp">)
  * Verify a signed archive token.
  */
 function verifyArchiveToken(path: string, token: string): ArchiveTokenPayload | null {
-  const env = getEnv()
-  const secret = env.betterAuthSecret || "dev-secret"
+  const secret = archiveSigningSecret()
 
   const parts = token.split(".")
   if (parts.length !== 2) return null
@@ -118,7 +117,12 @@ function verifyArchiveToken(path: string, token: string): ArchiveTokenPayload | 
   const expectedSig = createHmac("sha256", secret)
     .update(`${path}:${encodedPayload}`)
     .digest("base64url")
-  if (signature !== expectedSig) {
+  const signatureBytes = Buffer.from(signature, "base64url")
+  const expectedBytes = Buffer.from(expectedSig, "base64url")
+  if (
+    signatureBytes.length !== expectedBytes.length ||
+    !timingSafeEqual(signatureBytes, expectedBytes)
+  ) {
     return null
   }
 
@@ -148,6 +152,14 @@ function verifyArchiveToken(path: string, token: string): ArchiveTokenPayload | 
   }
 
   return payload
+}
+
+function archiveSigningSecret(): string {
+  const secret = getEnv().betterAuthSecret.trim()
+  if (!secret) {
+    throw new Error("BETTER_AUTH_SECRET must be configured to sign module archive URLs")
+  }
+  return secret
 }
 
 // =============================================================================
@@ -372,9 +384,9 @@ function jsonApiErrorResponse(status: number, title: string, detail?: string): R
   )
 }
 
-function sensitivePublicOutputsError(outputNames: string[]): Response {
-  const detail = `The public export includes sensitive Terraform outputs (${outputNames.join(", ")}). Store the secret in AWS Secrets Manager or SSM Parameter Store, output the ARN or name instead of the secret value, and grant the consuming workload IAM access to read it directly.`
-  return jsonApiErrorResponse(422, "Sensitive outputs cannot be exported publicly", detail)
+function sensitiveModuleOutputsError(outputNames: string[]): Response {
+  const detail = `The module includes sensitive Terraform outputs (${outputNames.join(", ")}). Store the secret in AWS Secrets Manager or SSM Parameter Store, output the ARN or name instead of the secret value, and grant the consuming workload IAM access to read it directly.`
+  return jsonApiErrorResponse(422, "Sensitive outputs cannot be included in modules", detail)
 }
 
 // =============================================================================
@@ -416,6 +428,7 @@ registryRoute.get("/:namespace/:name/:provider/versions", async (c) => {
 
     const workspacePath = moduleNameToWorkspacePath(moduleName)
     const versions = await listHostedOutputModuleVersions({
+      repoBindingId: auth.repoBindingId,
       canonicalRepoNamespace: auth.repoNamespace,
       environmentName: auth.environmentName,
       workspacePath,
@@ -538,21 +551,22 @@ registryRoute.get("/:namespace/:name/:provider/versions", async (c) => {
     )
   }
 
-  const producerConfigResult = await loadProducerConfig(workspace, orgSlug)
-
-  const accessDecision = resolveModuleAccessDecision({
-    authType: auth.type,
-    producerWorkspace: workspace,
-    producerConfigState: producerConfigResult.state,
-    producerConfig: producerConfigResult.config,
-    consumerWorkspace,
-  })
-  if (!accessDecision.allowed) {
-    return jsonApiErrorResponse(
-      accessDecision.errorStatus ?? 403,
-      accessDecision.errorTitle ?? "Module access denied",
-      accessDecision.errorDetail,
-    )
+  if (auth.type !== "user") {
+    const producerConfigResult = await loadProducerConfig(workspace, orgSlug)
+    const accessDecision = resolveModuleAccessDecision({
+      authType: auth.type,
+      producerWorkspace: workspace,
+      producerConfigState: producerConfigResult.state,
+      producerConfig: producerConfigResult.config,
+      consumerWorkspace,
+    })
+    if (!accessDecision.allowed) {
+      return jsonApiErrorResponse(
+        accessDecision.errorStatus ?? 403,
+        accessDecision.errorTitle ?? "Module access denied",
+        accessDecision.errorDetail,
+      )
+    }
   }
 
   // Map to version format
@@ -621,6 +635,7 @@ registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => 
 
     const workspacePath = moduleNameToWorkspacePath(moduleName)
     const hostedModule = await findHostedOutputModuleVersion({
+      repoBindingId: auth.repoBindingId,
       canonicalRepoNamespace: auth.repoNamespace,
       environmentName: auth.environmentName,
       workspacePath,
@@ -735,7 +750,7 @@ registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => 
     accessDecision.allowedOutputs,
   )
   if (sensitivePublicOutputs.length > 0) {
-    return sensitivePublicOutputsError(sensitivePublicOutputs)
+    return sensitiveModuleOutputsError(sensitivePublicOutputs)
   }
 
   const canUseSharedArchive =

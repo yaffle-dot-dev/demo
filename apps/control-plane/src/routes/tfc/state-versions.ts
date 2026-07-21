@@ -38,6 +38,7 @@ import {
   RequestBodyTooLargeError,
 } from "../../lib/request-protection.ts"
 import { resolveActiveRunCapability } from "../../lib/runner-capability.ts"
+import { OutputSelectionError, selectTerraformOutputs } from "../../lib/output-selection.ts"
 
 // Hono context variables for TFC auth
 type TfcVariables = {
@@ -886,8 +887,24 @@ stateUploadRoute.put("/state-versions/:state_version_id/upload/:upload_token", a
     try {
       const stateJson = JSON.parse(new TextDecoder().decode(content))
       terraformVersion = stateJson.terraform_version
-      outputs = stateJson.outputs
-    } catch {
+      outputs = normalizeTerraformStateOutputs(stateJson.outputs)
+    } catch (error) {
+      if (error instanceof OutputSelectionError) {
+        await deleteStateObject(sv.s3Key)
+        await discardStateVersion(sv.id)
+        return c.json(
+          {
+            errors: [
+              {
+                status: "422",
+                title: "Invalid Terraform output metadata",
+                detail: error.message,
+              },
+            ],
+          },
+          422,
+        )
+      }
       // State might not be valid JSON, that's OK
     }
 
@@ -957,6 +974,27 @@ stateUploadRoute.put("/state-versions/:state_version_id/upload/:upload_token", a
     throw err
   }
 })
+
+function normalizeTerraformStateOutputs(value: unknown): Record<string, unknown> | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new OutputSelectionError(
+      "INVALID_TERRAFORM_OUTPUT",
+      "Terraform state outputs must be an object",
+      [],
+    )
+  }
+
+  return (
+    selectTerraformOutputs({
+      outputs: value as Record<string, unknown>,
+      selection: { kind: "all" },
+      sensitive: "redact",
+    }) ?? undefined
+  )
+}
 
 /**
  * PUT /tfc/api/v2/state-versions/:state_version_id/upload-json

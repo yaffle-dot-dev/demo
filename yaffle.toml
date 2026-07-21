@@ -57,6 +57,12 @@ path = "apps/control-plane/infra"
 environments = ["*"]
 variables.private_beta_invites_required = true
 variables.private_beta_operator_identifiers = "dev@launi.me"
+outputs.ecs_cluster_name = { visibility = "internal" }
+outputs.control_plane_service_name = { visibility = "internal" }
+outputs.app_deployer_role_arn = { visibility = "internal" }
+outputs.database_migration_url_secret_arn = { visibility = "internal" }
+outputs.provider_discovery_agent_token_secret_arn = { visibility = "internal" }
+outputs.provider_discovery_callback_secret_arn = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "control-plane"
@@ -85,6 +91,9 @@ path = "apps/runner/infra"
 environments = ["*"]
 variables.runner_cpu = 512
 variables.runner_memory = 1024
+outputs.task_definition_family = { visibility = "internal" }
+outputs.app_deployer_role_arn = { visibility = "internal" }
+outputs.scanner_lambda_function_name = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "runner"
@@ -105,14 +114,24 @@ event_type = "yaffle.activation"
 [[workspaces]]
 path = "apps/marketing/infra"
 environments = ["*"]
+outputs.primary_bucket_name = { visibility = "internal" }
+outputs.deploy_role_arn = { visibility = "internal" }
+outputs.site_deployer_role_arn = { visibility = "internal" }
 
 [[workspaces]]
 path = "apps/docs/infra"
 environments = ["*"]
+outputs.primary_bucket_name = { visibility = "internal" }
+outputs.deploy_role_arn = { visibility = "internal" }
+outputs.docs_deployer_role_arn = { visibility = "internal" }
 
 [[workspaces]]
 path = "apps/web/infra"
 environments = ["*"]
+outputs.primary_bucket_name = { visibility = "internal" }
+outputs.deploy_role_arn = { visibility = "internal" }
+outputs.app_deployer_role_arn = { visibility = "internal" }
+outputs.web_service_name = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "web"
@@ -139,6 +158,19 @@ event_type = "yaffle.verification"
 [[workspaces]]
 path = "apps/provider-discovery-agent/infra"
 environments = ["*"]
+outputs.environment = { visibility = "internal" }
+outputs.worker_name = { visibility = "internal" }
+outputs.worker_host = { visibility = "internal" }
+outputs.worker_route_pattern = { visibility = "internal" }
+outputs.worker_url = { visibility = "internal" }
+outputs.ai_gateway_id = { visibility = "internal" }
+outputs.cloudflare_account_id_secret_id = { visibility = "internal" }
+outputs.cloudflare_api_token_secret_id = { visibility = "internal" }
+outputs.agent_token_secret_id = { visibility = "internal" }
+outputs.agent_token_secret_arn = { visibility = "internal" }
+outputs.callback_secret_secret_id = { visibility = "internal" }
+outputs.callback_secret_secret_arn = { visibility = "internal" }
+outputs.github_token_secret_id = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "provider-discovery-agent"
@@ -165,6 +197,9 @@ event_type = "yaffle.verification"
 [[workspaces]]
 path = "apps/traffic-controller/infra"
 environments = ["main"]
+outputs.api_lambda_function_name = { visibility = "internal" }
+outputs.reconcile_lambda_function_name = { visibility = "internal" }
+outputs.app_deployer_role_arn = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "traffic-controller"
@@ -186,3 +221,6 @@ event_type = "yaffle.activation"
 [[workspaces]]
 path = "apps/infra"
 environments = ["*"]
+outputs.site_url = { visibility = "internal" }
+outputs.cloudfront_distribution_id = { visibility = "internal" }
+outputs.invalidation_role_arn = { visibility = "internal" }

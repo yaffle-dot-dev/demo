@@ -42,7 +42,7 @@ export type TfRunLatestSummaryItem = Pick<
 >
 export type TfRunOutputsItem = Pick<
   TfRun,
-  "id" | "deploymentId" | "runType" | "status" | "outputs" | "createdAt"
+  "id" | "deploymentId" | "runGroupId" | "runType" | "status" | "outputs" | "createdAt"
 >
 
 function selectRunListFields() {
@@ -404,6 +404,7 @@ export async function findLatestSuccessfulRunsForDeployments(
       .select({
         id: tfRuns.id,
         deploymentId: tfRuns.deploymentId,
+        runGroupId: tfRuns.runGroupId,
         runType: tfRuns.runType,
         status: tfRuns.status,
         outputs: tfRuns.outputs,

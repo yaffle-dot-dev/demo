@@ -1,4 +1,7 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
+import { lookup } from "node:dns/promises"
+import { request as httpsRequest } from "node:https"
+import { isIP } from "node:net"
 
 import { Hono, type MiddlewareHandler } from "hono"
 import { z } from "zod"
@@ -7,6 +10,7 @@ import {
   type LifecycleEvent,
   type LifecycleItem,
   type LifecycleRun,
+  claimLifecycleItemForDispatch,
   consumeLifecycleCompletionToken,
   createLifecycleEvent,
   createLifecycleItem,
@@ -29,6 +33,7 @@ import {
 import { findOrgMembership, findOrgById } from "../db/queries/organizations.ts"
 import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { getConnectionSecret } from "../lib/connection-secrets.ts"
+import { OutputSelectionError, selectTerraformOutputs } from "../lib/output-selection.ts"
 import { getInstallationOctokit } from "../lib/github.ts"
 import {
   dispatchHostedLifecycleVerificationIfReady,
@@ -97,6 +102,7 @@ const createItemSchema = z.object({
   dispatchMode: z.enum(["local", "cloud"]),
   summary: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
+  selectedOutputNames: z.array(z.string().min(1)),
   callbackTtlMinutes: z
     .number()
     .int()
@@ -370,7 +376,7 @@ lifecycleRoute.post("/items", async (c) => {
       dispatchMode: body.dispatchMode,
       summary: "Blocked by environment governance policy",
       reason: governance.reason,
-      metadata: body.metadata ?? {},
+      metadata: { ...body.metadata, selectedOutputNames: body.selectedOutputNames },
     })
     await createLifecycleEvent({
       itemId: blockedItem.id,
@@ -409,7 +415,7 @@ lifecycleRoute.post("/items", async (c) => {
     destinationClass: body.destinationClass,
     dispatchMode: body.dispatchMode,
     summary: body.summary,
-    metadata: body.metadata ?? {},
+    metadata: { ...body.metadata, selectedOutputNames: body.selectedOutputNames },
   })
   await createLifecycleEvent({
     itemId: item.id,
@@ -471,10 +477,56 @@ lifecycleRoute.post("/dispatch", async (c) => {
     return c.json({ error: { code: "NOT_FOUND", message: "lifecycle item not found" } }, 404)
   }
 
+  const binding = await findPrincipalRepoBindingById(run.repoBindingId)
+  if (!binding || binding.principalId !== principal.principalId) {
+    return c.json({ error: { code: "NOT_FOUND", message: "repo binding not found" } }, 404)
+  }
+  if (run.status !== "running" || item.state !== "pending") {
+    return c.json(
+      {
+        error: {
+          code: "CONFLICT",
+          message: "lifecycle dispatch requires a running run and pending item",
+        },
+      },
+      409,
+    )
+  }
+
+  const selectedOutputNames = lifecycleItemSelectedOutputNames(item)
+  if (!selectedOutputNames) {
+    return c.json(
+      { error: { code: "CONFLICT", message: "lifecycle item has no immutable output policy" } },
+      409,
+    )
+  }
+  try {
+    body.payload.outputs =
+      selectTerraformOutputs({
+        outputs: body.payload.outputs,
+        selection: { kind: "names", names: selectedOutputNames },
+        sensitive: "reject",
+      }) ?? {}
+  } catch (error) {
+    if (error instanceof OutputSelectionError) {
+      return c.json(
+        { error: { code: error.code, message: error.message, outputNames: error.outputNames } },
+        422,
+      )
+    }
+    throw error
+  }
+
   if (
     item.workspacePath !== body.workspacePath ||
     item.phase !== body.phase ||
-    item.key !== body.payload.item_key
+    item.key !== body.payload.item_key ||
+    item.destinationUrl !== lifecycleDispatchDestination(body, binding.canonicalRepoNamespace) ||
+    run.environmentName !== body.environmentName ||
+    run.environmentName !== body.payload.environment ||
+    binding.canonicalRepoNamespace !== body.payload.repo_namespace ||
+    body.workspacePath !== body.payload.workspace_path ||
+    body.phase !== body.payload.phase
   ) {
     return c.json(
       {
@@ -487,13 +539,36 @@ lifecycleRoute.post("/dispatch", async (c) => {
     )
   }
 
+  if (
+    !(await isManagedLifecycleDispatchAuthorized(
+      principal,
+      binding.canonicalRepoNamespace,
+      body.dispatch,
+    ))
+  ) {
+    return c.json(
+      {
+        error: {
+          code: "FORBIDDEN",
+          message: "lifecycle principal is not authorized to use managed repository credentials",
+        },
+      },
+      403,
+    )
+  }
+
+  if (!(await claimLifecycleItemForDispatch(item.id))) {
+    return c.json(
+      { error: { code: "CONFLICT", message: "lifecycle item is no longer pending" } },
+      409,
+    )
+  }
+
   try {
-    await dispatchLifecycleHook(body)
+    await dispatchLifecycleHook(body, binding.canonicalRepoNamespace)
 
     await updateLifecycleItem(item.id, {
-      state: "running",
       summary: item.summary ?? `Dispatching ${item.phase} hook`,
-      startedAt: item.startedAt ?? new Date(),
     })
     await createLifecycleEvent({
       itemId: item.id,
@@ -835,21 +910,57 @@ async function resolvePrincipalTier(
   return "free_local"
 }
 
-async function dispatchLifecycleHook(body: LifecycleDispatchRequest): Promise<void> {
+async function isManagedLifecycleDispatchAuthorized(
+  principal: PrincipalAuthContext,
+  canonicalRepoNamespace: string,
+  dispatch: LifecycleDispatchRequest["dispatch"],
+): Promise<boolean> {
+  const usesManagedCredential =
+    dispatch.kind === "github_repository_dispatch" || dispatch.request.auth !== undefined
+  if (!usesManagedCredential) {
+    return true
+  }
+  if (!principal.userId) {
+    return false
+  }
+
+  const repoFullName =
+    dispatch.kind === "github_repository_dispatch"
+      ? (() => {
+          const target = resolveGitHubDispatchTarget(dispatch, canonicalRepoNamespace)
+          return `${target.owner}/${target.repo}`
+        })()
+      : repo_full_name_from_namespace(canonicalRepoNamespace)
+  const repo = repoFullName ? await findRepoByFullName(repoFullName) : undefined
+  const membership = repo?.orgId ? await findOrgMembership(repo.orgId, principal.userId) : undefined
+  return membership?.role === "admin"
+}
+
+async function dispatchLifecycleHook(
+  body: LifecycleDispatchRequest,
+  canonicalRepoNamespace: string,
+): Promise<void> {
   switch (body.dispatch.kind) {
     case "github_repository_dispatch":
-      await dispatchGitHubRepositoryDispatch(body as GitHubRepositoryDispatchRequest)
+      await dispatchGitHubRepositoryDispatch(
+        body as GitHubRepositoryDispatchRequest,
+        canonicalRepoNamespace,
+      )
       return
     case "generic":
-      await dispatchGenericLifecycleHook(body as GenericLifecycleDispatchRequest)
+      await dispatchGenericLifecycleHook(
+        body as GenericLifecycleDispatchRequest,
+        canonicalRepoNamespace,
+      )
       return
   }
 }
 
 async function dispatchGitHubRepositoryDispatch(
   body: GitHubRepositoryDispatchRequest,
+  canonicalRepoNamespace: string,
 ): Promise<void> {
-  const target = resolveGitHubDispatchTarget(body)
+  const target = resolveGitHubDispatchTarget(body.dispatch, canonicalRepoNamespace)
   const fullName = `${target.owner}/${target.repo}`
   const repoRecord = await findRepoByFullName(fullName)
   if (!repoRecord?.installationId) {
@@ -867,8 +978,12 @@ async function dispatchGitHubRepositoryDispatch(
   })
 }
 
-async function dispatchGenericLifecycleHook(body: GenericLifecycleDispatchRequest): Promise<void> {
+async function dispatchGenericLifecycleHook(
+  body: GenericLifecycleDispatchRequest,
+  canonicalRepoNamespace: string,
+): Promise<void> {
   const request = body.dispatch.request
+  const destinationAddress = await resolvePublicLifecycleDestination(request.url)
   const payloadBytes = Buffer.from(JSON.stringify(body.payload))
   const headers = new Headers({
     "content-type": "application/json",
@@ -876,7 +991,7 @@ async function dispatchGenericLifecycleHook(body: GenericLifecycleDispatchReques
 
   if (request.auth) {
     const secret = await resolveLifecycleConnectionSecret(
-      body.payload.repo_namespace,
+      canonicalRepoNamespace,
       body.environmentName,
       body.workspacePath,
       request.auth.connection,
@@ -884,15 +999,105 @@ async function dispatchGenericLifecycleHook(body: GenericLifecycleDispatchReques
     applyLifecycleConnectionAuth(headers, request.auth.scheme, secret, payloadBytes)
   }
 
-  const response = await fetch(request.url, {
-    method: request.method,
+  const status = await postLifecycleWebhook(
+    request.url,
+    request.method,
     headers,
-    body: payloadBytes,
-  })
+    payloadBytes,
+    destinationAddress,
+  )
 
-  if (!response.ok) {
-    throw new Error(`Lifecycle webhook returned ${response.status}`)
+  if (status < 200 || status >= 300) {
+    throw new Error(`Lifecycle webhook returned ${status}`)
   }
+}
+
+async function resolvePublicLifecycleDestination(rawUrl: string): Promise<string> {
+  const url = new URL(rawUrl)
+  if (url.protocol !== "https:" || url.username || url.password) {
+    throw new Error("Lifecycle webhooks must use an unauthenticated public HTTPS URL")
+  }
+
+  const addresses = isIP(url.hostname)
+    ? [{ address: url.hostname }]
+    : await lookup(url.hostname, { all: true, verbatim: true })
+  if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpAddress(address))) {
+    throw new Error("Lifecycle webhook destinations must resolve only to public IP addresses")
+  }
+  return addresses[0].address
+}
+
+async function postLifecycleWebhook(
+  rawUrl: string,
+  method: "POST",
+  headers: Headers,
+  body: Buffer,
+  address: string,
+): Promise<number> {
+  const url = new URL(rawUrl)
+  const family = isIP(address) as 4 | 6
+  return new Promise((resolve, reject) => {
+    const request = httpsRequest(
+      url,
+      {
+        method,
+        headers: Object.fromEntries(headers.entries()),
+        servername: url.hostname,
+        lookup: (_hostname, _options, callback) => callback(null, address, family),
+      },
+      (response) => {
+        response.resume()
+        resolve(response.statusCode ?? 502)
+      },
+    )
+    request.setTimeout(30_000, () => request.destroy(new Error("Lifecycle webhook timed out")))
+    request.on("error", reject)
+    request.end(body)
+  })
+}
+
+function isPublicIpAddress(address: string): boolean {
+  if (address.includes(":")) {
+    const normalized = address.toLowerCase()
+    if (normalized.startsWith("::ffff:")) {
+      return isPublicIpAddress(normalized.slice(7))
+    }
+    return !(
+      normalized === "::" ||
+      normalized === "::1" ||
+      normalized.startsWith("fc") ||
+      normalized.startsWith("fd") ||
+      /^fe[89ab]/.test(normalized) ||
+      /^fe[c-f]/.test(normalized)
+    )
+  }
+
+  const octets = address.split(".").map(Number)
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) {
+    return false
+  }
+  const [first, second] = octets
+  return !(
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 100 && second >= 64 && second <= 127) ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 198 && (second === 18 || second === 19)) ||
+    first >= 224
+  )
+}
+
+function lifecycleItemSelectedOutputNames(item: LifecycleItem): string[] | null {
+  if (!item.metadata || typeof item.metadata !== "object" || Array.isArray(item.metadata)) {
+    return null
+  }
+  const names = (item.metadata as Record<string, unknown>).selectedOutputNames
+  return Array.isArray(names) && names.every((name): name is string => typeof name === "string")
+    ? names
+    : null
 }
 
 async function resolveLifecycleConnectionSecret(
@@ -979,12 +1184,27 @@ function applyLifecycleConnectionAuth(
   headers.set("X-Yaffle-Signature", `sha256=${signature}`)
 }
 
-function resolveGitHubDispatchTarget(body: GitHubRepositoryDispatchRequest): {
+function lifecycleDispatchDestination(
+  body: LifecycleDispatchRequest,
+  canonicalRepoNamespace: string,
+): string {
+  if (body.dispatch.kind === "generic") {
+    return body.dispatch.request.url
+  }
+  const target = resolveGitHubDispatchTarget(body.dispatch, canonicalRepoNamespace)
+  const apiUrl = body.dispatch.github.apiUrl?.replace(/\/$/, "") ?? "https://api.github.com"
+  return `${apiUrl}/repos/${target.owner}/${target.repo}/dispatches`
+}
+
+function resolveGitHubDispatchTarget(
+  dispatch: z.infer<typeof githubRepositoryDispatchSchema>,
+  canonicalRepoNamespace: string,
+): {
   owner: string
   repo: string
 } {
-  const explicitOwner = body.dispatch.github.owner?.trim()
-  const explicitRepo = body.dispatch.github.repo?.trim()
+  const explicitOwner = dispatch.github.owner?.trim()
+  const explicitRepo = dispatch.github.repo?.trim()
   if (explicitOwner && explicitRepo) {
     return {
       owner: explicitOwner,
@@ -995,9 +1215,9 @@ function resolveGitHubDispatchTarget(body: GitHubRepositoryDispatchRequest): {
     throw new Error("GitHub repository_dispatch hooks must set both owner and repo together")
   }
 
-  const repoFullName = repo_full_name_from_namespace(body.payload.repo_namespace)
+  const repoFullName = repo_full_name_from_namespace(canonicalRepoNamespace)
   if (!repoFullName) {
-    throw new Error(`Could not resolve repository from namespace '${body.payload.repo_namespace}'`)
+    throw new Error(`Could not resolve repository from namespace '${canonicalRepoNamespace}'`)
   }
   const [owner, repo] = repoFullName.split("/")
   if (!owner || !repo) {

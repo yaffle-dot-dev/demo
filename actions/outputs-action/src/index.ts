@@ -3,6 +3,7 @@ import * as github from "@actions/github"
 import { EventSource } from "eventsource"
 
 import { resolveEnvironment } from "./environment"
+import { prepareActionOutputs, type TerraformOutput } from "./output-publishing"
 
 interface WorkspaceDeployment {
   id: string
@@ -26,20 +27,6 @@ interface EnvironmentSnapshot {
 
 interface EnvironmentStreamUpdate {
   data: EnvironmentSnapshot | null
-}
-
-interface TerraformOutput {
-  value: unknown
-  type?: string
-  sensitive?: boolean
-}
-
-function formatTerraformOutput(value: unknown): string {
-  if (typeof value === "string") return value
-  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
-    return `${value}`
-  }
-  return JSON.stringify(value) ?? ""
 }
 
 function isTransientEnvironmentFetchError(error: unknown): boolean {
@@ -232,19 +219,11 @@ async function run(): Promise<void> {
       return
     }
 
-    core.setOutput("outputs-json", JSON.stringify(outputs))
-
-    // Set each output as a separate action output
-    for (const [name, output] of Object.entries(outputs)) {
-      const tfOutput = output as TerraformOutput
-      if (tfOutput.sensitive) {
-        core.setSecret(String(tfOutput.value))
-        core.setOutput(name, tfOutput.value)
-      } else {
-        const value = formatTerraformOutput(tfOutput.value)
-        core.setOutput(name, value)
-        core.info(`Output ${name} = ${value}`)
-      }
+    const prepared = prepareActionOutputs(outputs)
+    core.setOutput("outputs-json", prepared.outputsJson)
+    for (const entry of prepared.entries) {
+      core.setOutput(entry.name, entry.value)
+      core.info(`Output ${entry.name} = ${entry.value}`)
     }
 
     core.info("Successfully fetched all outputs")
@@ -265,8 +244,11 @@ async function fetchEnvironment(
   environment: string,
   headSha: string,
 ): Promise<EnvironmentSnapshot> {
-  const query = headSha ? `?head_sha=${encodeURIComponent(headSha)}` : ""
-  const url = `${apiUrl}/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environment)}${query}`
+  const query = new URLSearchParams({ output_audience: "automation" })
+  if (headSha) {
+    query.set("head_sha", headSha)
+  }
+  const url = `${apiUrl}/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environment)}?${query.toString()}`
 
   const response = await fetch(url, {
     headers: {
@@ -360,7 +342,8 @@ async function waitForReadySSE(
 ): Promise<EnvironmentWorkspace> {
   return await new Promise((resolve, reject) => {
     const timeoutMs = timeoutSeconds * 1000
-    const streamQuery = new URLSearchParams({ token })
+    const streamQuery = new URLSearchParams()
+    streamQuery.set("output_audience", "automation")
     if (headSha) {
       streamQuery.set("head_sha", headSha)
     }
@@ -369,7 +352,7 @@ async function waitForReadySSE(
       `Connecting to SSE stream: ${apiUrl}/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environment)}/stream`,
     )
 
-    const es = new EventSource(streamUrl)
+    const es = createAuthenticatedEventSource(streamUrl, token)
     let settled = false
     let lastLoggedStatus: string | null = null
     const startedAt = Date.now()
@@ -529,6 +512,16 @@ async function waitForReadySSE(
       lastSseActivityAt = Date.now()
       core.info("SSE connection established")
     }
+  })
+}
+
+function createAuthenticatedEventSource(url: string, token: string): EventSource {
+  return new EventSource(url, {
+    fetch: (input, init) => {
+      const headers = new Headers(init?.headers)
+      headers.set("Authorization", `Bearer ${token}`)
+      return fetch(input, { ...init, headers })
+    },
   })
 }
 

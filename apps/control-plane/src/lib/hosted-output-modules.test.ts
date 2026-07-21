@@ -48,6 +48,38 @@ describe("publishHostedOutputModuleForRunGroupBinding", () => {
         headSha: "abc123def456",
         trigger: "manual",
         status: "running",
+        selectedWorkspacePaths: ["apps/control-plane/infra"],
+        executionSnapshot: {
+          version: 1,
+          source: {
+            installationId: 67890,
+            repositoryId: 12345,
+            ownerId: 1,
+            owner: "test-org",
+            repository: "fixture",
+            defaultBranch: "main",
+            ref: "refs/heads/main",
+            commitSha: "abc123def456",
+            baseSha: null,
+            actor: { githubId: null, login: null },
+          },
+          configuration: {
+            path: "yaffle.toml",
+            revision: "abc123def456",
+            digest: "config-digest",
+          },
+          environment: { kind: "named", name: "main", sourcePullRequestNumber: null },
+          workspaces: [
+            {
+              path: "apps/control-plane/infra",
+              variables: {},
+              approval: { required: false, approvers: [] },
+              lifecycle: { activation: [], verification: [] },
+              outputs: { api_url: { visibility: "internal" } },
+              automaticPreviewIsolation: false,
+            },
+          ],
+        },
       })
       .returning()
 
@@ -56,7 +88,8 @@ describe("publishHostedOutputModuleForRunGroupBinding", () => {
       environmentName: "main",
       workspacePath: "apps/control-plane/infra",
       outputs: {
-        api_url: { value: "https://api.yaffle.dev" },
+        api_url: { value: "https://api.yaffle.dev", sensitive: false },
+        database_password: { value: "do-not-publish", sensitive: true },
       },
     })
 
@@ -71,9 +104,25 @@ describe("publishHostedOutputModuleForRunGroupBinding", () => {
     expect(rows[0]?.repoBindingId).toBe(binding.id)
     expect(rows[0]?.environmentName).toBe("main")
     expect(rows[0]?.workspacePath).toBe("apps/control-plane/infra")
+    expect(rows[0]?.outputs).toEqual({
+      api_url: { value: "https://api.yaffle.dev", sensitive: false },
+    })
+
+    await db
+      .update(repositories)
+      .set({ fullName: "other-owner/fixture" })
+      .where(eq(repositories.orgId, org.id))
+    expect(
+      await publishHostedOutputModuleForRunGroupBinding({
+        runGroupId: runGroup.id,
+        environmentName: "main",
+        workspacePath: "apps/control-plane/infra",
+        outputs: { api_url: { value: "https://other.example", sensitive: false } },
+      }),
+    ).toBeNull()
   })
 
-  test("publishes hosted output modules for webhook-style run groups without a repo binding", async () => {
+  test("refuses to publish without an immutable repo-bound execution context", async () => {
     const org = await createTestOrg({ slug: "test-org-webhook" })
     await db.insert(repositories).values({
       orgId: org.id,
@@ -103,18 +152,15 @@ describe("publishHostedOutputModuleForRunGroupBinding", () => {
       runGroupId: runGroup.id,
       environmentName: "main",
       workspacePath: "infra/shared",
-      outputs: { shared: { value: true } },
+      outputs: { shared: { value: true, sensitive: false } },
     })
 
-    expect(version).toBe("1.0.1")
+    expect(version).toBeNull()
 
     const rows = await db
       .select()
       .from(hostedOutputModules)
       .where(eq(hostedOutputModules.canonicalRepoNamespace, "test-org-webhook--fixture"))
-    expect(rows).toHaveLength(1)
-    expect(rows[0]?.principalId).toBeNull()
-    expect(rows[0]?.repoBindingId).toBeNull()
-    expect(rows[0]?.workspacePath).toBe("infra/shared")
+    expect(rows).toHaveLength(0)
   })
 })

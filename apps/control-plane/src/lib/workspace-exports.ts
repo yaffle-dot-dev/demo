@@ -5,6 +5,7 @@ import {
   type Workspace as ConfigWorkspace,
   type YaffleTomlConfig,
 } from "./config-toml.ts"
+import { selectTerraformOutputs } from "./output-selection.ts"
 
 export interface ModuleConsumerWorkspace {
   orgId: string
@@ -25,19 +26,8 @@ export interface ModuleAccessDecision {
 
 export type ProducerConfigState = "loaded" | "missing" | "unavailable"
 
-interface TerraformOutput {
-  value: unknown
-  type?: unknown
-  sensitive?: boolean
-}
-
 function normalizeRepoName(repo: string): string {
   return repo.trim().toLowerCase()
-}
-
-function repoBasename(repo: string): string {
-  const parts = normalizeRepoName(repo).split("/")
-  return parts[parts.length - 1] ?? normalizeRepoName(repo)
 }
 
 function isSameRepoConsumer(
@@ -51,7 +41,19 @@ function isSameRepoConsumer(
   const producerRepo = normalizeRepoName(producerWorkspace.repo)
   const consumerRepo = normalizeRepoName(consumerWorkspace.repo)
 
-  return producerRepo === consumerRepo || repoBasename(producerRepo) === repoBasename(consumerRepo)
+  return producerRepo === consumerRepo
+}
+
+function isProducerWorkspace(
+  producerWorkspace: TfcWorkspace,
+  consumerWorkspace: ModuleConsumerWorkspace,
+): boolean {
+  return (
+    isSameRepoConsumer(producerWorkspace, consumerWorkspace) &&
+    producerWorkspace.workspacePath === consumerWorkspace.workspacePath &&
+    producerWorkspace.environmentKind === consumerWorkspace.environmentKind &&
+    producerWorkspace.environmentName === consumerWorkspace.environmentName
+  )
 }
 
 function getWorkspaceConfig(
@@ -98,27 +100,45 @@ export function resolveModuleAccessDecision(params: {
       }
     }
 
-    if (!hasExplicitOutputPolicies) {
-      return {
-        allowed: true,
-        allowedOutputs: null,
-      }
-    }
-
     return {
       allowed: false,
       errorStatus: 403,
       errorTitle: "Workspace-scoped token required",
       errorDetail:
-        "This module defines output access policies. Use a Yaffle run token so the consumer workspace can be authorized.",
+        "Use a Yaffle run token so the consumer workspace and selected outputs can be authorized.",
       allowedOutputs: null,
     }
   }
 
+  if (params.producerWorkspace.orgId !== params.consumerWorkspace.orgId) {
+    return {
+      allowed: false,
+      errorStatus: 403,
+      errorTitle: "Cross-organization output sharing is unavailable",
+      errorDetail: "Beta output consumers must belong to the producer's Yaffle organization.",
+      allowedOutputs: null,
+    }
+  }
+
+  if (isProducerWorkspace(params.producerWorkspace, params.consumerWorkspace)) {
+    return { allowed: true, allowedOutputs: null }
+  }
+
   if (isSameRepoConsumer(params.producerWorkspace, params.consumerWorkspace)) {
+    const allowedOutputs = Object.keys(outputPolicies).sort()
+    if (allowedOutputs.length === 0) {
+      return {
+        allowed: false,
+        errorStatus: 403,
+        errorTitle: "Module outputs are not selected",
+        errorDetail:
+          "The producer workspace must explicitly select outputs in yaffle.toml before another workspace can consume them.",
+        allowedOutputs: null,
+      }
+    }
     return {
       allowed: true,
-      allowedOutputs: null,
+      allowedOutputs,
     }
   }
 
@@ -186,33 +206,29 @@ export function filterOutputsForAccess(
   outputs: Record<string, unknown> | null,
   allowedOutputs: string[] | null,
 ): Record<string, unknown> | null {
-  if (!outputs || !allowedOutputs) {
-    return outputs
-  }
-
-  const allowedOutputSet = new Set(allowedOutputs)
-  const filteredEntries = Object.entries(outputs).filter(([name]) => allowedOutputSet.has(name))
-  return Object.fromEntries(filteredEntries)
+  return selectTerraformOutputs({
+    outputs,
+    selection: allowedOutputs ? { kind: "names", names: allowedOutputs } : { kind: "all" },
+    sensitive: "preserve",
+  })
 }
 
 export function findSensitiveExportedOutputs(
   outputs: Record<string, unknown> | null,
   allowedOutputs: string[] | null,
 ): string[] {
-  if (!outputs || !allowedOutputs) {
+  if (!outputs) {
     return []
   }
 
-  const allowedOutputSet = new Set(allowedOutputs)
+  const selected = selectTerraformOutputs({
+    outputs,
+    selection: allowedOutputs ? { kind: "names", names: allowedOutputs } : { kind: "all" },
+    sensitive: "preserve",
+  })
 
-  return Object.entries(outputs)
-    .filter(([name]) => allowedOutputSet.has(name))
-    .flatMap(([name, output]) => {
-      if (!output || typeof output !== "object") {
-        return []
-      }
-
-      return (output as TerraformOutput).sensitive ? [name] : []
-    })
+  return Object.entries(selected ?? {})
+    .filter(([, output]) => output.sensitive === true)
+    .map(([name]) => name)
     .sort()
 }

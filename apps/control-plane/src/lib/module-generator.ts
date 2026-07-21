@@ -1,6 +1,8 @@
 import { gzipSync } from "node:zlib"
 import { Buffer } from "node:buffer"
 
+import { selectTerraformOutputs, type TerraformOutput } from "./output-selection.ts"
+
 /**
  * Options for generating a shim module.
  */
@@ -17,12 +19,6 @@ export interface GenerateShimModuleOptions {
  * Terraform state output format.
  * This is what we extract from the state file's outputs.
  */
-interface TerraformOutput {
-  value: unknown
-  type?: unknown
-  sensitive?: boolean
-}
-
 /**
  * Generate a shim module as a tar.gz archive.
  *
@@ -34,9 +30,14 @@ interface TerraformOutput {
  */
 export async function generateShimModule(options: GenerateShimModuleOptions): Promise<Uint8Array> {
   const { workspacePath, serial, outputs } = options
+  const selectedOutputs = selectTerraformOutputs({
+    outputs,
+    selection: { kind: "all" },
+    sensitive: "reject",
+  })
 
   // Generate the main.tf content
-  const mainTf = generateMainTf(workspacePath, serial, outputs)
+  const mainTf = generateMainTf(workspacePath, serial, selectedOutputs)
 
   // Create tar.gz archive
   return createTarGz({

@@ -16,7 +16,7 @@ describe("generateShimModule", () => {
       workspacePath: "test/module",
       serial: 42,
       outputs: {
-        example: { value: "hello", type: "string" },
+        example: { value: "hello", type: "string", sensitive: false },
       },
     })
 
@@ -34,7 +34,7 @@ describe("generateShimModule", () => {
       workspacePath: "core/vpc",
       serial: 1,
       outputs: {
-        vpc_id: { value: "vpc-123", type: "string" },
+        vpc_id: { value: "vpc-123", type: "string", sensitive: false },
       },
     })
 
@@ -54,7 +54,7 @@ describe("generateShimModule", () => {
       workspacePath: "test",
       serial: 1,
       outputs: {
-        count: { value: 42, type: "number" },
+        count: { value: 42, type: "number", sensitive: false },
       },
     })
 
@@ -69,8 +69,8 @@ describe("generateShimModule", () => {
       workspacePath: "test",
       serial: 1,
       outputs: {
-        enabled: { value: true, type: "bool" },
-        disabled: { value: false, type: "bool" },
+        enabled: { value: true, type: "bool", sensitive: false },
+        disabled: { value: false, type: "bool", sensitive: false },
       },
     })
 
@@ -89,6 +89,7 @@ describe("generateShimModule", () => {
         subnet_ids: {
           value: ["subnet-aaa", "subnet-bbb", "subnet-ccc"],
           type: ["list", "string"],
+          sensitive: false,
         },
       },
     })
@@ -108,6 +109,7 @@ describe("generateShimModule", () => {
         tags: {
           value: { environment: "prod", team: "platform" },
           type: ["map", "string"],
+          sensitive: false,
         },
       },
     })
@@ -121,20 +123,16 @@ describe("generateShimModule", () => {
     expect(content).toContain("# type = map(string)")
   })
 
-  test("handles sensitive outputs", async () => {
-    const archive = await generateShimModule({
-      workspacePath: "test",
-      serial: 1,
-      outputs: {
-        password: { value: "secret123", type: "string", sensitive: true },
-      },
-    })
-
-    const decompressed = gunzipSync(archive)
-    const content = extractFileFromTar(decompressed, "main.tf")
-
-    expect(content).toContain('password = "secret123"')
-    expect(content).toContain("sensitive = true")
+  test("rejects sensitive outputs", async () => {
+    await expect(
+      generateShimModule({
+        workspacePath: "test",
+        serial: 1,
+        outputs: {
+          password: { value: "secret123", type: "string", sensitive: true },
+        },
+      }),
+    ).rejects.toThrow(/Sensitive Terraform outputs.*password/)
   })
 
   test("handles null outputs", async () => {
@@ -171,6 +169,7 @@ describe("generateShimModule", () => {
         message: {
           value: 'Hello "world"\nNew line\tTab',
           type: "string",
+          sensitive: false,
         },
       },
     })

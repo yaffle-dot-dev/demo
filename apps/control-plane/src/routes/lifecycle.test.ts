@@ -85,6 +85,7 @@ describe("lifecycleRoute", () => {
             provider: "nix-ci",
             dispatchId: "dispatch-1",
           },
+          selectedOutputNames: [],
           callbackTtlMinutes: 60,
         }),
       }),
@@ -244,13 +245,14 @@ describe("lifecycleRoute", () => {
           destinationUrl: "http://localhost:8787/hooks/preview-ready",
           destinationClass: "private_local",
           dispatchMode: "local",
+          selectedOutputNames: [],
           callbackTtlMinutes: 60,
         }),
       }),
     )
     expect(itemRes.status).toBe(201)
     const itemBody = (await itemRes.json()) as {
-      data: { state: string; onCompletionUrl: string | null }
+      data: { id: string; state: string; onCompletionUrl: string | null }
     }
     expect(itemBody.data.state).toBe("blocked")
     expect(itemBody.data.onCompletionUrl).toBeNull()
@@ -266,9 +268,36 @@ describe("lifecycleRoute", () => {
     }
     expect(stateBody.data.items[0]?.state).toBe("blocked")
     expect(stateBody.data.items[0]?.reason).toContain("requires principal tier 'paid_cloud'")
+
+    const dispatchRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/dispatch", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          runId: runBody.data.id,
+          itemId: itemBody.data.id,
+          environmentName: "main",
+          workspacePath: "apps/web/infra",
+          phase: "activation",
+          dispatch: {
+            kind: "generic",
+            request: { url: "http://localhost:8787/hooks/preview-ready", method: "POST" },
+          },
+          payload: {
+            repo_namespace: "test-org--fixture",
+            environment: "main",
+            workspace_path: "apps/web/infra",
+            item_key: "preview-ready",
+            phase: "activation",
+            outputs: {},
+          },
+        }),
+      }),
+    )
+    expect(dispatchRes.status).toBe(409)
   })
 
-  test("dispatches a connection-backed lifecycle hook through the control plane", async () => {
+  test("denies anonymous principals access to connection-backed lifecycle credentials", async () => {
     const org = await createTestOrg({ slug: "lifecycle-dispatch-org" })
     await db
       .update(organizations)
@@ -356,25 +385,137 @@ describe("lifecycleRoute", () => {
           destinationUrl: "https://hooks.example.com/buildkite",
           destinationClass: "public",
           dispatchMode: "local",
+          selectedOutputNames: ["password"],
           callbackTtlMinutes: 60,
         }),
       }),
     )
     const itemBody = (await itemRes.json()) as { data: { id: string; onCompletionUrl: string } }
 
-    const originalFetch = globalThis.fetch as typeof globalThis.fetch & { preconnect?: unknown }
-    const seen: Array<{ authorization: string | null; signature: string | null }> = []
-    globalThis.fetch = Object.assign(
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        const headers = new Headers(init?.headers)
-        seen.push({
-          authorization: headers.get("authorization"),
-          signature: headers.get("X-Yaffle-Signature"),
-        })
-        return new Response(null, { status: 202 })
+    const privateRunRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/runs", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "main",
+          executionMode: "local",
+        }),
+      }),
+    )
+    const privateRunBody = (await privateRunRes.json()) as { data: { id: string } }
+    const privateItemRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/items", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          runId: privateRunBody.data.id,
+          workspacePath: "apps/web/infra",
+          key: "private-target",
+          phase: "activation",
+          kind: "webhook",
+          failurePolicy: "failed",
+          scopes: ["usable"],
+          destinationUrl: "https://127.0.0.1/internal",
+          destinationClass: "public",
+          dispatchMode: "local",
+          selectedOutputNames: [],
+          callbackTtlMinutes: 60,
+        }),
+      }),
+    )
+    const privateItemBody = (await privateItemRes.json()) as { data: { id: string } }
+    const privateDispatchRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/dispatch", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          runId: privateRunBody.data.id,
+          itemId: privateItemBody.data.id,
+          environmentName: "main",
+          workspacePath: "apps/web/infra",
+          phase: "activation",
+          dispatch: {
+            kind: "generic",
+            request: { url: "https://127.0.0.1/internal", method: "POST" },
+          },
+          payload: {
+            repo_namespace: "test-org--fixture",
+            environment: "main",
+            workspace_path: "apps/web/infra",
+            item_key: "private-target",
+            phase: "activation",
+            outputs: {},
+          },
+        }),
+      }),
+    )
+    expect(privateDispatchRes.status).toBe(502)
+    expect(JSON.stringify(await privateDispatchRes.json())).toContain("public IP addresses")
+
+    const sensitiveDispatchRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/dispatch", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          runId: runBody.data.id,
+          itemId: itemBody.data.id,
+          environmentName: "main",
+          workspacePath: "apps/web/infra",
+          phase: "activation",
+          dispatch: {
+            kind: "generic",
+            request: { url: "https://hooks.example.com/buildkite", method: "POST" },
+          },
+          payload: {
+            repo_namespace: "test-org--fixture",
+            environment: "main",
+            workspace_path: "apps/web/infra",
+            item_key: "buildkite",
+            phase: "activation",
+            outputs: {
+              password: { value: "do-not-dispatch", sensitive: true },
+            },
+          },
+        }),
+      }),
+    )
+
+    expect(sensitiveDispatchRes.status).toBe(422)
+    expect(await sensitiveDispatchRes.json()).toMatchObject({
+      error: {
+        code: "SENSITIVE_OUTPUT_NOT_ALLOWED",
+        outputNames: ["password"],
       },
-      { preconnect: originalFetch.preconnect },
-    ) as typeof fetch
+    })
+
+    const mismatchedDispatchRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/dispatch", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          runId: runBody.data.id,
+          itemId: itemBody.data.id,
+          environmentName: "main",
+          workspacePath: "apps/web/infra",
+          phase: "activation",
+          dispatch: {
+            kind: "generic",
+            request: { url: "https://hooks.example.com/buildkite", method: "POST" },
+          },
+          payload: {
+            repo_namespace: "another-org--victim",
+            environment: "main",
+            workspace_path: "apps/web/infra",
+            item_key: "buildkite",
+            phase: "activation",
+            outputs: {},
+          },
+        }),
+      }),
+    )
+    expect(mismatchedDispatchRes.status).toBe(409)
 
     const dispatchRes = await app.fetch(
       new Request("http://localhost/api/lifecycle/dispatch", {
@@ -410,20 +551,7 @@ describe("lifecycleRoute", () => {
       }),
     )
 
-    globalThis.fetch = originalFetch
-
-    expect(dispatchRes.status).toBe(202)
-    expect(seen[0]?.authorization).toBe("Bearer super-secret")
-
-    const itemAfterRes = await app.fetch(
-      new Request(`http://localhost/api/lifecycle/items/${itemBody.data.id}`, {
-        headers: authHeaders,
-      }),
-    )
-    const itemAfterBody = (await itemAfterRes.json()) as {
-      data: { state: string; events: Array<{ eventType: string }> }
-    }
-    expect(itemAfterBody.data.state).toBe("running")
-    expect(itemAfterBody.data.events.some((event) => event.eventType === "dispatched")).toBe(true)
+    expect(dispatchRes.status).toBe(403)
+    expect(await dispatchRes.json()).toMatchObject({ error: { code: "FORBIDDEN" } })
   })
 })

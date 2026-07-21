@@ -194,18 +194,19 @@ Cross-repo sharing is controlled by the producer workspace.
 
 ### Authorization Rules
 
-- same-repo consumers are treated as internal platform composition and can read the full module surface
+- same-repo consumers can read explicitly selected `internal` and `public` outputs
 - cross-repo consumers must be explicitly allowlisted by the producer in `yaffle.toml`
 - consumer identity comes from the Yaffle run token's workspace context
 - if the consumer workspace cannot be resolved, access is denied by default
 - if the producer config cannot be loaded, access is denied by default
 - the beta support policy excludes cross-org sharing
-- the current resolver can match cross-org selectors; that path requires an explicit
-  enterprise entitlement, tenant-policy design, and security review before it becomes supported
+- cross-org selectors are denied until a post-beta enterprise entitlement and tenant-policy
+  design receive a dedicated security review
 
 ### Sensitive Outputs
 
-Terraform outputs marked `sensitive = true` cannot be exported as `public`.
+Terraform outputs marked `sensitive = true` cannot be included in generated modules, regardless
+of visibility.
 
 Instead:
 
