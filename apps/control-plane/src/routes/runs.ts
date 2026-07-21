@@ -25,6 +25,10 @@ import {
   parseRunViewCorrelation,
   runViewCorrelationQueryFields,
 } from "../lib/run-view-monitoring.ts"
+import {
+  authorizeExecutionMutation,
+  ExecutionMutationDeniedError,
+} from "../lib/execution-mutation.ts"
 
 const uuidParam = z.string().uuid()
 const logStreamQuerySchema = z.object({
@@ -55,89 +59,126 @@ async function getRunOrgId(c: {
  * Cancel a running terraform operation.
  * Sends SIGINT to the terraform process for graceful shutdown.
  */
-runsRoute.post("/:id/cancel", requireResourceAccess({ getOrgId: getRunOrgId }), async (c) => {
-  const parseResult = uuidParam.safeParse(c.req.param("id"))
-  if (!parseResult.success) {
-    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
-  }
-  const id = parseResult.data
+runsRoute.post(
+  "/:id/cancel",
+  requireResourceAccess({ minRole: "approver", getOrgId: getRunOrgId }),
+  async (c) => {
+    const parseResult = uuidParam.safeParse(c.req.param("id"))
+    if (!parseResult.success) {
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
+        400,
+      )
+    }
+    const id = parseResult.data
 
-  const run = await findRunById(id)
-  if (!run) {
-    return c.json({ error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } }, 404)
-  }
-
-  // Only running runs can be cancelled
-  if (run.status !== "running") {
-    return c.json(
-      { error: { code: "INVALID_STATUS", message: `run is not running (status: ${run.status})` } },
-      409,
-    )
-  }
-
-  const auth = getAuth(c)
-  logger.info("Cancelling run", {
-    runId: id,
-    deploymentId: run.deploymentId,
-    runType: run.runType,
-    userId: auth.userId,
-  })
-
-  // Try to cancel the process
-  const cancelled = processRegistry.cancel(id)
-
-  if (cancelled) {
-    // Update run status to cancelled
-    const statusUpdated = await updateRunStatus(
-      id,
-      run.deploymentId,
-      "cancelled",
-      {
-        completedAt: new Date(),
-        errorMessage: `Cancelled by ${auth.name || auth.userId}`,
-      },
-      "running",
-    )
-    if (!statusUpdated) {
-      return c.json({ error: { code: "INVALID_STATUS", message: "run is no longer running" } }, 409)
+    const run = await findRunById(id)
+    if (!run) {
+      return c.json({ error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } }, 404)
     }
 
-    logger.info("Run cancelled successfully", { runId: id })
-    return c.json({ data: { cancelled: true } })
-  }
+    // Only running runs can be cancelled
+    if (run.status !== "running") {
+      return c.json(
+        {
+          error: { code: "INVALID_STATUS", message: `run is not running (status: ${run.status})` },
+        },
+        409,
+      )
+    }
 
-  const remoteJob =
-    run.jobId && run.runGroupId
-      ? await cancelRunningJobForDeploymentAndType({
-          jobId: run.jobId,
-          runId: run.id,
-          deploymentId: run.deploymentId,
-          runGroupId: run.runGroupId,
-          jobType: run.runType as RunType,
-          errorMessage: `Cancelled by ${auth.name || auth.userId}`,
-        })
-      : undefined
-  if (remoteJob) {
-    logger.info("Run cancelled remotely", {
+    const auth = getAuth(c)
+    const deployment = await findDeploymentById(run.deploymentId)
+    if (!deployment || !run.runGroupId) {
+      return c.json(
+        { error: { code: "EXECUTION_CONTEXT_INVALID", message: "run has no execution context" } },
+        409,
+      )
+    }
+    try {
+      await authorizeExecutionMutation({
+        deploymentId: deployment.id,
+        runGroupId: run.runGroupId,
+        action: "cancel",
+        actor: {
+          kind: "human",
+          userId: auth.userId,
+          role: auth.role,
+          ...(auth.apiKeyId ? { apiKeyId: auth.apiKeyId } : {}),
+        },
+      })
+    } catch (error) {
+      if (error instanceof ExecutionMutationDeniedError) {
+        return c.json({ error: { code: error.code, message: error.message } }, 403)
+      }
+      throw error
+    }
+    logger.info("Cancelling run", {
       runId: id,
-      jobId: remoteJob.id,
       deploymentId: run.deploymentId,
+      runType: run.runType,
+      userId: auth.userId,
     })
-    return c.json({ data: { cancelled: true } })
-  }
 
-  logger.warn("Run process not found in registry", { runId: id })
-  return c.json(
-    {
-      error: {
-        code: "PROCESS_NOT_FOUND",
-        message:
-          "Run process not found. It may have already completed or be running on a different instance.",
+    // Try to cancel the process
+    const cancelled = processRegistry.cancel(id)
+
+    if (cancelled) {
+      // Update run status to cancelled
+      const statusUpdated = await updateRunStatus(
+        id,
+        run.deploymentId,
+        "cancelled",
+        {
+          completedAt: new Date(),
+          errorMessage: `Cancelled by ${auth.name || auth.userId}`,
+        },
+        "running",
+      )
+      if (!statusUpdated) {
+        return c.json(
+          { error: { code: "INVALID_STATUS", message: "run is no longer running" } },
+          409,
+        )
+      }
+
+      logger.info("Run cancelled successfully", { runId: id })
+      return c.json({ data: { cancelled: true } })
+    }
+
+    const remoteJob =
+      run.jobId && run.runGroupId
+        ? await cancelRunningJobForDeploymentAndType({
+            jobId: run.jobId,
+            runId: run.id,
+            deploymentId: run.deploymentId,
+            runGroupId: run.runGroupId,
+            jobType: run.runType as RunType,
+            errorMessage: `Cancelled by ${auth.name || auth.userId}`,
+          })
+        : undefined
+    if (remoteJob) {
+      logger.info("Run cancelled remotely", {
+        runId: id,
+        jobId: remoteJob.id,
+        deploymentId: run.deploymentId,
+      })
+      return c.json({ data: { cancelled: true } })
+    }
+
+    logger.warn("Run process not found in registry", { runId: id })
+    return c.json(
+      {
+        error: {
+          code: "PROCESS_NOT_FOUND",
+          message:
+            "Run process not found. It may have already completed or be running on a different instance.",
+        },
       },
-    },
-    404,
-  )
-})
+      404,
+    )
+  },
+)
 
 /**
  * GET /api/runs/:id

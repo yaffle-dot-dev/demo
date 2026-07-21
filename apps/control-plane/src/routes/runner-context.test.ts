@@ -143,6 +143,69 @@ test("does not expose or claim a transient job without a valid execution context
   expect(persistedJob.status).toBe("queued")
 })
 
+test("does not execute an apply job without a valid authorization decision", async () => {
+  const org = await createOrg({
+    name: "Unauthorized Apply",
+    slug: `unauthorized-apply-${crypto.randomUUID()}`,
+  })
+  const snapshot = executionSnapshot({
+    repo: "fixture",
+    ref: "refs/heads/main",
+    headSha: "authorized-context-sha",
+    environmentKind: "named",
+    environmentName: "main",
+    prNumber: null,
+    workspacePath: "infra",
+  })
+  const runGroup = await createRunGroup({
+    orgId: org.id,
+    repo: "fixture",
+    environmentKind: "named",
+    environmentName: "main",
+    ref: "refs/heads/main",
+    headSha: "authorized-context-sha",
+    selectedWorkspacePaths: ["infra"],
+    trigger: "manual",
+    status: "pending",
+    executionSnapshot: snapshot,
+  })
+  const [deployment] = await db
+    .insert(previews)
+    .values({
+      orgId: org.id,
+      runGroupId: runGroup.id,
+      repo: "fixture",
+      environmentKind: "named",
+      environmentName: "main",
+      workspacePath: "infra",
+      ref: "refs/heads/main",
+      headSha: "authorized-context-sha",
+      stateKey: "main/infra/terraform.tfstate",
+      mode: "saas",
+    })
+    .returning()
+  const jobId = crypto.randomUUID()
+  await db.execute(sql`
+    INSERT INTO iac_jobs (id, deployment_id, run_group_id, job_type, status)
+    VALUES (${jobId}, ${deployment.id}, ${runGroup.id}, 'apply', 'queued')
+  `)
+  const token = await generateJobToken(jobId, deployment.id, org.id)
+
+  const response = await app.request("/api/runner/claim", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${token}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ jobId, workerId: "test-worker" }),
+  })
+
+  expect(response.status).toBe(409)
+  expect(await response.json()).toMatchObject({
+    error: { code: "EXECUTION_CONTEXT_INVALID" },
+  })
+})
+
 test("rejects a heartbeat when the token does not own the job deployment and organization", async () => {
   const org = await createOrg({
     name: "Runner Heartbeat Owner",

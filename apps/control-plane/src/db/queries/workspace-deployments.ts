@@ -943,7 +943,6 @@ const AUTO_APPLY_DELAY_MS = 30_000
  * Find deployments that are ready for auto-apply.
  * These are deployments where:
  * - status = 'awaiting_apply'
- * - require_approval = false
  * - status_changed_at is older than AUTO_APPLY_DELAY_MS
  *
  * Used by the scheduler to automatically trigger applies without UI interaction.
@@ -957,7 +956,6 @@ export async function findDeploymentsReadyForAutoApply(): Promise<WorkspaceDeplo
       .where(
         and(
           eq(workspaceDeployments.status, "awaiting_apply"),
-          eq(workspaceDeployments.requireApproval, false),
           lt(workspaceDeployments.statusChangedAt, cutoff),
         ),
       )

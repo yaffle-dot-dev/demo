@@ -232,7 +232,7 @@ describe("iac job active/history split", () => {
   test("cancelJobsForDeployment archives queued and running jobs", async () => {
     const deployment = await createTestDeployment()
     const queuedJob = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
-    const runningJob = await createIacJob({ deploymentId: deployment.id, jobType: "apply" })
+    const runningJob = await createIacJob({ deploymentId: deployment.id, jobType: "destroy" })
 
     const claimResult = await claimJobForRunner(runnerCapability(runningJob), "worker-a")
     expect(claimResult.claimed).toBe(true)
@@ -267,7 +267,7 @@ describe("iac job active/history split", () => {
     expect(firstClaim.claimed).toBe(true)
     expect((await completeJobFromRunner(capability, { planSummary: "+1" })).success).toBe(true)
 
-    const queuedJob = await createIacJob({ deploymentId: deployment.id, jobType: "apply" })
+    const queuedJob = await createIacJob({ deploymentId: deployment.id, jobType: "destroy" })
 
     const latestJob = await findLatestJobForDeployment(deployment.id)
     expect(latestJob?.id).toBe(queuedJob.id)

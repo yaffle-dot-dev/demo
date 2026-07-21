@@ -562,6 +562,7 @@ function buildIacJobColumns(runGroupRequired: boolean) {
     planPurpose: text("plan_purpose").default("environment").notNull(),
     targetWorkspaceId: uuid("target_workspace_id").references(() => workspaces.id),
     targetStateVersionId: uuid("target_state_version_id").references(() => stateVersions.id),
+    applyDecision: jsonb("apply_decision"),
     status: iacJobStatusEnum("status").default("queued").notNull(),
     // Worker tracking
     workerId: text("worker_id"),

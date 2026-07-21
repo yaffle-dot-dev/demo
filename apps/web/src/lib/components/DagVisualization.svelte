@@ -20,6 +20,7 @@
     lifecycleStatusStale?: boolean
     lifecyclePhasePresence?: Record<string, string[]>
     lifecyclePhaseStatuses?: Record<string, Record<string, string>>
+    canMutateInfrastructure?: boolean
   }
 
   let props: Props = $props()
@@ -35,6 +36,7 @@
   const lifecycleStatusStale = $derived(props.lifecycleStatusStale ?? false)
   const lifecyclePhasePresence = $derived(props.lifecyclePhasePresence ?? {})
   const lifecyclePhaseStatuses = $derived(props.lifecyclePhaseStatuses ?? {})
+  const canMutateInfrastructure = $derived(props.canMutateInfrastructure ?? false)
 
   const workspaceNodes = $derived(
     dagNodes.filter((node): node is PreviewWorkspaceDagNode => node.kind === "workspace"),
@@ -115,6 +117,7 @@
    * Retries up to MAX_RETRIES times on failure to ensure apply is triggered.
    */
   async function handleApply(workspacePath: string, attempt: number = 1) {
+    if (!canMutateInfrastructure) return
     const ws = workspaceByPath.get(workspacePath)
     if (!ws) {
       console.error(`Workspace not found: ${workspacePath}`)
@@ -174,6 +177,7 @@
    * On success, marks the local timer as paused so UI shows "Approve" button.
    */
   async function handlePause(workspacePath: string) {
+    if (!canMutateInfrastructure) return
     const ws = workspaceByPath.get(workspacePath)
     if (!ws) {
       console.error(`Workspace not found: ${workspacePath}`)
@@ -254,6 +258,7 @@
       
       // Ready for auto-timer: plan succeeded with changes, no apply yet, no approval required
       if (
+        canMutateInfrastructure &&
         planStatus === "success" &&
         hasChanges(summary) &&
         applyStatus === null &&
@@ -732,7 +737,7 @@
                 <text x="44" y="13" text-anchor="middle" class="timer-btn-text">Pause</text>
               </g>
             {/if}
-          {:else if readyForApply && requiresApproval && !isSubmitting}
+          {:else if canMutateInfrastructure && readyForApply && requiresApproval && !isSubmitting}
             <g
               class="approval-btn"
               role="button"

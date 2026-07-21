@@ -26,6 +26,9 @@ import {
   findDeploymentById,
   listDeployments,
   updateDeploymentStatus,
+  updateDeploymentRunGroup,
+  claimDeploymentForAutoApply,
+  pauseDeployment,
   recordDeploymentApproval,
   resetSkippedDownstreams,
 } from "../db/queries/workspace-deployments.ts"
@@ -63,6 +66,7 @@ import {
   ExecutionSnapshotInvariantError,
   isExecutionContextAssociationValid,
 } from "./execution-snapshot.ts"
+import { authorizeExecutionMutation, type ExecutionMutationActor } from "./execution-mutation.ts"
 
 /** Default runner for production use. Override via createHandler() for tests. */
 const defaultRunner: Runner = new LocalRunner()
@@ -262,10 +266,7 @@ export async function handleWebhookEvent(ctx: WebhookContext): Promise<void> {
  */
 export async function triggerApply(opts: {
   previewId: string
-  /** User ID from auth context */
-  userId?: string | null
-  /** Display name for audit trail */
-  approverLogin?: string | null
+  actor: ExecutionMutationActor
 }): Promise<{ applyStarted: boolean; jobId: string }> {
   return previewMutex.run(`apply:${opts.previewId}`, async () => {
     const preview = await findDeploymentById(opts.previewId)
@@ -288,6 +289,16 @@ export async function triggerApply(opts: {
     }
     if (!latestPlan.runGroupId) {
       throw new ExecutionSnapshotInvariantError("Successful plan is missing its execution snapshot")
+    }
+    const { applyDecision } = await authorizeExecutionMutation({
+      deploymentId: preview.id,
+      runGroupId: latestPlan.runGroupId,
+      action: "apply",
+      actor: opts.actor,
+      planRunId: latestPlan.id,
+    })
+    if (!applyDecision) {
+      throw new Error("apply authorization did not produce a durable decision")
     }
 
     // Check that apply isn't already queued/running/completed for this plan
@@ -312,24 +323,24 @@ export async function triggerApply(opts: {
     }
 
     // Record approval if approver info provided
-    if (opts.userId) {
-      await recordDeploymentApproval(preview.id, opts.userId)
+    if (opts.actor.kind === "human") {
+      await recordDeploymentApproval(preview.id, opts.actor.userId)
 
       // Also record in approvals table for audit trail
-      if (preview.requireApproval) {
+      if (applyDecision.approvalRequired) {
         const { createApproval } = await import("../db/queries/approvals.ts")
         await createApproval({
           deploymentId: preview.id,
           runGroupId: latestPlan.runGroupId,
-          userId: opts.userId,
-          approverLogin: opts.approverLogin ?? null,
+          userId: opts.actor.userId,
+          approverLogin: applyDecision.actorGithubLogin,
         })
       }
 
       logger.info("Approval recorded", {
         deploymentId: preview.id,
-        userId: opts.userId,
-        approverLogin: opts.approverLogin ?? "unknown",
+        userId: opts.actor.userId,
+        approverLogin: applyDecision.actorGithubLogin ?? "not required",
       })
     }
 
@@ -338,6 +349,7 @@ export async function triggerApply(opts: {
       deploymentId: preview.id,
       runGroupId: latestPlan.runGroupId,
       jobType: "apply",
+      applyDecision,
     })
 
     logger.info("Apply job queued", {
@@ -388,12 +400,6 @@ export async function queueAutoApply(deploymentId: string): Promise<{ jobId: str
       return null
     }
 
-    // Double-check requireApproval (shouldn't be true if scheduler found it, but defensive)
-    if (preview.requireApproval) {
-      logger.warn("Auto-apply: deployment requires approval, skipping", { deploymentId })
-      return null
-    }
-
     // Check that plan succeeded
     const latestPlan = await findLatestRun(preview.id, "plan")
     if (!latestPlan || latestPlan.status !== "success") {
@@ -405,6 +411,16 @@ export async function queueAutoApply(deploymentId: string): Promise<{ jobId: str
         "Successful auto-apply plan is missing its execution snapshot",
       )
     }
+    const { applyDecision } = await authorizeExecutionMutation({
+      deploymentId: preview.id,
+      runGroupId: latestPlan.runGroupId,
+      action: "apply",
+      actor: { kind: "scheduler" },
+      planRunId: latestPlan.id,
+    })
+    if (!applyDecision) {
+      throw new Error("auto-apply authorization did not produce a durable decision")
+    }
 
     // Check that apply isn't already queued/running
     const { findPendingJobsForPreview } = await import("../db/queries/iac-jobs.ts")
@@ -414,12 +430,25 @@ export async function queueAutoApply(deploymentId: string): Promise<{ jobId: str
       return null
     }
 
+    const claimedDeployment = await claimDeploymentForAutoApply(preview.id)
+    if (!claimedDeployment) {
+      logger.debug("Auto-apply: deployment was paused or claimed", { deploymentId })
+      return null
+    }
+
     // Queue apply job (no approval recording - this is server-initiated)
-    const job = await createIacJob({
-      deploymentId: preview.id,
-      runGroupId: latestPlan.runGroupId,
-      jobType: "apply",
-    })
+    let job
+    try {
+      job = await createIacJob({
+        deploymentId: preview.id,
+        runGroupId: latestPlan.runGroupId,
+        jobType: "apply",
+        applyDecision,
+      })
+    } catch (error) {
+      await updateDeploymentStatus(preview.id, "awaiting_apply", latestPlan.runGroupId)
+      throw error
+    }
 
     logger.info("Auto-apply job queued", {
       deploymentId: preview.id,
@@ -454,9 +483,10 @@ export async function queueAutoApply(deploymentId: string): Promise<{ jobId: str
  */
 export async function rerunPreview(opts: {
   previewId: string
+  actor: ExecutionMutationActor
   triggeredBy?: string | null
 }): Promise<{ runGroupId: string; jobId: string }> {
-  return previewMutex.run(`rerun:${opts.previewId}`, async () => {
+  return previewMutex.run(`apply:${opts.previewId}`, async () => {
     const preview = await findDeploymentById(opts.previewId)
     if (!preview) {
       throw new Error("preview not found")
@@ -471,9 +501,15 @@ export async function rerunPreview(opts: {
     if (!preview.runGroupId) {
       throw new Error("preview has no run group")
     }
+    await authorizeExecutionMutation({
+      deploymentId: preview.id,
+      runGroupId: preview.runGroupId,
+      action: "rerun",
+      actor: opts.actor,
+    })
 
     // Reset preview status to pending (keeps existing run group)
-    await updateDeploymentStatus(preview.id, "pending")
+    await updateDeploymentRunGroup(preview.id, preview.runGroupId)
 
     // Reset any downstream workspaces that were skipped due to this upstream's failure.
     // This allows them to be scheduled when this workspace's apply succeeds.
@@ -501,6 +537,29 @@ export async function rerunPreview(opts: {
     })
 
     return { runGroupId: preview.runGroupId, jobId: job.id }
+  })
+}
+
+export async function pausePreview(opts: {
+  previewId: string
+  actor: ExecutionMutationActor
+}): Promise<Awaited<ReturnType<typeof pauseDeployment>>> {
+  return previewMutex.run(`apply:${opts.previewId}`, async () => {
+    const preview = await findDeploymentById(opts.previewId)
+    if (!preview?.runGroupId) {
+      throw new ExecutionSnapshotInvariantError("Preview has no immutable execution context")
+    }
+    await authorizeExecutionMutation({
+      deploymentId: preview.id,
+      runGroupId: preview.runGroupId,
+      action: "pause",
+      actor: opts.actor,
+    })
+    const pendingApplyJobs = await findPendingJobsForPreview(preview.id, "apply")
+    if (pendingApplyJobs.length > 0) {
+      throw new Error("apply already queued or in progress")
+    }
+    return pauseDeployment(preview.id)
   })
 }
 

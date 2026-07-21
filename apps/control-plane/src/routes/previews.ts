@@ -2,11 +2,7 @@ import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
-import {
-  findDeploymentById,
-  listDeployments,
-  pauseDeployment,
-} from "../db/queries/workspace-deployments.ts"
+import { findDeploymentById, listDeployments } from "../db/queries/workspace-deployments.ts"
 import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { listApprovals } from "../db/queries/approvals.ts"
 import {
@@ -17,9 +13,12 @@ import {
 import { parseEnvironmentGroupProjectionPayload } from "../lib/projections/environment-groups.ts"
 import { logger } from "../lib/telemetry.ts"
 import { requireOrgAccess, requireResourceAccess, getAuth } from "../middleware/org-auth.ts"
-import { rerunPreview, triggerApply } from "../lib/webhook-handler.ts"
+import { pausePreview, rerunPreview, triggerApply } from "../lib/webhook-handler.ts"
 import { events, type DeploymentUpdateEvent } from "../lib/events.ts"
-import { isUserAuthorizedApprover } from "../lib/approver.ts"
+import {
+  ExecutionMutationDeniedError,
+  type ExecutionMutationActor,
+} from "../lib/execution-mutation.ts"
 import {
   isExecutionContextAssociationValid,
   serializeBoundExecutionSnapshotIdentity,
@@ -440,34 +439,11 @@ previewsRoute.post(
       )
     }
 
-    // Check if user is authorized to approve
-    const approverStrings = Array.isArray(preview.approvers)
-      ? preview.approvers.filter((a): a is string => typeof a === "string")
-      : []
-
-    if (approverStrings.length > 0 && auth.name) {
-      // installationId is required for team membership checks
-      if (preview.installationId == null) {
-        logger.warn("Cannot check team approvers without installationId", { previewId: id })
-        return c.json({ error: { code: "FORBIDDEN", message: "approver is not authorized" } }, 403)
-      }
-
-      const isAuthorized = await isUserAuthorizedApprover(approverStrings, {
-        githubUsername: auth.name,
-        installationId: preview.installationId,
-      })
-
-      if (!isAuthorized) {
-        return c.json({ error: { code: "FORBIDDEN", message: "approver is not authorized" } }, 403)
-      }
-    }
-
     // Use the single triggerApply path
     try {
       const result = await triggerApply({
         previewId: id,
-        userId: auth.userId,
-        approverLogin: auth.name,
+        actor: executionMutationActor(auth),
       })
 
       return c.json({
@@ -478,6 +454,9 @@ previewsRoute.post(
         },
       })
     } catch (err) {
+      if (err instanceof ExecutionMutationDeniedError) {
+        return c.json({ error: { code: err.code, message: err.message } }, 403)
+      }
       const message = err instanceof Error ? err.message : "Failed to trigger apply"
       logger.warn("Approve/apply failed", { previewId: id, error: message })
 
@@ -505,7 +484,7 @@ previewsRoute.post(
  */
 previewsRoute.post(
   "/:id/rerun",
-  requireResourceAccess({ getOrgId: getPreviewOrgId }),
+  requireResourceAccess({ minRole: "approver", getOrgId: getPreviewOrgId }),
   async (c) => {
     const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
@@ -534,6 +513,7 @@ previewsRoute.post(
     try {
       const result = await rerunPreview({
         previewId: id,
+        actor: executionMutationActor(auth),
         triggeredBy: auth.name || auth.userId,
       })
 
@@ -545,6 +525,9 @@ previewsRoute.post(
         },
       })
     } catch (err) {
+      if (err instanceof ExecutionMutationDeniedError) {
+        return c.json({ error: { code: err.code, message: err.message } }, 403)
+      }
       const message = err instanceof Error ? err.message : "Failed to queue re-run"
       logger.warn("Re-run failed", {
         previewId: id,
@@ -576,7 +559,7 @@ previewsRoute.post(
  */
 previewsRoute.post(
   "/:id/apply",
-  requireResourceAccess({ getOrgId: getPreviewOrgId }),
+  requireResourceAccess({ minRole: "approver", getOrgId: getPreviewOrgId }),
   async (c) => {
     const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
@@ -606,8 +589,7 @@ previewsRoute.post(
     try {
       const result = await triggerApply({
         previewId: id,
-        userId: auth.userId,
-        approverLogin: auth.name,
+        actor: executionMutationActor(auth),
       })
 
       return c.json({
@@ -617,6 +599,9 @@ previewsRoute.post(
         },
       })
     } catch (err) {
+      if (err instanceof ExecutionMutationDeniedError) {
+        return c.json({ error: { code: err.code, message: err.message } }, 403)
+      }
       const message = err instanceof Error ? err.message : "Failed to trigger apply"
       logger.warn("Apply trigger failed", {
         previewId: id,
@@ -654,7 +639,7 @@ previewsRoute.post(
  */
 previewsRoute.post(
   "/:id/pause",
-  requireResourceAccess({ getOrgId: getPreviewOrgId }),
+  requireResourceAccess({ minRole: "approver", getOrgId: getPreviewOrgId }),
   async (c) => {
     const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
@@ -681,8 +666,21 @@ previewsRoute.post(
       currentStatus: preview.status,
     })
 
-    // Attempt to pause - this is atomic (CAS pattern)
-    const result = await pauseDeployment(id)
+    let result
+    try {
+      result = await pausePreview({
+        previewId: preview.id,
+        actor: executionMutationActor(auth),
+      })
+    } catch (error) {
+      if (error instanceof ExecutionMutationDeniedError) {
+        return c.json({ error: { code: error.code, message: error.message } }, 403)
+      }
+      if (error instanceof Error && error.message === "apply already queued or in progress") {
+        return c.json({ error: { code: "APPLY_IN_PROGRESS", message: error.message } }, 409)
+      }
+      throw error
+    }
 
     if (result.paused) {
       return c.json({
@@ -737,6 +735,15 @@ previewsRoute.post(
     )
   },
 )
+
+function executionMutationActor(auth: ReturnType<typeof getAuth>): ExecutionMutationActor {
+  return {
+    kind: "human",
+    userId: auth.userId,
+    role: auth.role,
+    ...(auth.apiKeyId ? { apiKeyId: auth.apiKeyId } : {}),
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Serialization helpers

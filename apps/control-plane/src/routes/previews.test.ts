@@ -1,9 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "@yaffle/test"
 
 import { Hono } from "hono"
+import { eq } from "drizzle-orm"
 
 // Import test utils FIRST to set YAFFLE_AUTH_MODE=dev before other imports
 import { createTestContext, authHeaders, type TestContext } from "../test-utils/auth.ts"
+import { account } from "../db/auth-schema.ts"
 
 import { db } from "../lib/db.ts"
 import { rebuildEnvironmentGroupProjections } from "../lib/projections/environment-groups.ts"
@@ -11,6 +13,8 @@ import { createPrincipal, ensurePrincipalRepoBinding } from "../db/queries/princ
 import {
   approvals,
   environmentGroupProjections,
+  iacJobs,
+  jobs,
   organizations,
   orgMemberships,
   previews,
@@ -27,6 +31,7 @@ app.route("/api/previews", previewsRoute)
 
 // Test context - set up once for the test suite
 let ctx: TestContext
+const originalFetch = globalThis.fetch
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -89,6 +94,76 @@ async function seedPreview(
   return rows[0]
 }
 
+async function seedPlannedPreview(approvers: string[]): Promise<typeof previews.$inferSelect> {
+  const principal = await createPrincipal({ type: "anonymous_session" })
+  const binding = await ensurePrincipalRepoBinding({
+    principalId: principal.id,
+    canonicalRepoNamespace: "test-org--test-repo",
+    localRepoFingerprint: crypto.randomUUID(),
+  })
+  const [runGroup] = await db
+    .insert(runGroups)
+    .values({
+      orgId: ctx.org.id,
+      repoBindingId: binding.id,
+      repo: "test-repo",
+      environmentKind: "transient",
+      environmentName: "pr-42",
+      prNumber: 42,
+      ref: "refs/heads/feature/test",
+      headSha: "abc123",
+      workspaceS3Key: "run-groups/test/workspace.tar.gz",
+      selectedWorkspacePaths: ["infra"],
+      trigger: "pr_opened",
+      executionSnapshot: {
+        version: 1,
+        source: {
+          installationId: 1,
+          repositoryId: 2,
+          ownerId: 3,
+          owner: "test-org",
+          repository: "test-repo",
+          defaultBranch: "main",
+          ref: "refs/heads/feature/test",
+          commitSha: "abc123",
+          baseSha: "base123",
+          actor: { githubId: 4, login: "builder" },
+        },
+        configuration: {
+          path: "yaffle.toml",
+          revision: "abc123",
+          digest: "approval-test-digest",
+        },
+        environment: { kind: "transient", name: "pr-42", sourcePullRequestNumber: 42 },
+        workspaces: [
+          {
+            path: "infra",
+            variables: {},
+            approval: { required: approvers.length > 0, approvers },
+            lifecycle: { activation: [], verification: [] },
+            outputs: {},
+            automaticPreviewIsolation: false,
+          },
+        ],
+      },
+    })
+    .returning()
+  const preview = await seedPreview({
+    runGroupId: runGroup.id,
+    status: approvers.length > 0 ? "awaiting_approval" : "awaiting_apply",
+    requireApproval: approvers.length > 0,
+    approvers,
+  })
+  await db.insert(tfRuns).values({
+    deploymentId: preview.id,
+    runGroupId: runGroup.id,
+    runType: "plan",
+    status: "success",
+    completedAt: new Date(),
+  })
+  return preview
+}
+
 // ---------------------------------------------------------------------------
 // Setup and Cleanup
 // ---------------------------------------------------------------------------
@@ -99,6 +174,7 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
+  globalThis.fetch = originalFetch
   // Clean up test data between tests (but keep user/org/membership)
   await db.delete(approvals)
   await db.delete(tfRuns)
@@ -118,6 +194,7 @@ afterAll(async () => {
   await db.delete(runGroups)
   await db.delete(principalRepoBindings)
   await db.delete(principals)
+  await db.delete(jobs).where(eq(jobs.orgId, ctx.org.id))
   await db.delete(orgMemberships)
   await db.delete(organizations)
 })
@@ -501,5 +578,106 @@ describe("POST /api/previews/:id/approve", () => {
       headers: viewerHeaders,
     })
     expect(res.status).toBe(403)
+  })
+})
+
+describe("execution mutation authorization", () => {
+  test.each(["apply", "rerun", "pause"])("denies viewers from %s", async (action) => {
+    const preview = await seedPreview({
+      status: action === "pause" ? "awaiting_apply" : "failed",
+    })
+    const viewerHeaders = authHeaders({
+      userId: ctx.user.id,
+      email: ctx.user.email,
+      orgId: ctx.org.id,
+      role: "viewer",
+    })
+
+    const response = await req(`/api/previews/${preview.id}/${action}`, {
+      method: "POST",
+      headers: viewerHeaders,
+    })
+
+    expect(response.status).toBe(403)
+  })
+
+  test("enforces configured approvers on the canonical apply endpoint", async () => {
+    const preview = await seedPlannedPreview(["github:user:alice"])
+    await db.insert(account).values({
+      id: crypto.randomUUID(),
+      accountId: "4242",
+      providerId: "github",
+      userId: ctx.user.id,
+      accessToken: "test-github-token",
+    })
+    globalThis.fetch = async (): Promise<Response> =>
+      Response.json({ id: 4242, login: "mallory" }, { status: 200 })
+    const unauthorizedResponse = await req(`/api/previews/${preview.id}/apply`, {
+      method: "POST",
+      headers: authHeaders({
+        userId: ctx.user.id,
+        email: ctx.user.email,
+        name: "alice",
+        orgId: ctx.org.id,
+        role: "admin",
+      }),
+    })
+    expect(unauthorizedResponse.status).toBe(403)
+
+    globalThis.fetch = async (): Promise<Response> =>
+      Response.json({ id: 4242, login: "Alice" }, { status: 200 })
+    const authorizedResponse = await req(`/api/previews/${preview.id}/apply`, {
+      method: "POST",
+      headers: authHeaders({
+        userId: ctx.user.id,
+        email: ctx.user.email,
+        name: "Unrelated display name",
+        orgId: ctx.org.id,
+        role: "approver",
+      }),
+    })
+    expect(authorizedResponse.status).toBe(200)
+
+    const [job] = await db.select().from(iacJobs)
+    expect(job.applyDecision).toMatchObject({
+      source: "human",
+      approvalRequired: true,
+      configuredApprovers: ["github:user:alice"],
+    })
+  })
+
+  test("allows approvers to rerun a plan", async () => {
+    const preview = await seedPlannedPreview([])
+    await db.update(previews).set({ status: "failed" }).where(eq(previews.id, preview.id))
+
+    const response = await req(`/api/previews/${preview.id}/rerun`, {
+      method: "POST",
+      headers: authHeaders({
+        userId: ctx.user.id,
+        email: ctx.user.email,
+        orgId: ctx.org.id,
+        role: "approver",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+  })
+
+  test("allows approvers to pause an unprotected apply countdown", async () => {
+    const preview = await seedPlannedPreview([])
+    const response = await req(`/api/previews/${preview.id}/pause`, {
+      method: "POST",
+      headers: authHeaders({
+        userId: ctx.user.id,
+        email: ctx.user.email,
+        orgId: ctx.org.id,
+        role: "approver",
+      }),
+    })
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({
+      data: { paused: true, status: "awaiting_approval" },
+    })
   })
 })

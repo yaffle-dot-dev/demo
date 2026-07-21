@@ -201,7 +201,7 @@ const triggersSchema = z.object({
 
 /** Zod schema for a namespaced approver string (e.g., "github:user:alice") */
 const approverStringSchema = z.string().refine(
-  (val) => val === "" || isValidApproverString(val),
+  (val) => isValidApproverString(val),
   (val) => ({
     message:
       getApproverValidationError(val) ??

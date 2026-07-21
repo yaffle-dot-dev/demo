@@ -71,6 +71,8 @@
     onSelectRunGroup?: (runGroupId: string) => void
     /** Whether current user can manage org connections */
     canManageConnections?: boolean
+    /** Whether current user can mutate hosted infrastructure */
+    canMutateInfrastructure?: boolean
     /** Navigation start time for first-render timing */
     runViewStartMs?: number | null
     /** Correlation IDs for run-view monitoring */
@@ -106,6 +108,7 @@
   const onSwitchToLatest = $derived(props.onSwitchToLatest ?? null)
   const onSelectRunGroup = $derived(props.onSelectRunGroup ?? null)
   const canManageConnections = $derived(props.canManageConnections ?? false)
+  const canMutateInfrastructure = $derived(props.canMutateInfrastructure ?? false)
   const runViewStartMs = $derived(props.runViewStartMs ?? null)
   const runViewCorrelation = $derived(props.runViewCorrelation ?? null)
   const onTrackRunViewEvent = $derived(props.onTrackRunViewEvent ?? null)
@@ -2401,6 +2404,7 @@ terraform {
             {lifecycleStatusStale}
             {lifecyclePhasePresence}
             {lifecyclePhaseStatuses}
+            {canMutateInfrastructure}
           />
       </div>
     {/if}
@@ -2474,7 +2478,7 @@ terraform {
                   </div>
 
                   <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
-                    {#if runningRun}
+                    {#if canMutateInfrastructure && runningRun}
                       <button
                         onclick={handleCancel}
                         disabled={cancellingRunId !== null}
@@ -2494,12 +2498,12 @@ terraform {
                         {/if}
                         <span>{cancellingRunId === runningRun.id ? "cxl" : "cancel"}</span>
                       </button>
-                    {:else if canRerun}
+                    {:else if canMutateInfrastructure && canRerun}
                       <button
                         onclick={handleRerun}
                         disabled={rerunning}
                         class="flex items-center gap-1 rounded px-2 py-1 text-text-muted transition-colors hover:bg-status-planning/10 hover:text-status-planning disabled:cursor-not-allowed disabled:opacity-50"
-                        title="Re-run plan and apply"
+                        title="Re-run plan"
                       >
                         {#if rerunning}
                           <svg class="h-3 w-3 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -2543,6 +2547,7 @@ terraform {
                     {lifecycleStatusStale}
                     {lifecyclePhasePresence}
                     {lifecyclePhaseStatuses}
+                    {canMutateInfrastructure}
                   />
                 </div>
               </aside>
@@ -2598,7 +2603,7 @@ terraform {
                 {/if}
               </div>
               <div class="flex items-center gap-2">
-                {#if runningRun}
+                {#if canMutateInfrastructure && runningRun}
                   <!-- Cancel button for running runs -->
                   <button
                     onclick={handleCancel}
@@ -2622,7 +2627,7 @@ terraform {
                     {/if}
                     <span>{cancellingRunId === runningRun.id ? "cancelling" : "cancel"}</span>
                   </button>
-                {:else if canRerun}
+                {:else if canMutateInfrastructure && canRerun}
                   <!-- Run again button for completed runs -->
                   <button
                     onclick={handleRerun}
@@ -2631,7 +2636,7 @@ terraform {
                            text-text-muted hover:text-status-planning hover:bg-status-planning/10 
                            rounded transition-colors
                            disabled:opacity-50 disabled:cursor-not-allowed"
-                    title="Re-run plan and apply"
+                    title="Re-run plan"
                   >
                     {#if rerunning}
                       <svg class="w-3.5 h-3.5 animate-spin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">

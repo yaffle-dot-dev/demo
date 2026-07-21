@@ -1343,6 +1343,26 @@ api_url = "https://github.example.test/api/v3"
   })
 })
 
+test("rejects empty configured approver identities", () => {
+  expect(() =>
+    parseYaffleToml(`
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+[[cloud.approvals]]
+workspaces = ["infra"]
+environments = ["main"]
+approvers = [""]
+`),
+  ).toThrow(/Approver string cannot be empty/)
+})
+
 describe("resolveApprovers", () => {
   const config = parseYaffleToml(`
 version = 1

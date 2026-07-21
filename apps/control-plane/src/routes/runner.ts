@@ -96,6 +96,7 @@ import {
   ExecutionContextAssociationError,
   findExecutionSnapshotWorkspace,
 } from "../lib/execution-snapshot.ts"
+import { applyDecisionMatchesExecution, isApplyDecision } from "../lib/execution-mutation.ts"
 
 // ---------------------------------------------------------------------------
 // Types
@@ -405,6 +406,37 @@ async function createClaimResponse(
   }
 
   const { deployment } = jobContext
+  if (job.jobType === "apply") {
+    const executionSnapshot = jobContext.runGroup?.executionSnapshot
+    const workspace = executionSnapshot?.workspaces.find(
+      (candidate) => candidate.path === deployment.workspacePath,
+    )
+    if (
+      !workspace ||
+      !executionSnapshot ||
+      !applyDecisionMatchesExecution({
+        decision: jobContext.applyDecision,
+        runGroupId: jobContext.runGroup!.id,
+        planRunId: isApplyDecision(jobContext.applyDecision)
+          ? jobContext.applyDecision.planRunId
+          : "",
+        workspacePath: deployment.workspacePath,
+        environmentKind: deployment.environmentKind,
+        configurationDigest: executionSnapshot.configuration.digest,
+        approval: workspace.approval,
+      })
+    ) {
+      await failJobFromRunner(
+        {
+          jobId: job.id,
+          deploymentId: deployment.id,
+          runGroupId: jobContext.runGroup!.id,
+        },
+        "Apply job has no valid authorization decision",
+      )
+      throw new ExecutionContextAssociationError("Apply job has no valid authorization decision")
+    }
+  }
 
   const statusMap: Record<string, "planning" | "applying" | "destroying"> = {
     plan: "planning",
@@ -1961,24 +1993,36 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
     })
   }
 
-  // For apply jobs, look up the saved plan file from the latest successful plan
+  // Apply only the saved plan named by the authorized decision.
   let planFileUrl: string | undefined
   if (job.jobType === "apply") {
     try {
-      const latestPlan = await findLatestSuccessfulRun(deployment.id, "plan", runGroup.id)
-      if (!latestPlan?.planFileS3Key) {
+      if (!isApplyDecision(job.applyDecision)) {
+        return c.json(
+          { error: { code: "APPLY_NOT_AUTHORIZED", message: "Apply authorization is invalid" } },
+          409,
+        )
+      }
+      const approvedPlan = await findRunById(job.applyDecision.planRunId)
+      if (
+        !approvedPlan?.planFileS3Key ||
+        approvedPlan.deploymentId !== deployment.id ||
+        approvedPlan.runGroupId !== runGroup.id ||
+        approvedPlan.runType !== "plan" ||
+        approvedPlan.status !== "success"
+      ) {
         return c.json(
           { error: { code: "PLAN_ARTIFACT_UNAVAILABLE", message: "Saved plan is unavailable" } },
           409,
         )
       }
       const cache = createWorkspaceCache()
-      await cache.assertPlanFileExists(latestPlan.planFileS3Key)
-      planFileUrl = await cache.getDownloadUrl(latestPlan.planFileS3Key)
+      await cache.assertPlanFileExists(approvedPlan.planFileS3Key)
+      planFileUrl = await cache.getDownloadUrl(approvedPlan.planFileS3Key)
       logger.info("runner.context.plan_file_url", {
         jobId,
-        planRunId: latestPlan.id,
-        s3Key: latestPlan.planFileS3Key,
+        planRunId: approvedPlan.id,
+        s3Key: approvedPlan.planFileS3Key,
       })
     } catch (err) {
       logger.warn("runner.context.plan_file_url_failed", {

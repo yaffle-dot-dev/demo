@@ -300,6 +300,16 @@ fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
     let trigger_root = cloud.as_ref().and_then(|cloud| cloud.triggers.clone());
     let approvals = cloud.and_then(|cloud| cloud.approvals).unwrap_or_default();
 
+    for approval in &approvals {
+        for approver in &approval.approvers {
+            if !is_valid_approver(approver) {
+                errors.push(format!(
+                    "invalid approver format \"{approver}\": expected github:user:<username> or github:team:<org>/<team>"
+                ));
+            }
+        }
+    }
+
     let triggers = normalize_triggers(trigger_root, &declared_environments, &mut errors);
 
     if !errors.is_empty() {
@@ -321,6 +331,19 @@ fn normalize_and_validate(raw: RawConfig) -> Result<YaffleConfig, ConfigError> {
             approvals,
         },
     })
+}
+
+fn is_valid_approver(value: &str) -> bool {
+    if let Some(username) = value.strip_prefix("github:user:") {
+        return !username.trim().is_empty() && !username.contains('/');
+    }
+    if let Some(team) = value.strip_prefix("github:team:") {
+        let mut parts = team.split('/');
+        return parts.next().is_some_and(|part| !part.trim().is_empty())
+            && parts.next().is_some_and(|part| !part.trim().is_empty())
+            && parts.next().is_none();
+    }
+    false
 }
 
 fn normalize_environment_selector(raw: RawEnvironmentSelector) -> EnvironmentSelector {
@@ -1079,6 +1102,28 @@ approvers = ["github:user:alice"]
             config.cloud.approvals[0].approvers,
             vec!["github:user:alice"]
         );
+    }
+
+    #[test]
+    fn rejects_empty_approval_identity() {
+        let input = r#"
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+[[cloud.approvals]]
+workspaces = ["infra"]
+environments = ["main"]
+approvers = [""]
+"#;
+
+        let error = parse_yaffle_toml(input).expect_err("empty approver should fail");
+        assert!(error.to_string().contains("invalid approver format"));
     }
 
     #[test]

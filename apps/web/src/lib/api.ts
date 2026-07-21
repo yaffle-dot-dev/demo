@@ -677,14 +677,14 @@ export async function cancelRun(runId: string): Promise<{ cancelled: boolean }> 
 }
 
 /**
- * Manually re-run a preview (plan + apply).
+ * Manually re-run a preview plan.
  */
 export async function rerunPreview(
   previewId: string,
-): Promise<{ rerunStarted: boolean; runGroupId: string }> {
-  const res = await postJson<{ data: { rerunStarted: boolean; runGroupId: string } }>(
-    `/previews/${previewId}/rerun`,
-  )
+): Promise<{ rerunQueued: boolean; runGroupId: string; jobId: string }> {
+  const res = await postJson<{
+    data: { rerunQueued: boolean; runGroupId: string; jobId: string }
+  }>(`/previews/${previewId}/rerun`)
   return res.data
 }
 
@@ -694,8 +694,8 @@ export async function rerunPreview(
  */
 export async function triggerApply(
   previewId: string,
-): Promise<{ applyStarted: boolean; runId: string }> {
-  const res = await postJson<{ data: { applyStarted: boolean; runId: string } }>(
+): Promise<{ applyStarted: boolean; jobId: string }> {
+  const res = await postJson<{ data: { applyStarted: boolean; jobId: string } }>(
     `/previews/${previewId}/apply`,
   )
   return res.data

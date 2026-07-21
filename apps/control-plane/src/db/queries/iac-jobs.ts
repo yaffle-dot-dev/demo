@@ -26,6 +26,7 @@ import {
   getRunnerStartupDurationHistogram,
   getRunnerTaskDurationHistogram,
 } from "../../lib/telemetry.ts"
+import { type ApplyDecision, isApplyDecision } from "../../lib/execution-mutation.ts"
 import { events } from "../../lib/events.ts"
 import { updateDeploymentStatus } from "./workspace-deployments.ts"
 import { updateRunStatus } from "./tf-runs.ts"
@@ -239,6 +240,7 @@ export async function createIacJob(values: {
   planPurpose?: "environment" | "merge_impact"
   targetWorkspaceId?: string
   targetStateVersionId?: string
+  applyDecision?: ApplyDecision
 }): Promise<IacJob> {
   const deploymentId = values.deploymentId ?? values.previewId
   if (!deploymentId) {
@@ -247,6 +249,19 @@ export async function createIacJob(values: {
 
   return withDbSpan("insert", "iac_jobs", async () => {
     const runGroupId = await resolveRunGroupIdForDeployment(deploymentId, values.runGroupId)
+    if (values.jobType === "apply") {
+      if (
+        !runGroupId ||
+        !isApplyDecision(values.applyDecision) ||
+        values.applyDecision.runGroupId !== runGroupId
+      ) {
+        throw new ExecutionContextAssociationError(
+          "Apply jobs require an authorized decision for the exact execution context",
+        )
+      }
+    } else if (values.applyDecision !== undefined) {
+      throw new ExecutionContextAssociationError("Only apply jobs may carry an apply decision")
+    }
     const planPurpose = values.planPurpose ?? "environment"
     if (planPurpose === "merge_impact") {
       if (
@@ -273,6 +288,7 @@ export async function createIacJob(values: {
         planPurpose,
         targetWorkspaceId: values.targetWorkspaceId,
         targetStateVersionId: values.targetStateVersionId,
+        applyDecision: values.applyDecision,
         status: "queued",
         blockedAt: null,
         blockedReason: null,

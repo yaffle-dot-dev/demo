@@ -16,6 +16,7 @@ import {
 } from "../../db/queries/workspaces.ts"
 import { discardPendingStateVersions } from "../../db/queries/state-versions.ts"
 import { TFC_SCOPES } from "../../db/queries/api-tokens.ts"
+import { authorizeInfrastructureRole } from "../../lib/execution-mutation.ts"
 import {
   tfcAuth,
   authorizeOrgAccess,
@@ -722,6 +723,7 @@ workspacesRoute.post(
     }
 
     const { workspace: ws } = access
+    authorizeInfrastructureRole("force_unlock", access.role ?? "")
 
     if (!ws.locked) {
       return c.json({ errors: [{ status: "409", title: "Workspace is not locked" }] }, 409)

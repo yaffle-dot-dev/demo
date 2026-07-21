@@ -14,6 +14,7 @@
   import type { EnvironmentPreviewGroup } from "$lib/api"
   import AsyncLoader from "$lib/components/AsyncLoader.svelte"
   import PreviewGroupPage from "$lib/components/PreviewGroupPage.svelte"
+  import { canMutateInfrastructure as roleCanMutateInfrastructure } from "$lib/execution-permissions"
 
   type PageData = {
     initialEnvironment: EnvironmentPreviewGroup | null
@@ -86,6 +87,7 @@
   )
 
   let canManageConnections = $state(false)
+  let canMutateInfrastructure = $state(false)
   let lastEnvironmentConnectionState = $state<"connecting" | "connected" | "disconnected">("connecting")
   let hasSeenEnvironmentConnected = $state(false)
   let environmentReconnectCount = $state(0)
@@ -255,8 +257,10 @@
         const orgsRes = await listOrgs()
         const orgRole = orgsRes.data.find((item) => item.slug === org)?.role ?? ""
         canManageConnections = orgRole === "admin"
+        canMutateInfrastructure = roleCanMutateInfrastructure(orgRole)
       } catch {
         canManageConnections = false
+        canMutateInfrastructure = false
       }
     })()
 
@@ -298,6 +302,7 @@
     onSwitchToLatest={stream.switchToLatest}
     onSelectRunGroup={stream.pinToRunGroup}
     {canManageConnections}
+    {canMutateInfrastructure}
     {runViewStartMs}
     runViewCorrelation={{ runViewSessionId, pageViewId }}
     onTrackRunViewEvent={trackRunViewEvent}

@@ -253,6 +253,13 @@
       "when": 1784432000000,
       "tag": "0035_bind_runner_capabilities",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1784669599000,
+      "tag": "0036_authorized_apply_decisions",
+      "breakpoints": true
     }
   ]
 }

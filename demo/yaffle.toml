@@ -1,0 +1,73 @@
+# Yaffle configuration demo
+
+version = 1
+
+# Named environments. Pull requests use transient pr-{number} environments and
+# do not need to be declared here.
+[[environments]]
+name = "production"
+
+[[environments]]
+name = "staging"
+
+[[environments]]
+name = "development"
+
+[cloud]
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/main"]
+environment = "production"
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/staging"]
+environment = "staging"
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/develop"]
+environment = "development"
+
+[[cloud.triggers.github.pull_request]]
+branch_patterns = ["*"]
+
+# Production changes to core and database infrastructure require approval from
+# the linked GitHub account for lamalex. Change this to your GitHub login when
+# adapting the demo for another account.
+[[cloud.approvals]]
+workspaces = ["infra/core", "infra/database"]
+environments = ["production"]
+approvers = ["github:user:lamalex"]
+
+# Shared infrastructure runs in every named and transient environment.
+[[workspaces]]
+path = "infra/shared"
+environments = ["*"]
+
+[[workspaces]]
+path = "infra/core"
+environments = ["production", "staging"]
+variables.project_name = "yaffle-demo"
+variables.enable_monitoring = true
+variables.retention_days = 30
+
+[[workspaces]]
+path = "infra/database"
+environments = ["production"]
+variables.instance_count = 3
+variables.enable_backups = true
+
+[[workspaces]]
+path = "infra/app"
+environments = ["staging", "development"]
+variables.min_instances = 1
+variables.max_instances = 5
+variables.enable_debug = false
+
+[[workspaces]]
+path = "infra/feature-flags"
+environments = ["*"]
+
+[[workspaces]]
+path = "infra/sandbox"
+environments = ["development"]
+variables.sandbox_mode = true

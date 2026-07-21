@@ -14,6 +14,8 @@
  *    Call `release()` for immediate handoff, or let it expire on crash.
  */
 
+import { randomUUID } from "node:crypto"
+
 import { eq, sql } from "drizzle-orm"
 
 import { db } from "./db.ts"
@@ -139,23 +141,20 @@ export class DbLeaseMutex implements Mutex {
 
   async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const leaseKey = `mutex:${key}`
+    const holderId = `${this.holderId}:${randomUUID()}`
+    let lease: LeaseHandle | null = null
 
     // Spin until we acquire the lease
-    while (true) {
-      const acquired = await tryAcquire(leaseKey, this.holderId, this.ttlMs)
-      if (acquired) break
+    while (!lease) {
+      lease = await acquireLease(leaseKey, holderId, this.ttlMs)
+      if (lease) break
       await new Promise((resolve) => setTimeout(resolve, MUTEX_RETRY_INTERVAL_MS))
     }
 
     try {
       return await fn()
     } finally {
-      // Release immediately so the next waiter doesn't have to wait for expiry
-      try {
-        await db.delete(leases).where(eq(leases.key, leaseKey))
-      } catch {
-        // Lease will expire naturally
-      }
+      await lease.release()
     }
   }
 }
