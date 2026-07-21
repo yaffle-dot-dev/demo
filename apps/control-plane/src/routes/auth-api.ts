@@ -18,16 +18,22 @@ const createApiKeySchema = z.object({
   name: z.string().min(1).max(64),
   orgId: z.string().uuid(),
   access: z.enum(["read", "write"]),
-  expiresIn: z.number().int().positive().max(365 * 24 * 60 * 60),
+  expiresIn: z
+    .number()
+    .int()
+    .positive()
+    .max(365 * 24 * 60 * 60),
 })
 
-const upsertPrivateBetaInviteSchema = z.object({
-  email: z.string().email().optional(),
-  githubLogin: z.string().min(1).max(64).optional(),
-  note: z.string().max(500).optional(),
-}).refine((value) => !!value.email || !!value.githubLogin, {
-  message: "email or githubLogin is required",
-})
+const upsertPrivateBetaInviteSchema = z
+  .object({
+    email: z.string().email().optional(),
+    githubLogin: z.string().min(1).max(64).optional(),
+    note: z.string().max(500).optional(),
+  })
+  .refine((value) => !!value.email || !!value.githubLogin, {
+    message: "email or githubLogin is required",
+  })
 
 async function requireOperator(c: Context) {
   const authContext = await requireAuth(c.req.raw.headers)
@@ -52,10 +58,10 @@ type ListedApiKey = NonNullable<Awaited<ReturnType<typeof auth.api.listApiKeys>>
 authApiRoute.get("/me", async (c) => {
   try {
     const auth = await requireAuth(c.req.raw.headers)
-    
+
     // Get the user's GitHub ID for matching PR authors
     const githubId = await getGithubIdForUser(auth.userId)
-    
+
     return c.json({
       data: {
         userId: auth.userId,
@@ -87,7 +93,10 @@ authApiRoute.get("/private-beta/access", async (c) => {
     if (err instanceof AuthError) {
       return c.json({ error: { code: err.code, message: err.message } }, 401)
     }
-    return c.json({ error: { code: "INTERNAL_ERROR", message: "failed to evaluate private beta access" } }, 500)
+    return c.json(
+      { error: { code: "INTERNAL_ERROR", message: "failed to evaluate private beta access" } },
+      500,
+    )
   }
 })
 
@@ -101,7 +110,10 @@ authApiRoute.get("/private-beta/invites", async (c) => {
     if (err instanceof AuthError) {
       return c.json({ error: { code: err.code, message: err.message } }, 401)
     }
-    return c.json({ error: { code: "INTERNAL_ERROR", message: "failed to list private beta invites" } }, 500)
+    return c.json(
+      { error: { code: "INTERNAL_ERROR", message: "failed to list private beta invites" } },
+      500,
+    )
   }
 })
 
@@ -124,9 +136,17 @@ authApiRoute.post("/private-beta/invites", async (c) => {
       return c.json({ error: { code: err.code, message: err.message } }, 401)
     }
     if (err instanceof z.ZodError) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: err.issues[0]?.message ?? "invalid request" } }, 400)
+      return c.json(
+        {
+          error: { code: "VALIDATION_ERROR", message: err.issues[0]?.message ?? "invalid request" },
+        },
+        400,
+      )
     }
-    return c.json({ error: { code: "INTERNAL_ERROR", message: "failed to save private beta invite" } }, 500)
+    return c.json(
+      { error: { code: "INTERNAL_ERROR", message: "failed to save private beta invite" } },
+      500,
+    )
   }
 })
 
@@ -145,7 +165,10 @@ authApiRoute.delete("/private-beta/invites/:inviteId", async (c) => {
     if (err instanceof AuthError) {
       return c.json({ error: { code: err.code, message: err.message } }, 401)
     }
-    return c.json({ error: { code: "INTERNAL_ERROR", message: "failed to revoke private beta invite" } }, 500)
+    return c.json(
+      { error: { code: "INTERNAL_ERROR", message: "failed to revoke private beta invite" } },
+      500,
+    )
   }
 })
 
@@ -160,9 +183,10 @@ authApiRoute.get("/api-keys", async (c) => {
     })
 
     const items = (result.apiKeys ?? []).map((key: ListedApiKey) => {
-      const metadata = key.metadata && typeof key.metadata === "object"
-        ? key.metadata as Record<string, unknown>
-        : {}
+      const metadata =
+        key.metadata && typeof key.metadata === "object"
+          ? (key.metadata as Record<string, unknown>)
+          : {}
       const scopedOrgId = typeof metadata.orgId === "string" ? metadata.orgId : null
       const org = scopedOrgId ? orgMap.get(scopedOrgId) : null
 
@@ -175,8 +199,8 @@ authApiRoute.get("/api-keys", async (c) => {
         enabled: key.enabled,
         access: metadata.access === "write" ? "write" : "read",
         orgId: scopedOrgId,
-        orgSlug: typeof metadata.orgSlug === "string" ? metadata.orgSlug : org?.slug ?? null,
-        orgName: typeof metadata.orgName === "string" ? metadata.orgName : org?.name ?? null,
+        orgSlug: typeof metadata.orgSlug === "string" ? metadata.orgSlug : (org?.slug ?? null),
+        orgName: typeof metadata.orgName === "string" ? metadata.orgName : (org?.name ?? null),
       }
     })
 
@@ -197,7 +221,12 @@ authApiRoute.post("/api-keys", async (c) => {
 
     if (!parsed.success) {
       return c.json(
-        { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0]?.message ?? "invalid request" } },
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: parsed.error.issues[0]?.message ?? "invalid request",
+          },
+        },
         400,
       )
     }
@@ -208,9 +237,8 @@ authApiRoute.post("/api-keys", async (c) => {
       return c.json({ error: { code: "FORBIDDEN", message: "org access denied" } }, 403)
     }
 
-    const permissions = parsed.data.access === "write"
-      ? { yaffle: ["read", "write"] }
-      : { yaffle: ["read"] }
+    const permissions =
+      parsed.data.access === "write" ? { yaffle: ["read", "write"] } : { yaffle: ["read"] }
 
     const result = await auth.api.createApiKey({
       body: {
@@ -228,24 +256,32 @@ authApiRoute.post("/api-keys", async (c) => {
       },
     })
 
-    return c.json({
-      data: {
-        id: result.id,
-        key: result.key,
-        name: result.name,
-        expiresAt: result.expiresAt,
-        access: parsed.data.access,
-        orgId: org.id,
-        orgSlug: org.slug,
-        orgName: org.name,
+    return c.json(
+      {
+        data: {
+          id: result.id,
+          key: result.key,
+          name: result.name,
+          expiresAt: result.expiresAt,
+          access: parsed.data.access,
+          orgId: org.id,
+          orgSlug: org.slug,
+          orgName: org.name,
+        },
       },
-    }, 201)
+      201,
+    )
   } catch (err) {
     if (err instanceof AuthError) {
       return c.json({ error: { code: err.code, message: err.message } }, 401)
     }
     if (err instanceof z.ZodError) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: err.issues[0]?.message ?? "invalid request" } }, 400)
+      return c.json(
+        {
+          error: { code: "VALIDATION_ERROR", message: err.issues[0]?.message ?? "invalid request" },
+        },
+        400,
+      )
     }
     console.error("failed to create api key", err)
     return c.json({ error: { code: "INTERNAL_ERROR", message: "failed to create api key" } }, 500)

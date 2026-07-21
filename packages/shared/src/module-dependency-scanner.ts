@@ -164,9 +164,7 @@ function resolveExpressionValue(value: string, context: ResolutionContext): stri
   return resolvedValue.includes("${") ? null : resolvedValue
 }
 
-function collectStringAssignments(
-  assignments: Record<string, unknown>,
-): Array<[string, string]> {
+function collectStringAssignments(assignments: Record<string, unknown>): Array<[string, string]> {
   return Object.entries(assignments).flatMap(([name, value]) =>
     typeof value === "string" ? [[name, value] as [string, string]] : [],
   )
@@ -179,16 +177,16 @@ function optionsVariablesToStrings(
     return {}
   }
 
-  return Object.fromEntries(
-    Object.entries(variables).map(([name, value]) => [name, String(value)]),
-  )
+  return Object.fromEntries(Object.entries(variables).map(([name, value]) => [name, String(value)]))
 }
 
 function buildResolutionContext(
   document: ParsedHclDocument,
   providedVariables?: DependencyScannerVariableBindings,
 ): ResolutionContext {
-  const variables = new Map<string, string>(Object.entries(optionsVariablesToStrings(providedVariables)))
+  const variables = new Map<string, string>(
+    Object.entries(optionsVariablesToStrings(providedVariables)),
+  )
   const locals = new Map<string, string>()
   const pendingVariables = new Map<string, string>()
   const pendingLocals = new Map<string, string>()

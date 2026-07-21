@@ -26,7 +26,9 @@ export async function handleProviderDiscoveryJob(job: Job): Promise<void> {
 
   const endpoint = process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT
   if (!endpoint) {
-    throw new Error("YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT is required when discovery is enabled")
+    throw new Error(
+      "YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT is required when discovery is enabled",
+    )
   }
 
   const token = process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN
@@ -35,7 +37,9 @@ export async function handleProviderDiscoveryJob(job: Job): Promise<void> {
   }
 
   if (!process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET) {
-    throw new Error("YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET is required when discovery is enabled")
+    throw new Error(
+      "YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET is required when discovery is enabled",
+    )
   }
 
   const parsed = providerDiscoveryPayloadSchema.safeParse(job.payload)

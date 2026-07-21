@@ -3,7 +3,7 @@ title: AWS Setup
 description: Set up IAM access for Yaffle with Terraform, CloudFormation, or AWS CLI.
 ---
 
-import { Aside, Steps, Tabs, TabItem } from '@astrojs/starlight/components';
+import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components"
 
 # Set up IAM access for Yaffle
 
@@ -26,7 +26,7 @@ want environment isolation, then paste those role ARNs in Yaffle.
 3. **Copy the resulting role ARN** from your method output.
 
 4. **Paste role ARN in Yaffle Step 3** and save the connection.
-</Steps>
+   </Steps>
 
 <Aside type="note">
 Yaffle includes an STS session tag named `environment` on AWS role assumptions
@@ -38,6 +38,7 @@ need your trust policy to allow both `sts:AssumeRole` and `sts:TagSession`.
 If you use the Terraform bootstrap module on this page, this is already configured
 for you. If you write the trust policy yourself, include `sts:TagSession` in the
 allowed actions.
+
 </Aside>
 
 ---
@@ -80,6 +81,7 @@ allowed actions.
     ```bash
     tofu output -raw yaffle_role_arn
     ```
+
   </TabItem>
 
   <TabItem label="CloudFormation">
@@ -153,6 +155,7 @@ allowed actions.
       --query "Stacks[0].Outputs[?OutputKey=='RoleArn'].OutputValue" \
       --output text
     ```
+
   </TabItem>
 
   <TabItem label="AWS CLI">
@@ -199,6 +202,7 @@ allowed actions.
       --query 'Role.Arn' \
       --output text
     ```
+
   </TabItem>
 </Tabs>
 
@@ -214,9 +218,9 @@ Default bootstrap creates one role with:
 - `AdministratorAccess` permissions
 
 <Aside type="tip">
-The default setup is still a single broad execution role. The session tag is attached
-automatically, but nothing about your access model changes unless you choose to add
-tag-based trust or IAM conditions.
+  The default setup is still a single broad execution role. The session tag is attached
+  automatically, but nothing about your access model changes unless you choose to add tag-based
+  trust or IAM conditions.
 </Aside>
 
 ## Optional policy customization
@@ -330,8 +334,8 @@ module "yaffle_other_environments" {
 ```
 
 <Aside type="note">
-If you prefer a permissions boundary instead of explicit deny policies, pass
-`permissions_boundary_arn` to the bootstrap module and keep the same session-tag trust rules.
+  If you prefer a permissions boundary instead of explicit deny policies, pass
+  `permissions_boundary_arn` to the bootstrap module and keep the same session-tag trust rules.
 </Aside>
 
 You can substitute any protected environment name here, not just `production`.

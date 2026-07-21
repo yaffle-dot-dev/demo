@@ -6,37 +6,37 @@ export type DeployableSecretAccess = "value" | "reference"
 
 export type DeployableSecretSource =
   | {
-    type: "literal"
-    value: string
-  }
+      type: "literal"
+      value: string
+    }
   | {
-    type: "env"
-    name: string
-  }
+      type: "env"
+      name: string
+    }
   | {
-    type: "aws-secretsmanager"
-    secretId: string
-  }
+      type: "aws-secretsmanager"
+      secretId: string
+    }
   | {
-    type: "workspace-output"
-    workspace: string
-    output: string
-    outputType?: "plain" | "aws-secret-id" | "aws-secret-arn"
-  }
+      type: "workspace-output"
+      workspace: string
+      output: string
+      outputType?: "plain" | "aws-secret-id" | "aws-secret-arn"
+    }
 
 export type DeployableSecretDelivery =
   | {
-    type: "none"
-  }
+      type: "none"
+    }
   | {
-    type: "env"
-    name: string
-  }
+      type: "env"
+      name: string
+    }
   | {
-    type: "file"
-    pathEnvVar: string
-    fileName?: string
-  }
+      type: "file"
+      pathEnvVar: string
+      fileName?: string
+    }
 
 export interface DeployableSecretDefinition {
   name: string

@@ -8,33 +8,39 @@ describe("shouldSkipArtifactBuild", () => {
   })
 
   test("does not skip when CI needs to build a missing artifact", () => {
-    expect(shouldSkipArtifactBuild({
-      strategy: "build_missing_artifact",
-      deployableName: "control-plane",
-      changed: true,
-      targetSha: "abc123",
-      artifactRef: "repo/control-plane:sha-abc123",
-    })).toBe(false)
+    expect(
+      shouldSkipArtifactBuild({
+        strategy: "build_missing_artifact",
+        deployableName: "control-plane",
+        changed: true,
+        targetSha: "abc123",
+        artifactRef: "repo/control-plane:sha-abc123",
+      }),
+    ).toBe(false)
   })
 
   test("skips when CI can reuse an existing artifact", () => {
-    expect(shouldSkipArtifactBuild({
-      strategy: "reuse_previous_artifact",
-      deployableName: "control-plane",
-      changed: false,
-      targetSha: "abc123",
-      artifactRef: "repo/control-plane:sha-prev",
-      reusedFromArtifactRef: "repo/control-plane:sha-prev",
-    })).toBe(true)
+    expect(
+      shouldSkipArtifactBuild({
+        strategy: "reuse_previous_artifact",
+        deployableName: "control-plane",
+        changed: false,
+        targetSha: "abc123",
+        artifactRef: "repo/control-plane:sha-prev",
+        reusedFromArtifactRef: "repo/control-plane:sha-prev",
+      }),
+    ).toBe(true)
   })
 
   test("skips when the target sha artifact already exists", () => {
-    expect(shouldSkipArtifactBuild({
-      strategy: "use_sha_artifact",
-      deployableName: "control-plane",
-      changed: true,
-      targetSha: "abc123",
-      artifactRef: "repo/control-plane:sha-abc123",
-    })).toBe(true)
+    expect(
+      shouldSkipArtifactBuild({
+        strategy: "use_sha_artifact",
+        deployableName: "control-plane",
+        changed: true,
+        targetSha: "abc123",
+        artifactRef: "repo/control-plane:sha-abc123",
+      }),
+    ).toBe(true)
   })
 })

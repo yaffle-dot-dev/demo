@@ -60,9 +60,7 @@ async function signCallback(params: {
 function mockDiscoveryAgent(handler: (request: Request) => Promise<Response>): void {
   globalThis.fetch = Object.assign(
     async (input: string | URL | Request, init?: RequestInit) => {
-      const request = input instanceof Request
-        ? input
-        : new Request(String(input), init)
+      const request = input instanceof Request ? input : new Request(String(input), init)
 
       const url = new URL(request.url)
       if (url.origin === "https://provider-discovery-agent.test") {
@@ -85,7 +83,8 @@ beforeEach(async () => {
   clearProviderDiscoveryCallbackNonceCacheForTests()
 
   process.env.YAFFLE_PROVIDER_DISCOVERY_ENABLED = "true"
-  process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT = "https://provider-discovery-agent.test/discover"
+  process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT =
+    "https://provider-discovery-agent.test/discover"
   process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN = "provider-agent-token"
   process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET = "provider-callback-secret"
   process.env.YAFFLE_PUBLIC_API_URL = "https://yaffle.local"
@@ -145,7 +144,7 @@ describe("provider discovery smoke flow", () => {
       expect(request.method).toBe("POST")
       expect(request.headers.get("authorization")).toBe("Bearer provider-agent-token")
       expect(request.headers.get("content-type")).toContain("application/json")
-      dispatchBody = await request.json() as Record<string, unknown>
+      dispatchBody = (await request.json()) as Record<string, unknown>
       return Response.json({ data: { accepted: true } }, { status: 202 })
     })
 
@@ -203,7 +202,7 @@ describe("provider discovery smoke flow", () => {
       body,
     })
     expect(callbackRes.status).toBe(202)
-    const callbackResBody = await callbackRes.json() as { data: { accepted: boolean } }
+    const callbackResBody = (await callbackRes.json()) as { data: { accepted: boolean } }
     expect(callbackResBody.data.accepted).toBe(true)
 
     const signatureRecord = await findProviderCredentialSignatureByType(missingProvider)
@@ -218,11 +217,14 @@ describe("provider discovery smoke flow", () => {
       source: "agent_auto",
     })
 
-    const signaturesRes = await app.request(`/api/orgs/${adminCtx.org.slug}/provider-credential-signatures`, {
-      headers: authHeaders(),
-    })
+    const signaturesRes = await app.request(
+      `/api/orgs/${adminCtx.org.slug}/provider-credential-signatures`,
+      {
+        headers: authHeaders(),
+      },
+    )
     expect(signaturesRes.status).toBe(200)
-    const signaturesBody = await signaturesRes.json() as {
+    const signaturesBody = (await signaturesRes.json()) as {
       data: Array<{ providerType: string; displayName: string; exactEnvVars: string[] }>
     }
     expect(signaturesBody.data).toEqual(
@@ -411,8 +413,6 @@ describe("provider discovery smoke flow", () => {
       exactEnvVars: ["CALLBACKFAIL_TOKEN"],
     })
 
-    await expect(
-      findProviderCredentialSignatureByType(failingProvider),
-    ).resolves.toBeUndefined()
+    await expect(findProviderCredentialSignatureByType(failingProvider)).resolves.toBeUndefined()
   })
 })

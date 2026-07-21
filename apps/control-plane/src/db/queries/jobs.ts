@@ -43,11 +43,7 @@ export async function createJob(data: {
  */
 export async function findJobById(id: string): Promise<Job | undefined> {
   return withDbSpan("select", "jobs", async () => {
-    const rows = await db
-      .select()
-      .from(jobs)
-      .where(eq(jobs.id, id))
-      .limit(1)
+    const rows = await db.select().from(jobs).where(eq(jobs.id, id)).limit(1)
     return rows[0]
   })
 }
@@ -56,19 +52,12 @@ export async function findJobById(id: string): Promise<Job | undefined> {
  * Claim a pending job for processing.
  * Uses FOR UPDATE SKIP LOCKED for safe concurrent access.
  */
-export async function claimJob(
-  workerId: string,
-  jobTypes?: string[],
-): Promise<Job | undefined> {
+export async function claimJob(workerId: string, jobTypes?: string[]): Promise<Job | undefined> {
   return withDbSpan("update", "jobs", async () => {
     const now = new Date()
 
     return db.transaction(async (tx) => {
-      const conditions = [
-        eq(jobs.status, "pending"),
-        lte(jobs.runAt, now),
-        isNull(jobs.lockedBy),
-      ]
+      const conditions = [eq(jobs.status, "pending"), lte(jobs.runAt, now), isNull(jobs.lockedBy)]
 
       if (jobTypes && jobTypes.length > 0) {
         conditions.push(inArray(jobs.jobType, jobTypes))
@@ -107,10 +96,7 @@ export async function claimJob(
  */
 export async function completeJob(jobId: string): Promise<void> {
   return withDbSpan("update", "jobs", async () => {
-    await db
-      .update(jobs)
-      .set({ status: "completed" })
-      .where(eq(jobs.id, jobId))
+    await db.update(jobs).set({ status: "completed" }).where(eq(jobs.id, jobId))
   })
 }
 
@@ -148,21 +134,12 @@ export async function releaseJob(jobId: string, runAt?: Date): Promise<void> {
 /**
  * Find pending jobs for an org by type.
  */
-export async function findPendingJobsByType(
-  orgId: string,
-  jobType: string,
-): Promise<Job[]> {
+export async function findPendingJobsByType(orgId: string, jobType: string): Promise<Job[]> {
   return withDbSpan("select", "jobs", async () => {
     return db
       .select()
       .from(jobs)
-      .where(
-        and(
-          eq(jobs.orgId, orgId),
-          eq(jobs.jobType, jobType),
-          eq(jobs.status, "pending"),
-        ),
-      )
+      .where(and(eq(jobs.orgId, orgId), eq(jobs.jobType, jobType), eq(jobs.status, "pending")))
   })
 }
 
@@ -179,12 +156,14 @@ export async function findActiveProviderDiscoveryJob(
     const rows = await db
       .select()
       .from(jobs)
-      .where(and(
-        eq(jobs.orgId, orgId),
-        eq(jobs.jobType, "provider_discovery"),
-        inArray(jobs.status, ["pending", "running"]),
-        sql`${jobs.payload} ->> 'providerType' = ${normalizedProviderType}`,
-      ))
+      .where(
+        and(
+          eq(jobs.orgId, orgId),
+          eq(jobs.jobType, "provider_discovery"),
+          inArray(jobs.status, ["pending", "running"]),
+          sql`${jobs.payload} ->> 'providerType' = ${normalizedProviderType}`,
+        ),
+      )
       .limit(1)
 
     return rows[0]

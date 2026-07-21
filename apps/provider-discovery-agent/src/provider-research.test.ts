@@ -37,11 +37,7 @@ describe("inferPrefixEnvVars", () => {
   test("derives common provider prefix from exact vars", () => {
     const prefixes = inferPrefixEnvVars({
       providerType: "cloudflare",
-      exactEnvVars: [
-        "CLOUDFLARE_API_TOKEN",
-        "CLOUDFLARE_API_KEY",
-        "CLOUDFLARE_EMAIL",
-      ],
+      exactEnvVars: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL"],
     })
 
     expect(prefixes).toContain("CLOUDFLARE_")
@@ -50,11 +46,7 @@ describe("inferPrefixEnvVars", () => {
   test("handles multi-segment provider prefixes", () => {
     const prefixes = inferPrefixEnvVars({
       providerType: "newrelic",
-      exactEnvVars: [
-        "NEW_RELIC_API_KEY",
-        "NEW_RELIC_ACCOUNT_ID",
-        "NEW_RELIC_REGION",
-      ],
+      exactEnvVars: ["NEW_RELIC_API_KEY", "NEW_RELIC_ACCOUNT_ID", "NEW_RELIC_REGION"],
     })
 
     expect(prefixes).toContain("NEW_RELIC_")
@@ -64,41 +56,44 @@ describe("inferPrefixEnvVars", () => {
 describe("discoverProviderCredentials", () => {
   test("returns high-confidence env vars for a known provider", async () => {
     globalThis.fetch = mock(async (input: string | URL | Request) => {
-      const url = typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
 
       if (url === "https://registry.terraform.io/v1/providers?name=cloudflare") {
-        return new Response(JSON.stringify({
-          providers: [
-            {
-              namespace: "cloudflare",
-              name: "cloudflare",
-              source: "https://github.com/cloudflare/terraform-provider-cloudflare",
-              tier: "official",
-              downloads: 100,
-            },
-          ],
-        }), { status: 200 })
+        return new Response(
+          JSON.stringify({
+            providers: [
+              {
+                namespace: "cloudflare",
+                name: "cloudflare",
+                source: "https://github.com/cloudflare/terraform-provider-cloudflare",
+                tier: "official",
+                downloads: 100,
+              },
+            ],
+          }),
+          { status: 200 },
+        )
       }
 
       if (url === "https://registry.terraform.io/v1/providers/cloudflare/cloudflare") {
-        return new Response(JSON.stringify({
-          namespace: "cloudflare",
-          name: "cloudflare",
-          source: "https://github.com/cloudflare/terraform-provider-cloudflare",
-          tier: "official",
-          docs: [
-            {
-              title: "Provider Overview",
-              path: "docs/index.md",
-              slug: "index",
-              category: "overview",
-            },
-          ],
-        }), { status: 200 })
+        return new Response(
+          JSON.stringify({
+            namespace: "cloudflare",
+            name: "cloudflare",
+            source: "https://github.com/cloudflare/terraform-provider-cloudflare",
+            tier: "official",
+            docs: [
+              {
+                title: "Provider Overview",
+                path: "docs/index.md",
+                slug: "index",
+                category: "overview",
+              },
+            ],
+          }),
+          { status: 200 },
+        )
       }
 
       if (url === "https://api.github.com/repos/cloudflare/terraform-provider-cloudflare") {
@@ -106,13 +101,18 @@ describe("discoverProviderCredentials", () => {
       }
 
       if (
-        url === "https://raw.githubusercontent.com/cloudflare/terraform-provider-cloudflare/main/README.md"
-        || url === "https://raw.githubusercontent.com/cloudflare/terraform-provider-cloudflare/main/docs/index.md"
+        url ===
+          "https://raw.githubusercontent.com/cloudflare/terraform-provider-cloudflare/main/README.md" ||
+        url ===
+          "https://raw.githubusercontent.com/cloudflare/terraform-provider-cloudflare/main/docs/index.md"
       ) {
-        return new Response([
-          "Configure the cloudflare provider with CLOUDFLARE_API_TOKEN.",
-          "Legacy auth supports CLOUDFLARE_EMAIL and CLOUDFLARE_API_KEY.",
-        ].join("\n"), { status: 200 })
+        return new Response(
+          [
+            "Configure the cloudflare provider with CLOUDFLARE_API_TOKEN.",
+            "Legacy auth supports CLOUDFLARE_EMAIL and CLOUDFLARE_API_KEY.",
+          ].join("\n"),
+          { status: 200 },
+        )
       }
 
       throw new Error(`Unexpected fetch: ${url}`)
@@ -135,11 +135,8 @@ describe("discoverProviderCredentials", () => {
 
   test("returns inconclusive when no provider exists in registry", async () => {
     globalThis.fetch = mock(async (input: string | URL | Request) => {
-      const url = typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
 
       if (url === "https://registry.terraform.io/v1/providers?name=notreal") {
         return new Response(JSON.stringify({ providers: [] }), { status: 200 })
@@ -161,54 +158,60 @@ describe("discoverProviderCredentials", () => {
 
   test("supports source-address provider identifiers", async () => {
     globalThis.fetch = mock(async (input: string | URL | Request) => {
-      const url = typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
 
       if (url === "https://registry.terraform.io/v1/providers/hashicorp/tfe") {
-        return new Response(JSON.stringify({
-          namespace: "hashicorp",
-          name: "tfe",
-          source: "https://github.com/hashicorp/terraform-provider-tfe",
-          tier: "official",
-          docs: [
-            {
-              title: "Provider Overview",
-              path: "docs/index.md",
-              slug: "index",
-              category: "overview",
-            },
-          ],
-        }), { status: 200 })
+        return new Response(
+          JSON.stringify({
+            namespace: "hashicorp",
+            name: "tfe",
+            source: "https://github.com/hashicorp/terraform-provider-tfe",
+            tier: "official",
+            docs: [
+              {
+                title: "Provider Overview",
+                path: "docs/index.md",
+                slug: "index",
+                category: "overview",
+              },
+            ],
+          }),
+          { status: 200 },
+        )
       }
 
       if (url === "https://api.github.com/repos/hashicorp/terraform-provider-tfe") {
         return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 })
       }
 
-      if (url === "https://api.github.com/repos/hashicorp/terraform-provider-tfe/git/trees/main?recursive=1") {
-        return new Response(JSON.stringify({
-          tree: [
-            {
-              path: "website/docs/index.html.markdown",
-              type: "blob",
-            },
-          ],
-        }), { status: 200 })
+      if (
+        url ===
+        "https://api.github.com/repos/hashicorp/terraform-provider-tfe/git/trees/main?recursive=1"
+      ) {
+        return new Response(
+          JSON.stringify({
+            tree: [
+              {
+                path: "website/docs/index.html.markdown",
+                type: "blob",
+              },
+            ],
+          }),
+          { status: 200 },
+        )
       }
 
       if (
-        url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/README.md"
-        || url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/docs/index.md"
-        || url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/website/docs/index.html.markdown"
+        url ===
+          "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/README.md" ||
+        url ===
+          "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/docs/index.md" ||
+        url ===
+          "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/website/docs/index.html.markdown"
       ) {
         const body = url.endsWith("website/docs/index.html.markdown")
-          ? [
-              "Use TFE_TOKEN to authenticate.",
-              "Set TFE_ADDRESS for your hostname.",
-            ].join("\n")
+          ? ["Use TFE_TOKEN to authenticate.", "Set TFE_ADDRESS for your hostname."].join("\n")
           : "Provider overview"
 
         return new Response(body, { status: 200 })
@@ -230,31 +233,36 @@ describe("discoverProviderCredentials", () => {
 
   test("uses providerSource to resolve namespaced providers when providerType is short", async () => {
     globalThis.fetch = mock(async (input: string | URL | Request) => {
-      const url = typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.toString()
-          : input.url
+      const url =
+        typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
 
       if (url === "https://registry.terraform.io/v1/providers/hashicorp/tfe") {
-        return new Response(JSON.stringify({
-          namespace: "hashicorp",
-          name: "tfe",
-          source: "https://github.com/hashicorp/terraform-provider-tfe",
-          tier: "official",
-          docs: [],
-        }), { status: 200 })
+        return new Response(
+          JSON.stringify({
+            namespace: "hashicorp",
+            name: "tfe",
+            source: "https://github.com/hashicorp/terraform-provider-tfe",
+            tier: "official",
+            docs: [],
+          }),
+          { status: 200 },
+        )
       }
 
       if (url === "https://api.github.com/repos/hashicorp/terraform-provider-tfe") {
         return new Response(JSON.stringify({ default_branch: "main" }), { status: 200 })
       }
 
-      if (url === "https://api.github.com/repos/hashicorp/terraform-provider-tfe/git/trees/main?recursive=1") {
+      if (
+        url ===
+        "https://api.github.com/repos/hashicorp/terraform-provider-tfe/git/trees/main?recursive=1"
+      ) {
         return new Response(JSON.stringify({ tree: [] }), { status: 200 })
       }
 
-      if (url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/README.md") {
+      if (
+        url === "https://raw.githubusercontent.com/hashicorp/terraform-provider-tfe/main/README.md"
+      ) {
         return new Response("Use TFE_TOKEN to authenticate.", { status: 200 })
       }
 

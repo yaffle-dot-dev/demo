@@ -21,14 +21,20 @@ function runOrThrow(command: string[], executable: string): void {
 }
 
 const env = getRuntimeRoleBootstrapEnv()
-const sqlFilePath = resolve(dirname(fileURLToPath(import.meta.url)), "../sql/0001_runtime_role_grants.sql")
+const sqlFilePath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  "../sql/0001_runtime_role_grants.sql",
+)
 
-runOrThrow(buildPsqlArgs({
-  sqlFilePath,
-  adminDatabaseUrl: env.adminDatabaseUrl,
-  runtimeRoleName: env.runtimeRoleName,
-  runtimeRolePassword: env.runtimeRolePassword,
-}), "psql")
+runOrThrow(
+  buildPsqlArgs({
+    sqlFilePath,
+    adminDatabaseUrl: env.adminDatabaseUrl,
+    runtimeRoleName: env.runtimeRoleName,
+    runtimeRolePassword: env.runtimeRolePassword,
+  }),
+  "psql",
+)
 
 const runtimeDatabaseUrl = buildRuntimeDatabaseUrl({
   adminDatabaseUrl: env.adminDatabaseUrl,
@@ -36,9 +42,14 @@ const runtimeDatabaseUrl = buildRuntimeDatabaseUrl({
   runtimeRolePassword: env.runtimeRolePassword,
 })
 
-runOrThrow(buildPutSecretValueArgs({
-  secretId: env.runtimeDatabaseUrlSecretId,
-  secretString: runtimeDatabaseUrl,
-}), "aws")
+runOrThrow(
+  buildPutSecretValueArgs({
+    secretId: env.runtimeDatabaseUrlSecretId,
+    secretString: runtimeDatabaseUrl,
+  }),
+  "aws",
+)
 
-console.log(`Bootstrapped traffic-controller runtime role '${env.runtimeRoleName}' and updated secret '${env.runtimeDatabaseUrlSecretId}'.`)
+console.log(
+  `Bootstrapped traffic-controller runtime role '${env.runtimeRoleName}' and updated secret '${env.runtimeDatabaseUrlSecretId}'.`,
+)

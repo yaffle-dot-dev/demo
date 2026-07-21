@@ -98,11 +98,11 @@ const IMMUTABLE_FIELDS = [
  * Fetch the current active task definition for a family, stripped of immutable fields.
  */
 export async function describeTaskDefinition(family: string): Promise<Record<string, any>> {
-  const result = await client().send(
-    new DescribeTaskDefinitionCommand({ taskDefinition: family })
-  ).catch((error) => {
-    throw formatAwsError(`Failed to describe task definition ${family}`, error)
-  })
+  const result = await client()
+    .send(new DescribeTaskDefinitionCommand({ taskDefinition: family }))
+    .catch((error) => {
+      throw formatAwsError(`Failed to describe task definition ${family}`, error)
+    })
 
   const taskDef = result.taskDefinition as Record<string, any>
   if (!taskDef) {
@@ -146,9 +146,7 @@ export function renderImage(
 
   return {
     ...taskDef,
-    containerDefinitions: containers.map((c) =>
-      c.name === containerName ? { ...c, image } : c
-    ),
+    containerDefinitions: containers.map((c) => (c.name === containerName ? { ...c, image } : c)),
   }
 }
 
@@ -176,12 +174,12 @@ export function renderContainerHealthCheck(
         ...container,
         healthCheck: container.healthCheck
           ? {
-            ...container.healthCheck,
-            command,
-          }
+              ...container.healthCheck,
+              command,
+            }
           : {
-            command,
-          },
+              command,
+            },
       }
     }),
   }
@@ -192,11 +190,11 @@ export function renderContainerHealthCheck(
  */
 export async function registerTaskDefinition(taskDef: Record<string, any>): Promise<string> {
   const family = typeof taskDef.family === "string" ? taskDef.family : "unknown"
-  const result = await client().send(
-    new RegisterTaskDefinitionCommand(taskDef as any)
-  ).catch((error) => {
-    throw formatAwsError(`Failed to register task definition for family ${family}`, error)
-  })
+  const result = await client()
+    .send(new RegisterTaskDefinitionCommand(taskDef as any))
+    .catch((error) => {
+      throw formatAwsError(`Failed to register task definition for family ${family}`, error)
+    })
 
   const arn = result.taskDefinition?.taskDefinitionArn
   if (!arn) {
@@ -217,18 +215,17 @@ export async function deployService(
 ): Promise<void> {
   await assertServiceExists(cluster, service)
 
-  await client().send(
-    new UpdateServiceCommand({
-      cluster,
-      service,
-      taskDefinition: taskDefinitionArn,
-    })
-  ).catch((error) => {
-    throw formatAwsError(
-      `Failed to update ECS service ${service} in cluster ${cluster}`,
-      error,
+  await client()
+    .send(
+      new UpdateServiceCommand({
+        cluster,
+        service,
+        taskDefinition: taskDefinitionArn,
+      }),
     )
-  })
+    .catch((error) => {
+      throw formatAwsError(`Failed to update ECS service ${service} in cluster ${cluster}`, error)
+    })
   console.log(`Updated service ${service} to ${taskDefinitionArn}`)
 }
 
@@ -249,10 +246,7 @@ export async function waitForStability(
     { cluster, services: [service] },
   ).catch(async (error) => {
     await logServiceStabilityDiagnostics(cluster, service)
-    throw formatAwsError(
-      `ECS service ${service} in cluster ${cluster} did not stabilize`,
-      error,
-    )
+    throw formatAwsError(`ECS service ${service} in cluster ${cluster} did not stabilize`, error)
   })
 
   console.log(`Service ${service} is stable`)
@@ -314,14 +308,16 @@ export async function getCurrentServiceImage(
   service: string,
   containerName: string,
 ): Promise<string | null> {
-  const result = await client().send(
-    new DescribeServicesCommand({
-      cluster,
-      services: [service],
-    }),
-  ).catch((error) => {
-    throw formatAwsError(`Failed to describe ECS service ${service}`, error)
-  })
+  const result = await client()
+    .send(
+      new DescribeServicesCommand({
+        cluster,
+        services: [service],
+      }),
+    )
+    .catch((error) => {
+      throw formatAwsError(`Failed to describe ECS service ${service}`, error)
+    })
 
   const taskDefinitionArn = result.services?.[0]?.taskDefinition
   if (!taskDefinitionArn) {

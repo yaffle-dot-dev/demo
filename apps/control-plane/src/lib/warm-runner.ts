@@ -14,10 +14,7 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 export function getWarmRunnerExcludedWorkspacePaths(): string[] {
   const raw = process.env.YAFFLE_WARM_RUNNER_EXCLUDED_WORKSPACES ?? ""
 
-  return raw
-    .split(",")
-    .map(normalizeWorkspacePath)
-    .filter(Boolean)
+  return raw.split(",").map(normalizeWorkspacePath).filter(Boolean)
 }
 
 export function isWarmRunnerWorkspaceExcluded(workspacePath: string): boolean {

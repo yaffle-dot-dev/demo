@@ -53,8 +53,12 @@ describe("KeyedMutex", () => {
 
     let releaseA!: () => void
     let releaseB!: () => void
-    const blockA = new Promise<void>((r) => { releaseA = r })
-    const blockB = new Promise<void>((r) => { releaseB = r })
+    const blockA = new Promise<void>((r) => {
+      releaseA = r
+    })
+    const blockB = new Promise<void>((r) => {
+      releaseB = r
+    })
 
     const opA = mutex.run("preview-A", async () => {
       running.push("A-start")
@@ -119,9 +123,11 @@ describe("KeyedMutex", () => {
   test("error in one operation does not block the next", async () => {
     const mutex = new KeyedMutex()
 
-    const op1 = mutex.run("key", async () => {
-      throw new Error("boom")
-    }).catch((err) => err)
+    const op1 = mutex
+      .run("key", async () => {
+        throw new Error("boom")
+      })
+      .catch((err) => err)
 
     const op2 = mutex.run("key", async () => {
       return "ok"

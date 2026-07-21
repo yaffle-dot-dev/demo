@@ -1,8 +1,8 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import type { DependencyGraph, EnvironmentLifecycleSummary, WorkspaceWithRuns } from "$lib/api"
+import type { DependencyGraph, EnvironmentLifecycleSummary, WorkspaceWithRuns } from "./api"
 
-import { buildPreviewDag } from "$lib/lifecycle-dag"
+import { buildPreviewDag } from "./lifecycle-dag"
 
 function workspace(workspacePath: string): WorkspaceWithRuns {
   return {
@@ -34,6 +34,7 @@ describe("buildPreviewDag", () => {
     const lifecycle: EnvironmentLifecycleSummary = {
       run: {
         id: "run-1",
+        runGroupId: null,
         status: "succeeded",
         executionMode: "local",
         startedAt: "2026-05-04T00:00:00Z",

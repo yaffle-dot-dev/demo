@@ -15,9 +15,7 @@ export function getApp(): App {
 
   const env = getEnv()
   if (!env.githubAppId || !env.githubAppPrivateKey) {
-    throw new GitHubAuthError(
-      "GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set",
-    )
+    throw new GitHubAuthError("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY must be set")
   }
 
   appInstance = new App({
@@ -31,7 +29,9 @@ export function getApp(): App {
 /**
  * Get an authenticated Octokit instance for a specific installation.
  */
-export async function getInstallationOctokit(installationId: number): ReturnType<App["getInstallationOctokit"]> {
+export async function getInstallationOctokit(
+  installationId: number,
+): ReturnType<App["getInstallationOctokit"]> {
   const app = getApp()
   return app.getInstallationOctokit(installationId)
 }
@@ -167,24 +167,15 @@ export async function upsertPrComment(
   const octokit = await getInstallationOctokit(installationId)
 
   // Find existing comment with this marker
-  const existingId = await findCommentByMarker(
-    octokit,
-    owner,
-    repo,
-    prNumber,
-    marker,
-  )
+  const existingId = await findCommentByMarker(octokit, owner, repo, prNumber, marker)
 
   if (existingId) {
-    await octokit.request(
-      "PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}",
-      {
-        owner,
-        repo,
-        comment_id: existingId,
-        body,
-      },
-    )
+    await octokit.request("PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}", {
+      owner,
+      repo,
+      comment_id: existingId,
+      body,
+    })
     return existingId
   }
 
@@ -281,7 +272,8 @@ export async function checkTeamMembership(
   team: string,
   username: string,
 ): Promise<boolean> {
-  const { maxAttempts, initialDelayMs, maxDelayMs, backoffMultiplier } = TEAM_MEMBERSHIP_RETRY_CONFIG
+  const { maxAttempts, initialDelayMs, maxDelayMs, backoffMultiplier } =
+    TEAM_MEMBERSHIP_RETRY_CONFIG
 
   let lastError: unknown
   let delayMs = initialDelayMs
@@ -314,7 +306,7 @@ export async function checkTeamMembership(
       if (status === 403) {
         console.warn(
           `[github] Team membership check forbidden: ${org}/${team} for ${username}. ` +
-          `Ensure the GitHub App has 'members:read' permission on the organization.`,
+            `Ensure the GitHub App has 'members:read' permission on the organization.`,
         )
         return false
       }
@@ -325,7 +317,7 @@ export async function checkTeamMembership(
       if (attempt < maxAttempts) {
         console.warn(
           `[github] Team membership check failed (attempt ${attempt}/${maxAttempts}), ` +
-          `retrying in ${delayMs}ms: ${err instanceof Error ? err.message : String(err)}`,
+            `retrying in ${delayMs}ms: ${err instanceof Error ? err.message : String(err)}`,
         )
         await sleep(delayMs)
         delayMs = Math.min(delayMs * backoffMultiplier, maxDelayMs)
@@ -336,7 +328,7 @@ export async function checkTeamMembership(
   // Exhausted retries - fail closed
   console.error(
     `[github] Team membership check failed after ${maxAttempts} attempts for ` +
-    `${org}/${team}/${username}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+      `${org}/${team}/${username}: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
   )
   return false
 }

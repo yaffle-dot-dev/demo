@@ -13,7 +13,10 @@ function parseCredentialHosts(raw: string | undefined): string[] {
 }
 
 export function buildTfcCredentialHosts(primaryHost: string): string[] {
-  const hosts = [primaryHost.trim(), ...parseCredentialHosts(process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS)]
+  const hosts = [
+    primaryHost.trim(),
+    ...parseCredentialHosts(process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS),
+  ]
 
   return [...new Set(hosts.filter((host) => host.length > 0))]
 }

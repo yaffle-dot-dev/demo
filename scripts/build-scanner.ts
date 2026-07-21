@@ -23,17 +23,19 @@ export async function buildScanner() {
 
   console.log("Bundling scanner-lambda.ts → dist/scanner-lambda.mjs")
   await exec([
-    "vp", "pack",
+    "vp",
+    "pack",
     "apps/runner/src/scanner-lambda.ts",
-    "--out-dir", bundleDir,
-    "--target", "node25",
-    "--format", "esm",
+    "--out-dir",
+    bundleDir,
+    "--target",
+    "node25",
+    "--format",
+    "esm",
   ])
 
   console.log("Creating dist/scanner-lambda.zip")
-  await exec([
-    "bash", "-lc", "zip -j dist/scanner-lambda.zip dist/scanner-lambda-build/*.mjs",
-  ])
+  await exec(["bash", "-lc", "zip -j dist/scanner-lambda.zip dist/scanner-lambda-build/*.mjs"])
 
   console.log("Scanner Lambda zip ready: dist/scanner-lambda.zip")
 }

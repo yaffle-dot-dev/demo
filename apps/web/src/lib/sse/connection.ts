@@ -76,9 +76,7 @@ export class SSEConnection {
         const parsed: unknown = JSON.parse((event as MessageEvent).data)
         this.options.onMessage(parsed)
       } catch (err) {
-        this.options.onError?.(
-          err instanceof Error ? err : new Error(String(err)),
-        )
+        this.options.onError?.(err instanceof Error ? err : new Error(String(err)))
       }
     })
 

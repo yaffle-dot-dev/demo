@@ -9,8 +9,10 @@ const DEFAULT_SUMMARIES: Record<RunGroupCheckSummaryKind, string> = {
 
 const PIRATE_SUMMARIES: Record<RunGroupCheckSummaryKind, string> = {
   pending: "Yaffle caught this commit and is charting your infrastructure changes, matey.",
-  success: "Yaffle finished processing the infrastructure changes for this commit. Fair winds, matey.",
-  failure: "Yaffle hit rough seas while processing the infrastructure changes for this commit, matey.",
+  success:
+    "Yaffle finished processing the infrastructure changes for this commit. Fair winds, matey.",
+  failure:
+    "Yaffle hit rough seas while processing the infrastructure changes for this commit, matey.",
   cancelled: "Yaffle did not finish processing the infrastructure changes for this commit, matey.",
 }
 

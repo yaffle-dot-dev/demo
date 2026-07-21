@@ -28,18 +28,22 @@ export async function deployRunner(artifact?: DeployableArtifactResolution) {
   // and picks up the latest revision on the next RunTask call.
 }
 
-export async function resolveRunnerTaskDefinition(): Promise<{ family: string; appDeployerRoleArn: string }> {
+export async function resolveRunnerTaskDefinition(): Promise<{
+  family: string
+  appDeployerRoleArn: string
+}> {
   const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
-  const override = process.env.YAFFLE_RUNNER_TASK_DEFINITION?.trim()
-    || process.env.YAFFLE_RUNNER_TASK_DEFINITION_FAMILY?.trim()
-    || process.env.YAFFLE_ECS_TASK_DEFINITION?.trim()
+  const override =
+    process.env.YAFFLE_RUNNER_TASK_DEFINITION?.trim() ||
+    process.env.YAFFLE_RUNNER_TASK_DEFINITION_FAMILY?.trim() ||
+    process.env.YAFFLE_ECS_TASK_DEFINITION?.trim()
 
   if (override) {
     const appDeployerRoleArn = process.env.YAFFLE_APP_DEPLOYER_ROLE_ARN?.trim() ?? ""
 
     if (!appDeployerRoleArn) {
       throw new Error(
-        "Set YAFFLE_APP_DEPLOYER_ROLE_ARN when overriding YAFFLE_RUNNER_TASK_DEFINITION."
+        "Set YAFFLE_APP_DEPLOYER_ROLE_ARN when overriding YAFFLE_RUNNER_TASK_DEFINITION.",
       )
     }
 
@@ -51,18 +55,16 @@ export async function resolveRunnerTaskDefinition(): Promise<{ family: string; a
     environment,
   })
 
-  const family = typeof outputs.task_definition_family === "string"
-    ? outputs.task_definition_family.trim()
-    : ""
-  const appDeployerRoleArn = typeof outputs.app_deployer_role_arn === "string"
-    ? outputs.app_deployer_role_arn.trim()
-    : ""
+  const family =
+    typeof outputs.task_definition_family === "string" ? outputs.task_definition_family.trim() : ""
+  const appDeployerRoleArn =
+    typeof outputs.app_deployer_role_arn === "string" ? outputs.app_deployer_role_arn.trim() : ""
 
   if (!family || !appDeployerRoleArn) {
     throw new Error(
-      "Could not determine runner task definition. "
-      + "Set YAFFLE_RUNNER_TASK_DEFINITION (or YAFFLE_RUNNER_TASK_DEFINITION_FAMILY / YAFFLE_ECS_TASK_DEFINITION), "
-      + "or ensure apps/runner/infra exports task_definition_family and app_deployer_role_arn through Yaffle outputs.",
+      "Could not determine runner task definition. " +
+        "Set YAFFLE_RUNNER_TASK_DEFINITION (or YAFFLE_RUNNER_TASK_DEFINITION_FAMILY / YAFFLE_ECS_TASK_DEFINITION), " +
+        "or ensure apps/runner/infra exports task_definition_family and app_deployer_role_arn through Yaffle outputs.",
     )
   }
 

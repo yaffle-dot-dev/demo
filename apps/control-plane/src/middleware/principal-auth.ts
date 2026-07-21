@@ -41,7 +41,10 @@ export function principalAuth(): MiddlewareHandler {
       }
 
       if (record.principal.status !== "active" || record.session.status !== "active") {
-        return c.json({ error: { code: "SESSION_INACTIVE", message: "session is not active" } }, 401)
+        return c.json(
+          { error: { code: "SESSION_INACTIVE", message: "session is not active" } },
+          401,
+        )
       }
 
       if (record.session.expiresAt && record.session.expiresAt.getTime() <= Date.now()) {
@@ -66,10 +69,10 @@ export function principalAuth(): MiddlewareHandler {
 
     const principal = await findPrincipalById(accountPayload.principal_id)
     if (
-      !principal
-      || principal.type !== "account"
-      || principal.status !== "active"
-      || principal.userId !== accountPayload.user_id
+      !principal ||
+      principal.type !== "account" ||
+      principal.status !== "active" ||
+      principal.userId !== accountPayload.user_id
     ) {
       return c.json({ error: { code: "INVALID_TOKEN", message: "invalid token" } }, 401)
     }

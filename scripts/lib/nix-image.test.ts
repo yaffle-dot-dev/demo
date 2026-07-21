@@ -44,19 +44,24 @@ describe("pushImageArchive", () => {
     await pushImageArchive("/nix/store/image.tar.gz", "registry.example.com/app:sha-test")
 
     expect(execMock).toHaveBeenCalledOnce()
-    expect(execMock).toHaveBeenCalledWith([
-      "skopeo",
-      "--registries-conf", join(tempHome, ".config", "containers", "registries.conf"),
-      "copy",
-      "--insecure-policy",
-      "--authfile", "/tmp/yaffle-real-home/.docker/config.json",
-      "docker-archive:/nix/store/image.tar.gz",
-      "docker://registry.example.com/app:sha-test",
-    ], {
-      env: {
-        HOME: tempHome,
+    expect(execMock).toHaveBeenCalledWith(
+      [
+        "skopeo",
+        "--registries-conf",
+        join(tempHome, ".config", "containers", "registries.conf"),
+        "copy",
+        "--insecure-policy",
+        "--authfile",
+        "/tmp/yaffle-real-home/.docker/config.json",
+        "docker-archive:/nix/store/image.tar.gz",
+        "docker://registry.example.com/app:sha-test",
+      ],
+      {
+        env: {
+          HOME: tempHome,
+        },
       },
-    })
+    )
     expect(registriesConfig).toContain("unqualified-search-registries")
     expect(registriesConfig).toContain('short-name-mode = "disabled"')
     await expect(access(tempHome, fsConstants.F_OK)).rejects.toThrow()

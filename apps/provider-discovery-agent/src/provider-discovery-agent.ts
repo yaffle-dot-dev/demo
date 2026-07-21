@@ -78,10 +78,7 @@ export class ProviderDiscoveryAgent extends Agent<Env, ProviderDiscoveryAgentSta
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (request.method !== "POST" || !url.pathname.endsWith("/run")) {
-      return Response.json(
-        { error: { code: "NOT_FOUND", message: "Not found" } },
-        { status: 404 },
-      )
+      return Response.json({ error: { code: "NOT_FOUND", message: "Not found" } }, { status: 404 })
     }
 
     let body: unknown
@@ -124,15 +121,11 @@ export class ProviderDiscoveryAgent extends Agent<Env, ProviderDiscoveryAgentSta
     }
   }
 
-  private async executeDiscovery(request: DiscoveryDispatchRequest): Promise<DiscoveryRequestAccepted> {
-    const timeoutMs = parseNumberEnv(
-      this.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS,
-      8000,
-    )
-    const maxDocs = parseNumberEnv(
-      this.env.YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS,
-      24,
-    )
+  private async executeDiscovery(
+    request: DiscoveryDispatchRequest,
+  ): Promise<DiscoveryRequestAccepted> {
+    const timeoutMs = parseNumberEnv(this.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS, 8000)
+    const maxDocs = parseNumberEnv(this.env.YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS, 24)
 
     this.setState({
       ...this.state,
@@ -205,11 +198,14 @@ export class ProviderDiscoveryAgent extends Agent<Env, ProviderDiscoveryAgentSta
       console.error("provider_discovery.callback_flow.failed", {
         requestId: request.requestId,
         providerType: request.providerType,
-        error: error instanceof Error ? {
-          name: error.name,
-          message: error.message,
-          stack: error.stack,
-        } : String(error),
+        error:
+          error instanceof Error
+            ? {
+                name: error.name,
+                message: error.message,
+                stack: error.stack,
+              }
+            : String(error),
       })
 
       this.setState({

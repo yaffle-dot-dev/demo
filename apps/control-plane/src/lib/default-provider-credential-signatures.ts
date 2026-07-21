@@ -25,21 +25,14 @@ export const DEFAULT_PROVIDER_CREDENTIAL_SIGNATURES: ProviderCredentialSignature
     providerType: "cloudflare",
     displayName: "Cloudflare",
     suggestedCredentialProviderType: "envvar",
-    exactEnvVars: [
-      "CLOUDFLARE_API_TOKEN",
-      "CLOUDFLARE_API_KEY",
-      "CLOUDFLARE_EMAIL",
-    ],
+    exactEnvVars: ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_API_KEY", "CLOUDFLARE_EMAIL"],
     prefixEnvVars: [],
   },
   {
     providerType: "hookdeck",
     displayName: "Hookdeck",
     suggestedCredentialProviderType: "envvar",
-    exactEnvVars: [
-      "HOOKDECK_API_KEY",
-      "HOOKDECK_API_BASE",
-    ],
+    exactEnvVars: ["HOOKDECK_API_KEY", "HOOKDECK_API_BASE"],
     prefixEnvVars: [],
   },
   {

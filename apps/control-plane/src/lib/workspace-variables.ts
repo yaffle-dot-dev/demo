@@ -1,11 +1,6 @@
 import type { WebhookContext } from "@yaffle/shared"
 
-import type {
-  EnvironmentKind,
-  VariableValue,
-  Workspace,
-  YaffleTomlConfig,
-} from "./config-toml.ts"
+import type { EnvironmentKind, VariableValue, Workspace, YaffleTomlConfig } from "./config-toml.ts"
 import { renderVariables, type TemplateContext } from "./templating.ts"
 
 export type WorkspaceVariablesByPath = Record<string, Record<string, VariableValue>>

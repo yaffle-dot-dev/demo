@@ -31,27 +31,32 @@ describe("extractProviderCredentialsWithLlm", () => {
       ],
     }
 
-    const result = await extractProviderCredentialsWithLlm({
-      AI: {
-        run: async (model, input, options) => {
-          calls.push({ model, input, options })
-          return {
-            response: JSON.stringify({
-              exactEnvVars: ["TFE_TOKEN", "TFE_ADDRESS", "FAKE_TOKEN"],
-              prefixEnvVars: ["TFE"],
-              confidence: "high",
-              reasoningSummary: "Official docs mention TFE_TOKEN and TFE_ADDRESS.",
-            }),
-          }
+    const result = await extractProviderCredentialsWithLlm(
+      {
+        AI: {
+          run: async (model, input, options) => {
+            calls.push({ model, input, options })
+            return {
+              response: JSON.stringify({
+                exactEnvVars: ["TFE_TOKEN", "TFE_ADDRESS", "FAKE_TOKEN"],
+                prefixEnvVars: ["TFE"],
+                confidence: "high",
+                reasoningSummary: "Official docs mention TFE_TOKEN and TFE_ADDRESS.",
+              }),
+            }
+          },
         },
+        YAFFLE_PROVIDER_DISCOVERY_AI_MODEL: "@cf/zai-org/glm-4.7-flash",
+        YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_ID: "provider-discovery-test",
       },
-      YAFFLE_PROVIDER_DISCOVERY_AI_MODEL: "@cf/zai-org/glm-4.7-flash",
-      YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_ID: "provider-discovery-test",
-    }, material)
+      material,
+    )
 
     expect(calls).toHaveLength(1)
     expect(calls[0]?.model).toBe("@cf/zai-org/glm-4.7-flash")
-    expect(calls[0]?.options).toEqual({ gateway: { id: "provider-discovery-test", skipCache: false } })
+    expect(calls[0]?.options).toEqual({
+      gateway: { id: "provider-discovery-test", skipCache: false },
+    })
     expect(result.exactEnvVars).toEqual(["TFE_TOKEN", "TFE_ADDRESS"])
     expect(result.prefixEnvVars).toEqual(["TFE_"])
     expect(result.confidence).toBe("high")
@@ -75,18 +80,21 @@ describe("extractProviderCredentialsWithLlm", () => {
       ],
     }
 
-    const result = await extractProviderCredentialsWithLlm({
-      AI: {
-        run: async () => ({
-          response: JSON.stringify({
-            exactEnvVars: ["TFE_TOKEN", "TfeToken", "TFETOKEN"],
-            prefixEnvVars: ["TFE_"],
-            confidence: "high",
-            reasoningSummary: "Canonical env var is TFE_TOKEN.",
+    const result = await extractProviderCredentialsWithLlm(
+      {
+        AI: {
+          run: async () => ({
+            response: JSON.stringify({
+              exactEnvVars: ["TFE_TOKEN", "TfeToken", "TFETOKEN"],
+              prefixEnvVars: ["TFE_"],
+              confidence: "high",
+              reasoningSummary: "Canonical env var is TFE_TOKEN.",
+            }),
           }),
-        }),
+        },
       },
-    }, material)
+      material,
+    )
 
     expect(result.exactEnvVars).toEqual(["TFE_TOKEN"])
   })
@@ -111,25 +119,30 @@ describe("extractProviderCredentialsWithLlm", () => {
       ],
     }
 
-    const result = await extractProviderCredentialsWithLlm({
-      AI: {
-        run: async (model, input, options) => {
-          calls.push({ model, input, options })
-          return {
-            response: JSON.stringify({
-              exactEnvVars: ["TFE_TOKEN"],
-              prefixEnvVars: ["TFE_"],
-              confidence: "high",
-              reasoningSummary: "TFE_TOKEN is documented.",
-            }),
-          }
+    const result = await extractProviderCredentialsWithLlm(
+      {
+        AI: {
+          run: async (model, input, options) => {
+            calls.push({ model, input, options })
+            return {
+              response: JSON.stringify({
+                exactEnvVars: ["TFE_TOKEN"],
+                prefixEnvVars: ["TFE_"],
+                confidence: "high",
+                reasoningSummary: "TFE_TOKEN is documented.",
+              }),
+            }
+          },
         },
+        YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_ID: "yaffle-provider-discovery",
       },
-      YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_ID: "yaffle-provider-discovery",
-    }, material)
+      material,
+    )
 
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.options).toEqual({ gateway: { id: "yaffle-provider-discovery", skipCache: false } })
+    expect(calls[0]?.options).toEqual({
+      gateway: { id: "yaffle-provider-discovery", skipCache: false },
+    })
     expect(result.exactEnvVars).toEqual(["TFE_TOKEN"])
   })
 })

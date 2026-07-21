@@ -20,10 +20,12 @@
 **Infrastructure and code are not separate things.**
 
 The industry treats them as separate:
+
 - Code goes through CI/CD, preview deploys, staging environments
 - Infrastructure goes through... `terraform plan` and prayer
 
 But they're a unit:
+
 - Your app doesn't work without its infrastructure
 - Your infrastructure is meaningless without the app
 - A change to either can break the whole system
@@ -47,6 +49,7 @@ But they're a unit:
 ### The Vision (3 Steps Ahead)
 
 Everything managed like a product:
+
 - Platform teams publish versioned, tiered offerings (platinum/gold/bronze stability)
 - Product teams self-serve through typed interfaces with clear contracts
 - Changes are previewed, tested, and promoted through environments
@@ -60,16 +63,19 @@ Everything managed like a product:
 **"Preview your whole system, not just your code."**
 
 Teams already have:
+
 - Preview deploys for frontend (Vercel, Netlify)
 - Preview deploys for backend (Railway, Render, etc.)
 
 Teams don't have:
+
 - Preview deploys for infrastructure
 - A way to test code + infra together before production
 
 That's the gap. That's the wedge.
 
 **Why now?**
+
 - AI agents are writing more code AND more infrastructure
 - Change velocity is increasing
 - The blast radius of a bad change is getting bigger
@@ -93,12 +99,14 @@ That's the gap. That's the wedge.
 
 **Company**: Series A+ startup, 20-500 employees, cloud-native
 
-**Day-to-day**: 
+**Day-to-day**:
+
 - Shipping features while keeping production stable
 - Reviewing changes (code AND infra)
 - Debugging production issues after deploys
 
 **Pain points**:
+
 - "We have preview deploys for code but not for infrastructure"
 - "I can't test my app against the new infra until it's in production"
 - "Our staging environment is a mess and doesn't match production"
@@ -116,6 +124,7 @@ What makes them buy NOW vs never?
 ### What We're Replacing
 
 **Status quo is the real competitor:**
+
 - Preview deploys for code + `terraform plan` for infra (separate worlds)
 - Shared staging environment that's always broken
 - "Deploy to prod and hope" (YOLO)
@@ -123,22 +132,23 @@ What makes them buy NOW vs never?
 
 ### Why Us vs Alternatives
 
-| Alternative | Gap We Fill |
-|-------------|-------------|
-| Vercel/Netlify | Preview code, not infrastructure |
-| Terraform Cloud | Plan infrastructure, don't actually create it |
-| Spacelift/Env0 | Plan infrastructure, don't actually create it |
-| Staging env | Shared, not isolated. Config drift. Not PR-specific. |
+| Alternative     | Gap We Fill                                          |
+| --------------- | ---------------------------------------------------- |
+| Vercel/Netlify  | Preview code, not infrastructure                     |
+| Terraform Cloud | Plan infrastructure, don't actually create it        |
+| Spacelift/Env0  | Plan infrastructure, don't actually create it        |
+| Staging env     | Shared, not isolated. Config drift. Not PR-specific. |
 
 **Our differentiation**: Preview infrastructure AND code together, because they're a unit.
 
 The **outputs action** is the key unlock:
+
 ```yaml
 - uses: yaffle-dev/outputs-action@v1
   id: infra
   with:
     workspace: my-app/infra
-    
+
 - run: deploy-my-app --database-url=${{ steps.infra.outputs.database_url }}
 ```
 
@@ -151,23 +161,27 @@ Your code deploys onto the preview infrastructure. Test the whole thing.
 Once we're in the door with preview environments, we expand to the full vision:
 
 ### Phase 1: Preview Your System (The Wedge)
+
 - Preview environments for PRs (infra + code together)
 - Outputs action bridges infra and code deploys
 - Test the whole thing before merge
 
 ### Phase 2: Beyond Infrastructure
+
 - Dashboards are a product - preview them
 - Feature flags are a product - preview them
 - Policies are a product - preview them
 - Anything that can break production should be previewable
 
 ### Phase 3: Platform as Product
+
 - Platform team publishes versioned offerings
 - Tiered stability (platinum/gold/bronze)
 - Typed contracts with explicit snapshot provenance
 - Product teams consume through self-service
 
 ### Phase 4: Safe Change Management for Everything
+
 - Humans and agents making changes
 - All changes go through preview
 - Promotion through environments (preview → staging → production)
@@ -182,20 +196,20 @@ someone who hasn't felt the pain of Phase 1.
 
 ### We're NOT Competing With:
 
-| Tool | Why Not Direct Competition |
-|------|---------------------------|
-| Vercel/Netlify | They preview code. We preview infra. **Together we're complete.** |
+| Tool            | Why Not Direct Competition                                             |
+| --------------- | ---------------------------------------------------------------------- |
+| Vercel/Netlify  | They preview code. We preview infra. **Together we're complete.**      |
 | Terraform Cloud | They manage state and run plans. We do previews. We're TFC-compatible. |
-| Atlantis | OSS plan runner. We're a superset - actual preview environments. |
+| Atlantis        | OSS plan runner. We're a superset - actual preview environments.       |
 
 ### We ARE Competing With:
 
-| Competitor | Our Advantage |
-|------------|---------------|
-| "Shared staging environment" | Isolated, PR-specific state |
-| "Deploy and hope" | Test before production |
+| Competitor                   | Our Advantage                            |
+| ---------------------------- | ---------------------------------------- |
+| "Shared staging environment" | Isolated, PR-specific state              |
+| "Deploy and hope"            | Test before production                   |
 | "Plan output is good enough" | Actually create the infra and test on it |
-| Internal tooling | We're a product, not a side project |
+| Internal tooling             | We're a product, not a side project      |
 
 ### Potential Partners/Integrations
 
@@ -233,32 +247,32 @@ These are other ways we COULD position, but aren't the recommended wedge:
 
 ### What Supports the Wedge (Build Now)
 
-| Feature | Why |
-|---------|-----|
-| Preview environments | **Core value prop** - isolated infra per PR |
-| Outputs action | **The bridge** - lets code deploy onto preview infra |
-| GitHub integration | PR-centric workflow, where teams already work |
-| PR comments | Surface results, make previews visible |
-| Basic state management | Required for previews to work |
+| Feature                | Why                                                  |
+| ---------------------- | ---------------------------------------------------- |
+| Preview environments   | **Core value prop** - isolated infra per PR          |
+| Outputs action         | **The bridge** - lets code deploy onto preview infra |
+| GitHub integration     | PR-centric workflow, where teams already work        |
+| PR comments            | Surface results, make previews visible               |
+| Basic state management | Required for previews to work                        |
 
 ### What Supports Expansion (Build Later)
 
-| Feature | Phase | Why |
-|---------|-------|-----|
-| TFC-compatible API | Phase 1-2 | Eases adoption for existing TF users |
-| Dashboard/config previews | Phase 2 | Extend beyond infra |
-| Module registry | Phase 3 | Platform-as-product enabler |
-| Tiered workspaces | Phase 3 | Stability tiers for platform teams |
-| BYOA deployment | Phase 4 | Customer-account isolation |
+| Feature                   | Phase     | Why                                  |
+| ------------------------- | --------- | ------------------------------------ |
+| TFC-compatible API        | Phase 1-2 | Eases adoption for existing TF users |
+| Dashboard/config previews | Phase 2   | Extend beyond infra                  |
+| Module registry           | Phase 3   | Platform-as-product enabler          |
+| Tiered workspaces         | Phase 3   | Stability tiers for platform teams   |
+| BYOA deployment           | Phase 4   | Customer-account isolation           |
 
 ### What We've Built - Validation Check
 
-| Feature | Wedge Support | Verdict |
-|---------|---------------|---------|
-| TFC-compatible state backend | Enables `tofu` workflow | Good - supports adoption |
-| Outputs action | **Critical** - bridges infra→code | Good - this is key |
-| Preview workspace lifecycle | Core to the wedge | Good |
-| Module registry | Phase 3 (but we need it now) | Good - dogfooding |
+| Feature                      | Wedge Support                     | Verdict                  |
+| ---------------------------- | --------------------------------- | ------------------------ |
+| TFC-compatible state backend | Enables `tofu` workflow           | Good - supports adoption |
+| Outputs action               | **Critical** - bridges infra→code | Good - this is key       |
+| Preview workspace lifecycle  | Core to the wedge                 | Good                     |
+| Module registry              | Phase 3 (but we need it now)      | Good - dogfooding        |
 
 **On the module registry**: This might look like a Phase 3 feature built too early,
 but we need it internally. We're setting up foundational infra (VPCs, networking,
@@ -284,17 +298,20 @@ Before we commit fully to this positioning, validate:
 ### Discovery Questions
 
 **About the problem:**
+
 - "Tell me about the last time a deploy broke production"
 - "How do you test changes before they hit production?"
 - "Do you have a staging environment? How well does it match production?"
 - "How do infrastructure changes and code changes get coordinated?"
 
 **About the pain:**
+
 - "What's the scariest part of shipping changes?"
 - "How much time do you spend debugging prod issues vs preventing them?"
 - "Has an AI agent ever shipped a change that broke something?"
 
 **About solutions:**
+
 - "How do you evaluate new dev tools?"
 - "What would make you switch from your current workflow?"
 - "If you could wave a magic wand, what would change?"
@@ -310,6 +327,7 @@ With "preview your whole system" as the wedge, pricing should anchor on:
 3. **Change velocity** - More deploys = more value from previews
 
 **Possible models**:
+
 - Per-preview-environment (pay for what you use)
 - Per-workspace (simpler, predictable)
 - Per-seat (aligns with team size)
@@ -339,11 +357,13 @@ With "preview your whole system" as the wedge, pricing should anchor on:
 ### Messaging
 
 **Lead with the insight:**
+
 - "Infrastructure and code aren't separate. Preview them together."
 - "Preview your whole system, not just your code."
 - "Your staging environment is lying to you."
 
 **Not:**
+
 - "Infrastructure as a Product platform" (too abstract, Phase 3)
 - "TFC alternative" (defines us by competitor)
 - "Platform engineering solution" (too niche, Phase 3)
@@ -407,39 +427,39 @@ Preview environments are how you validate outcomes.
 
 ### Infrastructure Tools
 
-| Tool | What They Do | Gap |
-|------|--------------|-----|
-| Terraform Cloud | State, plans, runs | Plans only, no actual preview |
-| Spacelift | GitOps, policy | Plans only, no actual preview |
-| Env0 | Cost estimation | Plans only, no actual preview |
-| Atlantis | OSS plan runner | Plans only, no state management |
-| Pulumi Cloud | State, deployments | Different paradigm, same gap |
+| Tool            | What They Do       | Gap                             |
+| --------------- | ------------------ | ------------------------------- |
+| Terraform Cloud | State, plans, runs | Plans only, no actual preview   |
+| Spacelift       | GitOps, policy     | Plans only, no actual preview   |
+| Env0            | Cost estimation    | Plans only, no actual preview   |
+| Atlantis        | OSS plan runner    | Plans only, no state management |
+| Pulumi Cloud    | State, deployments | Different paradigm, same gap    |
 
 ### Code Preview Tools
 
-| Tool | What They Do | Gap |
-|------|--------------|-----|
-| Vercel | Frontend previews | No infrastructure |
-| Netlify | Frontend previews | No infrastructure |
-| Railway | Backend previews | Limited infra, their infra only |
-| Render | Backend previews | Limited infra, their infra only |
+| Tool    | What They Do      | Gap                             |
+| ------- | ----------------- | ------------------------------- |
+| Vercel  | Frontend previews | No infrastructure               |
+| Netlify | Frontend previews | No infrastructure               |
+| Railway | Backend previews  | Limited infra, their infra only |
+| Render  | Backend previews  | Limited infra, their infra only |
 
 ### Staging/Environments
 
-| Approach | What It Is | Gap |
-|----------|------------|-----|
-| Shared staging | One env for all | Contention, drift, not PR-specific |
-| Namespace per PR | K8s namespaces | Limited to K8s, no cloud infra |
-| Feature branches | Long-lived branches | Merge conflicts, drift |
+| Approach         | What It Is          | Gap                                |
+| ---------------- | ------------------- | ---------------------------------- |
+| Shared staging   | One env for all     | Contention, drift, not PR-specific |
+| Namespace per PR | K8s namespaces      | Limited to K8s, no cloud infra     |
+| Feature branches | Long-lived branches | Merge conflicts, drift             |
 
 **The gap**: Nobody previews infrastructure AND code together in an isolated,
 PR-specific environment. That's the wedge.
 
 ### Potential Allies
 
-| Tool | Why Partner |
-|------|-------------|
-| Vercel | Our infra previews + their code previews = complete story |
-| Netlify | Same as Vercel |
-| GitHub | Deep integration opportunity |
-| OpenTofu | Aligned on open ecosystem |
+| Tool     | Why Partner                                               |
+| -------- | --------------------------------------------------------- |
+| Vercel   | Our infra previews + their code previews = complete story |
+| Netlify  | Same as Vercel                                            |
+| GitHub   | Deep integration opportunity                              |
+| OpenTofu | Aligned on open ecosystem                                 |

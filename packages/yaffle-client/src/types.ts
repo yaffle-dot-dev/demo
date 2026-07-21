@@ -58,13 +58,7 @@ export interface Run {
   durationMs?: number | null
 }
 
-export type RunStatus =
-  | "pending"
-  | "running"
-  | "success"
-  | "failed"
-  | "cancelled"
-  | (string & {})
+export type RunStatus = "pending" | "running" | "success" | "failed" | "cancelled" | (string & {})
 
 export interface OrgInfo {
   id: string
@@ -137,7 +131,7 @@ export interface ResourceSpan {
 export interface WorkspaceWithRuns {
   preview: WorkspacePreview
   runs: Run[]
-  outputs: unknown | null
+  outputs: unknown
   resourceSpans?: ResourceSpan[]
 }
 
@@ -195,9 +189,7 @@ export interface StreamUpdate {
 /**
  * Target for fetching outputs - either a PR or a named environment
  */
-export type Target =
-  | { type: "pr"; prNumber: number }
-  | { type: "env"; name: string }
+export type Target = { type: "pr"; prNumber: number } | { type: "env"; name: string }
 
 /**
  * Credentials for authenticating with Yaffle API

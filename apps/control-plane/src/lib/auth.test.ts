@@ -1,10 +1,22 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "@yaffle/test"
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from "@yaffle/test"
 
 import { apikey as apiKeyTable, user as userTable } from "../db/auth-schema.ts"
 import type { Session } from "./better-auth.ts"
 
 const mockGetSession = mock(async (_args: { headers: Headers }) => null as Session | null)
-const mockVerifyApiKey = mock(async (_args: { body: { key: string; permissions?: unknown } }) => ({ valid: false, key: null as null | { id: string; referenceId: string } }))
+const mockVerifyApiKey = mock(async (_args: { body: { key: string; permissions?: unknown } }) => ({
+  valid: false,
+  key: null as null | { id: string; referenceId: string },
+}))
 const mockDbSelect = mock((_shape?: unknown): any => ({
   from: (table: unknown) => ({
     where: () => ({
@@ -33,9 +45,9 @@ beforeAll(async () => {
   dbModule = await import("./db.ts")
   ;({ requireAuth } = await import("./auth.ts"))
 
-  originalGetSession = authModule.auth.api.getSession
-  originalVerifyApiKey = authModule.auth.api.verifyApiKey
-  originalDbSelect = dbModule.db.select
+  originalGetSession = authModule.auth.api.getSession.bind(authModule.auth.api)
+  originalVerifyApiKey = authModule.auth.api.verifyApiKey.bind(authModule.auth.api)
+  originalDbSelect = dbModule.db.select.bind(dbModule.db)
 })
 
 afterAll(() => {
@@ -131,39 +143,45 @@ describe("requireAuth transport hardening", () => {
   })
 
   test("accepts API keys with required permissions and metadata", async () => {
-    mockVerifyApiKey.mockImplementation(async ({ body }: { body: { key: string; permissions?: unknown } }) => {
-      if (body.key !== "yfl_valid") {
-        return { valid: false, key: null }
-      }
+    mockVerifyApiKey.mockImplementation(
+      async ({ body }: { body: { key: string; permissions?: unknown } }) => {
+        if (body.key !== "yfl_valid") {
+          return { valid: false, key: null }
+        }
 
-      return {
-        valid: true,
-        key: {
-          id: "key-1",
-          referenceId: "user-1",
-        },
-      }
-    })
+        return {
+          valid: true,
+          key: {
+            id: "key-1",
+            referenceId: "user-1",
+          },
+        }
+      },
+    )
 
     mockDbSelect.mockImplementation((_shape?: unknown): any => ({
       from: (table: unknown) => ({
         where: () => ({
           limit: async () => {
             if (table === userTable) {
-              return [{
-                id: "user-1",
-                email: "user@example.com",
-                name: "Test User",
-                image: null,
-              }]
+              return [
+                {
+                  id: "user-1",
+                  email: "user@example.com",
+                  name: "Test User",
+                  image: null,
+                },
+              ]
             }
 
             if (table === apiKeyTable) {
-              return [{
-                id: "key-1",
-                metadata: JSON.stringify({ orgId: "org-1", access: "read" }),
-                permissions: JSON.stringify({ yaffle: ["read"] }),
-              }]
+              return [
+                {
+                  id: "key-1",
+                  metadata: JSON.stringify({ orgId: "org-1", access: "read" }),
+                  permissions: JSON.stringify({ yaffle: ["read"] }),
+                },
+              ]
             }
 
             return []

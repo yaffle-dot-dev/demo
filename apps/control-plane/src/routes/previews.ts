@@ -2,7 +2,11 @@ import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
-import { findDeploymentById, listDeployments, pauseDeployment } from "../db/queries/workspace-deployments.ts"
+import {
+  findDeploymentById,
+  listDeployments,
+  pauseDeployment,
+} from "../db/queries/workspace-deployments.ts"
 import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { listApprovals } from "../db/queries/approvals.ts"
 import {
@@ -12,11 +16,7 @@ import {
 } from "../db/queries/run-groups.ts"
 import { parseEnvironmentGroupProjectionPayload } from "../lib/projections/environment-groups.ts"
 import { logger } from "../lib/telemetry.ts"
-import {
-  requireOrgAccess,
-  requireResourceAccess,
-  getAuth,
-} from "../middleware/org-auth.ts"
+import { requireOrgAccess, requireResourceAccess, getAuth } from "../middleware/org-auth.ts"
 import { rerunPreview, triggerApply } from "../lib/webhook-handler.ts"
 import { events, type DeploymentUpdateEvent } from "../lib/events.ts"
 import { isUserAuthorizedApprover } from "../lib/approver.ts"
@@ -77,7 +77,10 @@ async function buildPreviewOverviewSnapshot(params: {
       .filter((entry) => entry.payload?.environmentKind === "transient")
       .filter((entry) => {
         const payload = entry.payload!
-        const prNumber = typeof payload.sourceMetadata?.prNumber === "number" ? payload.sourceMetadata.prNumber : null
+        const prNumber =
+          typeof payload.sourceMetadata?.prNumber === "number"
+            ? payload.sourceMetadata.prNumber
+            : null
         if (params.prNumber !== undefined && prNumber !== params.prNumber) {
           return false
         }
@@ -95,14 +98,17 @@ async function buildPreviewOverviewSnapshot(params: {
     const runGroupsById = await findRunGroupsByIds(
       limitedGroups.flatMap((entry) =>
         entry.payload!.workspaces.flatMap((workspace) =>
-          workspace.runGroupId ? [workspace.runGroupId] : []
-        )
+          workspace.runGroupId ? [workspace.runGroupId] : [],
+        ),
       ),
       params.orgId,
     )
     const data = limitedGroups.flatMap((entry) => {
       const payload = entry.payload!
-      const prNumber = typeof payload.sourceMetadata?.prNumber === "number" ? payload.sourceMetadata.prNumber : null
+      const prNumber =
+        typeof payload.sourceMetadata?.prNumber === "number"
+          ? payload.sourceMetadata.prNumber
+          : null
 
       return payload.workspaces.map((workspace) => ({
         id: workspace.deploymentId,
@@ -145,9 +151,10 @@ async function buildPreviewOverviewSnapshot(params: {
       }),
     )
 
-    const nextCursor = params.limit && filteredGroups.length > limitedGroups.length
-      ? limitedGroups[limitedGroups.length - 1]?.payload?.updatedAt ?? null
-      : null
+    const nextCursor =
+      params.limit && filteredGroups.length > limitedGroups.length
+        ? (limitedGroups[limitedGroups.length - 1]?.payload?.updatedAt ?? null)
+        : null
 
     return {
       data,
@@ -172,7 +179,7 @@ async function buildPreviewOverviewSnapshot(params: {
     graphsObject[key] = graph
   }
   const runGroupsById = await findRunGroupsByIds(
-    result.items.flatMap((deployment) => deployment.runGroupId ? [deployment.runGroupId] : []),
+    result.items.flatMap((deployment) => (deployment.runGroupId ? [deployment.runGroupId] : [])),
     params.orgId,
   )
 
@@ -181,7 +188,7 @@ async function buildPreviewOverviewSnapshot(params: {
       serializePreview(
         deployment,
         deployment.runGroupId ? runGroupsById.get(deployment.runGroupId) : undefined,
-      )
+      ),
     ),
     dependencyGraphs: graphsObject,
     nextCursor: result.nextCursor,
@@ -194,51 +201,47 @@ async function buildPreviewOverviewSnapshot(params: {
  * List previews for an org. Filterable by repo, status, and PR number.
  * Cursor-based pagination — pass `nextCursor` from previous response as `cursor`.
  */
-previewsRoute.get(
-  "/",
-  requireOrgAccess({ orgSource: "query", orgKey: "org" }),
-  async (c) => {
-    const parsed = listQuerySchema.safeParse(c.req.query())
-    if (!parsed.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0].message } },
-        400,
-      )
-    }
-
-    const { repo, status, pr_number, limit, cursor } = parsed.data
-    const auth = getAuth(c)
-
-    const result = await listDeployments(auth.orgId, {
-      repo,
-      status,
-      prNumber: pr_number,
-      limit,
-      cursor,
-    })
-    const runGroupsById = await findRunGroupsByIds(
-      result.items.flatMap((deployment) => deployment.runGroupId ? [deployment.runGroupId] : []),
-      auth.orgId,
+previewsRoute.get("/", requireOrgAccess({ orgSource: "query", orgKey: "org" }), async (c) => {
+  const parsed = listQuerySchema.safeParse(c.req.query())
+  if (!parsed.success) {
+    return c.json(
+      { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0].message } },
+      400,
     )
+  }
 
-    logger.debug("list previews", {
-      orgId: auth.orgId,
-      repo,
-      status,
-      count: result.items.length,
-    })
+  const { repo, status, pr_number, limit, cursor } = parsed.data
+  const auth = getAuth(c)
 
-    return c.json({
-      data: result.items.map((deployment) =>
-        serializePreview(
-          deployment,
-          deployment.runGroupId ? runGroupsById.get(deployment.runGroupId) : undefined,
-        )
+  const result = await listDeployments(auth.orgId, {
+    repo,
+    status,
+    prNumber: pr_number,
+    limit,
+    cursor,
+  })
+  const runGroupsById = await findRunGroupsByIds(
+    result.items.flatMap((deployment) => (deployment.runGroupId ? [deployment.runGroupId] : [])),
+    auth.orgId,
+  )
+
+  logger.debug("list previews", {
+    orgId: auth.orgId,
+    repo,
+    status,
+    count: result.items.length,
+  })
+
+  return c.json({
+    data: result.items.map((deployment) =>
+      serializePreview(
+        deployment,
+        deployment.runGroupId ? runGroupsById.get(deployment.runGroupId) : undefined,
       ),
-      nextCursor: result.nextCursor,
-    })
-  },
-)
+    ),
+    nextCursor: result.nextCursor,
+  })
+})
 
 previewsRoute.get(
   "/overview",
@@ -301,14 +304,16 @@ previewsRoute.get(
         inFlight = true
         pendingUpdate = false
         try {
-          const payload = JSON.stringify(await buildPreviewOverviewSnapshot({
-            orgId: auth.orgId,
-            repo,
-            status,
-            prNumber: pr_number,
-            limit,
-            cursor,
-          }))
+          const payload = JSON.stringify(
+            await buildPreviewOverviewSnapshot({
+              orgId: auth.orgId,
+              repo,
+              status,
+              prNumber: pr_number,
+              limit,
+              cursor,
+            }),
+          )
 
           if (payload !== lastPayload) {
             lastPayload = payload
@@ -330,7 +335,9 @@ previewsRoute.get(
         if (event.orgId === auth.orgId) {
           // If filtering by repo, only refresh when that repo changes
           if (!repo || event.repo === repo) {
-            sendSnapshot().catch((err) => console.error(`[sse:previews] error in handleDeploymentUpdate:`, err))
+            sendSnapshot().catch((err) =>
+              console.error(`[sse:previews] error in handleDeploymentUpdate:`, err),
+            )
           }
         }
       }
@@ -339,8 +346,11 @@ previewsRoute.get(
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
-        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
-          .catch(() => { /* connection likely closed */ })
+        stream
+          .writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+          .catch(() => {
+            /* connection likely closed */
+          })
       }, 30_000)
 
       // Block the callback so Hono doesn't call stream.close() in its
@@ -357,7 +367,9 @@ previewsRoute.get(
 )
 
 // Helper to get preview orgId for resource-based auth
-async function getPreviewOrgId(c: { req: { param: (key: string) => string | undefined } }): Promise<string | null> {
+async function getPreviewOrgId(c: {
+  req: { param: (key: string) => string | undefined }
+}): Promise<string | null> {
   const id = c.req.param("id")
   if (!id) return null
   const preview = await findDeploymentById(id)
@@ -373,13 +385,19 @@ previewsRoute.get(
   async (c) => {
     const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
+        400,
+      )
     }
     const id = parseResult.data
 
     const preview = await findDeploymentById(id)
     if (!preview) {
-      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+      return c.json(
+        { error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } },
+        404,
+      )
     }
 
     const approvals = await listApprovals(id)
@@ -410,7 +428,10 @@ previewsRoute.post(
   async (c) => {
     const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
+        400,
+      )
     }
     const id = parseResult.data
 
@@ -418,7 +439,10 @@ previewsRoute.post(
 
     const preview = await findDeploymentById(id)
     if (!preview) {
-      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+      return c.json(
+        { error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } },
+        404,
+      )
     }
 
     // Check if user is authorized to approve
@@ -430,10 +454,7 @@ previewsRoute.post(
       // installationId is required for team membership checks
       if (preview.installationId == null) {
         logger.warn("Cannot check team approvers without installationId", { previewId: id })
-        return c.json(
-          { error: { code: "FORBIDDEN", message: "approver is not authorized" } },
-          403,
-        )
+        return c.json({ error: { code: "FORBIDDEN", message: "approver is not authorized" } }, 403)
       }
 
       const isAuthorized = await isUserAuthorizedApprover(approverStrings, {
@@ -442,10 +463,7 @@ previewsRoute.post(
       })
 
       if (!isAuthorized) {
-        return c.json(
-          { error: { code: "FORBIDDEN", message: "approver is not authorized" } },
-          403,
-        )
+        return c.json({ error: { code: "FORBIDDEN", message: "approver is not authorized" } }, 403)
       }
     }
 
@@ -496,14 +514,20 @@ previewsRoute.post(
   async (c) => {
     const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
+        400,
+      )
     }
     const id = parseResult.data
 
     const auth = getAuth(c)
     const preview = await findDeploymentById(id)
     if (!preview) {
-      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+      return c.json(
+        { error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } },
+        404,
+      )
     }
 
     logger.info("Manual re-run requested", {
@@ -561,14 +585,20 @@ previewsRoute.post(
   async (c) => {
     const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
+        400,
+      )
     }
     const id = parseResult.data
 
     const auth = getAuth(c)
     const preview = await findDeploymentById(id)
     if (!preview) {
-      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+      return c.json(
+        { error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } },
+        404,
+      )
     }
 
     logger.info("Apply triggered", {
@@ -633,14 +663,20 @@ previewsRoute.post(
   async (c) => {
     const parseResult = uuidParam.safeParse(c.req.param("id"))
     if (!parseResult.success) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
+        400,
+      )
     }
     const id = parseResult.data
 
     const auth = getAuth(c)
     const preview = await findDeploymentById(id)
     if (!preview) {
-      return c.json({ error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } }, 404)
+      return c.json(
+        { error: { code: "PREVIEW_NOT_FOUND", message: `preview ${id} not found` } },
+        404,
+      )
     }
 
     logger.info("Pause requested", {
@@ -680,21 +716,28 @@ previewsRoute.post(
 
     if (currentStatus === "applying") {
       return c.json(
-        { error: { code: "ALREADY_APPLYING", message: "apply already in progress, too late to pause" } },
+        {
+          error: {
+            code: "ALREADY_APPLYING",
+            message: "apply already in progress, too late to pause",
+          },
+        },
         409,
       )
     }
 
     if (currentStatus === "ready") {
-      return c.json(
-        { error: { code: "ALREADY_APPLIED", message: "apply already completed" } },
-        409,
-      )
+      return c.json({ error: { code: "ALREADY_APPLIED", message: "apply already completed" } }, 409)
     }
 
     // Some other state we didn't expect
     return c.json(
-      { error: { code: "INVALID_STATE", message: `cannot pause deployment in ${currentStatus} state` } },
+      {
+        error: {
+          code: "INVALID_STATE",
+          message: `cannot pause deployment in ${currentStatus} state`,
+        },
+      },
       400,
     )
   },
@@ -725,27 +768,30 @@ interface SerializedPreview {
   executionContext: ReturnType<typeof serializeBoundExecutionSnapshotIdentity>
 }
 
-function serializePreview(p: {
-  id: string
-  repo: string
-  prNumber: number | null
-  environmentKind: string
-  environmentName: string
-  workspacePath: string
-  ref: string
-  headSha: string
-  authorGithubId: number | null
-  authorLogin: string | null
-  status: string
-  stateKey: string
-  mode: string
-  requireApproval: boolean
-  approvers: unknown
-  createdAt: Date
-  statusChangedAt: Date
-  orgId: string
-  runGroupId: string | null
-}, runGroup?: RunGroupWithRepoBinding): SerializedPreview {
+function serializePreview(
+  p: {
+    id: string
+    repo: string
+    prNumber: number | null
+    environmentKind: string
+    environmentName: string
+    workspacePath: string
+    ref: string
+    headSha: string
+    authorGithubId: number | null
+    authorLogin: string | null
+    status: string
+    stateKey: string
+    mode: string
+    requireApproval: boolean
+    approvers: unknown
+    createdAt: Date
+    statusChangedAt: Date
+    orgId: string
+    runGroupId: string | null
+  },
+  runGroup?: RunGroupWithRepoBinding,
+): SerializedPreview {
   const approvers = Array.isArray(p.approvers)
     ? p.approvers.filter((entry) => typeof entry === "string")
     : null
@@ -787,8 +833,8 @@ function serializePreviewExecutionContext(
   }
 
   if (
-    deployment.environmentKind === "transient"
-    && !isExecutionContextAssociationValid({
+    deployment.environmentKind === "transient" &&
+    !isExecutionContextAssociationValid({
       snapshot: runGroup.executionSnapshot,
       runGroup,
       resource: deployment,

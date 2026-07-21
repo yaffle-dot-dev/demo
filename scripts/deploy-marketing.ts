@@ -71,15 +71,15 @@ function validatePricing(pricing: StripePricing): StripePricing {
     free_limits: {
       concurrent_preview_branches: assertFiniteNumber(
         pricing.free_limits?.concurrent_preview_branches,
-        "stripe_pricing.free_limits.concurrent_preview_branches"
+        "stripe_pricing.free_limits.concurrent_preview_branches",
       ),
       preview_creations_per_month: assertFiniteNumber(
         pricing.free_limits?.preview_creations_per_month,
-        "stripe_pricing.free_limits.preview_creations_per_month"
+        "stripe_pricing.free_limits.preview_creations_per_month",
       ),
       named_environments: assertFiniteNumber(
         pricing.free_limits?.named_environments,
-        "stripe_pricing.free_limits.named_environments"
+        "stripe_pricing.free_limits.named_environments",
       ),
     },
   }
@@ -87,7 +87,10 @@ function validatePricing(pricing: StripePricing): StripePricing {
 
 const MARKETING_DIR = `${importMetaDir(import.meta)}/../apps/marketing`
 
-async function loadMarketingInfrastructure(target: DeployTarget, wait: boolean): Promise<{
+async function loadMarketingInfrastructure(
+  target: DeployTarget,
+  wait: boolean,
+): Promise<{
   siteInfra: Awaited<ReturnType<typeof loadStaticSiteInfrastructure>>
   pricing: StripePricing
 }> {
@@ -136,14 +139,12 @@ async function buildSite(siteUrl: string, pricing: StripePricing, dryRun: boolea
       PUBLIC_STRIPE_TEAM_AMOUNT: String(pricing.team.amount),
       PUBLIC_STRIPE_TEAM_INTERVAL: pricing.team.interval,
       PUBLIC_YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS: String(
-        pricing.free_limits.concurrent_preview_branches
+        pricing.free_limits.concurrent_preview_branches,
       ),
       PUBLIC_YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS: String(
-        pricing.free_limits.preview_creations_per_month
+        pricing.free_limits.preview_creations_per_month,
       ),
-      PUBLIC_YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS: String(
-        pricing.free_limits.named_environments
-      ),
+      PUBLIC_YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS: String(pricing.free_limits.named_environments),
     },
   })
 }

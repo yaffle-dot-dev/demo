@@ -13,10 +13,12 @@ class AwsReconcileQueueClient implements ReconcileQueueClient {
   ) {}
 
   async send(command: TrafficControllerReconcileCommand): Promise<void> {
-    await this.sqs.send(new SendMessageCommand({
-      QueueUrl: this.queueUrl,
-      MessageBody: JSON.stringify(command),
-    }))
+    await this.sqs.send(
+      new SendMessageCommand({
+        QueueUrl: this.queueUrl,
+        MessageBody: JSON.stringify(command),
+      }),
+    )
   }
 }
 
@@ -30,8 +32,5 @@ export function getReconcileQueueUrl(): string {
 }
 
 export function createReconcileQueueClient(): ReconcileQueueClient {
-  return new AwsReconcileQueueClient(
-    getReconcileQueueUrl(),
-    new SQSClient({}),
-  )
+  return new AwsReconcileQueueClient(getReconcileQueueUrl(), new SQSClient({}))
 }

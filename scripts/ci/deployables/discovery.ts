@@ -62,7 +62,9 @@ async function discoverDeployablesUncached(): Promise<DiscoveredDeployable[]> {
     files.push(filePath)
   }
 
-  const discovered = (await Promise.all(files.sort().map((filePath) => loadDescriptorModule(filePath))))
+  const discovered = (
+    await Promise.all(files.sort().map((filePath) => loadDescriptorModule(filePath)))
+  )
     .flat()
     .sort((a, b) => a.name.localeCompare(b.name))
 

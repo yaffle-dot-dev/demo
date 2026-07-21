@@ -18,10 +18,7 @@ export interface AwsTag {
  *
  * `yaffle:org-id` is the canonical attribution key used for billing and cleanup.
  */
-export function buildOrgResourceTags(
-  ctx: OrgTagContext,
-  options: ResourceTagOptions,
-): AwsTag[] {
+export function buildOrgResourceTags(ctx: OrgTagContext, options: ResourceTagOptions): AwsTag[] {
   const tags: Record<string, string> = {
     project: "yaffle",
     managed_by: "yaffle",

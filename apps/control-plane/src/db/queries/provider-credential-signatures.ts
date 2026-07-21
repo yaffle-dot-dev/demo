@@ -20,7 +20,9 @@ export interface UpsertDiscoveredProviderCredentialSignatureInput {
   source: string
 }
 
-async function seedProviderCredentialSignature(seed: ProviderCredentialSignatureSeed): Promise<void> {
+async function seedProviderCredentialSignature(
+  seed: ProviderCredentialSignatureSeed,
+): Promise<void> {
   await db
     .insert(providerCredentialSignatures)
     .values({
@@ -49,15 +51,18 @@ export async function ensureDefaultProviderCredentialSignatures(): Promise<void>
   })
 }
 
-export async function listActiveProviderCredentialSignatures(): Promise<ProviderCredentialSignature[]> {
+export async function listActiveProviderCredentialSignatures(): Promise<
+  ProviderCredentialSignature[]
+> {
   return withDbSpan("select", "provider_credential_signatures", async () => {
     return db
       .select()
       .from(providerCredentialSignatures)
-      .where(and(
-        eq(providerCredentialSignatures.isActive, true),
-      ))
-      .orderBy(asc(providerCredentialSignatures.displayName), asc(providerCredentialSignatures.providerType))
+      .where(and(eq(providerCredentialSignatures.isActive, true)))
+      .orderBy(
+        asc(providerCredentialSignatures.displayName),
+        asc(providerCredentialSignatures.providerType),
+      )
   })
 }
 

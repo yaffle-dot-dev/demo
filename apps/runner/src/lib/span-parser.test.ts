@@ -20,7 +20,9 @@ describe("ResourceSpanParser", () => {
   })
 
   test("parses modify start event with id", () => {
-    const events = collectEvents("aws_cloudfront_distribution.main: Modifying... [id=EWVN2QG1SE6JF]\n")
+    const events = collectEvents(
+      "aws_cloudfront_distribution.main: Modifying... [id=EWVN2QG1SE6JF]\n",
+    )
     expect(events).toHaveLength(1)
     expect(events[0].action).toBe("update")
     expect(events[0].event).toBe("started")
@@ -34,7 +36,9 @@ describe("ResourceSpanParser", () => {
   })
 
   test("parses 'Refreshing state...' as refresh start", () => {
-    const events = collectEvents("module.core.aws_eip.nat[1]: Refreshing state... [id=eipalloc-09855471d455edc7b]\n")
+    const events = collectEvents(
+      "module.core.aws_eip.nat[1]: Refreshing state... [id=eipalloc-09855471d455edc7b]\n",
+    )
     expect(events).toHaveLength(1)
     expect(events[0].resourceAddress).toBe("module.core.aws_eip.nat[1]")
     expect(events[0].resourceType).toBe("aws_eip")
@@ -52,7 +56,9 @@ describe("ResourceSpanParser", () => {
   })
 
   test("parses progress event with id and elapsed", () => {
-    const events = collectEvents("aws_cloudfront_distribution.main: Still modifying... [id=EWVN2QG1SE6JF, 10s elapsed]\n")
+    const events = collectEvents(
+      "aws_cloudfront_distribution.main: Still modifying... [id=EWVN2QG1SE6JF, 10s elapsed]\n",
+    )
     expect(events).toHaveLength(1)
     expect(events[0].event).toBe("progress")
     expect(events[0].action).toBe("update")
@@ -60,7 +66,9 @@ describe("ResourceSpanParser", () => {
   })
 
   test("parses progress event with minutes", () => {
-    const events = collectEvents("aws_cloudfront_distribution.main: Still modifying... [id=EWVN2QG1SE6JF, 1m0s elapsed]\n")
+    const events = collectEvents(
+      "aws_cloudfront_distribution.main: Still modifying... [id=EWVN2QG1SE6JF, 1m0s elapsed]\n",
+    )
     expect(events).toHaveLength(1)
     expect(events[0].elapsedMs).toBe(60000)
   })
@@ -73,7 +81,9 @@ describe("ResourceSpanParser", () => {
   })
 
   test("parses creation complete event with 0s", () => {
-    const events = collectEvents("aws_acm_certificate_validation.main: Creation complete after 0s [id=2026-03-17 02:17:44.007 +0000 UTC]\n")
+    const events = collectEvents(
+      "aws_acm_certificate_validation.main: Creation complete after 0s [id=2026-03-17 02:17:44.007 +0000 UTC]\n",
+    )
     expect(events).toHaveLength(1)
     expect(events[0].event).toBe("complete")
     expect(events[0].action).toBe("create")
@@ -82,7 +92,9 @@ describe("ResourceSpanParser", () => {
   })
 
   test("parses modification complete with minutes+seconds", () => {
-    const events = collectEvents("aws_cloudfront_distribution.main: Modifications complete after 1m8s [id=EWVN2QG1SE6JF]\n")
+    const events = collectEvents(
+      "aws_cloudfront_distribution.main: Modifications complete after 1m8s [id=EWVN2QG1SE6JF]\n",
+    )
     expect(events).toHaveLength(1)
     expect(events[0].event).toBe("complete")
     expect(events[0].action).toBe("update")
@@ -184,8 +196,8 @@ describe("ResourceSpanParser", () => {
         "Terraform will perform the following actions:",
         "",
         "  # aws_s3_bucket.foo will be created",
-        "  + resource \"aws_s3_bucket\" \"foo\" {",
-        "      + bucket = \"my-bucket\"",
+        '  + resource "aws_s3_bucket" "foo" {',
+        '      + bucket = "my-bucket"',
         "    }",
         "",
         "Plan: 1 to add, 0 to change, 0 to destroy.",
@@ -219,7 +231,9 @@ describe("ResourceSpanParser", () => {
   })
 
   test("parseDuration handles minutes+seconds in complete", () => {
-    const events = collectEvents("aws_cloudfront_function.static_routing: Modifications complete after 2s [id=yaffle-static-routing-main-use1]\n")
+    const events = collectEvents(
+      "aws_cloudfront_function.static_routing: Modifications complete after 2s [id=yaffle-static-routing-main-use1]\n",
+    )
     expect(events[0].elapsedMs).toBe(2000)
   })
 })

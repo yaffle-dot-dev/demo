@@ -1,8 +1,6 @@
 import type { CiTarget } from "../types"
 
-export type LegacyDeployTarget =
-  | { type: "env"; name: string }
-  | { type: "pr"; prNumber: number }
+export type LegacyDeployTarget = { type: "env"; name: string } | { type: "pr"; prNumber: number }
 
 export function toLegacyDeployTarget(target: CiTarget): LegacyDeployTarget {
   if (target.environment.kind === "named") {

@@ -188,7 +188,9 @@ export async function initTelemetry(): Promise<void> {
   }
 
   if (tracerProviderInstance || meterProviderInstance || loggerProviderInstance) {
-    console.warn("[telemetry] initTelemetry called after providers were already initialized, skipping")
+    console.warn(
+      "[telemetry] initTelemetry called after providers were already initialized, skipping",
+    )
     return
   }
 
@@ -197,21 +199,22 @@ export async function initTelemetry(): Promise<void> {
     diag.setLogger(new DiagConsoleLogger(), diagLevel)
 
     const { resourceFromAttributes } = await import("@opentelemetry/resources")
-    const {
-      ATTR_SERVICE_NAME,
-      ATTR_SERVICE_VERSION,
-      SEMRESATTRS_DEPLOYMENT_ENVIRONMENT,
-    } = await import("@opentelemetry/semantic-conventions")
-    const { BasicTracerProvider, BatchSpanProcessor } = await import("@opentelemetry/sdk-trace-base")
+    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION, SEMRESATTRS_DEPLOYMENT_ENVIRONMENT } =
+      await import("@opentelemetry/semantic-conventions")
+    const { BasicTracerProvider, BatchSpanProcessor } =
+      await import("@opentelemetry/sdk-trace-base")
     const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-proto")
-    const { MeterProvider, PeriodicExportingMetricReader } = await import("@opentelemetry/sdk-metrics")
+    const { MeterProvider, PeriodicExportingMetricReader } =
+      await import("@opentelemetry/sdk-metrics")
     const { OTLPMetricExporter } = await import("@opentelemetry/exporter-metrics-otlp-proto")
     const { LoggerProvider, BatchLogRecordProcessor } = await import("@opentelemetry/sdk-logs")
     const { OTLPLogExporter } = await import("@opentelemetry/exporter-logs-otlp-proto")
 
     const metricExportIntervalMillis = parsePositiveIntEnv(
       "OTEL_METRIC_EXPORT_INTERVAL_MS",
-      isLocalDevTelemetryMode() ? DEFAULT_LOCAL_METRIC_EXPORT_INTERVAL_MS : DEFAULT_PROD_METRIC_EXPORT_INTERVAL_MS,
+      isLocalDevTelemetryMode()
+        ? DEFAULT_LOCAL_METRIC_EXPORT_INTERVAL_MS
+        : DEFAULT_PROD_METRIC_EXPORT_INTERVAL_MS,
     )
     const forceFlushIntervalMillis = parsePositiveIntEnv(
       "OTEL_FORCE_FLUSH_INTERVAL_MS",
@@ -233,11 +236,13 @@ export async function initTelemetry(): Promise<void> {
     const traceExporter = new OTLPTraceExporter()
     const tracerProvider = new BasicTracerProvider({
       resource,
-       spanProcessors: [new BatchSpanProcessor(traceExporter, {
-         scheduledDelayMillis: isLocalDevTelemetryMode() ? 1_000 : undefined,
-         maxQueueSize: isLocalDevTelemetryMode() ? 4_096 : undefined,
-         maxExportBatchSize: isLocalDevTelemetryMode() ? 512 : undefined,
-       })],
+      spanProcessors: [
+        new BatchSpanProcessor(traceExporter, {
+          scheduledDelayMillis: isLocalDevTelemetryMode() ? 1_000 : undefined,
+          maxQueueSize: isLocalDevTelemetryMode() ? 4_096 : undefined,
+          maxExportBatchSize: isLocalDevTelemetryMode() ? 512 : undefined,
+        }),
+      ],
     })
     // Register as global tracer provider via the API
     trace.setGlobalTracerProvider(tracerProvider)
@@ -262,11 +267,13 @@ export async function initTelemetry(): Promise<void> {
     const logExporter = new OTLPLogExporter()
     const logProvider = new LoggerProvider({
       resource,
-      processors: [new BatchLogRecordProcessor(logExporter, {
-        scheduledDelayMillis: isLocalDevTelemetryMode() ? 1_000 : undefined,
-        maxQueueSize: isLocalDevTelemetryMode() ? 4_096 : undefined,
-        maxExportBatchSize: isLocalDevTelemetryMode() ? 512 : undefined,
-      })],
+      processors: [
+        new BatchLogRecordProcessor(logExporter, {
+          scheduledDelayMillis: isLocalDevTelemetryMode() ? 1_000 : undefined,
+          maxQueueSize: isLocalDevTelemetryMode() ? 4_096 : undefined,
+          maxExportBatchSize: isLocalDevTelemetryMode() ? 512 : undefined,
+        }),
+      ],
     })
     loggerProviderInstance = logProvider
     otelLogger = logProvider.getLogger(SERVICE_NAME, SERVICE_VERSION)
@@ -384,7 +391,9 @@ function resetMeter(): void {
   _runnerWarmSlotsActiveValue = 0
 }
 
-let _webhookReceivedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _webhookReceivedCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: webhook events received, by event type. */
 export function getWebhookReceivedCounter(): typeof _webhookReceivedCounter & {} {
   if (!_webhookReceivedCounter) {
@@ -395,7 +404,9 @@ export function getWebhookReceivedCounter(): typeof _webhookReceivedCounter & {}
   return _webhookReceivedCounter
 }
 
-let _runDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _runDurationHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: terraform run duration in ms, by command/workspace. */
 export function getRunDurationHistogram(): typeof _runDurationHistogram & {} {
   if (!_runDurationHistogram) {
@@ -407,7 +418,8 @@ export function getRunDurationHistogram(): typeof _runDurationHistogram & {} {
   return _runDurationHistogram
 }
 
-let _runResultCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _runResultCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null =
+  null
 /** Counter: terraform run results, by command/success/failure. */
 export function getRunResultCounter(): typeof _runResultCounter & {} {
   if (!_runResultCounter) {
@@ -418,7 +430,9 @@ export function getRunResultCounter(): typeof _runResultCounter & {} {
   return _runResultCounter
 }
 
-let _configLoadErrorCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _configLoadErrorCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: config load errors. */
 export function getConfigLoadErrorCounter(): typeof _configLoadErrorCounter & {} {
   if (!_configLoadErrorCounter) {
@@ -429,7 +443,9 @@ export function getConfigLoadErrorCounter(): typeof _configLoadErrorCounter & {}
   return _configLoadErrorCounter
 }
 
-let _githubApiErrorCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _githubApiErrorCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: GitHub API errors, by endpoint. */
 export function getGithubApiErrorCounter(): typeof _githubApiErrorCounter & {} {
   if (!_githubApiErrorCounter) {
@@ -440,7 +456,9 @@ export function getGithubApiErrorCounter(): typeof _githubApiErrorCounter & {} {
   return _githubApiErrorCounter
 }
 
-let _httpRequestDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _httpRequestDuration: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: HTTP request duration in ms, by method/route/status. */
 export function getHttpRequestDurationHistogram(): typeof _httpRequestDuration & {} {
   if (!_httpRequestDuration) {
@@ -452,7 +470,8 @@ export function getHttpRequestDurationHistogram(): typeof _httpRequestDuration &
   return _httpRequestDuration
 }
 
-let _httpRequestCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _httpRequestCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null =
+  null
 /** Counter: HTTP requests, by method/route/status. */
 export function getHttpRequestCounter(): typeof _httpRequestCounter & {} {
   if (!_httpRequestCounter) {
@@ -463,7 +482,8 @@ export function getHttpRequestCounter(): typeof _httpRequestCounter & {} {
   return _httpRequestCounter
 }
 
-let _githubApiDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _githubApiDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null =
+  null
 /** Histogram: GitHub API call duration in ms, by endpoint. */
 export function getGithubApiDurationHistogram(): typeof _githubApiDuration & {} {
   if (!_githubApiDuration) {
@@ -498,7 +518,9 @@ export function getAuthCounter(): typeof _authCounter & {} {
   return _authCounter
 }
 
-let _localFirstOperationsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _localFirstOperationsCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: local-first auth and module transport operations, by operation/result. */
 export function getLocalFirstOperationsCounter(): typeof _localFirstOperationsCounter & {} {
   if (!_localFirstOperationsCounter) {
@@ -509,19 +531,26 @@ export function getLocalFirstOperationsCounter(): typeof _localFirstOperationsCo
   return _localFirstOperationsCounter
 }
 
-let _localFirstPayloadBytesHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _localFirstPayloadBytesHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: local-first payload size in bytes, by operation. */
 export function getLocalFirstPayloadBytesHistogram(): typeof _localFirstPayloadBytesHistogram & {} {
   if (!_localFirstPayloadBytesHistogram) {
-    _localFirstPayloadBytesHistogram = getMeter().createHistogram("yaffle.local_first.payload.bytes", {
-      description: "Local-first payload size in bytes",
-      unit: "By",
-    })
+    _localFirstPayloadBytesHistogram = getMeter().createHistogram(
+      "yaffle.local_first.payload.bytes",
+      {
+        description: "Local-first payload size in bytes",
+        unit: "By",
+      },
+    )
   }
   return _localFirstPayloadBytesHistogram
 }
 
-let _localFirstGcRunsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _localFirstGcRunsCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: local-first GC runs, by result and reason. */
 export function getLocalFirstGcRunsCounter(): typeof _localFirstGcRunsCounter & {} {
   if (!_localFirstGcRunsCounter) {
@@ -532,7 +561,9 @@ export function getLocalFirstGcRunsCounter(): typeof _localFirstGcRunsCounter & 
   return _localFirstGcRunsCounter
 }
 
-let _localFirstGcRowsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _localFirstGcRowsCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: local-first GC rows touched, by phase and entity. */
 export function getLocalFirstGcRowsCounter(): typeof _localFirstGcRowsCounter & {} {
   if (!_localFirstGcRowsCounter) {
@@ -559,7 +590,9 @@ export function getRunQueueTimeHistogram(): typeof _runQueueTime & {} {
 // SSE metrics (see docs/sse-streaming.md Decision 2)
 // ---------------------------------------------------------------------------
 
-let _sseSnapshotDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _sseSnapshotDuration: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: SSE snapshot query duration in ms, by stream type. */
 export function getSseSnapshotDurationHistogram(): typeof _sseSnapshotDuration & {} {
   if (!_sseSnapshotDuration) {
@@ -571,7 +604,8 @@ export function getSseSnapshotDurationHistogram(): typeof _sseSnapshotDuration &
   return _sseSnapshotDuration
 }
 
-let _ssePayloadBytes: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _ssePayloadBytes: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null =
+  null
 /** Histogram: SSE payload size in bytes. */
 export function getSsePayloadBytesHistogram(): typeof _ssePayloadBytes & {} {
   if (!_ssePayloadBytes) {
@@ -594,7 +628,8 @@ export function getSseMessagesSentCounter(): typeof _sseMessagesSent & {} {
   return _sseMessagesSent
 }
 
-let _sseMessagesDeduped: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _sseMessagesDeduped: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null =
+  null
 /** Counter: SSE messages deduped (payload unchanged). */
 export function getSseMessagesDedupedCounter(): typeof _sseMessagesDeduped & {} {
   if (!_sseMessagesDeduped) {
@@ -605,7 +640,9 @@ export function getSseMessagesDedupedCounter(): typeof _sseMessagesDeduped & {} 
   return _sseMessagesDeduped
 }
 
-let _sseEventToSendLatency: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _sseEventToSendLatency: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: latency from backend event emission to SSE payload send in ms. */
 export function getSseEventToSendLatencyHistogram(): typeof _sseEventToSendLatency & {} {
   if (!_sseEventToSendLatency) {
@@ -617,7 +654,9 @@ export function getSseEventToSendLatencyHistogram(): typeof _sseEventToSendLaten
   return _sseEventToSendLatency
 }
 
-let _sseConnectionsActive: ReturnType<ReturnType<typeof metrics.getMeter>["createUpDownCounter"]> | null = null
+let _sseConnectionsActive: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createUpDownCounter"]
+> | null = null
 /** UpDownCounter: active SSE connections (gauge-like). */
 export function getSseConnectionsActiveCounter(): typeof _sseConnectionsActive & {} {
   if (!_sseConnectionsActive) {
@@ -628,7 +667,8 @@ export function getSseConnectionsActiveCounter(): typeof _sseConnectionsActive &
   return _sseConnectionsActive
 }
 
-let _sseEventsEmitted: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _sseEventsEmitted: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null =
+  null
 /** Counter: events emitted on the event bus, by type. */
 export function getSseEventsEmittedCounter(): typeof _sseEventsEmitted & {} {
   if (!_sseEventsEmitted) {
@@ -639,18 +679,24 @@ export function getSseEventsEmittedCounter(): typeof _sseEventsEmitted & {} {
   return _sseEventsEmitted
 }
 
-let _runLogConnectionsActive: ReturnType<ReturnType<typeof metrics.getMeter>["createUpDownCounter"]> | null = null
+let _runLogConnectionsActive: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createUpDownCounter"]
+> | null = null
 /** UpDownCounter: active per-run log SSE connections. */
 export function getRunLogConnectionsActiveCounter(): typeof _runLogConnectionsActive & {} {
   if (!_runLogConnectionsActive) {
-    _runLogConnectionsActive = getMeter().createUpDownCounter("yaffle.run_logs.connections.active", {
-      description: "Number of active per-run log SSE connections",
-    })
+    _runLogConnectionsActive = getMeter().createUpDownCounter(
+      "yaffle.run_logs.connections.active",
+      {
+        description: "Number of active per-run log SSE connections",
+      },
+    )
   }
   return _runLogConnectionsActive
 }
 
-let _runLogMessagesSent: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _runLogMessagesSent: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null =
+  null
 /** Counter: run log SSE messages sent, by event type. */
 export function getRunLogMessagesSentCounter(): typeof _runLogMessagesSent & {} {
   if (!_runLogMessagesSent) {
@@ -661,7 +707,8 @@ export function getRunLogMessagesSentCounter(): typeof _runLogMessagesSent & {} 
   return _runLogMessagesSent
 }
 
-let _runLogPayloadBytes: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _runLogPayloadBytes: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null =
+  null
 /** Histogram: run log SSE payload sizes in bytes. */
 export function getRunLogPayloadBytesHistogram(): typeof _runLogPayloadBytes & {} {
   if (!_runLogPayloadBytes) {
@@ -673,7 +720,8 @@ export function getRunLogPayloadBytesHistogram(): typeof _runLogPayloadBytes & {
   return _runLogPayloadBytes
 }
 
-let _runLogStreamEnds: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _runLogStreamEnds: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null =
+  null
 /** Counter: run log stream terminations, by reason. */
 export function getRunLogStreamEndsCounter(): typeof _runLogStreamEnds & {} {
   if (!_runLogStreamEnds) {
@@ -684,7 +732,9 @@ export function getRunLogStreamEndsCounter(): typeof _runLogStreamEnds & {} {
   return _runLogStreamEnds
 }
 
-let _runLogEventToSendLatency: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _runLogEventToSendLatency: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: latency from run log event emission to SSE log payload send in ms. */
 export function getRunLogEventToSendLatencyHistogram(): typeof _runLogEventToSendLatency & {} {
   if (!_runLogEventToSendLatency) {
@@ -700,7 +750,9 @@ export function getRunLogEventToSendLatencyHistogram(): typeof _runLogEventToSen
 // Scheduler metrics
 // ---------------------------------------------------------------------------
 
-let _schedulerJobsBlockedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _schedulerJobsBlockedCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: jobs blocked due to concurrency limits, by reason (global_limit, group_limit). */
 export function getSchedulerJobsBlockedCounter(): typeof _schedulerJobsBlockedCounter & {} {
   if (!_schedulerJobsBlockedCounter) {
@@ -711,7 +763,9 @@ export function getSchedulerJobsBlockedCounter(): typeof _schedulerJobsBlockedCo
   return _schedulerJobsBlockedCounter
 }
 
-let _schedulerSpawnAttemptsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _schedulerSpawnAttemptsCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: worker spawn attempts initiated by the scheduler. */
 export function getSchedulerSpawnAttemptsCounter(): typeof _schedulerSpawnAttemptsCounter & {} {
   if (!_schedulerSpawnAttemptsCounter) {
@@ -722,18 +776,25 @@ export function getSchedulerSpawnAttemptsCounter(): typeof _schedulerSpawnAttemp
   return _schedulerSpawnAttemptsCounter
 }
 
-let _schedulerSpawnSuppressedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _schedulerSpawnSuppressedCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: jobs skipped by the scheduler before spawn, by reason. */
 export function getSchedulerSpawnSuppressedCounter(): typeof _schedulerSpawnSuppressedCounter & {} {
   if (!_schedulerSpawnSuppressedCounter) {
-    _schedulerSpawnSuppressedCounter = getMeter().createCounter("yaffle.scheduler.spawn.suppressed", {
-      description: "Jobs skipped by the scheduler before spawn",
-    })
+    _schedulerSpawnSuppressedCounter = getMeter().createCounter(
+      "yaffle.scheduler.spawn.suppressed",
+      {
+        description: "Jobs skipped by the scheduler before spawn",
+      },
+    )
   }
   return _schedulerSpawnSuppressedCounter
 }
 
-let _schedulerSpawnFailuresCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _schedulerSpawnFailuresCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: scheduler spawn failures, by reason. */
 export function getSchedulerSpawnFailuresCounter(): typeof _schedulerSpawnFailuresCounter & {} {
   if (!_schedulerSpawnFailuresCounter) {
@@ -744,7 +805,9 @@ export function getSchedulerSpawnFailuresCounter(): typeof _schedulerSpawnFailur
   return _schedulerSpawnFailuresCounter
 }
 
-let _schedulerPollOverlapCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _schedulerPollOverlapCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: scheduler poll cycles that started while another poll was already in flight. */
 export function getSchedulerPollOverlapCounter(): typeof _schedulerPollOverlapCounter & {} {
   if (!_schedulerPollOverlapCounter) {
@@ -755,19 +818,26 @@ export function getSchedulerPollOverlapCounter(): typeof _schedulerPollOverlapCo
   return _schedulerPollOverlapCounter
 }
 
-let _schedulerQueueToSpawnHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _schedulerQueueToSpawnHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: time from queueing to scheduler spawn attempt in ms. */
 export function getSchedulerQueueToSpawnHistogram(): typeof _schedulerQueueToSpawnHistogram & {} {
   if (!_schedulerQueueToSpawnHistogram) {
-    _schedulerQueueToSpawnHistogram = getMeter().createHistogram("yaffle.scheduler.queue_to_spawn", {
-      description: "Time from job queueing to scheduler spawn attempt in milliseconds",
-      unit: "ms",
-    })
+    _schedulerQueueToSpawnHistogram = getMeter().createHistogram(
+      "yaffle.scheduler.queue_to_spawn",
+      {
+        description: "Time from job queueing to scheduler spawn attempt in milliseconds",
+        unit: "ms",
+      },
+    )
   }
   return _schedulerQueueToSpawnHistogram
 }
 
-let _schedulerActiveJobsGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _schedulerActiveJobsGauge: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createObservableGauge"]
+> | null = null
 let _schedulerActiveJobsValue = 0
 /** Observable gauge: current number of active (running) jobs. */
 export function getSchedulerActiveJobsGauge(): typeof _schedulerActiveJobsGauge & {} {
@@ -789,7 +859,9 @@ export function setSchedulerActiveJobsValue(count: number): void {
   getSchedulerActiveJobsGauge()
 }
 
-let _schedulerQueuedJobsGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _schedulerQueuedJobsGauge: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createObservableGauge"]
+> | null = null
 let _schedulerQueuedJobsValue = 0
 /** Observable gauge: current number of queued jobs waiting for dispatch. */
 export function getSchedulerQueuedJobsGauge(): typeof _schedulerQueuedJobsGauge & {} {
@@ -811,7 +883,9 @@ export function setSchedulerQueuedJobsValue(count: number): void {
   getSchedulerQueuedJobsGauge()
 }
 
-let _schedulerPollDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _schedulerPollDuration: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: scheduler poll cycle duration in ms. */
 export function getSchedulerPollDurationHistogram(): typeof _schedulerPollDuration & {} {
   if (!_schedulerPollDuration) {
@@ -823,14 +897,19 @@ export function getSchedulerPollDurationHistogram(): typeof _schedulerPollDurati
   return _schedulerPollDuration
 }
 
-let _schedulerGroupsQueuedGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _schedulerGroupsQueuedGauge: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createObservableGauge"]
+> | null = null
 let _schedulerGroupsQueuedValue = 0
 /** Observable gauge: number of run groups with queued work. */
 export function getSchedulerGroupsQueuedGauge(): typeof _schedulerGroupsQueuedGauge & {} {
   if (!_schedulerGroupsQueuedGauge) {
-    _schedulerGroupsQueuedGauge = getMeter().createObservableGauge("yaffle.scheduler.groups.queued", {
-      description: "Number of run groups with queued work",
-    })
+    _schedulerGroupsQueuedGauge = getMeter().createObservableGauge(
+      "yaffle.scheduler.groups.queued",
+      {
+        description: "Number of run groups with queued work",
+      },
+    )
     _schedulerGroupsQueuedGauge.addCallback((result) => {
       result.observe(_schedulerGroupsQueuedValue)
     })
@@ -844,18 +923,25 @@ export function setSchedulerGroupsQueuedValue(count: number): void {
   getSchedulerGroupsQueuedGauge()
 }
 
-let _schedulerPollGroupsQueried: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _schedulerPollGroupsQueried: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: number of group queries per poll cycle. */
 export function getSchedulerPollGroupsQueriedHistogram(): typeof _schedulerPollGroupsQueried & {} {
   if (!_schedulerPollGroupsQueried) {
-    _schedulerPollGroupsQueried = getMeter().createHistogram("yaffle.scheduler.poll.groups_queried", {
-      description: "Number of run group queries per scheduler poll cycle",
-    })
+    _schedulerPollGroupsQueried = getMeter().createHistogram(
+      "yaffle.scheduler.poll.groups_queried",
+      {
+        description: "Number of run group queries per scheduler poll cycle",
+      },
+    )
   }
   return _schedulerPollGroupsQueried
 }
 
-let _schedulerPollJobsFetched: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _schedulerPollJobsFetched: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: total jobs fetched across all group queries per poll. */
 export function getSchedulerPollJobsFetchedHistogram(): typeof _schedulerPollJobsFetched & {} {
   if (!_schedulerPollJobsFetched) {
@@ -866,13 +952,18 @@ export function getSchedulerPollJobsFetchedHistogram(): typeof _schedulerPollJob
   return _schedulerPollJobsFetched
 }
 
-let _schedulerSkipLockedMisses: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _schedulerSkipLockedMisses: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: jobs we couldn't lock due to SKIP LOCKED (indicates contention). */
 export function getSchedulerSkipLockedMissesCounter(): typeof _schedulerSkipLockedMisses & {} {
   if (!_schedulerSkipLockedMisses) {
-    _schedulerSkipLockedMisses = getMeter().createCounter("yaffle.scheduler.claim.skip_locked_misses", {
-      description: "Jobs skipped due to FOR UPDATE SKIP LOCKED (indicates contention)",
-    })
+    _schedulerSkipLockedMisses = getMeter().createCounter(
+      "yaffle.scheduler.claim.skip_locked_misses",
+      {
+        description: "Jobs skipped due to FOR UPDATE SKIP LOCKED (indicates contention)",
+      },
+    )
   }
   return _schedulerSkipLockedMisses
 }
@@ -881,47 +972,67 @@ export function getSchedulerSkipLockedMissesCounter(): typeof _schedulerSkipLock
 // Connections requirements metrics
 // ---------------------------------------------------------------------------
 
-let _connectionRequirementsDuration: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _connectionRequirementsDuration: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: connection requirement discovery duration in ms. */
 export function getConnectionRequirementsDurationHistogram(): typeof _connectionRequirementsDuration & {} {
   if (!_connectionRequirementsDuration) {
-    _connectionRequirementsDuration = getMeter().createHistogram("yaffle.connections.requirements.duration", {
-      description: "Connection requirement discovery duration in milliseconds",
-      unit: "ms",
-    })
+    _connectionRequirementsDuration = getMeter().createHistogram(
+      "yaffle.connections.requirements.duration",
+      {
+        description: "Connection requirement discovery duration in milliseconds",
+        unit: "ms",
+      },
+    )
   }
   return _connectionRequirementsDuration
 }
 
-let _connectionRequirementsDeploymentsScanned: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _connectionRequirementsDeploymentsScanned: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: number of deployments scanned during requirement discovery. */
 export function getConnectionRequirementsDeploymentsScannedHistogram(): typeof _connectionRequirementsDeploymentsScanned & {} {
   if (!_connectionRequirementsDeploymentsScanned) {
-    _connectionRequirementsDeploymentsScanned = getMeter().createHistogram("yaffle.connections.requirements.deployments_scanned", {
-      description: "Deployments scanned during connection requirement discovery",
-    })
+    _connectionRequirementsDeploymentsScanned = getMeter().createHistogram(
+      "yaffle.connections.requirements.deployments_scanned",
+      {
+        description: "Deployments scanned during connection requirement discovery",
+      },
+    )
   }
   return _connectionRequirementsDeploymentsScanned
 }
 
-let _connectionRequirementsProvidersScanned: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _connectionRequirementsProvidersScanned: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: number of providers scanned during requirement discovery. */
 export function getConnectionRequirementsProvidersScannedHistogram(): typeof _connectionRequirementsProvidersScanned & {} {
   if (!_connectionRequirementsProvidersScanned) {
-    _connectionRequirementsProvidersScanned = getMeter().createHistogram("yaffle.connections.requirements.providers_scanned", {
-      description: "Providers scanned during connection requirement discovery",
-    })
+    _connectionRequirementsProvidersScanned = getMeter().createHistogram(
+      "yaffle.connections.requirements.providers_scanned",
+      {
+        description: "Providers scanned during connection requirement discovery",
+      },
+    )
   }
   return _connectionRequirementsProvidersScanned
 }
 
-let _connectionRequirementsProviderCache: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _connectionRequirementsProviderCache: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: provider requirement cache outcomes (hit/miss/expired/evict). */
 export function getConnectionRequirementsProviderCacheCounter(): typeof _connectionRequirementsProviderCache & {} {
   if (!_connectionRequirementsProviderCache) {
-    _connectionRequirementsProviderCache = getMeter().createCounter("yaffle.connections.requirements.provider_cache", {
-      description: "Provider requirement cache outcomes",
-    })
+    _connectionRequirementsProviderCache = getMeter().createCounter(
+      "yaffle.connections.requirements.provider_cache",
+      {
+        description: "Provider requirement cache outcomes",
+      },
+    )
   }
   return _connectionRequirementsProviderCache
 }
@@ -930,7 +1041,9 @@ export function getConnectionRequirementsProviderCacheCounter(): typeof _connect
 // Org Provisioning metrics
 // ---------------------------------------------------------------------------
 
-let _provisioningAttemptsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _provisioningAttemptsCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: org provisioning attempts, by status (success/failure) and org. */
 export function getProvisioningAttemptsCounter(): typeof _provisioningAttemptsCounter & {} {
   if (!_provisioningAttemptsCounter) {
@@ -941,7 +1054,9 @@ export function getProvisioningAttemptsCounter(): typeof _provisioningAttemptsCo
   return _provisioningAttemptsCounter
 }
 
-let _provisioningDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _provisioningDurationHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: org provisioning duration in ms. */
 export function getProvisioningDurationHistogram(): typeof _provisioningDurationHistogram & {} {
   if (!_provisioningDurationHistogram) {
@@ -953,7 +1068,9 @@ export function getProvisioningDurationHistogram(): typeof _provisioningDuration
   return _provisioningDurationHistogram
 }
 
-let _provisioningFailuresCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _provisioningFailuresCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: org provisioning failures, by error type. */
 export function getProvisioningFailuresCounter(): typeof _provisioningFailuresCounter & {} {
   if (!_provisioningFailuresCounter) {
@@ -964,13 +1081,18 @@ export function getProvisioningFailuresCounter(): typeof _provisioningFailuresCo
   return _provisioningFailuresCounter
 }
 
-let _provisioningPermanentFailuresCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _provisioningPermanentFailuresCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: org provisioning permanent failures (max attempts exceeded). */
 export function getProvisioningPermanentFailuresCounter(): typeof _provisioningPermanentFailuresCounter & {} {
   if (!_provisioningPermanentFailuresCounter) {
-    _provisioningPermanentFailuresCounter = getMeter().createCounter("yaffle.provisioning.permanent_failures", {
-      description: "Org provisioning permanent failures (max attempts exceeded)",
-    })
+    _provisioningPermanentFailuresCounter = getMeter().createCounter(
+      "yaffle.provisioning.permanent_failures",
+      {
+        description: "Org provisioning permanent failures (max attempts exceeded)",
+      },
+    )
   }
   return _provisioningPermanentFailuresCounter
 }
@@ -979,7 +1101,9 @@ export function getProvisioningPermanentFailuresCounter(): typeof _provisioningP
 // Job lifecycle metrics
 // ---------------------------------------------------------------------------
 
-let _jobQueueWaitHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _jobQueueWaitHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: time from job creation (queued) to claim (running) in ms. */
 export function getJobQueueWaitHistogram(): typeof _jobQueueWaitHistogram & {} {
   if (!_jobQueueWaitHistogram) {
@@ -991,7 +1115,9 @@ export function getJobQueueWaitHistogram(): typeof _jobQueueWaitHistogram & {} {
   return _jobQueueWaitHistogram
 }
 
-let _jobRunDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _jobRunDurationHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: time from job start to completion in ms. */
 export function getJobRunDurationHistogram(): typeof _jobRunDurationHistogram & {} {
   if (!_jobRunDurationHistogram) {
@@ -1003,7 +1129,8 @@ export function getJobRunDurationHistogram(): typeof _jobRunDurationHistogram & 
   return _jobRunDurationHistogram
 }
 
-let _jobHeartbeatsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _jobHeartbeatsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null =
+  null
 /** Counter: successful job heartbeats. */
 export function getJobHeartbeatsCounter(): typeof _jobHeartbeatsCounter & {} {
   if (!_jobHeartbeatsCounter) {
@@ -1014,7 +1141,9 @@ export function getJobHeartbeatsCounter(): typeof _jobHeartbeatsCounter & {} {
   return _jobHeartbeatsCounter
 }
 
-let _jobStateTransitionsCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _jobStateTransitionsCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: job state transitions, by from_state and to_state. */
 export function getJobStateTransitionsCounter(): typeof _jobStateTransitionsCounter & {} {
   if (!_jobStateTransitionsCounter) {
@@ -1029,7 +1158,9 @@ export function getJobStateTransitionsCounter(): typeof _jobStateTransitionsCoun
 // Runner execution metrics
 // ---------------------------------------------------------------------------
 
-let _runnerTasksStartedCounter: ReturnType<ReturnType<typeof metrics.getMeter>["createCounter"]> | null = null
+let _runnerTasksStartedCounter: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createCounter"]
+> | null = null
 /** Counter: successful runner task/process starts. */
 export function getRunnerTasksStartedCounter(): typeof _runnerTasksStartedCounter & {} {
   if (!_runnerTasksStartedCounter) {
@@ -1040,19 +1171,26 @@ export function getRunnerTasksStartedCounter(): typeof _runnerTasksStartedCounte
   return _runnerTasksStartedCounter
 }
 
-let _runnerDispatchDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _runnerDispatchDurationHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: time spent in the scheduler spawn call in ms. */
 export function getRunnerDispatchDurationHistogram(): typeof _runnerDispatchDurationHistogram & {} {
   if (!_runnerDispatchDurationHistogram) {
-    _runnerDispatchDurationHistogram = getMeter().createHistogram("yaffle.runner.dispatch.duration", {
-      description: "Time spent in the scheduler spawn call in milliseconds",
-      unit: "ms",
-    })
+    _runnerDispatchDurationHistogram = getMeter().createHistogram(
+      "yaffle.runner.dispatch.duration",
+      {
+        description: "Time spent in the scheduler spawn call in milliseconds",
+        unit: "ms",
+      },
+    )
   }
   return _runnerDispatchDurationHistogram
 }
 
-let _runnerStartupDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _runnerStartupDurationHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: time from successful dispatch to worker claim in ms. */
 export function getRunnerStartupDurationHistogram(): typeof _runnerStartupDurationHistogram & {} {
   if (!_runnerStartupDurationHistogram) {
@@ -1064,38 +1202,51 @@ export function getRunnerStartupDurationHistogram(): typeof _runnerStartupDurati
   return _runnerStartupDurationHistogram
 }
 
-let _runnerFirstOutputDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _runnerFirstOutputDurationHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: time from worker claim to first tofu output in ms. */
 export function getRunnerFirstOutputDurationHistogram(): typeof _runnerFirstOutputDurationHistogram & {} {
   if (!_runnerFirstOutputDurationHistogram) {
-    _runnerFirstOutputDurationHistogram = getMeter().createHistogram("yaffle.runner.first_output.duration", {
-      description: "Time from worker claim to first tofu output in milliseconds",
-      unit: "ms",
-    })
+    _runnerFirstOutputDurationHistogram = getMeter().createHistogram(
+      "yaffle.runner.first_output.duration",
+      {
+        description: "Time from worker claim to first tofu output in milliseconds",
+        unit: "ms",
+      },
+    )
   }
   return _runnerFirstOutputDurationHistogram
 }
 
-let _runnerTaskDurationHistogram: ReturnType<ReturnType<typeof metrics.getMeter>["createHistogram"]> | null = null
+let _runnerTaskDurationHistogram: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createHistogram"]
+> | null = null
 /** Histogram: proxy for runner task billed lifetime from dispatch to completion in ms. */
 export function getRunnerTaskDurationHistogram(): typeof _runnerTaskDurationHistogram & {} {
   if (!_runnerTaskDurationHistogram) {
     _runnerTaskDurationHistogram = getMeter().createHistogram("yaffle.runner.task.duration", {
-      description: "Proxy for runner task billed lifetime from dispatch to completion in milliseconds",
+      description:
+        "Proxy for runner task billed lifetime from dispatch to completion in milliseconds",
       unit: "ms",
     })
   }
   return _runnerTaskDurationHistogram
 }
 
-let _runnerWarmRunnersActiveGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _runnerWarmRunnersActiveGauge: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createObservableGauge"]
+> | null = null
 let _runnerWarmRunnersActiveValue = 0
 /** Observable gauge: current number of warm runners. Placeholder until warm mode ships. */
 export function getRunnerWarmRunnersActiveGauge(): typeof _runnerWarmRunnersActiveGauge & {} {
   if (!_runnerWarmRunnersActiveGauge) {
-    _runnerWarmRunnersActiveGauge = getMeter().createObservableGauge("yaffle.runner.warm.runners.active", {
-      description: "Current number of warm runners",
-    })
+    _runnerWarmRunnersActiveGauge = getMeter().createObservableGauge(
+      "yaffle.runner.warm.runners.active",
+      {
+        description: "Current number of warm runners",
+      },
+    )
     _runnerWarmRunnersActiveGauge.addCallback((result) => {
       result.observe(_runnerWarmRunnersActiveValue)
     })
@@ -1108,14 +1259,19 @@ export function setRunnerWarmRunnersActiveValue(count: number): void {
   getRunnerWarmRunnersActiveGauge()
 }
 
-let _runnerWarmSlotsActiveGauge: ReturnType<ReturnType<typeof metrics.getMeter>["createObservableGauge"]> | null = null
+let _runnerWarmSlotsActiveGauge: ReturnType<
+  ReturnType<typeof metrics.getMeter>["createObservableGauge"]
+> | null = null
 let _runnerWarmSlotsActiveValue = 0
 /** Observable gauge: current number of active warm-runner slots. Placeholder until warm mode ships. */
 export function getRunnerWarmSlotsActiveGauge(): typeof _runnerWarmSlotsActiveGauge & {} {
   if (!_runnerWarmSlotsActiveGauge) {
-    _runnerWarmSlotsActiveGauge = getMeter().createObservableGauge("yaffle.runner.warm.slots.active", {
-      description: "Current number of active warm-runner slots",
-    })
+    _runnerWarmSlotsActiveGauge = getMeter().createObservableGauge(
+      "yaffle.runner.warm.slots.active",
+      {
+        description: "Current number of active warm-runner slots",
+      },
+    )
     _runnerWarmSlotsActiveGauge.addCallback((result) => {
       result.observe(_runnerWarmSlotsActiveValue)
     })
@@ -1182,7 +1338,9 @@ function emitLog(
   telemetryStats.logsEmitted++
   telemetryStats.logsEmittedSinceSummary++
   telemetryStats.logsBySeverity[severityText as keyof typeof telemetryStats.logsBySeverity]++
-  telemetryStats.logsBySeveritySinceSummary[severityText as keyof typeof telemetryStats.logsBySeveritySinceSummary]++
+  telemetryStats.logsBySeveritySinceSummary[
+    severityText as keyof typeof telemetryStats.logsBySeveritySinceSummary
+  ]++
 
   // Always write to console for local dev / container stdout
   const localLogMeta = {

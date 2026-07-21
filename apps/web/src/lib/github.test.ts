@@ -1,20 +1,13 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import {
-  githubRepoUrl,
-  githubTreeUrl,
-  githubCommitUrl,
-  githubPullUrl,
-} from "./github"
+import { githubRepoUrl, githubTreeUrl, githubCommitUrl, githubPullUrl } from "./github"
 
 describe("github URL utilities", () => {
   const params = { org: "yaffle-dot-dev", repo: "yaffle" }
 
   describe("githubRepoUrl", () => {
     test("builds correct repo URL with org and repo", () => {
-      expect(githubRepoUrl(params)).toBe(
-        "https://github.com/yaffle-dot-dev/yaffle",
-      )
+      expect(githubRepoUrl(params)).toBe("https://github.com/yaffle-dot-dev/yaffle")
     })
 
     test("handles org with hyphens", () => {
@@ -56,9 +49,7 @@ describe("github URL utilities", () => {
 
   describe("githubPullUrl", () => {
     test("builds correct PR URL", () => {
-      expect(githubPullUrl(params, 42)).toBe(
-        "https://github.com/yaffle-dot-dev/yaffle/pull/42",
-      )
+      expect(githubPullUrl(params, 42)).toBe("https://github.com/yaffle-dot-dev/yaffle/pull/42")
     })
   })
 })

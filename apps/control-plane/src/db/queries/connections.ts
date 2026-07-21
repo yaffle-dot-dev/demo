@@ -79,9 +79,7 @@ export async function updateConnection(
 export async function deleteConnection(connectionId: string): Promise<void> {
   return withDbSpan("delete", "connections", async () => {
     const existing = await findConnectionById(connectionId)
-    await db
-      .delete(connections)
-      .where(eq(connections.id, connectionId))
+    await db.delete(connections).where(eq(connections.id, connectionId))
 
     if (existing) {
       await enqueueEnvironmentGroupProjectionRebuild({

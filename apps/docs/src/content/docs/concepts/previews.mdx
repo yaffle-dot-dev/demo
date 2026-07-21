@@ -31,24 +31,26 @@ PR #42 creates `myapp-pr-42`. No collision with PR #99 or production.
 
 ## Lifecycle
 
-| PR Event | Yaffle Action |
-|----------|---------------|
-| Opened | `plan` → `apply` to preview |
-| Pushed | `plan` → `apply` to preview |
-| Merged | `destroy` preview; Yaffle or customer CI may separately deploy production |
-| Closed | `destroy` preview |
+| PR Event | Yaffle Action                                                             |
+| -------- | ------------------------------------------------------------------------- |
+| Opened   | `plan` → `apply` to preview                                               |
+| Pushed   | `plan` → `apply` to preview                                               |
+| Merged   | `destroy` preview; Yaffle or customer CI may separately deploy production |
+| Closed   | `destroy` preview                                                         |
 
 ## Outputs
 
 After apply, outputs are available:
 
 **In the GitHub check:**
+
 ```
 Outputs:
   api_url = "https://pr-42.api.example.com"
 ```
 
 **Via the environment API:**
+
 ```bash
 curl --header "Authorization: Bearer $YAFFLE_API_TOKEN" \
   "https://api.yaffle.dev/api/orgs/acme/repos/app/environment/pr-42"
@@ -59,6 +61,7 @@ The response is the current environment representation. Select the required work
 contract.
 
 **In GitHub Actions:**
+
 ```yaml
 - uses: yaffle-dot-dev/outputs-action@v1
   with:
@@ -68,12 +71,12 @@ contract.
 
 ## Preview status
 
-| Status | Meaning |
-|--------|---------|
-| `pending` | Waiting for runner |
-| `planning` | Running `terraform plan` |
-| `applying` | Running `terraform apply` |
-| `ready` | Infrastructure is up |
-| `failed` | Run failed |
+| Status       | Meaning                     |
+| ------------ | --------------------------- |
+| `pending`    | Waiting for runner          |
+| `planning`   | Running `terraform plan`    |
+| `applying`   | Running `terraform apply`   |
+| `ready`      | Infrastructure is up        |
+| `failed`     | Run failed                  |
 | `destroying` | Running `terraform destroy` |
-| `destroyed` | Cleaned up |
+| `destroyed`  | Cleaned up                  |

@@ -28,7 +28,7 @@ env:
   DEFAULT_YAFFLE_API_URL: http://yaffle.tail66f312.ts.net:3000
   DEFAULT_TAILSCALE_PING_TARGET: yaffle.tail66f312.ts.net
   GITHUB_ACTION: true
-  
+
 jobs:
   deploy:
     name: Deploy provider discovery agent
@@ -58,7 +58,7 @@ jobs:
         with:
           role-to-assume: ${{ env.YAFFLE_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      
+
       - name: Fetch Tailscale CI OAuth credentials
         id: tailscale-bootstrap
         run: |
@@ -71,7 +71,7 @@ jobs:
           echo "::add-mask::${OAUTH_SECRET}"
           echo "oauth-client-id=$(printf '%s' "$SECRET_JSON" | jq -r '.oauth_client_id')" >> "$GITHUB_OUTPUT"
           echo "oauth-secret=${OAUTH_SECRET}" >> "$GITHUB_OUTPUT"
-      
+
       - name: Connect runner to Tailscale
         uses: tailscale/github-action@v4
         with:
@@ -80,7 +80,7 @@ jobs:
           tags: tag:ci-runner
           ping: ${{ env.DEFAULT_TAILSCALE_PING_TARGET }}
           version: latest
-          args: '--accept-dns'
+          args: "--accept-dns"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

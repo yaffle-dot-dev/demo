@@ -32,9 +32,7 @@ interface TerraformOutput {
  * This allows consumers to reference workspace outputs as module outputs:
  *   module.vpc.vpc_id
  */
-export async function generateShimModule(
-  options: GenerateShimModuleOptions,
-): Promise<Uint8Array> {
+export async function generateShimModule(options: GenerateShimModuleOptions): Promise<Uint8Array> {
   const { workspacePath, serial, outputs } = options
 
   // Generate the main.tf content
@@ -183,8 +181,9 @@ function toHclValue(value: unknown, indent: number = 4): string {
       return "{}"
     }
     const padding = " ".repeat(indent)
-    const formatted = entries
-      .map(([k, v]) => `${padding}  ${quoteIfNeeded(k)} = ${toHclValue(v, indent + 2)}`)
+    const formatted = entries.map(
+      ([k, v]) => `${padding}  ${quoteIfNeeded(k)} = ${toHclValue(v, indent + 2)}`,
+    )
     return `{\n${formatted.join("\n")}\n${padding}}`
   }
 

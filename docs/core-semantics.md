@@ -147,12 +147,12 @@ solely from `EnvironmentKind` or an environment-name prefix.
 
 Ownership and lifetime combine into four environment classes:
 
-| Class | Lifecycle owner | Lifetime | Contract |
-|-------|-----------------|----------|----------|
-| `transient_managed` | Yaffle | Bounded by a trigger or requested lifecycle | Yaffle plans, applies, locks, and destroys isolated state. A GitHub pull-request source uses `pr-{number}`; other sources may define other names. |
-| `named_managed` | Yaffle | Long-lived | Yaffle plans, applies, locks, and retains state for a declared named environment. |
-| `named_external` | Customer CI or another orchestrator | Long-lived | The external owner plans and applies. It may publish authorized output snapshots; Yaffle never mutates or destroys it. |
-| `static_external` | External system or operator | Independent of a Yaffle environment lifecycle | Yaffle consumes a pinned external dependency or snapshot and never operates its producer. |
+| Class               | Lifecycle owner                     | Lifetime                                      | Contract                                                                                                                                          |
+| ------------------- | ----------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `transient_managed` | Yaffle                              | Bounded by a trigger or requested lifecycle   | Yaffle plans, applies, locks, and destroys isolated state. A GitHub pull-request source uses `pr-{number}`; other sources may define other names. |
+| `named_managed`     | Yaffle                              | Long-lived                                    | Yaffle plans, applies, locks, and retains state for a declared named environment.                                                                 |
+| `named_external`    | Customer CI or another orchestrator | Long-lived                                    | The external owner plans and applies. It may publish authorized output snapshots; Yaffle never mutates or destroys it.                            |
+| `static_external`   | External system or operator         | Independent of a Yaffle environment lifecycle | Yaffle consumes a pinned external dependency or snapshot and never operates its producer.                                                         |
 
 These classes describe product ownership. They are separate from the managed runtime
 `EnvironmentKind`, whose values are only `named` and `transient`. For example,
@@ -308,13 +308,7 @@ Yaffle models lifecycle truth as a reduction over workspace lifecycle vectors.
 ### Lifecycle states
 
 ```ts
-type LifecycleState =
-  | "pending"
-  | "running"
-  | "succeeded"
-  | "degraded"
-  | "blocked"
-  | "failed"
+type LifecycleState = "pending" | "running" | "succeeded" | "degraded" | "blocked" | "failed"
 ```
 
 ### Phase vector
@@ -512,27 +506,33 @@ interface EnvironmentCondition {
 ### Predicates
 
 `infra_ready`
+
 - basis: `infra` items in `infra_dag`
 - met iff `pending == 0`, `running == 0`, `blocked == 0`, `failed == 0`, `degraded == 0`
 
 `activation_settled`
+
 - basis: all `activation` items
 - met iff `pending == 0` and `running == 0`
 
 `verification_settled`
+
 - basis: all `verification` items
 - met iff `pending == 0` and `running == 0`
 
 `usable`
+
 - basis: items in `usable`
 - met iff `pending == 0`, `running == 0`, `blocked == 0`, `failed == 0`
 - `degraded` does not block `usable`
 
 `acceptable`
+
 - basis: items in `acceptable`
 - met iff `pending == 0`, `running == 0`, `blocked == 0`, `failed == 0`, `degraded == 0`
 
 `teardown_settled`
+
 - basis: items in `teardown`
 - met iff `pending == 0` and `running == 0`
 
@@ -638,15 +638,9 @@ It answers: does this workspace still reflect current dependency truth?
 ### Freshness states
 
 ```ts
-type WorkspaceFreshness =
-  | "fresh"
-  | "in_flux"
-  | "stale"
+type WorkspaceFreshness = "fresh" | "in_flux" | "stale"
 
-type EnvironmentFreshness =
-  | "fresh"
-  | "in_flux"
-  | "stale"
+type EnvironmentFreshness = "fresh" | "in_flux" | "stale"
 ```
 
 Meanings:

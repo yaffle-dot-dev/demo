@@ -12,23 +12,23 @@ description: GitHub App setup and webhooks
 
 ## Permissions
 
-| Permission | Access | Why |
-|------------|--------|-----|
-| Contents | Read | Clone repos, read OpenTofu files |
-| Pull requests | Write | Post comments |
-| Checks | Write | Post plan results |
+| Permission    | Access | Why                              |
+| ------------- | ------ | -------------------------------- |
+| Contents      | Read   | Clone repos, read OpenTofu files |
+| Pull requests | Write  | Post comments                    |
+| Checks        | Write  | Post plan results                |
 
 Yaffle never pushes code.
 
 ## Webhooks
 
-| Event | Yaffle action |
-|-------|---------------|
-| `pull_request.opened` | Plan + apply preview |
-| `pull_request.synchronize` | Plan + apply preview |
-| `pull_request.closed` | Destroy preview |
+| Event                          | Yaffle action                                                            |
+| ------------------------------ | ------------------------------------------------------------------------ |
+| `pull_request.opened`          | Plan + apply preview                                                     |
+| `pull_request.synchronize`     | Plan + apply preview                                                     |
+| `pull_request.closed`          | Destroy preview                                                          |
 | `pull_request.closed` (merged) | Destroy preview; a configured push trigger may apply a named environment |
-| `push` | Apply to matching environment |
+| `push`                         | Apply to matching environment                                            |
 
 ## Check runs
 

@@ -78,7 +78,7 @@ branch-qualified username like `yaffle_tc_runtime.main`.
 
 The Lambda resources intentionally use a placeholder zip during early scaffolding.
 Code deployment should later be handled by a dedicated build/deploy step once the
- handlers do real work.
+handlers do real work.
 
 ## Least-Privilege Note
 

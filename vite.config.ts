@@ -34,10 +34,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    exclude: [
-      ...IGNORE_PATTERNS,
-      "**/*.smoke.test.ts",
-    ],
+    exclude: [...IGNORE_PATTERNS, "**/*.smoke.test.ts"],
   },
   run: {
     cache: {

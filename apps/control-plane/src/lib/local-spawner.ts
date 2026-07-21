@@ -43,8 +43,7 @@ export class LocalChildProcessSpawner implements IacEngineSpawner {
   private readonly apiUrl: string
 
   constructor(config: LocalSpawnerConfig = {}) {
-    const apiUrl = config.apiUrl
-      ?? process.env.YAFFLE_RUNNER_API_URL
+    const apiUrl = config.apiUrl ?? process.env.YAFFLE_RUNNER_API_URL
 
     if (!apiUrl) {
       throw new Error("YAFFLE_RUNNER_API_HOST must be configured")

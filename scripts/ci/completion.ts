@@ -1,4 +1,9 @@
-import { CI_COMMAND_SPEC, findCommandSpec, type CommandOptionSpec, type CommandSpec } from "./command-spec"
+import {
+  CI_COMMAND_SPEC,
+  findCommandSpec,
+  type CommandOptionSpec,
+  type CommandSpec,
+} from "./command-spec"
 import { discoverDeployables } from "./deployables/discovery"
 import { listNamedEnvironments } from "./environments"
 

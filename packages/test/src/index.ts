@@ -1,14 +1,4 @@
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  test,
-  vi,
-} from "vitest"
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, test, vi } from "vitest"
 
 declare module "vitest" {
   interface Assertion<T = any> {
@@ -28,7 +18,7 @@ type MockFactory = typeof vi.fn & {
 const mock = Object.assign(
   ((implementation?: Parameters<typeof vi.fn>[0]) => vi.fn(implementation)) as MockFactory,
   {
-    module: vi.mock,
+    module: vi.mock.bind(vi),
     restore: () => {
       vi.restoreAllMocks()
       vi.resetAllMocks()
@@ -42,22 +32,12 @@ expect.extend({
 
     return {
       pass,
-      message: () => pass
-        ? `expected ${received} not to start with ${prefix}`
-        : `expected ${received} to start with ${prefix}`,
+      message: () =>
+        pass
+          ? `expected ${received} not to start with ${prefix}`
+          : `expected ${received} to start with ${prefix}`,
     }
   },
 })
 
-export {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  mock,
-  test,
-  vi,
-}
+export { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock, test, vi }

@@ -21,10 +21,10 @@ export const load: PageLoad = async ({ fetch, params }) => {
   ])
 
   const environmentsBody = environmentsResponse.ok
-    ? await environmentsResponse.json() as EnvironmentsResponse
+    ? ((await environmentsResponse.json()) as EnvironmentsResponse)
     : null
   const previewsBody = previewsResponse.ok
-    ? await previewsResponse.json() as PreviewOverviewResponse
+    ? ((await previewsResponse.json()) as PreviewOverviewResponse)
     : null
 
   return {

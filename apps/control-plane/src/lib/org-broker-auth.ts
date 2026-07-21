@@ -17,13 +17,19 @@ export async function assumeOrgBrokerRole(
     }
   }
 
-  const assumed = await sts.send(new AssumeRoleCommand({
-    RoleArn: orgBrokerRoleArn,
-    RoleSessionName: `yaffle-org-${orgId.slice(0, 8)}`,
-    DurationSeconds: 3600,
-  }))
+  const assumed = await sts.send(
+    new AssumeRoleCommand({
+      RoleArn: orgBrokerRoleArn,
+      RoleSessionName: `yaffle-org-${orgId.slice(0, 8)}`,
+      DurationSeconds: 3600,
+    }),
+  )
 
-  if (!assumed.Credentials?.AccessKeyId || !assumed.Credentials.SecretAccessKey || !assumed.Credentials.SessionToken) {
+  if (
+    !assumed.Credentials?.AccessKeyId ||
+    !assumed.Credentials.SecretAccessKey ||
+    !assumed.Credentials.SessionToken
+  ) {
     throw new Error(`Failed to assume organization broker role for ${orgId}`)
   }
 

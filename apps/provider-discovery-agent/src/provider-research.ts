@@ -15,7 +15,8 @@ const GITHUB_RAW_BASE_URL = "https://raw.githubusercontent.com"
 
 const MAX_FETCH_BYTES = 1_000_000
 
-const AUTH_HINT_PATTERN = /(TOKEN|KEY|SECRET|PASSWORD|USERNAME|EMAIL|URL|HOST|REGION|ACCOUNT|CLIENT|TENANT|PROJECT|ORG|ID|PRIVATE|PUBLIC|ACCESS|API)/
+const AUTH_HINT_PATTERN =
+  /(TOKEN|KEY|SECRET|PASSWORD|USERNAME|EMAIL|URL|HOST|REGION|ACCOUNT|CLIENT|TENANT|PROJECT|ORG|ID|PRIVATE|PUBLIC|ACCESS|API)/
 const ENV_VAR_PATTERN = /\b[A-Z][A-Z0-9_]{2,}\b/g
 
 const SKIP_ENV_VARS = new Set([
@@ -67,11 +68,7 @@ function shouldIgnoreEnvVar(token: string): boolean {
   return false
 }
 
-function scoreToken(params: {
-  providerType: string
-  token: string
-  line: string
-}): number {
+function scoreToken(params: { providerType: string; token: string; line: string }): number {
   const providerType = normalizeProviderType(params.providerType)
   const providerNormalized = normalizeProviderToken(providerType)
   const providerPrefix = providerType
@@ -136,7 +133,11 @@ async function fetchText(url: string, init: RequestInit, timeoutMs: number): Pro
   return text.slice(0, MAX_FETCH_BYTES)
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
@@ -197,12 +198,16 @@ async function resolveProviderCandidate(
     providers?: ProviderCandidate[]
   }
 
-  const payload = await fetchJson<ProviderSearchResponse>(url, {
-    headers: {
-      "content-type": "application/json",
-      "user-agent": "yaffle-provider-discovery-agent",
+  const payload = await fetchJson<ProviderSearchResponse>(
+    url,
+    {
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "yaffle-provider-discovery-agent",
+      },
     },
-  }, timeoutMs)
+    timeoutMs,
+  )
 
   const exactMatches = (payload.providers ?? [])
     .filter((candidate) => candidate.name.toLowerCase() === normalized)
@@ -212,9 +217,7 @@ async function resolveProviderCandidate(
     providerType,
     providerSource: normalizedSource || undefined,
     candidateCount: exactMatches.length,
-    selected: exactMatches[0]
-      ? `${exactMatches[0].namespace}/${exactMatches[0].name}`
-      : null,
+    selected: exactMatches[0] ? `${exactMatches[0].namespace}/${exactMatches[0].name}` : null,
   })
 
   return exactMatches[0] ?? null
@@ -239,12 +242,16 @@ async function fetchProviderDetails(
   }
 
   const url = `${TERRAFORM_REGISTRY_BASE_URL}/v1/providers/${candidate.namespace}/${candidate.name}`
-  const payload = await fetchJson<ProviderDetailResponse>(url, {
-    headers: {
-      "content-type": "application/json",
-      "user-agent": "yaffle-provider-discovery-agent",
+  const payload = await fetchJson<ProviderDetailResponse>(
+    url,
+    {
+      headers: {
+        "content-type": "application/json",
+        "user-agent": "yaffle-provider-discovery-agent",
+      },
     },
-  }, timeoutMs)
+    timeoutMs,
+  )
 
   return {
     namespace: payload.namespace,
@@ -480,17 +487,21 @@ async function collectGitHubMarkdown(params: {
     const url = `${GITHUB_RAW_BASE_URL}/${params.owner}/${params.repo}/${params.defaultBranch}/${encodedPath}`
 
     try {
-      const text = await fetchText(url, {
-        headers: {
-          "user-agent": "yaffle-provider-discovery-agent",
+      const text = await fetchText(
+        url,
+        {
+          headers: {
+            "user-agent": "yaffle-provider-discovery-agent",
+          },
         },
-      }, params.timeoutMs)
+        params.timeoutMs,
+      )
 
-        documents.push({
-          url,
-          text,
-          kind: "github_repository_docs",
-        })
+      documents.push({
+        url,
+        text,
+        kind: "github_repository_docs",
+      })
     } catch {
       continue
     }
@@ -532,7 +543,9 @@ async function collectProviderResearchMaterial(params: {
     details = {
       namespace: candidate.namespace,
       name: candidate.name,
-      source: candidate.source ?? `https://github.com/${candidate.namespace}/terraform-provider-${candidate.name}`,
+      source:
+        candidate.source ??
+        `https://github.com/${candidate.namespace}/terraform-provider-${candidate.name}`,
       docs: [],
     }
 
@@ -556,10 +569,7 @@ async function collectProviderResearchMaterial(params: {
     })
 
     const docs = pickHighSignalDocs(details.docs, params.maxDocs)
-    const primaryPaths = [
-      "README.md",
-      ...docs.map((doc) => doc.path),
-    ]
+    const primaryPaths = ["README.md", ...docs.map((doc) => doc.path)]
 
     const primaryDocuments = await collectGitHubMarkdown({
       owner: repo.owner,
@@ -582,8 +592,9 @@ async function collectProviderResearchMaterial(params: {
       githubToken: params.githubToken,
     }).catch(() => [])
 
-    const fallbackPaths = pickFallbackMarkdownPaths(treePaths, Math.max(params.maxDocs, 12))
-      .filter((path) => !primaryPaths.includes(path))
+    const fallbackPaths = pickFallbackMarkdownPaths(treePaths, Math.max(params.maxDocs, 12)).filter(
+      (path) => !primaryPaths.includes(path),
+    )
 
     if (fallbackPaths.length > 0) {
       const fallbackDocuments = await collectGitHubMarkdown({
@@ -651,15 +662,16 @@ function extractProviderCredentialsHeuristically(
     exactEnvVars,
   })
 
-  const hasOfficialEvidence = material.sources.some((source) =>
-    source.kind === "terraform_registry" || source.kind === "github_repository_docs"
+  const hasOfficialEvidence = material.sources.some(
+    (source) => source.kind === "terraform_registry" || source.kind === "github_repository_docs",
   )
 
-  const confidence = exactEnvVars.length >= 2 && prefixEnvVars.length > 0 && hasOfficialEvidence
-    ? "high"
-    : exactEnvVars.length >= 1 && hasOfficialEvidence
-      ? "medium"
-      : "low"
+  const confidence =
+    exactEnvVars.length >= 2 && prefixEnvVars.length > 0 && hasOfficialEvidence
+      ? "high"
+      : exactEnvVars.length >= 1 && hasOfficialEvidence
+        ? "medium"
+        : "low"
 
   return {
     exactEnvVars,
@@ -717,9 +729,7 @@ export async function discoverProviderCredentials(params: {
     ? await params.extractor(material)
     : extractProviderCredentialsHeuristically(material)
 
-  const confidence = extraction.exactEnvVars.length > 0
-    ? extraction.confidence
-    : "low"
+  const confidence = extraction.exactEnvVars.length > 0 ? extraction.confidence : "low"
 
   const status = extraction.exactEnvVars.length > 0 ? "succeeded" : "inconclusive"
 

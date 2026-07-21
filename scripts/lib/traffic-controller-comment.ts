@@ -77,8 +77,7 @@ export function parseTrafficControllerComment(commentBody: string): ParsedRouteC
     action: action || undefined,
     repositoryOwner,
     repositoryName,
-    target: normalizedTarget === "this preview"
-      ? "this_preview"
-      : { deploymentId: targetRaw.trim() },
+    target:
+      normalizedTarget === "this preview" ? "this_preview" : { deploymentId: targetRaw.trim() },
   }
 }

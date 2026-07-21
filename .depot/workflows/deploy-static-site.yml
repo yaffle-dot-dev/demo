@@ -56,7 +56,7 @@ env:
   AWS_REGION: us-east-1
   YAFFLE_CI_ROLE_ARN: arn:aws:iam::870923192739:role/yaffle-depot-ci
   TAILSCALE_GITHUB_ACTIONS_SECRET_ID: yaffle/shared/tailscale/github-actions-oauth
-  
+
 jobs:
   deploy:
     name: Deploy ${{ inputs.site-name }}
@@ -82,7 +82,7 @@ jobs:
         with:
           role-to-assume: ${{ env.YAFFLE_CI_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      
+
       - name: Fetch Tailscale CI OAuth credentials
         if: inputs.tailscale-ping-target != ''
         id: tailscale-bootstrap

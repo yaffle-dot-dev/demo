@@ -81,7 +81,9 @@ describe("configureLocalBackend", () => {
 
 describe("stateExistsSync", () => {
   test("returns false when no state file exists", () => {
-    expect(stateExistsSync(TEST_OWNER, TEST_REPO, "preview-pr-0/infra/terraform.tfstate")).toBe(false)
+    expect(stateExistsSync(TEST_OWNER, TEST_REPO, "preview-pr-0/infra/terraform.tfstate")).toBe(
+      false,
+    )
   })
 
   test("returns true when state file exists", async () => {

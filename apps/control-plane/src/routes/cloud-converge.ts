@@ -429,7 +429,10 @@ export function createCloudConvergeRoute(
     const config = await loadConfig(ctx)
     const environmentKind = getEnvironmentKind(config, values.environmentName)
 
-    if (environmentKind === "named" && !environmentMatchesRef(config, ctx, values.environmentName)) {
+    if (
+      environmentKind === "named" &&
+      !environmentMatchesRef(config, ctx, values.environmentName)
+    ) {
       return c.json(
         {
           error: {
@@ -585,29 +588,31 @@ export function createCloudConvergeRoute(
     const repoBinding = runGroup.repoBindingId
       ? await findPrincipalRepoBindingById(runGroup.repoBindingId)
       : undefined
-    const executionContext = repoBinding && isExecutionContextAssociationValid({
-      snapshot: runGroup.executionSnapshot,
-      runGroup,
-      resource: {
-        orgId: runGroup.orgId,
-        repo: runGroup.repo,
-        environmentKind: runGroup.environmentKind,
-        environmentName: runGroup.environmentName,
-      },
-      canonicalRepoNamespace: repoBinding.canonicalRepoNamespace,
-      requireRepoBinding: true,
-    })
-      ? serializeBoundExecutionSnapshotIdentity({
-          snapshot: runGroup.executionSnapshot,
-          runGroup,
-          resource: {
-            orgId: runGroup.orgId,
-            repo: runGroup.repo,
-            environmentKind: runGroup.environmentKind,
-            environmentName: runGroup.environmentName,
-          },
-        })
-      : null
+    const executionContext =
+      repoBinding &&
+      isExecutionContextAssociationValid({
+        snapshot: runGroup.executionSnapshot,
+        runGroup,
+        resource: {
+          orgId: runGroup.orgId,
+          repo: runGroup.repo,
+          environmentKind: runGroup.environmentKind,
+          environmentName: runGroup.environmentName,
+        },
+        canonicalRepoNamespace: repoBinding.canonicalRepoNamespace,
+        requireRepoBinding: true,
+      })
+        ? serializeBoundExecutionSnapshotIdentity({
+            snapshot: runGroup.executionSnapshot,
+            runGroup,
+            resource: {
+              orgId: runGroup.orgId,
+              repo: runGroup.repo,
+              environmentKind: runGroup.environmentKind,
+              environmentName: runGroup.environmentName,
+            },
+          })
+        : null
 
     const deployments = await findDeploymentsByRunGroup(runGroup.id)
     const latestRuns = await listRunsForDeployments(deployments.map((deployment) => deployment.id))

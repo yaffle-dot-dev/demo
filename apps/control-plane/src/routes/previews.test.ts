@@ -3,11 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "@yaffle
 import { Hono } from "hono"
 
 // Import test utils FIRST to set YAFFLE_AUTH_MODE=dev before other imports
-import {
-  createTestContext,
-  authHeaders,
-  type TestContext,
-} from "../test-utils/auth.ts"
+import { createTestContext, authHeaders, type TestContext } from "../test-utils/auth.ts"
 
 import { db } from "../lib/db.ts"
 import { rebuildEnvironmentGroupProjections } from "../lib/projections/environment-groups.ts"
@@ -45,17 +41,17 @@ async function req(
 ): Promise<Response> {
   const { headers, method = "GET", body } = options
   const reqHeaders = headers ?? ctx.headers
-  
+
   const init: RequestInit = {
     method,
     headers: reqHeaders,
   }
-  
+
   if (body) {
     init.body = JSON.stringify(body)
     reqHeaders.set("Content-Type", "application/json")
   }
-  
+
   return app.request(path, init)
 }
 
@@ -72,7 +68,7 @@ async function seedPreview(
   const prNumber = overrides.prNumber ?? 42
   const workspacePath = overrides.workspacePath ?? "infra"
   const environmentName = overrides.environmentName ?? `pr-${prNumber}`
-  
+
   const rows = await db
     .insert(previews)
     .values({
@@ -212,13 +208,15 @@ describe("GET /api/previews", () => {
             name: "pr-42",
             sourcePullRequestNumber: 42,
           },
-          workspaces: [{
-            path: "infra",
-            variables: { internal_marker: "foreign-do-not-expose" },
-            approval: { required: false, approvers: [] },
-            lifecycle: { activation: [], verification: [] },
-            automaticPreviewIsolation: false,
-          }],
+          workspaces: [
+            {
+              path: "infra",
+              variables: { internal_marker: "foreign-do-not-expose" },
+              approval: { required: false, approvers: [] },
+              lifecycle: { activation: [], verification: [] },
+              automaticPreviewIsolation: false,
+            },
+          ],
         },
       })
       .returning()
@@ -246,7 +244,11 @@ describe("GET /api/previews", () => {
 
   test("filters by repo", async () => {
     await seedPreview({ repo: "repo-a" })
-    await seedPreview({ repo: "repo-b", prNumber: 43, stateKey: "previews/pr-43/infra/terraform.tfstate" })
+    await seedPreview({
+      repo: "repo-b",
+      prNumber: 43,
+      stateKey: "previews/pr-43/infra/terraform.tfstate",
+    })
 
     const res = await req("/api/previews?org=test-org&repo=repo-a")
     expect(res.status).toBe(200)
@@ -399,31 +401,35 @@ describe("GET /api/previews/:id/approvals", () => {
             name: "pr-42",
             sourcePullRequestNumber: 42,
           },
-          workspaces: [{
-            path: "infra",
-            variables: { internal_marker: "do-not-expose" },
-            approval: { required: true, approvers: ["github:user:test-approver"] },
-            lifecycle: {
-              activation: [{
-                key: "deploy",
-                environments: ["pr-42"],
-                kind: "generic",
-                failure: "failed",
-                scopes: [],
-                request: {
-                  url: "https://private-hook.example.test/deploy",
-                  method: "POST",
-                },
-              }],
-              verification: [],
+          workspaces: [
+            {
+              path: "infra",
+              variables: { internal_marker: "do-not-expose" },
+              approval: { required: true, approvers: ["github:user:test-approver"] },
+              lifecycle: {
+                activation: [
+                  {
+                    key: "deploy",
+                    environments: ["pr-42"],
+                    kind: "generic",
+                    failure: "failed",
+                    scopes: [],
+                    request: {
+                      url: "https://private-hook.example.test/deploy",
+                      method: "POST",
+                    },
+                  },
+                ],
+                verification: [],
+              },
+              automaticPreviewIsolation: false,
             },
-            automaticPreviewIsolation: false,
-          }],
+          ],
         },
       })
       .returning()
     const preview = await seedPreview({ runGroupId: runGroup.id })
-    
+
     // Seed an approval
     await db.insert(approvals).values({
       deploymentId: preview.id,
@@ -479,7 +485,7 @@ describe("POST /api/previews/:id/approve", () => {
 
   test("returns 403 when user has viewer role", async () => {
     const preview = await seedPreview({ requireApproval: true })
-    
+
     // Create viewer headers
     const viewerHeaders = authHeaders({
       userId: ctx.user.id,

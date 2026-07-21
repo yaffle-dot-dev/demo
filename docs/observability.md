@@ -28,14 +28,14 @@ You can correlate events using:
 
 Jobs emit structured lifecycle logs at each state transition:
 
-| Event | Description | Key Attributes |
-|-------|-------------|----------------|
-| `job.created` | Job queued | `job.id`, `job.type`, `deployment.id` |
-| `job.claimed` | Worker claimed job (queued→running) | `job.id`, `worker.id`, `duration.queue_wait_ms` |
-| `job.completed` | Job succeeded (running→completed) | `job.id`, `duration.run_ms` |
-| `job.failed` | Job failed (running→failed) | `job.id`, `duration.run_ms`, `error.message` |
-| `job.stale_timeout` | Worker stopped heartbeating | `job.id`, `duration.stale_ms` |
-| `job.cancelled` | Job cancelled (e.g., PR closed) | `job.id`, `deployment.id` |
+| Event               | Description                         | Key Attributes                                  |
+| ------------------- | ----------------------------------- | ----------------------------------------------- |
+| `job.created`       | Job queued                          | `job.id`, `job.type`, `deployment.id`           |
+| `job.claimed`       | Worker claimed job (queued→running) | `job.id`, `worker.id`, `duration.queue_wait_ms` |
+| `job.completed`     | Job succeeded (running→completed)   | `job.id`, `duration.run_ms`                     |
+| `job.failed`        | Job failed (running→failed)         | `job.id`, `duration.run_ms`, `error.message`    |
+| `job.stale_timeout` | Worker stopped heartbeating         | `job.id`, `duration.stale_ms`                   |
+| `job.cancelled`     | Job cancelled (e.g., PR closed)     | `job.id`, `deployment.id`                       |
 
 ## APL Query Templates
 
@@ -194,27 +194,27 @@ The following OTel metrics are available:
 
 ### Job Metrics
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `yaffle.job.queue_wait` | Histogram | `job_type` | Time from creation to claim (ms) |
-| `yaffle.job.run_duration` | Histogram | `job_type`, `status` | Time from start to completion (ms) |
-| `yaffle.job.heartbeats` | Counter | - | Successful heartbeat count |
-| `yaffle.job.state_transitions` | Counter | `from_state`, `to_state`, `job_type` | State change count |
+| Metric                         | Type      | Labels                               | Description                        |
+| ------------------------------ | --------- | ------------------------------------ | ---------------------------------- |
+| `yaffle.job.queue_wait`        | Histogram | `job_type`                           | Time from creation to claim (ms)   |
+| `yaffle.job.run_duration`      | Histogram | `job_type`, `status`                 | Time from start to completion (ms) |
+| `yaffle.job.heartbeats`        | Counter   | -                                    | Successful heartbeat count         |
+| `yaffle.job.state_transitions` | Counter   | `from_state`, `to_state`, `job_type` | State change count                 |
 
 ### Scheduler Metrics
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
-| `yaffle.scheduler.jobs.claimed` | Counter | - | Jobs dispatched to workers |
-| `yaffle.scheduler.jobs.blocked` | Counter | `reason` | Jobs blocked by limits |
-| `yaffle.scheduler.jobs.active` | Gauge | - | Currently running jobs |
-| `yaffle.scheduler.jobs.queued` | Gauge | - | Jobs waiting in queue |
-| `yaffle.scheduler.poll.duration` | Histogram | - | Scheduler poll cycle time (ms) |
+| Metric                           | Type      | Labels   | Description                    |
+| -------------------------------- | --------- | -------- | ------------------------------ |
+| `yaffle.scheduler.jobs.claimed`  | Counter   | -        | Jobs dispatched to workers     |
+| `yaffle.scheduler.jobs.blocked`  | Counter   | `reason` | Jobs blocked by limits         |
+| `yaffle.scheduler.jobs.active`   | Gauge     | -        | Currently running jobs         |
+| `yaffle.scheduler.jobs.queued`   | Gauge     | -        | Jobs waiting in queue          |
+| `yaffle.scheduler.poll.duration` | Histogram | -        | Scheduler poll cycle time (ms) |
 
 ### Webhook Metrics
 
-| Metric | Type | Labels | Description |
-|--------|------|--------|-------------|
+| Metric                    | Type    | Labels  | Description               |
+| ------------------------- | ------- | ------- | ------------------------- |
 | `yaffle.webhook.received` | Counter | `event` | Webhooks received by type |
 
 ## Troubleshooting Scenarios
@@ -222,6 +222,7 @@ The following OTel metrics are available:
 ### Job Stuck in Queue
 
 1. Check if concurrency limits are blocking:
+
    ```apl
    ['yaffle']
    | where body contains "blocked by"
@@ -239,6 +240,7 @@ The following OTel metrics are available:
 ### Job Failed Without Clear Error
 
 1. Find the job's full timeline:
+
    ```apl
    ['yaffle']
    | where ['attributes.job.id'] == "JOB_ID"
@@ -254,6 +256,7 @@ The following OTel metrics are available:
 ### Webhook Not Processing
 
 1. Verify webhook was received:
+
    ```apl
    ['yaffle']
    | where ['attributes.webhook.delivery_id'] == "DELIVERY_ID"
@@ -268,6 +271,7 @@ The following OTel metrics are available:
 ### High Queue Wait Times
 
 1. Check queue depth over time:
+
    ```apl
    ['yaffle']
    | where name == "yaffle.scheduler.jobs.queued"

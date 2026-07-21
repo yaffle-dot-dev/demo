@@ -38,10 +38,7 @@ export async function findRepoByFullName(fullName: string): Promise<Repository |
 /**
  * Find a repository by org ID and name
  */
-export async function findRepoByName(
-  orgId: string,
-  name: string,
-): Promise<Repository | undefined> {
+export async function findRepoByName(orgId: string, name: string): Promise<Repository | undefined> {
   return withDbSpan("select", "repositories", async () => {
     const rows = await db
       .select()
@@ -186,10 +183,7 @@ export async function deactivateRepos(githubIds: number[]): Promise<void> {
  */
 export async function deactivateAllReposForOrg(orgId: string): Promise<void> {
   return withDbSpan("update", "repositories", async () => {
-    await db
-      .update(repositories)
-      .set({ isActive: false })
-      .where(eq(repositories.orgId, orgId))
+    await db.update(repositories).set({ isActive: false }).where(eq(repositories.orgId, orgId))
   })
 }
 

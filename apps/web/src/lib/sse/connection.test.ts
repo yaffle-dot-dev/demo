@@ -30,7 +30,10 @@ class MockEventSource {
 
   removeEventListener(type: string, handler: EventHandler): void {
     const handlers = this.listeners.get(type) ?? []
-    this.listeners.set(type, handlers.filter((h) => h !== handler))
+    this.listeners.set(
+      type,
+      handlers.filter((h) => h !== handler),
+    )
   }
 
   close(): void {
@@ -53,7 +56,10 @@ class MockEventSource {
   }
 
   simulateHeartbeat(): void {
-    this.dispatch("heartbeat", new MessageEvent("heartbeat", { data: JSON.stringify({ ts: Date.now() }) }))
+    this.dispatch(
+      "heartbeat",
+      new MessageEvent("heartbeat", { data: JSON.stringify({ ts: Date.now() }) }),
+    )
   }
 
   private dispatch(type: string, event: Event | MessageEvent): void {
@@ -87,9 +93,10 @@ beforeEach(() => {
   globalThis.EventSource = MockEventSource
 
   // Mock document for visibility API
-  // @ts-expect-error -- partial mock
   globalThis.document = {
-    get hidden() { return documentHidden },
+    get hidden() {
+      return documentHidden
+    },
     addEventListener(type: string, handler: () => void) {
       if (type === "visibilitychange") visibilityListeners.push(handler)
     },
@@ -99,12 +106,11 @@ beforeEach(() => {
         if (idx !== -1) visibilityListeners.splice(idx, 1)
       }
     },
-  }
+  } as unknown as Document
 })
 
 afterEach(() => {
   globalThis.EventSource = originalEventSource
-  // @ts-expect-error -- restore
   globalThis.document = originalDocument
 })
 

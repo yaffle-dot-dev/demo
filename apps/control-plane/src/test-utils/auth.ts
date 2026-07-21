@@ -76,12 +76,18 @@ export async function createTestUser(overrides: Partial<TestUser> = {}): Promise
 /**
  * Create a test organization in the database.
  */
-export async function createTestOrg(overrides: Partial<Omit<TestOrg, "id">> = {}): Promise<TestOrg> {
+export async function createTestOrg(
+  overrides: Partial<Omit<TestOrg, "id">> = {},
+): Promise<TestOrg> {
   const slug = overrides.slug ?? uniqueId("test-org")
   const name = overrides.name ?? `Test Org ${slug}`
 
   // Check if org exists
-  const existing = await db.select().from(organizations).where(eq(organizations.slug, slug)).limit(1)
+  const existing = await db
+    .select()
+    .from(organizations)
+    .where(eq(organizations.slug, slug))
+    .limit(1)
   if (existing.length > 0) {
     return { id: existing[0].id, slug: existing[0].slug, name: existing[0].name }
   }
@@ -158,10 +164,12 @@ export function authHeaders(ctx: {
  * Create a full test context with user, org, membership, and auth headers.
  * This is the main helper for most tests.
  */
-export async function createTestContext(options: {
-  role?: "viewer" | "approver" | "admin"
-  orgSlug?: string
-} = {}): Promise<TestContext> {
+export async function createTestContext(
+  options: {
+    role?: "viewer" | "approver" | "admin"
+    orgSlug?: string
+  } = {},
+): Promise<TestContext> {
   const role = options.role ?? "admin"
 
   const testUser = await createTestUser()
@@ -196,7 +204,7 @@ export async function cleanupTestData(): Promise<void> {
   if (!dbUrl.includes("_test")) {
     throw new Error(
       `FATAL: cleanupTestData() called but DATABASE_URL doesn't contain '_test'. ` +
-      `Refusing to truncate tables. Current URL: ${dbUrl.replace(/\/\/[^@]+@/, "//***@")}`
+        `Refusing to truncate tables. Current URL: ${dbUrl.replace(/\/\/[^@]+@/, "//***@")}`,
     )
   }
 

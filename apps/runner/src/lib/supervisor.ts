@@ -36,10 +36,12 @@ export class HeartbeatSupervisor {
 
   constructor(config: SupervisorConfig) {
     this.apiClient = config.apiClient
-    this.onHeartbeatFailure = config.onHeartbeatFailure ?? (() => {
-      console.error("[supervisor] Heartbeat failed, exiting")
-      process.exit(1)
-    })
+    this.onHeartbeatFailure =
+      config.onHeartbeatFailure ??
+      (() => {
+        console.error("[supervisor] Heartbeat failed, exiting")
+        process.exit(1)
+      })
   }
 
   /**

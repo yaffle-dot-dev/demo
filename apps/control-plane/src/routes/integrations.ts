@@ -51,7 +51,7 @@ async function refreshGithubToken(accountId: string, refreshToken: string): Prom
 
   if (!res.ok) return null
 
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     access_token?: string
     refresh_token?: string
     refresh_token_expires_in?: number
@@ -125,9 +125,10 @@ integrationsRoute.get("/github/installations", async (c) => {
 
   const tokenResult = await getValidGithubToken(auth.userId)
   if ("error" in tokenResult) {
-    const message = tokenResult.error === "NO_GITHUB_ACCOUNT"
-      ? "No linked GitHub account found"
-      : "GitHub access token has expired. Please sign in again."
+    const message =
+      tokenResult.error === "NO_GITHUB_ACCOUNT"
+        ? "No linked GitHub account found"
+        : "GitHub access token has expired. Please sign in again."
     const status = tokenResult.error === "NO_GITHUB_ACCOUNT" ? 400 : 401
     return c.json({ error: { code: tokenResult.error, message } }, status as any)
   }
@@ -141,10 +142,13 @@ integrationsRoute.get("/github/installations", async (c) => {
   })
 
   if (!res.ok) {
-    return c.json({ error: { code: "GITHUB_API_ERROR", message: `GitHub API error: ${res.status}` } }, 502)
+    return c.json(
+      { error: { code: "GITHUB_API_ERROR", message: `GitHub API error: ${res.status}` } },
+      502,
+    )
   }
 
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     installations: Array<{
       id: number
       account: { id: number; login: string; type: string; avatar_url: string }
@@ -189,9 +193,10 @@ integrationsRoute.get("/github/installations/:id/repositories", async (c) => {
 
   const tokenResult = await getValidGithubToken(auth.userId)
   if ("error" in tokenResult) {
-    const message = tokenResult.error === "NO_GITHUB_ACCOUNT"
-      ? "No linked GitHub account found"
-      : "GitHub access token has expired. Please sign in again."
+    const message =
+      tokenResult.error === "NO_GITHUB_ACCOUNT"
+        ? "No linked GitHub account found"
+        : "GitHub access token has expired. Please sign in again."
     const status = tokenResult.error === "NO_GITHUB_ACCOUNT" ? 400 : 401
     return c.json({ error: { code: tokenResult.error, message } }, status as any)
   }
@@ -209,12 +214,23 @@ integrationsRoute.get("/github/installations/:id/repositories", async (c) => {
 
   if (!res.ok) {
     if (res.status === 403 || res.status === 404) {
-      return c.json({ error: { code: "INSTALLATION_NOT_ACCESSIBLE", message: "You do not have access to this installation" } }, 403)
+      return c.json(
+        {
+          error: {
+            code: "INSTALLATION_NOT_ACCESSIBLE",
+            message: "You do not have access to this installation",
+          },
+        },
+        403,
+      )
     }
-    return c.json({ error: { code: "GITHUB_API_ERROR", message: `GitHub API error: ${res.status}` } }, 502)
+    return c.json(
+      { error: { code: "GITHUB_API_ERROR", message: `GitHub API error: ${res.status}` } },
+      502,
+    )
   }
 
-  const body = await res.json() as {
+  const body = (await res.json()) as {
     repositories: Array<{
       id: number
       name: string
@@ -243,9 +259,7 @@ integrationsRoute.get("/github/installations/:id/repositories", async (c) => {
     visibleOwnerSlugs = new Set(userOrgs.map((entry) => entry.slug))
   }
 
-  const repoOwners = targetOrgId
-    ? await listRepoOwnersForInstallation(Number(installationId))
-    : []
+  const repoOwners = targetOrgId ? await listRepoOwnersForInstallation(Number(installationId)) : []
   const repoOwnerByGithubId = new Map(repoOwners.map((owner) => [owner.githubRepoId, owner]))
 
   const repositories = body.repositories.map((r) => ({

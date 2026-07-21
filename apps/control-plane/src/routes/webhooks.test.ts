@@ -36,7 +36,9 @@ async function signBase64(payload: string, secret: string): Promise<string> {
     ["sign"],
   )
 
-  return Buffer.from(await crypto.subtle.sign("HMAC", key, encoder.encode(payload))).toString("base64")
+  return Buffer.from(await crypto.subtle.sign("HMAC", key, encoder.encode(payload))).toString(
+    "base64",
+  )
 }
 
 afterEach(() => {

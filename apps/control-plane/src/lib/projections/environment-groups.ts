@@ -1,8 +1,14 @@
-import { buildRunGroupWorkspaceMetadataKey, findRunGroupWorkspaceMetadataForRunGroups } from "../../db/queries/run-group-workspace-metadata.ts"
+import {
+  buildRunGroupWorkspaceMetadataKey,
+  findRunGroupWorkspaceMetadataForRunGroups,
+} from "../../db/queries/run-group-workspace-metadata.ts"
 import { findLatestRunsForDeployments } from "../../db/queries/tf-runs.ts"
 import { getLatestDependencyGraphsForOrg } from "../../db/queries/run-groups.ts"
 import { listConnectionsForOrg } from "../../db/queries/connections.ts"
-import { listLatestDeploymentsForOrg, type WorkspaceDeployment } from "../../db/queries/workspace-deployments.ts"
+import {
+  listLatestDeploymentsForOrg,
+  type WorkspaceDeployment,
+} from "../../db/queries/workspace-deployments.ts"
 import {
   deleteEnvironmentGroupProjectionsByIds,
   listEnvironmentGroupProjections,
@@ -95,10 +101,10 @@ function aggregateStatus(workspaces: Array<{ status: string }>): string {
   const statuses = new Set(workspaces.map((workspace) => workspace.status))
   if (statuses.has("failed")) return "failed"
   if (
-    statuses.has("applying")
-    || statuses.has("activating")
-    || statuses.has("planning")
-    || statuses.has("destroying")
+    statuses.has("applying") ||
+    statuses.has("activating") ||
+    statuses.has("planning") ||
+    statuses.has("destroying")
   ) {
     return "in_progress"
   }
@@ -121,9 +127,7 @@ function isActiveWorkspaceStatus(status: string): boolean {
   return ["planning", "applying", "activating", "destroying", "running"].includes(status)
 }
 
-function getSourceMetadataForDeployment(
-  deployment: WorkspaceDeployment,
-): {
+function getSourceMetadataForDeployment(deployment: WorkspaceDeployment): {
   sourceKind: string | null
   sourceMetadata: EnvironmentGroupProjectionSourceMetadata | null
 } {
@@ -185,13 +189,21 @@ export async function buildEnvironmentGroupProjectionRows(params: {
     }
 
     const deploymentIds = activeDeployments.map((deployment) => deployment.id)
-    const runGroupIds = [...new Set(
-      activeDeployments
-        .map((deployment) => deployment.runGroupId)
-        .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
-    )]
+    const runGroupIds = [
+      ...new Set(
+        activeDeployments
+          .map((deployment) => deployment.runGroupId)
+          .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
+      ),
+    ]
 
-    const [applyRunsMap, allRunsMap, orgConnections, metadataByRunGroupWorkspaceKey, dependencyGraphs] = await Promise.all([
+    const [
+      applyRunsMap,
+      allRunsMap,
+      orgConnections,
+      metadataByRunGroupWorkspaceKey,
+      dependencyGraphs,
+    ] = await Promise.all([
       findLatestRunsForDeployments(deploymentIds, "apply"),
       findLatestRunsForDeployments(deploymentIds),
       listConnectionsForOrg(params.orgId),
@@ -207,9 +219,12 @@ export async function buildEnvironmentGroupProjectionRows(params: {
         getProviderRequirementsForDeployment: (currentDeployment) =>
           getRequiredProviderRequirementsForDeployment(currentDeployment, {
             metadata: currentDeployment.runGroupId
-              ? metadataByRunGroupWorkspaceKey.get(
-                buildRunGroupWorkspaceMetadataKey(currentDeployment.runGroupId, currentDeployment.workspacePath),
-              ) ?? null
+              ? (metadataByRunGroupWorkspaceKey.get(
+                  buildRunGroupWorkspaceMetadataKey(
+                    currentDeployment.runGroupId,
+                    currentDeployment.workspacePath,
+                  ),
+                ) ?? null)
               : null,
           }),
         listConnectionsForOrg: async () => orgConnections,
@@ -219,7 +234,8 @@ export async function buildEnvironmentGroupProjectionRows(params: {
       const latestApply = applyRunsMap.get(deployment.id)
       const latestRun = latestApply ?? allRunsMap.get(deployment.id)
       const groupKey = `${deployment.repo}:${deployment.environmentKind}:${deployment.environmentName}`
-      const dependencyGraph = dependencyGraphs.get(`${deployment.repo}:${deployment.environmentName}`) ?? null
+      const dependencyGraph =
+        dependencyGraphs.get(`${deployment.repo}:${deployment.environmentName}`) ?? null
       const { sourceKind, sourceMetadata } = getSourceMetadataForDeployment(deployment)
 
       const workspacePayload: EnvironmentGroupProjectionWorkspacePayload = {
@@ -283,10 +299,16 @@ export async function buildEnvironmentGroupProjectionRows(params: {
     const rows: NewEnvironmentGroupProjection[] = []
 
     for (const payload of groups.values()) {
-      payload.workspaces.sort((left, right) => left.workspacePath.localeCompare(right.workspacePath))
+      payload.workspaces.sort((left, right) =>
+        left.workspacePath.localeCompare(right.workspacePath),
+      )
 
-      const blockedWorkspaceCount = payload.workspaces.filter((workspace) => workspace.blockedReason !== null).length
-      const degradedWorkspaceCount = payload.workspaces.filter((workspace) => workspace.degradation !== null).length
+      const blockedWorkspaceCount = payload.workspaces.filter(
+        (workspace) => workspace.blockedReason !== null,
+      ).length
+      const degradedWorkspaceCount = payload.workspaces.filter(
+        (workspace) => workspace.degradation !== null,
+      ).length
 
       rows.push({
         orgId: params.orgId,
@@ -311,7 +333,10 @@ export async function buildEnvironmentGroupProjectionRows(params: {
 
     span.setAttributes({
       "projections.group_count": rows.length,
-      "projections.workspace_count": rows.reduce((total, row) => total + (row.workspaceCount ?? 0), 0),
+      "projections.workspace_count": rows.reduce(
+        (total, row) => total + (row.workspaceCount ?? 0),
+        0,
+      ),
     })
 
     return rows
@@ -336,7 +361,10 @@ export async function rebuildEnvironmentGroupProjections(params: {
 
   await deleteEnvironmentGroupProjectionsByIds(
     existing
-      .filter((row) => !nextKeys.has(`${row.orgId}:${row.repo}:${row.environmentKind}:${row.environmentName}`))
+      .filter(
+        (row) =>
+          !nextKeys.has(`${row.orgId}:${row.repo}:${row.environmentKind}:${row.environmentName}`),
+      )
       .map((row) => row.id),
   )
 

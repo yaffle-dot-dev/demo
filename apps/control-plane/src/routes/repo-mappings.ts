@@ -22,13 +22,21 @@ export const repoMappingsRoute = new Hono()
 async function resolveOrgAdmin(
   headers: Headers,
   slug: string,
-): Promise<{ auth: AuthContext; org: Organization } | { error: true; status: number; code: string; message: string }> {
+): Promise<
+  | { auth: AuthContext; org: Organization }
+  | { error: true; status: number; code: string; message: string }
+> {
   let auth: AuthContext
   try {
     auth = await requireAuth(headers)
   } catch (err) {
     if (err instanceof AuthError) {
-      return { error: true, status: err.code === "AUTH_REQUIRED" ? 401 : 403, code: err.code, message: err.message }
+      return {
+        error: true,
+        status: err.code === "AUTH_REQUIRED" ? 401 : 403,
+        code: err.code,
+        message: err.message,
+      }
     }
     throw err
   }
@@ -118,17 +126,29 @@ repoMappingsRoute.post("/:slug/repo-mappings", async (c) => {
   // Verify the user has access to this GitHub installation
   const hasAccess = await verifyInstallationAccess(result.auth.userId, body.installationId)
   if (!hasAccess) {
-    return c.json({
-      error: { code: "INSTALLATION_NOT_ACCESSIBLE", message: "You do not have access to this GitHub installation" },
-    }, 403)
+    return c.json(
+      {
+        error: {
+          code: "INSTALLATION_NOT_ACCESSIBLE",
+          message: "You do not have access to this GitHub installation",
+        },
+      },
+      403,
+    )
   }
 
   // Check if this repo is already mapped to a different org
   const existing = await findOrgForRepo(body.installationId, body.githubRepoId)
   if (existing && existing.orgId !== result.org.id) {
-    return c.json({
-      error: { code: "REPO_ALREADY_MAPPED", message: "This repository is already mapped to another organization" },
-    }, 409)
+    return c.json(
+      {
+        error: {
+          code: "REPO_ALREADY_MAPPED",
+          message: "This repository is already mapped to another organization",
+        },
+      },
+      409,
+    )
   }
 
   const mapping = await setRepoMapping({
@@ -156,13 +176,19 @@ repoMappingsRoute.delete("/:slug/repo-mappings/:installationId/:repoId", async (
   const repoId = Number(c.req.param("repoId"))
 
   if (!Number.isFinite(installationId) || !Number.isFinite(repoId)) {
-    return c.json({ error: { code: "VALIDATION_ERROR", message: "Invalid installation or repo ID" } }, 400)
+    return c.json(
+      { error: { code: "VALIDATION_ERROR", message: "Invalid installation or repo ID" } },
+      400,
+    )
   }
 
   // Verify the mapping belongs to this org before deleting
   const existing = await findOrgForRepo(installationId, repoId)
   if (!existing || existing.orgId !== result.org.id) {
-    return c.json({ error: { code: "NOT_FOUND", message: "Mapping not found for this organization" } }, 404)
+    return c.json(
+      { error: { code: "NOT_FOUND", message: "Mapping not found for this organization" } },
+      404,
+    )
   }
 
   await removeRepoMapping(installationId, repoId)

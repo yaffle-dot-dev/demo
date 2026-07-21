@@ -1,7 +1,7 @@
 /**
  * BetterAuth database schema for Drizzle ORM.
  * Generated based on BetterAuth's core schema requirements.
- * 
+ *
  * These tables are managed by BetterAuth for authentication.
  */
 import { pgTable, text, timestamp, boolean, integer, index } from "drizzle-orm/pg-core"

@@ -121,7 +121,10 @@ export async function listRepoMappingsForOrg(orgId: string): Promise<EnrichedRep
       })
       .from(githubRepoMappings)
       .leftJoin(repositories, eq(repositories.githubId, githubRepoMappings.githubRepoId))
-      .leftJoin(githubInstallations, eq(githubInstallations.installationId, githubRepoMappings.installationId))
+      .leftJoin(
+        githubInstallations,
+        eq(githubInstallations.installationId, githubRepoMappings.installationId),
+      )
       .leftJoin(user, eq(user.id, githubRepoMappings.createdBy))
       .where(eq(githubRepoMappings.orgId, orgId))
 

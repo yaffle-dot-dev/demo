@@ -40,7 +40,7 @@ export class DeviceFlowAuth implements AuthProvider {
 
   constructor(
     private apiUrl: string,
-    private clientId: string
+    private clientId: string,
   ) {}
 
   /**

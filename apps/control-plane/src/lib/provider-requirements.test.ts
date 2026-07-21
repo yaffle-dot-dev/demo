@@ -28,7 +28,9 @@ function mockConnection(config: Record<string, unknown>): Connection {
   }
 }
 
-function mockDeployment(partial: Partial<ProviderRequirementDeployment>): ProviderRequirementDeployment {
+function mockDeployment(
+  partial: Partial<ProviderRequirementDeployment>,
+): ProviderRequirementDeployment {
   return {
     orgId: "org-1",
     repo: "repo-a",

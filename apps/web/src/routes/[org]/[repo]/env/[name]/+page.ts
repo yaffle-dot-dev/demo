@@ -17,7 +17,7 @@ export const load: PageLoad = async ({ fetch, params }) => {
     }
   }
 
-  const body = await response.json() as EnvironmentResponse
+  const body = (await response.json()) as EnvironmentResponse
 
   return {
     initialEnvironment: body.data ?? null,

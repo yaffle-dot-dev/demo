@@ -99,7 +99,9 @@ export function usePreviewStream(
       url,
       withCredentials: true, // Send cookies for BetterAuth session
       onMessage: (data) => store.handleMessage(data),
-      onStateChange: (state) => { store.connectionState = state },
+      onStateChange: (state) => {
+        store.connectionState = state
+      },
       onError: (err) => console.error("[sse] parse error:", err),
     })
 
@@ -112,13 +114,27 @@ export function usePreviewStream(
   })
 
   return {
-    get data() { return store.data },
-    get latestMeta() { return store.latestMeta },
-    get connectionState() { return store.connectionState },
-    get isStreaming() { return store.isStreaming },
-    get viewedRunGroupId() { return store.viewedRunGroupId },
-    get hasNewerRunGroup() { return store.hasNewerRunGroup },
-    get pinnedHeadSha() { return store.pinnedHeadSha },
+    get data() {
+      return store.data
+    },
+    get latestMeta() {
+      return store.latestMeta
+    },
+    get connectionState() {
+      return store.connectionState
+    },
+    get isStreaming() {
+      return store.isStreaming
+    },
+    get viewedRunGroupId() {
+      return store.viewedRunGroupId
+    },
+    get hasNewerRunGroup() {
+      return store.hasNewerRunGroup
+    },
+    get pinnedHeadSha() {
+      return store.pinnedHeadSha
+    },
     pinToRunGroup: (runGroupId) => store.pinToRunGroup(runGroupId),
     switchToLatest: () => store.switchToLatest(),
   }
@@ -141,9 +157,7 @@ export function usePreviewStream(
  * </script>
  * ```
  */
-export function usePreviewListStream(
-  getOrg: () => string,
-): PreviewListStreamState {
+export function usePreviewListStream(getOrg: () => string): PreviewListStreamState {
   const store = new PreviewListStore()
 
   $effect(() => {
@@ -159,7 +173,9 @@ export function usePreviewListStream(
       url,
       withCredentials: true, // Send cookies for BetterAuth session
       onMessage: (data) => store.handleMessage(data),
-      onStateChange: (state) => { store.connectionState = state },
+      onStateChange: (state) => {
+        store.connectionState = state
+      },
       onError: (err) => console.error("[sse] parse error:", err),
     })
 
@@ -171,10 +187,18 @@ export function usePreviewListStream(
   })
 
   return {
-    get previews() { return store.previews },
-    get dependencyGraphs() { return store.dependencyGraphs },
-    get hasReceivedSnapshot() { return store.hasReceivedSnapshot },
-    get connectionState() { return store.connectionState },
+    get previews() {
+      return store.previews
+    },
+    get dependencyGraphs() {
+      return store.dependencyGraphs
+    },
+    get hasReceivedSnapshot() {
+      return store.hasReceivedSnapshot
+    },
+    get connectionState() {
+      return store.connectionState
+    },
   }
 }
 
@@ -198,9 +222,7 @@ export function usePreviewListStream(
  * </script>
  * ```
  */
-export function useOrgStatusStream(
-  getOrg: () => string,
-): OrgStatusStreamState {
+export function useOrgStatusStream(getOrg: () => string): OrgStatusStreamState {
   const store = new OrgStatusStore()
 
   $effect(() => {
@@ -216,7 +238,9 @@ export function useOrgStatusStream(
       url,
       withCredentials: true,
       onMessage: (data) => store.handleMessage(data),
-      onStateChange: (state) => { store.connectionState = state },
+      onStateChange: (state) => {
+        store.connectionState = state
+      },
       onError: (err) => console.error("[sse] org status parse error:", err),
     })
 
@@ -228,9 +252,17 @@ export function useOrgStatusStream(
   })
 
   return {
-    get status() { return store.status },
-    get error() { return store.error },
-    get attempts() { return store.attempts },
-    get connectionState() { return store.connectionState },
+    get status() {
+      return store.status
+    },
+    get error() {
+      return store.error
+    },
+    get attempts() {
+      return store.attempts
+    },
+    get connectionState() {
+      return store.connectionState
+    },
   }
 }

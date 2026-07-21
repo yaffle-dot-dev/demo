@@ -112,23 +112,23 @@ Implements the [Terraform Module Registry Protocol](https://developer.hashicorp.
 
 Module source `yaffle.dev/acme--platform/core-infrastructure--vpc/yaffle` maps to:
 
-| Component | Value | Source |
-|-----------|-------|--------|
-| hostname | `yaffle.dev` | From module source |
-| namespace | `acme--platform` | `{org_slug}--{repo}` |
-| name | `core-infrastructure--vpc` | Workspace path (slashes → `--`) |
-| provider | `yaffle` | Constant (not provider-specific) |
+| Component | Value                      | Source                           |
+| --------- | -------------------------- | -------------------------------- |
+| hostname  | `yaffle.dev`               | From module source               |
+| namespace | `acme--platform`           | `{org_slug}--{repo}`             |
+| name      | `core-infrastructure--vpc` | Workspace path (slashes → `--`)  |
+| provider  | `yaffle`                   | Constant (not provider-specific) |
 
 ### Intra-Repo vs Inter-Repo Sources
 
 Yaffle uses the module namespace to decide whether a module reference is part of
 the current repo's orchestration graph or just a normal external module.
 
-| Reference type | Namespace compared to current repo | Registry resolution | Included in DAG |
-|----------------|------------------------------------|---------------------|-----------------|
-| Intra-repo | Same namespace | Preview-aware, last-known-good state | Yes |
-| Cross-repo (same org) | Different repo in same org | Normal registry dependency | No |
-| Cross-org | Different Yaffle org | Existing allowlist path; unsupported in beta, planned enterprise | No |
+| Reference type        | Namespace compared to current repo | Registry resolution                                              | Included in DAG |
+| --------------------- | ---------------------------------- | ---------------------------------------------------------------- | --------------- |
+| Intra-repo            | Same namespace                     | Preview-aware, last-known-good state                             | Yes             |
+| Cross-repo (same org) | Different repo in same org         | Normal registry dependency                                       | No              |
+| Cross-org             | Different Yaffle org               | Existing allowlist path; unsupported in beta, planned enterprise | No              |
 
 Examples:
 
@@ -152,15 +152,12 @@ Authorization: Bearer <token>
 ```
 
 Response:
+
 ```json
 {
   "modules": [
     {
-      "versions": [
-        { "version": "1.0.42" },
-        { "version": "1.0.41" },
-        { "version": "1.0.40" }
-      ]
+      "versions": [{ "version": "1.0.42" }, { "version": "1.0.41" }, { "version": "1.0.40" }]
     }
   ]
 }
@@ -176,6 +173,7 @@ Authorization: Bearer <token>
 ```
 
 Response:
+
 ```http
 HTTP/1.1 204 No Content
 X-Terraform-Get: /tfc/registry/v1/modules/acme--platform/core-infrastructure--vpc/yaffle/1.0.42/archive.tar.gz
@@ -189,10 +187,10 @@ Cross-repo sharing is controlled by the producer workspace.
 
 ### Visibility Classes
 
-| Visibility | Who can read it | Included in same-repo module | Included in cross-repo module |
-|------------|-----------------|------------------------------|-------------------------------|
-| `internal` | Same-repo downstream workspaces | Yes | No |
-| `public` | Beta: allowlisted workspaces in the same Yaffle org | Yes | Yes, if allowlisted |
+| Visibility | Who can read it                                     | Included in same-repo module | Included in cross-repo module |
+| ---------- | --------------------------------------------------- | ---------------------------- | ----------------------------- |
+| `internal` | Same-repo downstream workspaces                     | Yes                          | No                            |
+| `public`   | Beta: allowlisted workspaces in the same Yaffle org | Yes                          | Yes, if allowlisted           |
 
 ### Authorization Rules
 
@@ -284,16 +282,16 @@ output "cidr_block" {
 
 Terraform state includes output values and types. Map to HCL types:
 
-| State Type | HCL Type |
-|------------|----------|
-| `"string"` | `string` |
-| `"number"` | `number` |
-| `"bool"` | `bool` |
-| `["list", "string"]` | `list(string)` |
-| `["map", "number"]` | `map(number)` |
-| `["set", "string"]` | `set(string)` |
-| `["object", {...}]` | `object({...})` |
-| `["tuple", [...]]` | `tuple([...])` |
+| State Type           | HCL Type        |
+| -------------------- | --------------- |
+| `"string"`           | `string`        |
+| `"number"`           | `number`        |
+| `"bool"`             | `bool`          |
+| `["list", "string"]` | `list(string)`  |
+| `["map", "number"]`  | `map(number)`   |
+| `["set", "string"]`  | `set(string)`   |
+| `["object", {...}]`  | `object({...})` |
+| `["tuple", [...]]`   | `tuple([...])`  |
 
 For complex nested types, fall back to `any` if needed.
 
@@ -422,6 +420,7 @@ apps/shared-lib/infra
 ```
 
 Uses:
+
 - Cycle detection
 - Plan/apply ordering
 - Blast radius analysis
@@ -442,6 +441,7 @@ delay or sequence runs around them.
 ### Phase 1: Module Registry Protocol (YAF-38)
 
 Implement the Terraform module registry protocol:
+
 - Service discovery (`modules.v1`)
 - Version listing endpoint
 - Module download endpoint
@@ -452,6 +452,7 @@ Implement the Terraform module registry protocol:
 ### Phase 2: Shim Module Generation (YAF-39)
 
 Generate typed shim modules from workspace outputs:
+
 - Extract outputs from state
 - Infer HCL types
 - Generate valid HCL module
@@ -462,6 +463,7 @@ Generate typed shim modules from workspace outputs:
 ### Phase 3: Transient-Aware Resolution (YAF-40)
 
 Resolve modules to correct state based on context:
+
 - Named vs transient finalized state
 - Last-known-good fallback when transient state is unavailable
 - `?environment={name}` propagation through registry requests
@@ -471,6 +473,7 @@ Resolve modules to correct state based on context:
 ### Phase 4: Dependency Inference and Validation (YAF-41)
 
 Same-repo dependency management via Terraform source scanning:
+
 - Infer edges from Yaffle module sources
 - Keep only current-namespace references in the DAG
 - Cycle detection

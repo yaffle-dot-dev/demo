@@ -9,7 +9,9 @@ function cleanDbUrl(raw: string): string {
   return url.toString()
 }
 
-const dbUrl = cleanDbUrl(process.env.DATABASE_URL ?? "postgresql://yaffle@localhost:5432/yaffle_dev")
+const dbUrl = cleanDbUrl(
+  process.env.DATABASE_URL ?? "postgresql://yaffle@localhost:5432/yaffle_dev",
+)
 
 export default defineConfig({
   schema: "./src/db/schema.ts",

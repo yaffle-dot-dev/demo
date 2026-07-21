@@ -27,10 +27,7 @@ async function main(): Promise<void> {
         isNotNull(workspaceDeployments.runGroupId),
         eq(organizations.slug, orgSlug),
       )
-    : and(
-        ne(workspaceDeployments.status, "destroyed"),
-        isNotNull(workspaceDeployments.runGroupId),
-      )
+    : and(ne(workspaceDeployments.status, "destroyed"), isNotNull(workspaceDeployments.runGroupId))
 
   const rows = await db
     .select({
@@ -43,31 +40,35 @@ async function main(): Promise<void> {
     .innerJoin(organizations, eq(organizations.id, workspaceDeployments.orgId))
     .where(whereClause)
 
-  const uniqueRows = new Map<string, typeof rows[number]>()
+  const uniqueRows = new Map<string, (typeof rows)[number]>()
   for (const row of rows) {
     if (!row.runGroupId) {
       continue
     }
 
-    uniqueRows.set(
-      buildRunGroupWorkspaceMetadataKey(row.runGroupId, row.workspacePath),
-      row,
-    )
+    uniqueRows.set(buildRunGroupWorkspaceMetadataKey(row.runGroupId, row.workspacePath), row)
   }
 
-  const runGroupIds = [...new Set(
-    [...uniqueRows.values()].map((row) => row.runGroupId).filter((runGroupId): runGroupId is string => runGroupId != null),
-  )]
+  const runGroupIds = [
+    ...new Set(
+      [...uniqueRows.values()]
+        .map((row) => row.runGroupId)
+        .filter((runGroupId): runGroupId is string => runGroupId != null),
+    ),
+  ]
 
   const [existingMetadata, runGroupsById] = await Promise.all([
     findRunGroupWorkspaceMetadataForRunGroups(runGroupIds),
     findRunGroupsByIds(runGroupIds),
   ])
 
-  const missingByRunGroup = new Map<string, {
-    orgSlug: string
-    workspacePaths: string[]
-  }>()
+  const missingByRunGroup = new Map<
+    string,
+    {
+      orgSlug: string
+      workspacePaths: string[]
+    }
+  >()
 
   for (const [key, row] of uniqueRows) {
     if (existingMetadata.has(key) || !row.runGroupId) {
@@ -85,7 +86,9 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(`[backfill-run-group-workspace-metadata] active pairs=${uniqueRows.size} missing=${missingByRunGroup.size}`)
+  console.log(
+    `[backfill-run-group-workspace-metadata] active pairs=${uniqueRows.size} missing=${missingByRunGroup.size}`,
+  )
 
   if (missingByRunGroup.size === 0) {
     return
@@ -99,7 +102,9 @@ async function main(): Promise<void> {
     }
 
     const workspacePaths = [...new Set(entry.workspacePaths)].sort()
-    console.log(`- ${entry.orgSlug} ${runGroup.repo} ${runGroup.environmentName} runGroup=${runGroupId} workspaces=${workspacePaths.join(",")}`)
+    console.log(
+      `- ${entry.orgSlug} ${runGroup.repo} ${runGroup.environmentName} runGroup=${runGroupId} workspaces=${workspacePaths.join(",")}`,
+    )
 
     if (!apply) {
       continue

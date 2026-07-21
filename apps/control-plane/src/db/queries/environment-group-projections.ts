@@ -19,10 +19,11 @@ export async function upsertEnvironmentGroupProjection(
       environmentName: row.environmentName,
     })
 
-    const payloadChanged = JSON.stringify(existing?.payload ?? null) !== JSON.stringify(row.payload)
-      || existing?.status !== row.status
-      || existing?.headSha !== row.headSha
-      || existing?.updatedAt?.getTime() !== row.updatedAt?.getTime()
+    const payloadChanged =
+      JSON.stringify(existing?.payload ?? null) !== JSON.stringify(row.payload) ||
+      existing?.status !== row.status ||
+      existing?.headSha !== row.headSha ||
+      existing?.updatedAt?.getTime() !== row.updatedAt?.getTime()
 
     const nextVersion = payloadChanged
       ? (existing?.version ?? 0) + 1
@@ -86,19 +87,22 @@ export async function upsertEnvironmentGroupProjections(
         const existingRows = await tx
           .select()
           .from(environmentGroupProjections)
-          .where(and(
-            eq(environmentGroupProjections.orgId, row.orgId),
-            eq(environmentGroupProjections.repo, row.repo),
-            eq(environmentGroupProjections.environmentKind, row.environmentKind),
-            eq(environmentGroupProjections.environmentName, row.environmentName),
-          ))
+          .where(
+            and(
+              eq(environmentGroupProjections.orgId, row.orgId),
+              eq(environmentGroupProjections.repo, row.repo),
+              eq(environmentGroupProjections.environmentKind, row.environmentKind),
+              eq(environmentGroupProjections.environmentName, row.environmentName),
+            ),
+          )
           .limit(1)
 
         const existing = existingRows[0]
-        const payloadChanged = JSON.stringify(existing?.payload ?? null) !== JSON.stringify(row.payload)
-          || existing?.status !== row.status
-          || existing?.headSha !== row.headSha
-          || existing?.updatedAt?.getTime() !== row.updatedAt?.getTime()
+        const payloadChanged =
+          JSON.stringify(existing?.payload ?? null) !== JSON.stringify(row.payload) ||
+          existing?.status !== row.status ||
+          existing?.headSha !== row.headSha ||
+          existing?.updatedAt?.getTime() !== row.updatedAt?.getTime()
 
         const nextVersion = payloadChanged
           ? (existing?.version ?? 0) + 1
@@ -185,12 +189,14 @@ export async function findEnvironmentGroupProjection(params: {
     const rows = await db
       .select()
       .from(environmentGroupProjections)
-      .where(and(
-        eq(environmentGroupProjections.orgId, params.orgId),
-        eq(environmentGroupProjections.repo, params.repo),
-        eq(environmentGroupProjections.environmentKind, params.environmentKind),
-        eq(environmentGroupProjections.environmentName, params.environmentName),
-      ))
+      .where(
+        and(
+          eq(environmentGroupProjections.orgId, params.orgId),
+          eq(environmentGroupProjections.repo, params.repo),
+          eq(environmentGroupProjections.environmentKind, params.environmentKind),
+          eq(environmentGroupProjections.environmentName, params.environmentName),
+        ),
+      )
       .limit(1)
 
     return rows[0]
@@ -203,8 +209,6 @@ export async function deleteEnvironmentGroupProjectionsByIds(ids: string[]): Pro
   }
 
   await withDbSpan("delete", "environment_group_projections", async () => {
-    await db
-      .delete(environmentGroupProjections)
-      .where(inArray(environmentGroupProjections.id, ids))
+    await db.delete(environmentGroupProjections).where(inArray(environmentGroupProjections.id, ids))
   })
 }

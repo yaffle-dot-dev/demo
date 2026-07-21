@@ -24,7 +24,5 @@ export function getAwsClientConfig(region: string): {
   credentials?: ExplicitAwsCredentials
 } {
   const credentials = getExplicitAwsCredentials()
-  return credentials
-    ? { region, credentials }
-    : { region }
+  return credentials ? { region, credentials } : { region }
 }

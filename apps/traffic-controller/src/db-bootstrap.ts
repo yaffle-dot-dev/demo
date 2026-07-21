@@ -38,7 +38,8 @@ function requireEnv(name: string): string {
 
 export function getRuntimeRoleBootstrapEnv(): RuntimeRoleBootstrapEnv {
   const adminDatabaseUrl = cleanDatabaseUrl(requireEnv("TRAFFIC_CONTROL_ADMIN_DATABASE_URL"))
-  const runtimeRoleName = process.env.TRAFFIC_CONTROL_RUNTIME_ROLE_NAME?.trim() || "yaffle_tc_runtime"
+  const runtimeRoleName =
+    process.env.TRAFFIC_CONTROL_RUNTIME_ROLE_NAME?.trim() || "yaffle_tc_runtime"
   const branchSuffix = extractBranchSuffixFromUsername(new URL(adminDatabaseUrl).username)
 
   return {

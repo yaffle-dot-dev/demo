@@ -72,16 +72,18 @@ export async function createTrafficControlOperation(
 
 export async function updateTrafficControlOperation(
   operationId: string,
-  changes: Partial<Pick<
-    TrafficControlOperation,
-    | "status"
-    | "output"
-    | "resultCode"
-    | "resultMessage"
-    | "routeableDeploymentId"
-    | "liveWebhookLeaseId"
-    | "completedAt"
-  >>,
+  changes: Partial<
+    Pick<
+      TrafficControlOperation,
+      | "status"
+      | "output"
+      | "resultCode"
+      | "resultMessage"
+      | "routeableDeploymentId"
+      | "liveWebhookLeaseId"
+      | "completedAt"
+    >
+  >,
   db?: TrafficControlDb,
 ): Promise<TrafficControlOperation | undefined> {
   const resolvedDb = await operationsDb(db)
@@ -113,13 +115,17 @@ export async function markOperationSucceeded(
   },
   db?: TrafficControlDb,
 ): Promise<TrafficControlOperation | undefined> {
-  return updateTrafficControlOperation(operationId, {
-    status: "succeeded",
-    output: params.output,
-    routeableDeploymentId: params.routeableDeploymentId,
-    liveWebhookLeaseId: params.liveWebhookLeaseId,
-    completedAt: new Date(),
-  }, db)
+  return updateTrafficControlOperation(
+    operationId,
+    {
+      status: "succeeded",
+      output: params.output,
+      routeableDeploymentId: params.routeableDeploymentId,
+      liveWebhookLeaseId: params.liveWebhookLeaseId,
+      completedAt: new Date(),
+    },
+    db,
+  )
 }
 
 export async function markOperationFailed(
@@ -127,12 +133,16 @@ export async function markOperationFailed(
   params: { resultCode: string; resultMessage: string },
   db?: TrafficControlDb,
 ): Promise<TrafficControlOperation | undefined> {
-  return updateTrafficControlOperation(operationId, {
-    status: "failed",
-    resultCode: params.resultCode,
-    resultMessage: params.resultMessage,
-    completedAt: new Date(),
-  }, db)
+  return updateTrafficControlOperation(
+    operationId,
+    {
+      status: "failed",
+      resultCode: params.resultCode,
+      resultMessage: params.resultMessage,
+      completedAt: new Date(),
+    },
+    db,
+  )
 }
 
 export async function findInFlightOperationByRequestIdAndType(
@@ -144,10 +154,12 @@ export async function findInFlightOperationByRequestIdAndType(
   const rows = await resolvedDb
     .select()
     .from(trafficControlOperations)
-    .where(and(
-      eq(trafficControlOperations.requestId, requestId),
-      eq(trafficControlOperations.operationType, operationType),
-    ))
+    .where(
+      and(
+        eq(trafficControlOperations.requestId, requestId),
+        eq(trafficControlOperations.operationType, operationType),
+      ),
+    )
     .limit(1)
 
   return rows[0]

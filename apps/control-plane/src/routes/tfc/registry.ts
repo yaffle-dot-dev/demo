@@ -3,11 +3,7 @@ import { createHmac } from "node:crypto"
 
 import { logger as log } from "../../lib/telemetry.ts"
 import { getEnv } from "../../lib/env.ts"
-import {
-  findOrgBySlug,
-  findOrgById,
-  findOrgMembership,
-} from "../../db/queries/organizations.ts"
+import { findOrgBySlug, findOrgById, findOrgMembership } from "../../db/queries/organizations.ts"
 import {
   findNamedWorkspace,
   findTransientWorkspace,
@@ -23,18 +19,11 @@ import {
   findHostedOutputModuleVersion,
   listHostedOutputModuleVersions,
 } from "../../db/queries/principals.ts"
-import {
-  tfcAuth,
-  type TfcAuthContext,
-} from "../../middleware/tfc-auth.ts"
+import { tfcAuth, type TfcAuthContext } from "../../middleware/tfc-auth.ts"
 import { findRepoByFullName, findRepoByName } from "../../db/queries/repositories.ts"
 import { fetchFileContent } from "../../lib/github.ts"
-import {
-  generateShimModule,
-} from "../../lib/module-generator.ts"
-import {
-  getOrGenerateModule,
-} from "../../lib/module-cache.ts"
+import { generateShimModule } from "../../lib/module-generator.ts"
+import { getOrGenerateModule } from "../../lib/module-cache.ts"
 import {
   parseTransientEnvironmentContext,
   resolveModule,
@@ -100,17 +89,18 @@ interface ArchiveTokenPayload {
  * Generate a signed token for archive downloads.
  * Token format: {expiry_timestamp}.{hmac_signature}
  */
-function signArchiveUrl(
-  path: string,
-  payload: Omit<ArchiveTokenPayload, "exp">,
-): string {
+function signArchiveUrl(path: string, payload: Omit<ArchiveTokenPayload, "exp">): string {
   const env = getEnv()
   const secret = env.betterAuthSecret || "dev-secret"
-  const encodedPayload = Buffer.from(JSON.stringify({
-    ...payload,
-    exp: Date.now() + ARCHIVE_TOKEN_TTL_MS,
-  })).toString("base64url")
-  const signature = createHmac("sha256", secret).update(`${path}:${encodedPayload}`).digest("base64url")
+  const encodedPayload = Buffer.from(
+    JSON.stringify({
+      ...payload,
+      exp: Date.now() + ARCHIVE_TOKEN_TTL_MS,
+    }),
+  ).toString("base64url")
+  const signature = createHmac("sha256", secret)
+    .update(`${path}:${encodedPayload}`)
+    .digest("base64url")
   return `${encodedPayload}.${signature}`
 }
 
@@ -125,14 +115,18 @@ function verifyArchiveToken(path: string, token: string): ArchiveTokenPayload | 
   if (parts.length !== 2) return null
 
   const [encodedPayload, signature] = parts
-  const expectedSig = createHmac("sha256", secret).update(`${path}:${encodedPayload}`).digest("base64url")
+  const expectedSig = createHmac("sha256", secret)
+    .update(`${path}:${encodedPayload}`)
+    .digest("base64url")
   if (signature !== expectedSig) {
     return null
   }
 
   let payload: ArchiveTokenPayload
   try {
-    payload = JSON.parse(Buffer.from(encodedPayload, "base64url").toString("utf-8")) as ArchiveTokenPayload
+    payload = JSON.parse(
+      Buffer.from(encodedPayload, "base64url").toString("utf-8"),
+    ) as ArchiveTokenPayload
   } catch {
     return null
   }
@@ -246,7 +240,9 @@ async function checkOrgMembership(
       return {
         allowed: false,
         error: new Response(
-          JSON.stringify({ errors: [{ status: "403", title: "Not a member of this organization" }] }),
+          JSON.stringify({
+            errors: [{ status: "403", title: "Not a member of this organization" }],
+          }),
           { status: 403, headers: { "Content-Type": "application/json" } },
         ),
       }
@@ -264,7 +260,9 @@ function parseRepoRef(repoRef: string, fallbackOwner: string): { owner: string; 
   return { owner: fallbackOwner, repo: repoRef }
 }
 
-async function resolveConsumerWorkspace(auth: TfcAuthContext): Promise<ModuleConsumerWorkspace | null> {
+async function resolveConsumerWorkspace(
+  auth: TfcAuthContext,
+): Promise<ModuleConsumerWorkspace | null> {
   if (auth.type !== "run" || !auth.workspaceId) {
     return null
   }
@@ -280,7 +278,8 @@ async function resolveConsumerWorkspace(auth: TfcAuthContext): Promise<ModuleCon
   }
 
   const repository = workspace.repo.includes("/")
-    ? await findRepoByFullName(workspace.repo) ?? await findRepoByName(workspace.orgId, workspace.repo.split("/").pop() ?? workspace.repo)
+    ? ((await findRepoByFullName(workspace.repo)) ??
+      (await findRepoByName(workspace.orgId, workspace.repo.split("/").pop() ?? workspace.repo)))
     : await findRepoByName(workspace.orgId, workspace.repo)
 
   return {
@@ -296,17 +295,16 @@ async function resolveConsumerWorkspace(auth: TfcAuthContext): Promise<ModuleCon
 function deriveTransientEnvironment(options: {
   explicitEnvironment: TransientEnvironmentContext | null
   consumerWorkspace: ModuleConsumerWorkspace | null
-}):
-  | { allowed: true; environment: TransientEnvironmentContext | null }
-  | { allowed: false } {
+}): { allowed: true; environment: TransientEnvironmentContext | null } | { allowed: false } {
   const consumer = options.consumerWorkspace
   if (!consumer) {
     return { allowed: true, environment: options.explicitEnvironment }
   }
 
-  const boundEnvironment = consumer.environmentKind === "transient"
-    ? parseTransientEnvironmentContext(consumer.environmentName)
-    : null
+  const boundEnvironment =
+    consumer.environmentKind === "transient"
+      ? parseTransientEnvironmentContext(consumer.environmentName)
+      : null
   if (
     options.explicitEnvironment &&
     options.explicitEnvironment.environmentName !== boundEnvironment?.environmentName
@@ -323,7 +321,8 @@ async function loadProducerConfig(
 ): Promise<{ state: ProducerConfigState; config: YaffleTomlConfig | null }> {
   const { owner, repo } = parseRepoRef(workspace.repo, producerOrgSlug)
   const repository = workspace.repo.includes("/")
-    ? await findRepoByFullName(`${owner}/${repo}`) ?? await findRepoByName(workspace.orgId, repo)
+    ? ((await findRepoByFullName(`${owner}/${repo}`)) ??
+      (await findRepoByName(workspace.orgId, repo)))
     : await findRepoByName(workspace.orgId, repo)
 
   const resolvedOwner = repository?.fullName.split("/")[0] ?? owner
@@ -393,188 +392,194 @@ function sensitivePublicOutputsError(outputNames: string[]): Response {
  * Query parameters:
  * - environment: transient environment name to prefer over a named workspace
  */
-registryRoute.get(
-  "/:namespace/:name/:provider/versions",
-  async (c) => {
-    const namespace = c.req.param("namespace")
-    const moduleName = c.req.param("name")
-    const provider = c.req.param("provider")
-    const auth = c.get("tfcAuth")
-    const environmentParam = c.req.query("environment")
+registryRoute.get("/:namespace/:name/:provider/versions", async (c) => {
+  const namespace = c.req.param("namespace")
+  const moduleName = c.req.param("name")
+  const provider = c.req.param("provider")
+  const auth = c.get("tfcAuth")
+  const environmentParam = c.req.query("environment")
 
-    // Provider must be "yaffle" for our modules
-    if (provider !== "yaffle") {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found", detail: "Provider must be 'yaffle'" }] },
-        404,
-      )
+  // Provider must be "yaffle" for our modules
+  if (provider !== "yaffle") {
+    return c.json(
+      {
+        errors: [{ status: "404", title: "Module not found", detail: "Provider must be 'yaffle'" }],
+      },
+      404,
+    )
+  }
+
+  if (auth.type === "execution") {
+    if (auth.repoNamespace !== namespace || !auth.repoBindingId || !auth.environmentName) {
+      return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
     }
 
-    if (auth.type === "execution") {
-      if (auth.repoNamespace !== namespace || !auth.repoBindingId || !auth.environmentName) {
-        return c.json(
-          { errors: [{ status: "404", title: "Module not found" }] },
-          404,
-        )
-      }
+    const workspacePath = moduleNameToWorkspacePath(moduleName)
+    const versions = await listHostedOutputModuleVersions({
+      canonicalRepoNamespace: auth.repoNamespace,
+      environmentName: auth.environmentName,
+      workspacePath,
+    })
 
-      const workspacePath = moduleNameToWorkspacePath(moduleName)
-      const versions = await listHostedOutputModuleVersions({
-        canonicalRepoNamespace: auth.repoNamespace,
-        environmentName: auth.environmentName,
-        workspacePath,
-      })
+    if (versions.length === 0) {
+      return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+    }
 
-      if (versions.length === 0) {
-        return c.json(
-          { errors: [{ status: "404", title: "Module not found" }] },
-          404,
-        )
-      }
+    return c.json({
+      modules: [
+        {
+          versions: versions.map((record) => ({
+            version: buildHostedModuleVersion(record.versionSerial),
+          })),
+        },
+      ],
+    })
+  }
 
-      return c.json({
-        modules: [
+  // Parse namespace into org and repo
+  const parsed = parseNamespace(namespace)
+  if (!parsed) {
+    return c.json(
+      {
+        errors: [
           {
-            versions: versions.map((record) => ({
-              version: buildHostedModuleVersion(record.versionSerial),
-            })),
+            status: "400",
+            title: "Invalid namespace",
+            detail: "Namespace must be in format: {org}--{repo}",
           },
         ],
-      })
-    }
+      },
+      400,
+    )
+  }
+  const { orgSlug, repo } = parsed
 
-    // Parse namespace into org and repo
-    const parsed = parseNamespace(namespace)
-    if (!parsed) {
-      return c.json(
-        { errors: [{ status: "400", title: "Invalid namespace", detail: "Namespace must be in format: {org}--{repo}" }] },
-        400,
-      )
-    }
-    const { orgSlug, repo } = parsed
+  // Find the organization
+  const org = await findOrgBySlug(orgSlug)
+  if (!org) {
+    return c.json({ errors: [{ status: "404", title: "Namespace not found" }] }, 404)
+  }
 
-    // Find the organization
-    const org = await findOrgBySlug(orgSlug)
-    if (!org) {
-      return c.json(
-        { errors: [{ status: "404", title: "Namespace not found" }] },
-        404,
-      )
-    }
+  // Check org membership
+  const membershipCheck = await checkOrgMembership(auth, org.id)
+  if (!membershipCheck.allowed && "error" in membershipCheck) {
+    return membershipCheck.error
+  }
 
-    // Check org membership
-    const membershipCheck = await checkOrgMembership(auth, org.id)
-    if (!membershipCheck.allowed && "error" in membershipCheck) {
-      return membershipCheck.error
-    }
+  // Convert module name to workspace path
+  const workspacePath = moduleNameToWorkspacePath(moduleName)
+  const consumerWorkspace = await resolveConsumerWorkspace(auth)
+  const environmentDecision = deriveTransientEnvironment({
+    explicitEnvironment: parseTransientEnvironmentContext(environmentParam ?? null),
+    consumerWorkspace,
+  })
+  if (!environmentDecision.allowed) {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+  const transientEnvironment = environmentDecision.environment
 
-    // Convert module name to workspace path
-    const workspacePath = moduleNameToWorkspacePath(moduleName)
-    const consumerWorkspace = await resolveConsumerWorkspace(auth)
-    const environmentDecision = deriveTransientEnvironment({
-      explicitEnvironment: parseTransientEnvironmentContext(environmentParam ?? null),
-      consumerWorkspace,
-    })
-    if (!environmentDecision.allowed) {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found" }] },
-        404,
-      )
-    }
-    const transientEnvironment = environmentDecision.environment
+  // Find the appropriate workspace
+  let workspace: Workspace | undefined
+  let stateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> = []
+  let transientWorkspace: Workspace | undefined
+  let transientStateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> | undefined
 
-    // Find the appropriate workspace
-    let workspace: Workspace | undefined
-    let stateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> = []
-    let transientWorkspace: Workspace | undefined
-    let transientStateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> | undefined
+  if (transientEnvironment) {
+    transientWorkspace = await findTransientWorkspace(
+      org.id,
+      repo,
+      workspacePath,
+      transientEnvironment.environmentName,
+    )
+    if (transientWorkspace) {
+      transientStateVersions = await listStateVersionsForModule(transientWorkspace.id)
 
-    if (transientEnvironment) {
-      transientWorkspace = await findTransientWorkspace(
-        org.id,
-        repo,
-        workspacePath,
-        transientEnvironment.environmentName,
-      )
-      if (transientWorkspace) {
-        transientStateVersions = await listStateVersionsForModule(transientWorkspace.id)
-
-        if (transientStateVersions.length > 0) {
-          workspace = transientWorkspace
-          stateVersions = transientStateVersions
-        } else {
-          log.info("Transient workspace has no finalized module versions, falling back to named workspace", {
+      if (transientStateVersions.length > 0) {
+        workspace = transientWorkspace
+        stateVersions = transientStateVersions
+      } else {
+        log.info(
+          "Transient workspace has no finalized module versions, falling back to named workspace",
+          {
             namespace,
             repo,
             workspacePath,
             environmentName: transientEnvironment.environmentName,
             workspaceId: transientWorkspace.id,
-          })
-        }
+          },
+        )
       }
     }
+  }
 
-    if (!workspace) {
-      workspace = await findNamedWorkspace(org.id, repo, workspacePath)
+  if (!workspace) {
+    workspace = await findNamedWorkspace(org.id, repo, workspacePath)
 
-      if (workspace) {
-        stateVersions = await listStateVersionsForModule(workspace.id)
-      } else if (transientWorkspace) {
-        workspace = transientWorkspace
-        stateVersions = transientStateVersions ?? []
-      }
+    if (workspace) {
+      stateVersions = await listStateVersionsForModule(workspace.id)
+    } else if (transientWorkspace) {
+      workspace = transientWorkspace
+      stateVersions = transientStateVersions ?? []
     }
+  }
 
-    if (!workspace) {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found", detail: `No workspace at path: ${workspacePath} in repo: ${repo}` }] },
-        404,
-      )
-    }
+  if (!workspace) {
+    return c.json(
+      {
+        errors: [
+          {
+            status: "404",
+            title: "Module not found",
+            detail: `No workspace at path: ${workspacePath} in repo: ${repo}`,
+          },
+        ],
+      },
+      404,
+    )
+  }
 
-    const producerConfigResult = await loadProducerConfig(workspace, orgSlug)
+  const producerConfigResult = await loadProducerConfig(workspace, orgSlug)
 
-    const accessDecision = resolveModuleAccessDecision({
-      authType: auth.type,
-      producerWorkspace: workspace,
-      producerConfigState: producerConfigResult.state,
-      producerConfig: producerConfigResult.config,
-      consumerWorkspace,
-    })
-    if (!accessDecision.allowed) {
-      return jsonApiErrorResponse(
-        accessDecision.errorStatus ?? 403,
-        accessDecision.errorTitle ?? "Module access denied",
-        accessDecision.errorDetail,
-      )
-    }
+  const accessDecision = resolveModuleAccessDecision({
+    authType: auth.type,
+    producerWorkspace: workspace,
+    producerConfigState: producerConfigResult.state,
+    producerConfig: producerConfigResult.config,
+    consumerWorkspace,
+  })
+  if (!accessDecision.allowed) {
+    return jsonApiErrorResponse(
+      accessDecision.errorStatus ?? 403,
+      accessDecision.errorTitle ?? "Module access denied",
+      accessDecision.errorDetail,
+    )
+  }
 
-    // Map to version format
-    const versions = stateVersions.map((sv) => ({
-      version: serialToVersion(sv.serial),
-    }))
+  // Map to version format
+  const versions = stateVersions.map((sv) => ({
+    version: serialToVersion(sv.serial),
+  }))
 
-    log.info("Module versions listed", {
-      namespace,
-      orgSlug,
-      repo,
-      moduleName,
-      workspacePath,
-      workspaceId: workspace.id,
-      versionCount: versions.length,
-      isTransient: workspace.environmentKind === "transient",
-    })
+  log.info("Module versions listed", {
+    namespace,
+    orgSlug,
+    repo,
+    moduleName,
+    workspacePath,
+    workspaceId: workspace.id,
+    versionCount: versions.length,
+    isTransient: workspace.environmentKind === "transient",
+  })
 
-    // Return in Terraform module registry format
-    return c.json({
-      modules: [
-        {
-          versions,
-        },
-      ],
-    })
-  },
-)
+  // Return in Terraform module registry format
+  return c.json({
+    modules: [
+      {
+        versions,
+      },
+    ],
+  })
+})
 
 // =============================================================================
 // Download Module
@@ -591,190 +596,44 @@ registryRoute.get(
  * Query parameters:
  * - environment: transient environment name to prefer over a named workspace
  */
-registryRoute.get(
-  "/:namespace/:name/:provider/:version/download",
-  async (c) => {
-    const namespace = c.req.param("namespace")
-    const moduleName = c.req.param("name")
-    const provider = c.req.param("provider")
-    const version = c.req.param("version")
-    const auth = c.get("tfcAuth")
-    const environmentParam = c.req.query("environment")
+registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => {
+  const namespace = c.req.param("namespace")
+  const moduleName = c.req.param("name")
+  const provider = c.req.param("provider")
+  const version = c.req.param("version")
+  const auth = c.get("tfcAuth")
+  const environmentParam = c.req.query("environment")
 
-    // Provider must be "yaffle"
-    if (provider !== "yaffle") {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found" }] },
-        404,
-      )
+  // Provider must be "yaffle"
+  if (provider !== "yaffle") {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+
+  if (auth.type === "execution") {
+    if (auth.repoNamespace !== namespace || !auth.repoBindingId || !auth.environmentName) {
+      return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
     }
 
-    if (auth.type === "execution") {
-      if (auth.repoNamespace !== namespace || !auth.repoBindingId || !auth.environmentName) {
-        return c.json(
-          { errors: [{ status: "404", title: "Module not found" }] },
-          404,
-        )
-      }
-
-      const versionSerial = parseHostedModuleVersion(version)
-      if (!versionSerial) {
-        return c.json(
-          { errors: [{ status: "400", title: "Invalid version format" }] },
-          400,
-        )
-      }
-
-      const workspacePath = moduleNameToWorkspacePath(moduleName)
-      const hostedModule = await findHostedOutputModuleVersion({
-        canonicalRepoNamespace: auth.repoNamespace,
-        environmentName: auth.environmentName,
-        workspacePath,
-        versionSerial,
-      })
-
-      if (!hostedModule) {
-        return c.json(
-          { errors: [{ status: "404", title: "Module not found" }] },
-          404,
-        )
-      }
-
-      const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
-      const token = signArchiveUrl(archivePath, {
-        hostedOutputModuleId: hostedModule.id,
-      })
-      const params = new URLSearchParams({ token })
-      const archiveUrl = `${archivePath}?${params.toString()}`
-
-      return new Response(null, {
-        status: 204,
-        headers: {
-          "X-Terraform-Get": archiveUrl,
-        },
-      })
+    const versionSerial = parseHostedModuleVersion(version)
+    if (!versionSerial) {
+      return c.json({ errors: [{ status: "400", title: "Invalid version format" }] }, 400)
     }
 
-    // Parse namespace into org and repo
-    const parsed = parseNamespace(namespace)
-    if (!parsed) {
-      return c.json(
-        { errors: [{ status: "400", title: "Invalid namespace", detail: "Namespace must be in format: {org}--{repo}" }] },
-        400,
-      )
-    }
-    const { orgSlug, repo } = parsed
-
-    // Find the organization
-    const org = await findOrgBySlug(orgSlug)
-    if (!org) {
-      return c.json(
-        { errors: [{ status: "404", title: "Namespace not found" }] },
-        404,
-      )
-    }
-
-    // Check org membership
-    const membershipCheck = await checkOrgMembership(auth, org.id)
-    if (!membershipCheck.allowed && "error" in membershipCheck) {
-      return membershipCheck.error
-    }
-
-    // Parse version
-    let serial: number | "latest"
-    try {
-      serial = versionToSerial(version)
-    } catch {
-      return c.json(
-        { errors: [{ status: "400", title: "Invalid version format" }] },
-        400,
-      )
-    }
-
-    // Convert module name to workspace path
     const workspacePath = moduleNameToWorkspacePath(moduleName)
-    const consumerWorkspace = await resolveConsumerWorkspace(auth)
-    const environmentDecision = deriveTransientEnvironment({
-      explicitEnvironment: parseTransientEnvironmentContext(environmentParam ?? null),
-      consumerWorkspace,
-    })
-    if (!environmentDecision.allowed) {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found" }] },
-        404,
-      )
-    }
-    const transientEnvironment = environmentDecision.environment
-
-    // Resolve the module
-    const resolved = await resolveModule({
-      orgId: org.id,
-      repo,
+    const hostedModule = await findHostedOutputModuleVersion({
+      canonicalRepoNamespace: auth.repoNamespace,
+      environmentName: auth.environmentName,
       workspacePath,
-      serial,
-      transientEnvironment,
+      versionSerial,
     })
 
-    if (!resolved) {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found" }] },
-        404,
-      )
+    if (!hostedModule) {
+      return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
     }
 
-    const producerConfigResult = await loadProducerConfig(resolved.workspace, orgSlug)
-
-    const accessDecision = resolveModuleAccessDecision({
-      authType: auth.type,
-      producerWorkspace: resolved.workspace,
-      producerConfigState: producerConfigResult.state,
-      producerConfig: producerConfigResult.config,
-      consumerWorkspace,
-    })
-    if (!accessDecision.allowed) {
-      return jsonApiErrorResponse(
-        accessDecision.errorStatus ?? 403,
-        accessDecision.errorTitle ?? "Module access denied",
-        accessDecision.errorDetail,
-      )
-    }
-
-    const filteredOutputs = filterOutputsForAccess(
-      resolved.stateVersion.outputs as Record<string, unknown> | null,
-      accessDecision.allowedOutputs,
-    )
-    const sensitivePublicOutputs = findSensitiveExportedOutputs(
-      resolved.stateVersion.outputs as Record<string, unknown> | null,
-      accessDecision.allowedOutputs,
-    )
-    if (sensitivePublicOutputs.length > 0) {
-      return sensitivePublicOutputsError(sensitivePublicOutputs)
-    }
-
-    const canUseSharedArchive = accessDecision.allowedOutputs === null ||
-      Object.keys(filteredOutputs ?? {}).length === Object.keys(
-        (resolved.stateVersion.outputs as Record<string, unknown> | null) ?? {},
-      ).length
-
-    log.info("Module download requested", {
-      namespace,
-      orgSlug,
-      repo,
-      moduleName,
-      version,
-      workspaceId: resolved.workspace.id,
-      stateVersionId: resolved.stateVersion.id,
-      serial: resolved.stateVersion.serial,
-      isTransient: resolved.isTransient,
-    })
-
-    // Build archive URL with signed token
     const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
     const token = signArchiveUrl(archivePath, {
-      stateVersionId: resolved.stateVersion.id,
-      ...(canUseSharedArchive || !accessDecision.allowedOutputs
-        ? {}
-        : { outputNames: accessDecision.allowedOutputs }),
+      hostedOutputModuleId: hostedModule.id,
     })
     const params = new URLSearchParams({ token })
     const archiveUrl = `${archivePath}?${params.toString()}`
@@ -785,8 +644,135 @@ registryRoute.get(
         "X-Terraform-Get": archiveUrl,
       },
     })
-  },
-)
+  }
+
+  // Parse namespace into org and repo
+  const parsed = parseNamespace(namespace)
+  if (!parsed) {
+    return c.json(
+      {
+        errors: [
+          {
+            status: "400",
+            title: "Invalid namespace",
+            detail: "Namespace must be in format: {org}--{repo}",
+          },
+        ],
+      },
+      400,
+    )
+  }
+  const { orgSlug, repo } = parsed
+
+  // Find the organization
+  const org = await findOrgBySlug(orgSlug)
+  if (!org) {
+    return c.json({ errors: [{ status: "404", title: "Namespace not found" }] }, 404)
+  }
+
+  // Check org membership
+  const membershipCheck = await checkOrgMembership(auth, org.id)
+  if (!membershipCheck.allowed && "error" in membershipCheck) {
+    return membershipCheck.error
+  }
+
+  // Parse version
+  let serial: number | "latest"
+  try {
+    serial = versionToSerial(version)
+  } catch {
+    return c.json({ errors: [{ status: "400", title: "Invalid version format" }] }, 400)
+  }
+
+  // Convert module name to workspace path
+  const workspacePath = moduleNameToWorkspacePath(moduleName)
+  const consumerWorkspace = await resolveConsumerWorkspace(auth)
+  const environmentDecision = deriveTransientEnvironment({
+    explicitEnvironment: parseTransientEnvironmentContext(environmentParam ?? null),
+    consumerWorkspace,
+  })
+  if (!environmentDecision.allowed) {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+  const transientEnvironment = environmentDecision.environment
+
+  // Resolve the module
+  const resolved = await resolveModule({
+    orgId: org.id,
+    repo,
+    workspacePath,
+    serial,
+    transientEnvironment,
+  })
+
+  if (!resolved) {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+
+  const producerConfigResult = await loadProducerConfig(resolved.workspace, orgSlug)
+
+  const accessDecision = resolveModuleAccessDecision({
+    authType: auth.type,
+    producerWorkspace: resolved.workspace,
+    producerConfigState: producerConfigResult.state,
+    producerConfig: producerConfigResult.config,
+    consumerWorkspace,
+  })
+  if (!accessDecision.allowed) {
+    return jsonApiErrorResponse(
+      accessDecision.errorStatus ?? 403,
+      accessDecision.errorTitle ?? "Module access denied",
+      accessDecision.errorDetail,
+    )
+  }
+
+  const filteredOutputs = filterOutputsForAccess(
+    resolved.stateVersion.outputs as Record<string, unknown> | null,
+    accessDecision.allowedOutputs,
+  )
+  const sensitivePublicOutputs = findSensitiveExportedOutputs(
+    resolved.stateVersion.outputs as Record<string, unknown> | null,
+    accessDecision.allowedOutputs,
+  )
+  if (sensitivePublicOutputs.length > 0) {
+    return sensitivePublicOutputsError(sensitivePublicOutputs)
+  }
+
+  const canUseSharedArchive =
+    accessDecision.allowedOutputs === null ||
+    Object.keys(filteredOutputs ?? {}).length ===
+      Object.keys((resolved.stateVersion.outputs as Record<string, unknown> | null) ?? {}).length
+
+  log.info("Module download requested", {
+    namespace,
+    orgSlug,
+    repo,
+    moduleName,
+    version,
+    workspaceId: resolved.workspace.id,
+    stateVersionId: resolved.stateVersion.id,
+    serial: resolved.stateVersion.serial,
+    isTransient: resolved.isTransient,
+  })
+
+  // Build archive URL with signed token
+  const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
+  const token = signArchiveUrl(archivePath, {
+    stateVersionId: resolved.stateVersion.id,
+    ...(canUseSharedArchive || !accessDecision.allowedOutputs
+      ? {}
+      : { outputNames: accessDecision.allowedOutputs }),
+  })
+  const params = new URLSearchParams({ token })
+  const archiveUrl = `${archivePath}?${params.toString()}`
+
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "X-Terraform-Get": archiveUrl,
+    },
+  })
+})
 
 // =============================================================================
 // Module Archive (Generated Shim Module)
@@ -800,136 +786,38 @@ registryRoute.get(
  *
  * Namespace format: "{org}--{repo}" (e.g., "yaffle-dot-dev--yaffle")
  *
-     * Query parameters:
-     * - token: signed archive access token issued by the download endpoint
+ * Query parameters:
+ * - token: signed archive access token issued by the download endpoint
  */
-registryRoute.get(
-  "/:namespace/:name/:provider/:version/archive.tar.gz",
-  async (c) => {
-    const namespace = c.req.param("namespace")
-    const moduleName = c.req.param("name")
-    const provider = c.req.param("provider")
-    const version = c.req.param("version")
-    const token = c.req.query("token")
+registryRoute.get("/:namespace/:name/:provider/:version/archive.tar.gz", async (c) => {
+  const namespace = c.req.param("namespace")
+  const moduleName = c.req.param("name")
+  const provider = c.req.param("provider")
+  const version = c.req.param("version")
+  const token = c.req.query("token")
 
-    // Provider must be "yaffle"
-    if (provider !== "yaffle") {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found" }] },
-        404,
-      )
+  // Provider must be "yaffle"
+  if (provider !== "yaffle") {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+
+  // Verify signed token (archive downloads don't have auth headers)
+  const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
+  const archiveToken = token ? verifyArchiveToken(archivePath, token) : null
+  if (!archiveToken) {
+    return c.json({ errors: [{ status: "401", title: "Invalid or expired token" }] }, 401)
+  }
+
+  if (archiveToken.hostedOutputModuleId) {
+    const hostedModule = await findHostedOutputModuleById(archiveToken.hostedOutputModuleId)
+    if (!hostedModule) {
+      return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
     }
 
-    // Verify signed token (archive downloads don't have auth headers)
-    const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
-    const archiveToken = token ? verifyArchiveToken(archivePath, token) : null
-    if (!archiveToken) {
-      return c.json(
-        { errors: [{ status: "401", title: "Invalid or expired token" }] },
-        401,
-      )
-    }
-
-    if (archiveToken.hostedOutputModuleId) {
-      const hostedModule = await findHostedOutputModuleById(archiveToken.hostedOutputModuleId)
-      if (!hostedModule) {
-        return c.json(
-          { errors: [{ status: "404", title: "Module not found" }] },
-          404,
-        )
-      }
-
-      const archive = await generateShimModule({
-        workspacePath: hostedModule.workspacePath,
-        serial: hostedModule.versionSerial,
-        outputs: hostedModule.outputs as Record<string, unknown>,
-      })
-
-      return new Response(archive.buffer as ArrayBuffer, {
-        status: 200,
-        headers: {
-          "Content-Type": "application/gzip",
-          "Content-Disposition": `attachment; filename="${moduleName}-${version}.tar.gz"`,
-        },
-      })
-    }
-
-    // Parse namespace into org and repo
-    const parsed = parseNamespace(namespace)
-    if (!parsed) {
-      return c.json(
-        { errors: [{ status: "400", title: "Invalid namespace", detail: "Namespace must be in format: {org}--{repo}" }] },
-        400,
-      )
-    }
-    const { orgSlug } = parsed
-
-    // Find the organization
-    const org = await findOrgBySlug(orgSlug)
-    if (!org) {
-      return c.json(
-        { errors: [{ status: "404", title: "Namespace not found" }] },
-        404,
-      )
-    }
-
-    // Token was verified, no need for membership check on archive download
-    // (membership was checked when the download URL was generated)
-
-    const stateVersionId = archiveToken.stateVersionId
-    if (!stateVersionId) {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found" }] },
-        404,
-      )
-    }
-
-    const stateVersion = await findStateVersionById(stateVersionId)
-    if (!stateVersion || stateVersion.status !== "finalized") {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found" }] },
-        404,
-      )
-    }
-
-    const workspace = await findWorkspaceById(stateVersion.workspaceId)
-    if (!workspace || workspace.orgId !== org.id) {
-      return c.json(
-        { errors: [{ status: "404", title: "Module not found" }] },
-        404,
-      )
-    }
-
-    const outputs = filterOutputsForAccess(
-      stateVersion.outputs as Record<string, unknown> | null,
-      archiveToken.outputNames ?? null,
-    )
-
-    const archive = archiveToken.outputNames
-      ? await generateShimModule({
-          workspacePath: workspace.workspacePath,
-          serial: stateVersion.serial,
-          outputs,
-        })
-      : await getOrGenerateModule(
-          workspace.id,
-          stateVersion.serial,
-          org.id,
-          async () => generateShimModule({
-            workspacePath: workspace.workspacePath,
-            serial: stateVersion.serial,
-            outputs,
-          }),
-        )
-
-    log.info("Module archive served", {
-      namespace,
-      moduleName,
-      version,
-      workspaceId: workspace.id,
-      stateVersionId: stateVersion.id,
-      archiveSize: archive.length,
-      filteredOutputCount: archiveToken.outputNames?.length,
+    const archive = await generateShimModule({
+      workspacePath: hostedModule.workspacePath,
+      serial: hostedModule.versionSerial,
+      outputs: hostedModule.outputs as Record<string, unknown>,
     })
 
     return new Response(archive.buffer as ArrayBuffer, {
@@ -939,5 +827,84 @@ registryRoute.get(
         "Content-Disposition": `attachment; filename="${moduleName}-${version}.tar.gz"`,
       },
     })
-  },
-)
+  }
+
+  // Parse namespace into org and repo
+  const parsed = parseNamespace(namespace)
+  if (!parsed) {
+    return c.json(
+      {
+        errors: [
+          {
+            status: "400",
+            title: "Invalid namespace",
+            detail: "Namespace must be in format: {org}--{repo}",
+          },
+        ],
+      },
+      400,
+    )
+  }
+  const { orgSlug } = parsed
+
+  // Find the organization
+  const org = await findOrgBySlug(orgSlug)
+  if (!org) {
+    return c.json({ errors: [{ status: "404", title: "Namespace not found" }] }, 404)
+  }
+
+  // Token was verified, no need for membership check on archive download
+  // (membership was checked when the download URL was generated)
+
+  const stateVersionId = archiveToken.stateVersionId
+  if (!stateVersionId) {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+
+  const stateVersion = await findStateVersionById(stateVersionId)
+  if (!stateVersion || stateVersion.status !== "finalized") {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+
+  const workspace = await findWorkspaceById(stateVersion.workspaceId)
+  if (!workspace || workspace.orgId !== org.id) {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+
+  const outputs = filterOutputsForAccess(
+    stateVersion.outputs as Record<string, unknown> | null,
+    archiveToken.outputNames ?? null,
+  )
+
+  const archive = archiveToken.outputNames
+    ? await generateShimModule({
+        workspacePath: workspace.workspacePath,
+        serial: stateVersion.serial,
+        outputs,
+      })
+    : await getOrGenerateModule(workspace.id, stateVersion.serial, org.id, async () =>
+        generateShimModule({
+          workspacePath: workspace.workspacePath,
+          serial: stateVersion.serial,
+          outputs,
+        }),
+      )
+
+  log.info("Module archive served", {
+    namespace,
+    moduleName,
+    version,
+    workspaceId: workspace.id,
+    stateVersionId: stateVersion.id,
+    archiveSize: archive.length,
+    filteredOutputCount: archiveToken.outputNames?.length,
+  })
+
+  return new Response(archive.buffer as ArrayBuffer, {
+    status: 200,
+    headers: {
+      "Content-Type": "application/gzip",
+      "Content-Disposition": `attachment; filename="${moduleName}-${version}.tar.gz"`,
+    },
+  })
+})

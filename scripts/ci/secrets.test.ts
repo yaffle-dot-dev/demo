@@ -85,7 +85,8 @@ test("writes file-delivered secrets and cleans them up", async () => {
         access: "value",
         source: {
           type: "literal",
-          value: "registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=test-token\n",
+          value:
+            "registry=https://registry.npmjs.org/\n//registry.npmjs.org/:_authToken=test-token\n",
         },
         delivery: {
           type: "file",
@@ -168,7 +169,9 @@ test("reports secret check status for required and optional secrets", async () =
 
   expect(checks).toHaveLength(2)
   expect(checks.find((entry) => entry.secret === "required-secret")?.status).toBe("ok")
-  expect(checks.find((entry) => entry.secret === "optional-secret")?.status).toBe("optional_missing")
+  expect(checks.find((entry) => entry.secret === "optional-secret")?.status).toBe(
+    "optional_missing",
+  )
 })
 
 test("treats placeholder secret values as missing", async () => {

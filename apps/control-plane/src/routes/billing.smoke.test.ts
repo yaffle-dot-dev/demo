@@ -8,9 +8,12 @@ import { cleanupTestData, createTestContext, type TestContext } from "../test-ut
 import { db } from "../lib/db.ts"
 import { organizations } from "../db/schema.ts"
 
-process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS = process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS ?? "5"
-process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS = process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS ?? "25"
-process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS = process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS ?? "1"
+process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS =
+  process.env.YAFFLE_FREE_LIMIT_CONCURRENT_PREVIEWS ?? "5"
+process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS =
+  process.env.YAFFLE_FREE_LIMIT_MONTHLY_PREVIEWS ?? "25"
+process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS =
+  process.env.YAFFLE_FREE_LIMIT_NAMED_ENVIRONMENTS ?? "1"
 process.env.STRIPE_WEBHOOK_SIGNING_SECRET = "whsec_smoke_test"
 
 const mockCustomersCreate = mock(async (_input: unknown) => ({
@@ -182,7 +185,7 @@ describe("billing smoke flow", () => {
       body: JSON.stringify({ priceId: "price_pro_smoke" }),
     })
     expect(checkoutRes.status).toBe(200)
-    const checkoutBody = await checkoutRes.json() as { data: { url: string } }
+    const checkoutBody = (await checkoutRes.json()) as { data: { url: string } }
     expect(checkoutBody.data.url).toBe("https://checkout.stripe.test/session/cs_smoke_123")
 
     expect(mockCustomersCreate).toHaveBeenCalledTimes(1)
@@ -214,7 +217,7 @@ describe("billing smoke flow", () => {
       method: "POST",
     })
     expect(portalRes.status).toBe(200)
-    const portalBody = await portalRes.json() as { data: { url: string } }
+    const portalBody = (await portalRes.json()) as { data: { url: string } }
     expect(portalBody.data.url).toBe("https://billing.stripe.test/session/bps_smoke_123")
 
     expect(mockPortalSessionsCreate).toHaveBeenCalledTimes(1)
@@ -244,7 +247,7 @@ describe("billing smoke flow", () => {
       body: JSON.stringify(webhookEvent),
     })
     expect(webhookRes.status).toBe(200)
-    const webhookBody = await webhookRes.json() as { received: boolean }
+    const webhookBody = (await webhookRes.json()) as { received: boolean }
     expect(webhookBody.received).toBe(true)
 
     expect(mockConstructEvent).toHaveBeenCalledTimes(1)
@@ -271,14 +274,16 @@ describe("billing smoke flow", () => {
       body: JSON.stringify({ priceId: "price_pro_smoke" }),
     })
     expect(viewerCheckoutRes.status).toBe(403)
-    const viewerCheckoutBody = await viewerCheckoutRes.json() as { error: { code: string } }
+    const viewerCheckoutBody = (await viewerCheckoutRes.json()) as { error: { code: string } }
     expect(viewerCheckoutBody.error.code).toBe("FORBIDDEN")
 
     const portalWithoutCustomerRes = await reqAs(adminCtx, `/api/orgs/${orgSlug}/billing/portal`, {
       method: "POST",
     })
     expect(portalWithoutCustomerRes.status).toBe(400)
-    const portalWithoutCustomerBody = await portalWithoutCustomerRes.json() as { error: { code: string } }
+    const portalWithoutCustomerBody = (await portalWithoutCustomerRes.json()) as {
+      error: { code: string }
+    }
     expect(portalWithoutCustomerBody.error.code).toBe("NO_BILLING_ACCOUNT")
 
     const invalidCheckoutRes = await reqAs(adminCtx, `/api/orgs/${orgSlug}/billing/checkout`, {
@@ -287,7 +292,7 @@ describe("billing smoke flow", () => {
       body: JSON.stringify({ priceId: "" }),
     })
     expect(invalidCheckoutRes.status).toBe(400)
-    const invalidCheckoutBody = await invalidCheckoutRes.json() as { error: { code: string } }
+    const invalidCheckoutBody = (await invalidCheckoutRes.json()) as { error: { code: string } }
     expect(invalidCheckoutBody.error.code).toBe("VALIDATION_ERROR")
     expect(mockCustomersCreate).not.toHaveBeenCalled()
 

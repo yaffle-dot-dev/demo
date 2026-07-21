@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import type { EnvironmentGroup } from "$lib/api"
+import type { EnvironmentGroup } from "./api"
 
 import {
   countDegradedEnvironments,
@@ -26,61 +26,66 @@ describe("environment-degradation", () => {
   })
 
   test("summarizes degraded workspaces by shared message", () => {
-    const summary = summarizeEnvironmentDegradation(createEnvironment({
-      workspaces: [
-        {
-          previewId: "a",
-          workspacePath: "infra/core",
-          status: "failed",
-          connectionStatus: "not_required",
-          missingProviders: [],
-          conflictProviders: [],
-          matchedConnections: [],
-          blockedReason: null,
-          degradation: {
-            kind: "provider_requirements_unavailable",
-            errorKind: "workspace_cache_missing",
-            message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
-            retryable: false,
+    const summary = summarizeEnvironmentDegradation(
+      createEnvironment({
+        workspaces: [
+          {
+            previewId: "a",
+            workspacePath: "infra/core",
+            status: "failed",
+            connectionStatus: "not_required",
+            missingProviders: [],
+            conflictProviders: [],
+            matchedConnections: [],
+            blockedReason: null,
+            degradation: {
+              kind: "provider_requirements_unavailable",
+              errorKind: "workspace_cache_missing",
+              message:
+                "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+              retryable: false,
+            },
+            headSha: "sha",
+            lastRunId: null,
+            lastRunType: null,
+            lastRunStatus: null,
+            lastRunCompletedAt: null,
+            planSummary: null,
           },
-          headSha: "sha",
-          lastRunId: null,
-          lastRunType: null,
-          lastRunStatus: null,
-          lastRunCompletedAt: null,
-          planSummary: null,
-        },
-        {
-          previewId: "b",
-          workspacePath: "infra/shared",
-          status: "ready",
-          connectionStatus: "not_required",
-          missingProviders: [],
-          conflictProviders: [],
-          matchedConnections: [],
-          blockedReason: null,
-          degradation: {
-            kind: "provider_requirements_unavailable",
-            errorKind: "workspace_cache_missing",
-            message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
-            retryable: false,
+          {
+            previewId: "b",
+            workspacePath: "infra/shared",
+            status: "ready",
+            connectionStatus: "not_required",
+            missingProviders: [],
+            conflictProviders: [],
+            matchedConnections: [],
+            blockedReason: null,
+            degradation: {
+              kind: "provider_requirements_unavailable",
+              errorKind: "workspace_cache_missing",
+              message:
+                "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+              retryable: false,
+            },
+            headSha: "sha",
+            lastRunId: null,
+            lastRunType: null,
+            lastRunStatus: null,
+            lastRunCompletedAt: null,
+            planSummary: null,
           },
-          headSha: "sha",
-          lastRunId: null,
-          lastRunType: null,
-          lastRunStatus: null,
-          lastRunCompletedAt: null,
-          planSummary: null,
-        },
-      ],
-    }))
+        ],
+      }),
+    )
 
     expect(summary).toEqual({
       totalWorkspaces: 2,
       groups: [
         {
           errorKind: "workspace_cache_missing",
-          message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+          message:
+            "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
           retryable: false,
           workspaces: ["infra/core", "infra/shared"],
         },

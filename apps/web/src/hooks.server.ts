@@ -6,7 +6,6 @@ if (!API_URL) {
   throw new Error("YAFFLE_PUBLIC_API_URL must be configured")
 }
 
-
 export const handle: Handle = async ({ event, resolve }) => {
   // Lightweight health check - no SSR rendering, no auth
   if (event.url.pathname === "/app/_/health") {
@@ -24,9 +23,10 @@ export const handle: Handle = async ({ event, resolve }) => {
     const response = await fetch(targetUrl, {
       method: event.request.method,
       headers,
-      body: event.request.method !== "GET" && event.request.method !== "HEAD"
-        ? await event.request.arrayBuffer()
-        : undefined,
+      body:
+        event.request.method !== "GET" && event.request.method !== "HEAD"
+          ? await event.request.arrayBuffer()
+          : undefined,
       // @ts-expect-error duplex is required for streaming bodies
       duplex: "half",
       credentials: "include", // Forward cookies for BetterAuth

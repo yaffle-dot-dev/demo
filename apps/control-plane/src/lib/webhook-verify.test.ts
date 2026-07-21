@@ -4,10 +4,7 @@ import { afterEach, describe, expect, test } from "@yaffle/test"
 
 import { WebhookVerificationError } from "@yaffle/shared"
 
-import {
-  verifyGithubWebhookSignature,
-  verifyHookdeckWebhookSignature,
-} from "./webhook-verify.ts"
+import { verifyGithubWebhookSignature, verifyHookdeckWebhookSignature } from "./webhook-verify.ts"
 
 async function signHex(payload: string, secret: string): Promise<string> {
   const encoder = new TextEncoder()
@@ -37,7 +34,9 @@ async function signBase64(payload: string, secret: string): Promise<string> {
     ["sign"],
   )
 
-  return Buffer.from(await crypto.subtle.sign("HMAC", key, encoder.encode(payload))).toString("base64")
+  return Buffer.from(await crypto.subtle.sign("HMAC", key, encoder.encode(payload))).toString(
+    "base64",
+  )
 }
 
 afterEach(() => {
@@ -46,9 +45,9 @@ afterEach(() => {
 
 describe("verifyGithubWebhookSignature", () => {
   test("rejects when webhook secret is missing", async () => {
-    await expect(
-      verifyGithubWebhookSignature("{}", "sha256=abc", ""),
-    ).rejects.toBeInstanceOf(WebhookVerificationError)
+    await expect(verifyGithubWebhookSignature("{}", "sha256=abc", "")).rejects.toBeInstanceOf(
+      WebhookVerificationError,
+    )
   })
 
   test("allows explicit insecure dev override", async () => {
@@ -68,9 +67,9 @@ describe("verifyGithubWebhookSignature", () => {
 
 describe("verifyHookdeckWebhookSignature", () => {
   test("rejects when Hookdeck secret is missing", async () => {
-    await expect(
-      verifyHookdeckWebhookSignature("{}", "abc", undefined, ""),
-    ).rejects.toBeInstanceOf(WebhookVerificationError)
+    await expect(verifyHookdeckWebhookSignature("{}", "abc", undefined, "")).rejects.toBeInstanceOf(
+      WebhookVerificationError,
+    )
   })
 
   test("accepts valid primary signatures when secret is configured", async () => {

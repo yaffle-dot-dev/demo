@@ -10,10 +10,14 @@ import { describe, expect, test } from "@yaffle/test"
 // Replicate the priority function from iac-jobs.ts
 const jobTypePriority = (type: string): number => {
   switch (type) {
-    case "apply": return 0
-    case "destroy": return 1
-    case "plan": return 2
-    default: return 3
+    case "apply":
+      return 0
+    case "destroy":
+      return 1
+    case "plan":
+      return 2
+    default:
+      return 3
   }
 }
 
@@ -26,10 +30,7 @@ interface MockJob {
   spawnLeaseExpiresAt?: string | null
 }
 
-function filterSpawnLeaseEligibleJobs(
-  jobs: MockJob[],
-  now: Date,
-): MockJob[] {
+function filterSpawnLeaseEligibleJobs(jobs: MockJob[], now: Date): MockJob[] {
   return jobs.filter((job) => {
     if (!job.spawnLeaseExpiresAt) {
       return true
@@ -90,7 +91,12 @@ describe("iac-jobs priority sorting", () => {
   test("destroy jobs have priority between apply and plan", () => {
     const jobs: MockJob[] = [
       { id: "plan-1", jobType: "plan", queuedAt: "2024-01-01T00:00:00Z", runGroupId: "group-a" },
-      { id: "destroy-1", jobType: "destroy", queuedAt: "2024-01-01T00:01:00Z", runGroupId: "group-a" },
+      {
+        id: "destroy-1",
+        jobType: "destroy",
+        queuedAt: "2024-01-01T00:01:00Z",
+        runGroupId: "group-a",
+      },
       { id: "apply-1", jobType: "apply", queuedAt: "2024-01-01T00:02:00Z", runGroupId: "group-a" },
     ]
 
@@ -106,16 +112,23 @@ describe("iac-jobs priority sorting", () => {
       { id: "apply-1", jobType: "apply", queuedAt: "2024-01-01T00:01:00Z", runGroupId: "group-a" },
       { id: "plan-2", jobType: "plan", queuedAt: "2024-01-01T00:02:00Z", runGroupId: "group-a" },
       { id: "apply-2", jobType: "apply", queuedAt: "2024-01-01T00:03:00Z", runGroupId: "group-a" },
-      { id: "destroy-1", jobType: "destroy", queuedAt: "2024-01-01T00:04:00Z", runGroupId: "group-a" },
+      {
+        id: "destroy-1",
+        jobType: "destroy",
+        queuedAt: "2024-01-01T00:04:00Z",
+        runGroupId: "group-a",
+      },
     ]
 
     const sorted = sortJobsByPriority(jobs)
 
     // All applies first (by queue time), then destroys, then plans (by queue time)
     expect(sorted.map((j) => j.id)).toEqual([
-      "apply-1", "apply-2",  // applies sorted by queue time
-      "destroy-1",           // destroy
-      "plan-1", "plan-2",    // plans sorted by queue time
+      "apply-1",
+      "apply-2", // applies sorted by queue time
+      "destroy-1", // destroy
+      "plan-1",
+      "plan-2", // plans sorted by queue time
     ])
   })
 
@@ -218,72 +231,110 @@ describe("round-robin with group-local priority", () => {
 
   test("active spawn leases suppress jobs from scheduling", () => {
     const jobsByGroup = new Map<string, MockJob[]>([
-      ["group-a", filterSpawnLeaseEligibleJobs([
-        {
-          id: "a-plan-leased",
-          jobType: "plan",
-          queuedAt: "2024-01-01T00:00:00Z",
-          runGroupId: "group-a",
-          spawnLeaseExpiresAt: "2024-01-01T00:10:00Z",
-        },
-        {
-          id: "a-plan-ready",
-          jobType: "plan",
-          queuedAt: "2024-01-01T00:01:00Z",
-          runGroupId: "group-a",
-          spawnLeaseExpiresAt: null,
-        },
-      ], new Date("2024-01-01T00:05:00Z"))],
-      ["group-b", filterSpawnLeaseEligibleJobs([
-        {
-          id: "b-apply-ready",
-          jobType: "apply",
-          queuedAt: "2024-01-01T00:02:00Z",
-          runGroupId: "group-b",
-          spawnLeaseExpiresAt: null,
-        },
-      ], new Date("2024-01-01T00:05:00Z"))],
+      [
+        "group-a",
+        filterSpawnLeaseEligibleJobs(
+          [
+            {
+              id: "a-plan-leased",
+              jobType: "plan",
+              queuedAt: "2024-01-01T00:00:00Z",
+              runGroupId: "group-a",
+              spawnLeaseExpiresAt: "2024-01-01T00:10:00Z",
+            },
+            {
+              id: "a-plan-ready",
+              jobType: "plan",
+              queuedAt: "2024-01-01T00:01:00Z",
+              runGroupId: "group-a",
+              spawnLeaseExpiresAt: null,
+            },
+          ],
+          new Date("2024-01-01T00:05:00Z"),
+        ),
+      ],
+      [
+        "group-b",
+        filterSpawnLeaseEligibleJobs(
+          [
+            {
+              id: "b-apply-ready",
+              jobType: "apply",
+              queuedAt: "2024-01-01T00:02:00Z",
+              runGroupId: "group-b",
+              spawnLeaseExpiresAt: null,
+            },
+          ],
+          new Date("2024-01-01T00:05:00Z"),
+        ),
+      ],
     ])
 
     const claimed = simulateRoundRobinClaim(jobsByGroup, 3)
 
-    expect(claimed).toEqual([
-      "a-plan-ready",
-      "b-apply-ready",
-    ])
+    expect(claimed).toEqual(["a-plan-ready", "b-apply-ready"])
   })
 
   test("expired spawn leases make jobs eligible again", () => {
-    const jobs = filterSpawnLeaseEligibleJobs([
-      {
-        id: "plan-expired-lease",
-        jobType: "plan",
-        queuedAt: "2024-01-01T00:00:00Z",
-        runGroupId: "group-a",
-        spawnLeaseExpiresAt: "2024-01-01T00:01:00Z",
-      },
-      {
-        id: "plan-active-lease",
-        jobType: "plan",
-        queuedAt: "2024-01-01T00:01:00Z",
-        runGroupId: "group-a",
-        spawnLeaseExpiresAt: "2024-01-01T00:10:00Z",
-      },
-    ], new Date("2024-01-01T00:05:00Z"))
+    const jobs = filterSpawnLeaseEligibleJobs(
+      [
+        {
+          id: "plan-expired-lease",
+          jobType: "plan",
+          queuedAt: "2024-01-01T00:00:00Z",
+          runGroupId: "group-a",
+          spawnLeaseExpiresAt: "2024-01-01T00:01:00Z",
+        },
+        {
+          id: "plan-active-lease",
+          jobType: "plan",
+          queuedAt: "2024-01-01T00:01:00Z",
+          runGroupId: "group-a",
+          spawnLeaseExpiresAt: "2024-01-01T00:10:00Z",
+        },
+      ],
+      new Date("2024-01-01T00:05:00Z"),
+    )
 
     expect(jobs.map((job) => job.id)).toEqual(["plan-expired-lease"])
   })
 
   test("applies from group B do not skip plans from group A", () => {
     const jobsByGroup = new Map<string, MockJob[]>([
-      ["group-a", [
-        { id: "a-plan-1", jobType: "plan", queuedAt: "2024-01-01T00:00:00Z", runGroupId: "group-a" },
-        { id: "a-plan-2", jobType: "plan", queuedAt: "2024-01-01T00:01:00Z", runGroupId: "group-a" },
-      ]],
-      ["group-b", [
-        { id: "b-apply-1", jobType: "apply", queuedAt: "2024-01-01T00:02:00Z", runGroupId: "group-b" },
-        { id: "b-plan-1", jobType: "plan", queuedAt: "2024-01-01T00:03:00Z", runGroupId: "group-b" },
-      ]],
+      [
+        "group-a",
+        [
+          {
+            id: "a-plan-1",
+            jobType: "plan",
+            queuedAt: "2024-01-01T00:00:00Z",
+            runGroupId: "group-a",
+          },
+          {
+            id: "a-plan-2",
+            jobType: "plan",
+            queuedAt: "2024-01-01T00:01:00Z",
+            runGroupId: "group-a",
+          },
+        ],
+      ],
+      [
+        "group-b",
+        [
+          {
+            id: "b-apply-1",
+            jobType: "apply",
+            queuedAt: "2024-01-01T00:02:00Z",
+            runGroupId: "group-b",
+          },
+          {
+            id: "b-plan-1",
+            jobType: "plan",
+            queuedAt: "2024-01-01T00:03:00Z",
+            runGroupId: "group-b",
+          },
+        ],
+      ],
     ])
 
     const claimed = simulateRoundRobinClaim(jobsByGroup, 4)
@@ -292,20 +343,38 @@ describe("round-robin with group-local priority", () => {
     // Group A: plan-1, plan-2 (no applies to prioritize)
     // Group B: apply-1 (prioritized), plan-1
     expect(claimed).toEqual([
-      "a-plan-1",   // round 1: group-a's first job (plan, no applies)
-      "b-apply-1",  // round 1: group-b's first job (apply prioritized)
-      "a-plan-2",   // round 2: group-a's second job
-      "b-plan-1",   // round 2: group-b's second job
+      "a-plan-1", // round 1: group-a's first job (plan, no applies)
+      "b-apply-1", // round 1: group-b's first job (apply prioritized)
+      "a-plan-2", // round 2: group-a's second job
+      "b-plan-1", // round 2: group-b's second job
     ])
   })
 
   test("applies within same group are prioritized over plans", () => {
     const jobsByGroup = new Map<string, MockJob[]>([
-      ["group-a", [
-        { id: "a-plan-1", jobType: "plan", queuedAt: "2024-01-01T00:00:00Z", runGroupId: "group-a" },
-        { id: "a-apply-1", jobType: "apply", queuedAt: "2024-01-01T00:01:00Z", runGroupId: "group-a" },
-        { id: "a-plan-2", jobType: "plan", queuedAt: "2024-01-01T00:02:00Z", runGroupId: "group-a" },
-      ]],
+      [
+        "group-a",
+        [
+          {
+            id: "a-plan-1",
+            jobType: "plan",
+            queuedAt: "2024-01-01T00:00:00Z",
+            runGroupId: "group-a",
+          },
+          {
+            id: "a-apply-1",
+            jobType: "apply",
+            queuedAt: "2024-01-01T00:01:00Z",
+            runGroupId: "group-a",
+          },
+          {
+            id: "a-plan-2",
+            jobType: "plan",
+            queuedAt: "2024-01-01T00:02:00Z",
+            runGroupId: "group-a",
+          },
+        ],
+      ],
     ])
 
     const claimed = simulateRoundRobinClaim(jobsByGroup, 3)
@@ -316,28 +385,62 @@ describe("round-robin with group-local priority", () => {
 
   test("fair round-robin is maintained across groups with mixed priorities", () => {
     const jobsByGroup = new Map<string, MockJob[]>([
-      ["group-a", [
-        { id: "a-plan-1", jobType: "plan", queuedAt: "2024-01-01T00:00:00Z", runGroupId: "group-a" },
-        { id: "a-apply-1", jobType: "apply", queuedAt: "2024-01-01T00:05:00Z", runGroupId: "group-a" },
-      ]],
-      ["group-b", [
-        { id: "b-plan-1", jobType: "plan", queuedAt: "2024-01-01T00:01:00Z", runGroupId: "group-b" },
-      ]],
-      ["group-c", [
-        { id: "c-apply-1", jobType: "apply", queuedAt: "2024-01-01T00:02:00Z", runGroupId: "group-c" },
-        { id: "c-plan-1", jobType: "plan", queuedAt: "2024-01-01T00:03:00Z", runGroupId: "group-c" },
-      ]],
+      [
+        "group-a",
+        [
+          {
+            id: "a-plan-1",
+            jobType: "plan",
+            queuedAt: "2024-01-01T00:00:00Z",
+            runGroupId: "group-a",
+          },
+          {
+            id: "a-apply-1",
+            jobType: "apply",
+            queuedAt: "2024-01-01T00:05:00Z",
+            runGroupId: "group-a",
+          },
+        ],
+      ],
+      [
+        "group-b",
+        [
+          {
+            id: "b-plan-1",
+            jobType: "plan",
+            queuedAt: "2024-01-01T00:01:00Z",
+            runGroupId: "group-b",
+          },
+        ],
+      ],
+      [
+        "group-c",
+        [
+          {
+            id: "c-apply-1",
+            jobType: "apply",
+            queuedAt: "2024-01-01T00:02:00Z",
+            runGroupId: "group-c",
+          },
+          {
+            id: "c-plan-1",
+            jobType: "plan",
+            queuedAt: "2024-01-01T00:03:00Z",
+            runGroupId: "group-c",
+          },
+        ],
+      ],
     ])
 
     const claimed = simulateRoundRobinClaim(jobsByGroup, 5)
 
     // Round-robin through groups, but within each group applies come first
     expect(claimed).toEqual([
-      "a-apply-1",  // group-a: apply prioritized over plan
-      "b-plan-1",   // group-b: only has plan
-      "c-apply-1",  // group-c: apply prioritized over plan
-      "a-plan-1",   // group-a: now the plan
-      "c-plan-1",   // group-c: now the plan (group-b exhausted)
+      "a-apply-1", // group-a: apply prioritized over plan
+      "b-plan-1", // group-b: only has plan
+      "c-apply-1", // group-c: apply prioritized over plan
+      "a-plan-1", // group-a: now the plan
+      "c-plan-1", // group-c: now the plan (group-b exhausted)
     ])
   })
 })

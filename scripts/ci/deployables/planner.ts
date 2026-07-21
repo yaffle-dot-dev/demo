@@ -25,13 +25,15 @@ function matchesPath(filePath: string, watchedPath: string): boolean {
 
 function touchedByChanges(deployable: DiscoveredDeployable, changedFiles: string[]): boolean {
   return changedFiles.some((filePath) =>
-    deployable.watchedPaths.some((watchedPath) => matchesPath(filePath, watchedPath))
+    deployable.watchedPaths.some((watchedPath) => matchesPath(filePath, watchedPath)),
   )
 }
 
 export function planDeployables(options: PlanDeployablesOptions): DeployablePlan {
   const requested = new Set(options.requestedDeployables ?? [])
-  const deployableByName = new Map(options.deployables.map((deployable) => [deployable.name, deployable]))
+  const deployableByName = new Map(
+    options.deployables.map((deployable) => [deployable.name, deployable]),
+  )
 
   for (const name of requested) {
     if (!deployableByName.has(name)) {
@@ -67,7 +69,9 @@ export function planDeployables(options: PlanDeployablesOptions): DeployablePlan
     if (!supportsTarget) {
       if (options.changedFiles && touchedByChanges(deployable, options.changedFiles)) {
         entry.status = "unsupported_for_target"
-        entry.reasons.push(`changed, but only supports ${deployable.supports.environmentKinds.join(", ")}`)
+        entry.reasons.push(
+          `changed, but only supports ${deployable.supports.environmentKinds.join(", ")}`,
+        )
       } else {
         entry.status = "not_requested"
         entry.reasons.push(`does not support ${options.environmentKind} environments`)
@@ -79,7 +83,9 @@ export function planDeployables(options: PlanDeployablesOptions): DeployablePlan
 
     if (requested.has(deployable.name) || options.changedFiles === null) {
       entry.status = "selected"
-      entry.reasons.push(requested.has(deployable.name) ? "explicitly requested" : "selected for full convergence")
+      entry.reasons.push(
+        requested.has(deployable.name) ? "explicitly requested" : "selected for full convergence",
+      )
       selected.push(deployable)
       entries.push(entry)
       continue

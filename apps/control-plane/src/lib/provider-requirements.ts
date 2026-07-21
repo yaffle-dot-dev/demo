@@ -145,14 +145,16 @@ export function buildProviderRequirementsDegradation(
       return {
         kind: "provider_requirements_unavailable",
         errorKind,
-        message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+        message:
+          "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
         retryable: false,
       }
     case "access_denied":
       return {
         kind: "provider_requirements_unavailable",
         errorKind,
-        message: "Yaffle could not inspect this workspace because access to the cached workspace archive was denied.",
+        message:
+          "Yaffle could not inspect this workspace because access to the cached workspace archive was denied.",
         retryable: false,
       }
     default:
@@ -165,10 +167,9 @@ export function buildProviderRequirementsDegradation(
   }
 }
 
-function buildStoredMetadataDegradation(metadata: Pick<
-  RunGroupWorkspaceMetadata,
-  "errorKind" | "errorMessage" | "retryable"
->): ProviderRequirementsDegradation {
+function buildStoredMetadataDegradation(
+  metadata: Pick<RunGroupWorkspaceMetadata, "errorKind" | "errorMessage" | "retryable">,
+): ProviderRequirementsDegradation {
   const errorKind = (metadata.errorKind ?? "unknown") as WorkspaceMetadataErrorKind
 
   if (metadata.errorMessage) {
@@ -185,21 +186,24 @@ function buildStoredMetadataDegradation(metadata: Pick<
       return {
         kind: "provider_requirements_unavailable",
         errorKind,
-        message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+        message:
+          "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
         retryable: false,
       }
     case "access_denied":
       return {
         kind: "provider_requirements_unavailable",
         errorKind,
-        message: "Yaffle could not inspect this workspace because access to provider metadata was denied.",
+        message:
+          "Yaffle could not inspect this workspace because access to provider metadata was denied.",
         retryable: false,
       }
     case "metadata_missing":
       return {
         kind: "provider_requirements_unavailable",
         errorKind,
-        message: "Provider metadata is missing for this workspace. Rerun this environment to regenerate it.",
+        message:
+          "Provider metadata is missing for this workspace. Rerun this environment to regenerate it.",
         retryable: false,
       }
     case "metadata_pending":
@@ -224,17 +228,23 @@ function metadataRowToRequirements(
 ): ExtractedProviderRequirement[] {
   const raw = Array.isArray(metadata.providerRequirements) ? metadata.providerRequirements : []
 
-  return normalizeProviderRequirements(raw.flatMap((entry) => {
-    if (typeof entry !== "object" || entry === null) {
-      return []
-    }
+  return normalizeProviderRequirements(
+    raw.flatMap((entry) => {
+      if (typeof entry !== "object" || entry === null) {
+        return []
+      }
 
-    const requirement = entry as Record<string, unknown>
-    return [{
-      providerType: typeof requirement.providerType === "string" ? requirement.providerType : "",
-      providerSource: typeof requirement.providerSource === "string" ? requirement.providerSource : null,
-    } satisfies ExtractedProviderRequirement]
-  }))
+      const requirement = entry as Record<string, unknown>
+      return [
+        {
+          providerType:
+            typeof requirement.providerType === "string" ? requirement.providerType : "",
+          providerSource:
+            typeof requirement.providerSource === "string" ? requirement.providerSource : null,
+        } satisfies ExtractedProviderRequirement,
+      ]
+    }),
+  )
 }
 
 async function findTerraformFiles(dir: string): Promise<string[]> {
@@ -248,7 +258,7 @@ async function findTerraformFiles(dir: string): Promise<string[]> {
 
     const fullPath = join(dir, entry.name)
     if (entry.isDirectory()) {
-      files.push(...await findTerraformFiles(fullPath))
+      files.push(...(await findTerraformFiles(fullPath)))
     } else if (entry.isFile() && entry.name.endsWith(".tf")) {
       files.push(fullPath)
     }
@@ -354,11 +364,13 @@ export function connectionMatches(
   environment: string,
   workspace: string,
 ): boolean {
-  const config = typeof connection.config === "object" && connection.config !== null
-    ? connection.config as Record<string, unknown>
-    : {}
+  const config =
+    typeof connection.config === "object" && connection.config !== null
+      ? (connection.config as Record<string, unknown>)
+      : {}
 
-  const providerType = typeof config.providerType === "string" ? config.providerType : connection.type
+  const providerType =
+    typeof config.providerType === "string" ? config.providerType : connection.type
   if (providerType.toLowerCase() !== provider.toLowerCase()) {
     return false
   }
@@ -400,8 +412,9 @@ export async function getRequiredProviderRequirementsForDeployment(
     return []
   }
 
-  const metadata = opts?.metadata
-    ?? await findRunGroupWorkspaceMetadata(deployment.runGroupId, deployment.workspacePath)
+  const metadata =
+    opts?.metadata ??
+    (await findRunGroupWorkspaceMetadata(deployment.runGroupId, deployment.workspacePath))
 
   if (!metadata) {
     logger.warn("connection_readiness.degraded", {
@@ -418,7 +431,8 @@ export async function getRequiredProviderRequirementsForDeployment(
     throw new WorkspaceMetadataUnavailableError({
       kind: "provider_requirements_unavailable",
       errorKind: "metadata_missing",
-      message: "Provider metadata is missing for this workspace. Rerun this environment to regenerate it.",
+      message:
+        "Provider metadata is missing for this workspace. Rerun this environment to regenerate it.",
       retryable: false,
     })
   }
@@ -450,14 +464,17 @@ export async function getRequiredProvidersForDeployments(
     return new Map()
   }
 
-  const runGroupIds = [...new Set(
-    deployments
-      .map((deployment) => deployment.runGroupId)
-      .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
-  )]
+  const runGroupIds = [
+    ...new Set(
+      deployments
+        .map((deployment) => deployment.runGroupId)
+        .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
+    ),
+  ]
 
-  const metadataByRunGroupWorkspaceKey = opts?.metadataByRunGroupWorkspaceKey
-    ?? await findRunGroupWorkspaceMetadataForRunGroups(runGroupIds)
+  const metadataByRunGroupWorkspaceKey =
+    opts?.metadataByRunGroupWorkspaceKey ??
+    (await findRunGroupWorkspaceMetadataForRunGroups(runGroupIds))
   const providersByDeployment = new Map<string, string[]>()
 
   for (const deployment of deployments) {
@@ -490,16 +507,22 @@ export interface FindMissingConnectionRequirementsOptions {
   getProvidersForDeployment?: (deployment: ProviderRequirementDeployment) => Promise<string[]>
 }
 
-export async function findMissingConnectionRequirements(params: {
-  deployments: ProviderRequirementDeployment[]
-  connections: Connection[]
-}, opts: FindMissingConnectionRequirementsOptions = {}): Promise<MissingConnectionRequirement[]> {
+export async function findMissingConnectionRequirements(
+  params: {
+    deployments: ProviderRequirementDeployment[]
+    connections: Connection[]
+  },
+  opts: FindMissingConnectionRequirementsOptions = {},
+): Promise<MissingConnectionRequirement[]> {
   const startedAt = performance.now()
   const deploymentsScanned = params.deployments.length
 
   getConnectionRequirementsDeploymentsScannedHistogram().record(deploymentsScanned)
 
-  const extractionConcurrency = Math.max(1, opts.extractionConcurrency ?? DEFAULT_EXTRACTION_CONCURRENCY)
+  const extractionConcurrency = Math.max(
+    1,
+    opts.extractionConcurrency ?? DEFAULT_EXTRACTION_CONCURRENCY,
+  )
 
   const result = await withSpan("connections.find_missing_requirements", async (span) => {
     span.setAttributes({
@@ -508,11 +531,13 @@ export async function findMissingConnectionRequirements(params: {
       "connections.extraction_concurrency": extractionConcurrency,
     })
 
-    const runGroupIds = [...new Set(
-      params.deployments
-        .map((deployment) => deployment.runGroupId)
-        .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
-    )]
+    const runGroupIds = [
+      ...new Set(
+        params.deployments
+          .map((deployment) => deployment.runGroupId)
+          .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
+      ),
+    ]
 
     const metadataByRunGroupWorkspaceKey = opts.getProvidersForDeployment
       ? new Map<string, RunGroupWorkspaceMetadata>()
@@ -527,20 +552,25 @@ export async function findMissingConnectionRequirements(params: {
         continue
       }
 
-      const metadataKey = buildRunGroupWorkspaceMetadataKey(deployment.runGroupId, deployment.workspacePath)
+      const metadataKey = buildRunGroupWorkspaceMetadataKey(
+        deployment.runGroupId,
+        deployment.workspacePath,
+      )
       let providers = providersByRunGroupWorkspaceKey.get(metadataKey)
 
       if (!providers) {
         providers = opts.getProvidersForDeployment
           ? await opts.getProvidersForDeployment(deployment)
           : (() => {
-            const metadata = metadataByRunGroupWorkspaceKey.get(metadataKey)
-            if (!metadata || metadata.extractionStatus !== "ready") {
-              return []
-            }
+              const metadata = metadataByRunGroupWorkspaceKey.get(metadataKey)
+              if (!metadata || metadata.extractionStatus !== "ready") {
+                return []
+              }
 
-            return metadataRowToRequirements(metadata).map((requirement) => requirement.providerType)
-          })()
+              return metadataRowToRequirements(metadata).map(
+                (requirement) => requirement.providerType,
+              )
+            })()
 
         providersByRunGroupWorkspaceKey.set(metadataKey, providers)
       }
@@ -549,7 +579,12 @@ export async function findMissingConnectionRequirements(params: {
 
       for (const provider of providers) {
         const hasMatch = params.connections.some((connection) =>
-          connectionMatches(connection, provider, deployment.environmentName, deployment.workspacePath)
+          connectionMatches(
+            connection,
+            provider,
+            deployment.environmentName,
+            deployment.workspacePath,
+          ),
         )
 
         if (!hasMatch) {
@@ -570,11 +605,12 @@ export async function findMissingConnectionRequirements(params: {
       "connections.extractions_total": runGroupIds.length,
     })
 
-    return missing.sort((a, b) =>
-      a.repo.localeCompare(b.repo)
-      || a.environment.localeCompare(b.environment)
-      || a.workspace.localeCompare(b.workspace)
-      || a.provider.localeCompare(b.provider)
+    return missing.sort(
+      (a, b) =>
+        a.repo.localeCompare(b.repo) ||
+        a.environment.localeCompare(b.environment) ||
+        a.workspace.localeCompare(b.workspace) ||
+        a.provider.localeCompare(b.provider),
     )
   })
 

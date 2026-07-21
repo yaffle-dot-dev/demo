@@ -82,9 +82,7 @@ export function computeCliAlignedColumns<T>(
   }
 }
 
-export function buildOrthogonalEdgePaths(
-  edges: OrthogonalEdgeRouteInput[],
-): Map<string, string> {
+export function buildOrthogonalEdgePaths(edges: OrthogonalEdgeRouteInput[]): Map<string, string> {
   const horizontalSegments: HorizontalSegment[] = []
   const verticalSegments: VerticalSegment[] = []
 
@@ -128,7 +126,10 @@ export function buildOrthogonalEdgePaths(
       .map((vertical) => vertical.x)
       .sort((left, right) => left - right)
 
-    edgeCrossings.set(segmentKey(segment.edgeId, segment.y, segment.startX, segment.endX), crossings)
+    edgeCrossings.set(
+      segmentKey(segment.edgeId, segment.y, segment.startX, segment.endX),
+      crossings,
+    )
   }
 
   return new Map(
@@ -178,7 +179,12 @@ function buildOrthogonalEdgePath(
   return commands.join(" ")
 }
 
-function horizontalPathCommand(y: number, startX: number, endX: number, crossings: number[]): string {
+function horizontalPathCommand(
+  y: number,
+  startX: number,
+  endX: number,
+  crossings: number[],
+): string {
   if (crossings.length === 0) {
     return `L ${endX} ${y}`
   }
@@ -274,7 +280,9 @@ function computeCliStages(
   for (const workspacePath of topologicalOrder) {
     const stage = Math.max(
       0,
-      ...(dependencies.get(workspacePath) ?? []).map((dependency) => (stages.get(dependency) ?? 0) + 1),
+      ...(dependencies.get(workspacePath) ?? []).map(
+        (dependency) => (stages.get(dependency) ?? 0) + 1,
+      ),
     )
     stages.set(workspacePath, stage)
   }

@@ -8,9 +8,7 @@ describe("normalizePem", () => {
       "-----BEGIN PRIVATE KEY-----\\nabc123\\ndef456\\n-----END PRIVATE KEY-----",
     )
 
-    expect(pem).toBe(
-      "-----BEGIN PRIVATE KEY-----\nabc123\ndef456\n-----END PRIVATE KEY-----",
-    )
+    expect(pem).toBe("-----BEGIN PRIVATE KEY-----\nabc123\ndef456\n-----END PRIVATE KEY-----")
   })
 
   test("reformats single-line pem bodies into 64-char lines", () => {

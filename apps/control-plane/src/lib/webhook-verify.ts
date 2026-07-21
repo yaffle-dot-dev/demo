@@ -38,7 +38,9 @@ async function computeHmac(payload: string, secret: string): Promise<ArrayBuffer
 }
 
 function anyTimingSafeEqual(computed: string, candidates: Array<string | undefined>): boolean {
-  return candidates.some((candidate) => candidate !== undefined && timingSafeEqual(computed, candidate))
+  return candidates.some(
+    (candidate) => candidate !== undefined && timingSafeEqual(computed, candidate),
+  )
 }
 
 /**

@@ -1,8 +1,5 @@
 import type { Env } from "./provider-discovery-agent"
-import type {
-  DiscoveryDispatchRequest,
-  DiscoveryRequestAccepted,
-} from "./types"
+import type { DiscoveryDispatchRequest, DiscoveryRequestAccepted } from "./types"
 
 export interface DiscoveryAgentServer {
   fetch(request: Request): Promise<Response>
@@ -14,14 +11,16 @@ export type GetDiscoveryAgentByName = (
 ) => Promise<DiscoveryAgentServer>
 
 export function parseAgentInstanceName(providerType: string): string {
-  return providerType
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, "-")
-    .replace(/-{2,}/g, "-")
-    .replace(/^-+/, "")
-    .replace(/-+$/, "")
-    .slice(0, 80) || "default"
+  return (
+    providerType
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^-+/, "")
+      .replace(/-+$/, "")
+      .slice(0, 80) || "default"
+  )
 }
 
 export async function dispatchDiscovery(
@@ -32,15 +31,17 @@ export async function dispatchDiscovery(
   const instanceName = parseAgentInstanceName(payload.providerType)
   const agent = await getAgentByName(env.ProviderDiscoveryAgent, instanceName)
 
-  const response = await agent.fetch(new Request("https://provider-discovery-agent.internal/run", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  }))
+  const response = await agent.fetch(
+    new Request("https://provider-discovery-agent.internal/run", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }),
+  )
 
-  const body = await response.json() as {
+  const body = (await response.json()) as {
     data?: DiscoveryRequestAccepted
     error?: { message?: string }
   }

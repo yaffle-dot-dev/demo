@@ -7,7 +7,10 @@ import {
 
 const originalDiscoveryEnabled = process.env.YAFFLE_PROVIDER_DISCOVERY_ENABLED
 
-function makeRequirement(providerType: string, providerSource?: string): {
+function makeRequirement(
+  providerType: string,
+  providerSource?: string,
+): {
   providerType: string
   providerSource: string | null
 } {

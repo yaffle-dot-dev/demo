@@ -7,9 +7,11 @@ import {
 
 describe("traffic-controller PR comment parser", () => {
   test("parses create route commands with this preview target", () => {
-    expect(parseTrafficControllerComment(
-      "/yaffle create route pull_request opened on lamalex/aoc to this preview",
-    )).toEqual({
+    expect(
+      parseTrafficControllerComment(
+        "/yaffle create route pull_request opened on lamalex/aoc to this preview",
+      ),
+    ).toEqual({
       desiredState: "active",
       event: "pull_request",
       action: "opened",
@@ -20,9 +22,11 @@ describe("traffic-controller PR comment parser", () => {
   })
 
   test("parses destroy route commands with explicit deployment id", () => {
-    expect(parseTrafficControllerComment(
-      "/yaffle destroy route push on lamalex/aoc from dep-pr-7-lamalex",
-    )).toEqual({
+    expect(
+      parseTrafficControllerComment(
+        "/yaffle destroy route push on lamalex/aoc from dep-pr-7-lamalex",
+      ),
+    ).toEqual({
       desiredState: "absent",
       event: "push",
       action: undefined,
@@ -33,9 +37,11 @@ describe("traffic-controller PR comment parser", () => {
   })
 
   test("still parses legacy key=value commands", () => {
-    expect(parseTrafficControllerComment(
-      "/yaffle lease ensure deployment=dep-pr7-lamalex event=pull_request repo=lamalex/aoc action=opened",
-    )).toEqual({
+    expect(
+      parseTrafficControllerComment(
+        "/yaffle lease ensure deployment=dep-pr7-lamalex event=pull_request repo=lamalex/aoc action=opened",
+      ),
+    ).toEqual({
       desiredState: "active",
       event: "pull_request",
       action: "opened",
@@ -46,6 +52,8 @@ describe("traffic-controller PR comment parser", () => {
   })
 
   test("builds a deterministic default deployment id for this preview", () => {
-    expect(buildDefaultDeploymentId({ prNumber: 7, actorLogin: "lamalex" })).toBe("dep-pr-7-lamalex")
+    expect(buildDefaultDeploymentId({ prNumber: 7, actorLogin: "lamalex" })).toBe(
+      "dep-pr-7-lamalex",
+    )
   })
 })

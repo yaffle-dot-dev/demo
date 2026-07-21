@@ -42,9 +42,7 @@ function normalizePem(raw: string): string {
   if (trimmed.includes("\n")) return trimmed
 
   // Single-line PEM: extract header, base64 body, footer and reformat
-  const match = trimmed.match(
-    /^(-----BEGIN [A-Z ]+-----)\s+(.+?)\s+(-----END [A-Z ]+-----)-*$/,
-  )
+  const match = trimmed.match(/^(-----BEGIN [A-Z ]+-----)\s+(.+?)\s+(-----END [A-Z ]+-----)-*$/)
   if (!match) return trimmed
 
   const [, header, body, footer] = match

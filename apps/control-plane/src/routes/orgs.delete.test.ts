@@ -84,10 +84,14 @@ describe("org deletion", () => {
     })
 
     expect(res.status).toBe(200)
-    const body = await res.json() as { data: { deleted: boolean } }
+    const body = (await res.json()) as { data: { deleted: boolean } }
     expect(body.data.deleted).toBe(true)
 
-    const deletedOrg = await db.select().from(organizations).where(eq(organizations.id, adminCtx.org.id)).limit(1)
+    const deletedOrg = await db
+      .select()
+      .from(organizations)
+      .where(eq(organizations.id, adminCtx.org.id))
+      .limit(1)
     expect(deletedOrg).toHaveLength(0)
 
     const memberships = await listUserOrgs(adminCtx.user.id)
@@ -127,7 +131,7 @@ describe("org deletion", () => {
     })
 
     expect(res.status).toBe(400)
-    const body = await res.json() as { error: { code: string } }
+    const body = (await res.json()) as { error: { code: string } }
     expect(body.error.code).toBe("CONFIRMATION_MISMATCH")
   })
 
@@ -139,7 +143,7 @@ describe("org deletion", () => {
     })
 
     expect(res.status).toBe(403)
-    const body = await res.json() as { error: { code: string } }
+    const body = (await res.json()) as { error: { code: string } }
     expect(body.error.code).toBe("FORBIDDEN")
   })
 })

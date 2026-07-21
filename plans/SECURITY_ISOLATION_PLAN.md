@@ -61,11 +61,11 @@ All components are slugified (special chars → `-`, lowercased).
 
 **Examples:**
 
-| Scenario | Environment | Branch | Result |
-|----------|-------------|--------|--------|
-| PR #42 | `pr-42` | `feature/foo` | `myrepo-pr-42-feature-foo-infra-shared` |
-| Push to main (production) | `production` | `main` | `myrepo-production-main-infra-shared` |
-| Push to main (staging) | `staging` | `main` | `myrepo-staging-main-infra-shared` |
+| Scenario                  | Environment  | Branch        | Result                                  |
+| ------------------------- | ------------ | ------------- | --------------------------------------- |
+| PR #42                    | `pr-42`      | `feature/foo` | `myrepo-pr-42-feature-foo-infra-shared` |
+| Push to main (production) | `production` | `main`        | `myrepo-production-main-infra-shared`   |
+| Push to main (staging)    | `staging`    | `main`        | `myrepo-staging-main-infra-shared`      |
 
 The environment comes from `yaffle.toml` triggers, not derived from branch.
 
@@ -93,19 +93,17 @@ export function buildWorkspaceName(
   workspacePath: string,
 ): string {
   const slugify = (s: string): string =>
-    s.toLowerCase()
+    s
+      .toLowerCase()
       .replace(/[^a-z0-9-]/g, "-")
       .replace(/-+/g, "-")
       .replace(/^-|-$/g, "")
 
   const repoName = repo.includes("/") ? repo.split("/")[1] : repo
 
-  return [
-    slugify(repoName),
-    slugify(environment),
-    slugify(branch),
-    slugify(workspacePath),
-  ].join("-")
+  return [slugify(repoName), slugify(environment), slugify(branch), slugify(workspacePath)].join(
+    "-",
+  )
 }
 ```
 
@@ -396,10 +394,13 @@ In org creation, queue provisioning job:
 
 ```typescript
 export async function createOrg(data: CreateOrgInput): Promise<Organization> {
-  const org = await db.insert(organizations).values({
-    ...data,
-    provisioningStatus: "pending",
-  }).returning()
+  const org = await db
+    .insert(organizations)
+    .values({
+      ...data,
+      provisioningStatus: "pending",
+    })
+    .returning()
 
   // Queue async provisioning
   await createJob({
@@ -422,9 +423,10 @@ if (org.provisioningStatus !== "active") {
     success: false,
     command: job.jobType,
     output: "",
-    errorMessage: org.provisioningStatus === "failed"
-      ? "Organization provisioning failed. Support has been notified."
-      : `Organization is ${org.provisioningStatus}. Please wait.`,
+    errorMessage:
+      org.provisioningStatus === "failed"
+        ? "Organization provisioning failed. Support has been notified."
+        : `Organization is ${org.provisioningStatus}. Please wait.`,
     durationMs: 0,
   }
 }
@@ -443,11 +445,13 @@ import { STSClient, AssumeRoleCommand } from "@aws-sdk/client-sts"
 
 async function assumeOrgRole(roleArn: string): Promise<Credentials> {
   const sts = new STSClient({})
-  const response = await sts.send(new AssumeRoleCommand({
-    RoleArn: roleArn,
-    RoleSessionName: `yaffle-run-${Date.now()}`,
-    DurationSeconds: 3600,
-  }))
+  const response = await sts.send(
+    new AssumeRoleCommand({
+      RoleArn: roleArn,
+      RoleSessionName: `yaffle-run-${Date.now()}`,
+      DurationSeconds: 3600,
+    }),
+  )
   return response.Credentials!
 }
 
@@ -478,34 +482,34 @@ if (org.iamRoleArn) {
 
 ## Files Changed Summary
 
-| File | Change Type | Description |
-|------|-------------|-------------|
-| `src/db/schema.ts` | Modify | Add org security fields |
-| `src/db/queries/workspaces.ts` | Modify | New `buildWorkspaceName`, delete helpers |
-| `src/db/queries/state-versions.ts` | Modify | Add orgId to `buildS3Key` |
-| `src/db/queries/organizations.ts` | Modify | Queue provisioning job on create |
-| `src/lib/workspace-service.ts` | Modify | Rename function, add environment param |
-| `src/lib/iac-engine.ts` | Modify | Check provisioning status |
-| `src/lib/local-runner.ts` | Modify | Add STS AssumeRole |
-| `src/lib/org-provisioning.ts` | **New** | AWS resource provisioning |
-| `src/jobs/org-provision.ts` | **New** | Provisioning job handler |
-| `infra/state-storage.tf` | Modify | 30-day retention |
-| `infra/iam.tf` | Modify | Add provisioning permissions |
-| `drizzle/0007_org_security.sql` | **New** | Migration |
+| File                               | Change Type | Description                              |
+| ---------------------------------- | ----------- | ---------------------------------------- |
+| `src/db/schema.ts`                 | Modify      | Add org security fields                  |
+| `src/db/queries/workspaces.ts`     | Modify      | New `buildWorkspaceName`, delete helpers |
+| `src/db/queries/state-versions.ts` | Modify      | Add orgId to `buildS3Key`                |
+| `src/db/queries/organizations.ts`  | Modify      | Queue provisioning job on create         |
+| `src/lib/workspace-service.ts`     | Modify      | Rename function, add environment param   |
+| `src/lib/iac-engine.ts`            | Modify      | Check provisioning status                |
+| `src/lib/local-runner.ts`          | Modify      | Add STS AssumeRole                       |
+| `src/lib/org-provisioning.ts`      | **New**     | AWS resource provisioning                |
+| `src/jobs/org-provision.ts`        | **New**     | Provisioning job handler                 |
+| `infra/state-storage.tf`           | Modify      | 30-day retention                         |
+| `infra/iam.tf`                     | Modify      | Add provisioning permissions             |
+| `drizzle/0007_org_security.sql`    | **New**     | Migration                                |
 
 ---
 
 ## Decisions
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Storage model | Single bucket, path-separated | Simpler ops, IAM enforces isolation |
-| Encryption | Per-org KMS CMK | True isolation, customer-specific keys |
-| IAM | Per-org role created at signup | Defense in depth |
-| Provisioning | AWS SDK (temp), moving to Terraform | SDK for MVP, Terraform for dogfooding |
-| State versioning | 30-day retention | Balance recovery vs secret exposure |
-| Retry policy | 5 attempts with exponential backoff | Then raise incident |
-| Workspace naming | `{repo}-{env}-{branch}-{path}` | Prevents all collision types |
+| Decision         | Choice                              | Rationale                              |
+| ---------------- | ----------------------------------- | -------------------------------------- |
+| Storage model    | Single bucket, path-separated       | Simpler ops, IAM enforces isolation    |
+| Encryption       | Per-org KMS CMK                     | True isolation, customer-specific keys |
+| IAM              | Per-org role created at signup      | Defense in depth                       |
+| Provisioning     | AWS SDK (temp), moving to Terraform | SDK for MVP, Terraform for dogfooding  |
+| State versioning | 30-day retention                    | Balance recovery vs secret exposure    |
+| Retry policy     | 5 attempts with exponential backoff | Then raise incident                    |
+| Workspace naming | `{repo}-{env}-{branch}-{path}`      | Prevents all collision types           |
 
 ---
 

@@ -52,6 +52,7 @@ graph TB
     outputs -->|subnet_ids| team1
     outputs -->|db_endpoint| team1
     outputs -->|redis_url| team2
+
 `} />
 
 When a product team references the platform's database workspace, they get:
@@ -75,9 +76,9 @@ Under the beta snapshot contract, that `connection_string` is a value from an id
 snapshot of a running RDS instance that the platform team manages.
 
 <Aside type="tip">
-The beta module contract serves immutable, versioned **output snapshots** from workspaces
-that have already been applied. Downstream pinning and external publication are beta
-implementation work, not current module-registry guarantees.
+  The beta module contract serves immutable, versioned **output snapshots** from workspaces that
+  have already been applied. Downstream pinning and external publication are beta implementation
+  work, not current module-registry guarantees.
 </Aside>
 
 ## The contract is outputs
@@ -104,8 +105,9 @@ output "secret_arn" {
 ```
 
 Downstream teams don't need to know:
+
 - What RDS instance class is used
-- How backups are configured  
+- How backups are configured
 - What the maintenance window is
 - How replicas are set up
 
@@ -190,7 +192,7 @@ graph LR
         pr_db[(pr-42 RDS)]
     end
 
-    subgraph Staging  
+    subgraph Staging
         staging_db[(staging RDS)]
     end
 
@@ -204,6 +206,7 @@ graph LR
 
     team[Product Teams] -->|always consume| staging_db
     team -->|always consume| prod_db
+
 `} />
 
 Product teams never see preview infrastructure. They consume stable, named environments while the platform team iterates safely.
@@ -212,14 +215,14 @@ Product teams never see preview infrastructure. They consume stable, named envir
 
 A typical platform-as-product offers:
 
-| Workspace | Outputs consumed by product teams |
-|-----------|-----------------------------------|
-| `network` | `vpc_id`, `private_subnet_ids`, `public_subnet_ids` |
-| `database` | `connection_string`, `secret_arn`, `security_group_id` |
-| `cache` | `redis_url`, `redis_port` |
-| `dns` | `zone_id`, `domain_name` |
-| `monitoring` | `log_group_name`, `metrics_namespace` |
-| `secrets` | `kms_key_arn` |
+| Workspace    | Outputs consumed by product teams                      |
+| ------------ | ------------------------------------------------------ |
+| `network`    | `vpc_id`, `private_subnet_ids`, `public_subnet_ids`    |
+| `database`   | `connection_string`, `secret_arn`, `security_group_id` |
+| `cache`      | `redis_url`, `redis_port`                              |
+| `dns`        | `zone_id`, `domain_name`                               |
+| `monitoring` | `log_group_name`, `metrics_namespace`                  |
+| `secrets`    | `kms_key_arn`                                          |
 
 Product teams compose these outputs into their own infrastructure:
 
@@ -261,7 +264,7 @@ platform-infra/
 ├── network/              # VPC, subnets, security groups
 │   ├── main.tf
 │   └── outputs.tf        # Contract: vpc_id, subnet_ids, etc.
-├── database/             # RDS instances  
+├── database/             # RDS instances
 │   ├── main.tf
 │   └── outputs.tf        # Contract: connection_string, secret_arn
 ├── cache/                # ElastiCache
@@ -278,7 +281,7 @@ version = 1
 name = "dev"
 
 [[environments]]
-name = "staging"  
+name = "staging"
 
 [[environments]]
 name = "prod"
@@ -288,7 +291,7 @@ path = "network"
 environments = ["*"]
 
 [[workspaces]]
-path = "database"  
+path = "database"
 environments = ["*"]
 
 [[workspaces]]
@@ -310,12 +313,12 @@ branch_patterns = ["*"]
 
 Yaffle enables platform teams to operate as product teams—but the product is **running infrastructure**, not reusable modules:
 
-| Traditional IaC | Platform as Product with Yaffle |
-|-----------------|--------------------------------|
-| Publish module, teams instantiate their own | Run infrastructure, teams consume outputs |
-| "Here's how to create an RDS instance" | "Here's your database endpoint" |
-| Teams manage their own state | Platform manages state, teams consume results |
-| Drift between team configurations | Consistency across all consumers |
-| Coordination to change shared patterns | Preview environments for safe iteration |
+| Traditional IaC                             | Platform as Product with Yaffle               |
+| ------------------------------------------- | --------------------------------------------- |
+| Publish module, teams instantiate their own | Run infrastructure, teams consume outputs     |
+| "Here's how to create an RDS instance"      | "Here's your database endpoint"               |
+| Teams manage their own state                | Platform manages state, teams consume results |
+| Drift between team configurations           | Consistency across all consumers              |
+| Coordination to change shared patterns      | Preview environments for safe iteration       |
 
 The result: platform teams own the infrastructure lifecycle end-to-end, downstream teams get stable APIs to build on, and everyone ships with confidence.

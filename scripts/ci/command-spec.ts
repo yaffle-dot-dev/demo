@@ -112,11 +112,7 @@ export const CI_COMMAND_SPEC: CommandSpec = {
     },
     {
       name: "completion",
-      subcommands: [
-        { name: "bash" },
-        { name: "zsh" },
-        { name: "fish" },
-      ],
+      subcommands: [{ name: "bash" }, { name: "zsh" }, { name: "fish" }],
     },
     {
       name: "__complete",

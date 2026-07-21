@@ -1,7 +1,4 @@
-import type {
-  EnsureLiveWebhookLeaseRequest,
-  TrafficControllerApiResponse,
-} from "../contract.ts"
+import type { EnsureLiveWebhookLeaseRequest, TrafficControllerApiResponse } from "../contract.ts"
 import {
   createTrafficControlOperation,
   findInFlightOperationByRequestIdAndType,
@@ -33,7 +30,9 @@ interface EnsureLiveWebhookLeaseDeps {
   queue: ReconcileQueueClient
 }
 
-export function createEnsureLiveWebhookLeaseDeps(queue: ReconcileQueueClient): EnsureLiveWebhookLeaseDeps {
+export function createEnsureLiveWebhookLeaseDeps(
+  queue: ReconcileQueueClient,
+): EnsureLiveWebhookLeaseDeps {
   return {
     findExistingOperation: findInFlightOperationByRequestIdAndType,
     createOperation: createTrafficControlOperation,
@@ -70,9 +69,8 @@ export async function ensureLiveWebhookLease(
   command: EnsureLiveWebhookLeaseRequest,
   deps: EnsureLiveWebhookLeaseDeps,
 ): Promise<TrafficControllerApiResponse> {
-  const operationType = command.desiredState === "active"
-    ? "ensure_live_webhook_lease"
-    : "revoke_live_webhook_lease"
+  const operationType =
+    command.desiredState === "active" ? "ensure_live_webhook_lease" : "revoke_live_webhook_lease"
 
   const existingOperation = await deps.findExistingOperation(command.requestId, operationType)
   if (existingOperation) {
@@ -252,23 +250,25 @@ export async function ensureLiveWebhookLease(
     }
   }
 
-  const lease = exactLease ?? await deps.createLiveWebhookLease({
-    prNumber: command.prNumber,
-    routeableDeploymentId: routeableDeployment.id,
-    actorGithubUserId: command.actorGithubUserId,
-    actorGithubLoginSnapshot: command.actorGithubLogin,
-    scopeClass: command.scope.repositoryId == null ? "installation" : "repo",
-    event: command.scope.event,
-    installationId: command.scope.installationId,
-    repositoryId: command.scope.repositoryId,
-    action: command.scope.action,
-    pullRequestNumber: command.scope.pullRequestNumber,
-    ref: command.scope.ref,
-    githubOwnerTypeSnapshot: ownerSnapshot.githubOwnerType,
-    githubOwnerIdSnapshot: ownerSnapshot.githubOwnerId,
-    githubOwnerLoginSnapshot: ownerSnapshot.githubOwnerLogin,
-    reason: command.reason,
-  })
+  const lease =
+    exactLease ??
+    (await deps.createLiveWebhookLease({
+      prNumber: command.prNumber,
+      routeableDeploymentId: routeableDeployment.id,
+      actorGithubUserId: command.actorGithubUserId,
+      actorGithubLoginSnapshot: command.actorGithubLogin,
+      scopeClass: command.scope.repositoryId == null ? "installation" : "repo",
+      event: command.scope.event,
+      installationId: command.scope.installationId,
+      repositoryId: command.scope.repositoryId,
+      action: command.scope.action,
+      pullRequestNumber: command.scope.pullRequestNumber,
+      ref: command.scope.ref,
+      githubOwnerTypeSnapshot: ownerSnapshot.githubOwnerType,
+      githubOwnerIdSnapshot: ownerSnapshot.githubOwnerId,
+      githubOwnerLoginSnapshot: ownerSnapshot.githubOwnerLogin,
+      reason: command.reason,
+    }))
 
   const operation = await deps.createOperation({
     requestId: command.requestId,

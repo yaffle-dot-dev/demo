@@ -3,10 +3,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import {
-  buildTfcEnvVars,
-  writeEphemeralCredentials,
-} from "./tfc-backend.ts"
+import { buildTfcEnvVars, writeEphemeralCredentials } from "./tfc-backend.ts"
 
 describe("buildTfcEnvVars", () => {
   const originalEnv = process.env.YAFFLE_TFC_API_HOST

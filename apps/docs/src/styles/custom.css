@@ -917,7 +917,11 @@ dialog,
 }
 
 /* Smooth transitions for interactive elements */
-a, button, .action, .card, .sl-link-card {
+a,
+button,
+.action,
+.card,
+.sl-link-card {
   transition: all 0.15s ease;
 }
 

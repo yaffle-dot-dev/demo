@@ -41,7 +41,10 @@ export async function deployScanner() {
   console.log(`Scanner Lambda updated: ${functionName}`)
 }
 
-async function resolveScannerDeploymentTarget(): Promise<{ functionName: string; appDeployerRoleArn: string }> {
+async function resolveScannerDeploymentTarget(): Promise<{
+  functionName: string
+  appDeployerRoleArn: string
+}> {
   const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
   const overrideFunctionName = process.env.YAFFLE_SCANNER_FUNCTION?.trim()
   const overrideAppDeployerRoleArn = process.env.YAFFLE_APP_DEPLOYER_ROLE_ARN?.trim()
@@ -58,20 +61,20 @@ async function resolveScannerDeploymentTarget(): Promise<{ functionName: string;
     environment,
   })
 
-  const functionName = overrideFunctionName
-    || (typeof outputs.scanner_lambda_function_name === "string"
+  const functionName =
+    overrideFunctionName ||
+    (typeof outputs.scanner_lambda_function_name === "string"
       ? outputs.scanner_lambda_function_name.trim()
       : "")
-  const appDeployerRoleArn = overrideAppDeployerRoleArn
-    || (typeof outputs.app_deployer_role_arn === "string"
-      ? outputs.app_deployer_role_arn.trim()
-      : "")
+  const appDeployerRoleArn =
+    overrideAppDeployerRoleArn ||
+    (typeof outputs.app_deployer_role_arn === "string" ? outputs.app_deployer_role_arn.trim() : "")
 
   if (!functionName || !appDeployerRoleArn) {
     throw new Error(
-      "Could not determine scanner deployment target. "
-      + "Set YAFFLE_SCANNER_FUNCTION and YAFFLE_APP_DEPLOYER_ROLE_ARN, "
-      + "or ensure apps/runner/infra exports scanner_lambda_function_name and app_deployer_role_arn through Yaffle outputs.",
+      "Could not determine scanner deployment target. " +
+        "Set YAFFLE_SCANNER_FUNCTION and YAFFLE_APP_DEPLOYER_ROLE_ARN, " +
+        "or ensure apps/runner/infra exports scanner_lambda_function_name and app_deployer_role_arn through Yaffle outputs.",
     )
   }
 

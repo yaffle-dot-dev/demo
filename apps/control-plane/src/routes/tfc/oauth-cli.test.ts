@@ -32,7 +32,7 @@ async function ensureTestUserRecord(): Promise<void> {
 }
 
 beforeAll(async () => {
-  originalGetSession = auth.api.getSession
+  originalGetSession = auth.api.getSession.bind(auth.api)
 
   await ensureTestUserRecord()
 
@@ -143,7 +143,7 @@ describe("oauthCliRoute", () => {
 
     expect(tokenRes.status).toBe(200)
 
-    const tokenBody = await tokenRes.json() as { access_token?: string; token_type?: string }
+    const tokenBody = (await tokenRes.json()) as { access_token?: string; token_type?: string }
     expect(tokenBody.token_type).toBe("bearer")
     expect(typeof tokenBody.access_token).toBe("string")
     expect(tokenBody.access_token).toBeTruthy()

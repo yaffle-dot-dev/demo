@@ -69,40 +69,40 @@ jobs:
           echo "web_image=${{ env.REGISTRY }}/yaffle-web-${TIER}" >> $GITHUB_OUTPUT
           echo "runner_image=${{ env.REGISTRY }}/yaffle-runner-${TIER}" >> $GITHUB_OUTPUT
           echo "sha_tag=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
-      
+
       - parallel:
-        - name: Build control-plane image
-          run: |
-            if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
-              depot build -f apps/control-plane/Dockerfile --platform linux/arm64 --push \
-                -t ${{ steps.tags.outputs.cp_image }}:${{ steps.tags.outputs.sha_tag }} \
-                -t ${{ steps.tags.outputs.cp_image }}:latest \
-                .
-            else
-              depot build -f apps/control-plane/Dockerfile --platform linux/arm64 .
-            fi
+          - name: Build control-plane image
+            run: |
+              if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
+                depot build -f apps/control-plane/Dockerfile --platform linux/arm64 --push \
+                  -t ${{ steps.tags.outputs.cp_image }}:${{ steps.tags.outputs.sha_tag }} \
+                  -t ${{ steps.tags.outputs.cp_image }}:latest \
+                  .
+              else
+                depot build -f apps/control-plane/Dockerfile --platform linux/arm64 .
+              fi
 
-        - name: Build web image
-          run: |
-            if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
-              depot build -f apps/web/Dockerfile --platform linux/arm64 --push \
-                -t ${{ steps.tags.outputs.web_image }}:${{ steps.tags.outputs.sha_tag }} \
-                -t ${{ steps.tags.outputs.web_image }}:latest \
-                .
-            else
-              depot build -f apps/web/Dockerfile --platform linux/arm64 .
-            fi
+          - name: Build web image
+            run: |
+              if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
+                depot build -f apps/web/Dockerfile --platform linux/arm64 --push \
+                  -t ${{ steps.tags.outputs.web_image }}:${{ steps.tags.outputs.sha_tag }} \
+                  -t ${{ steps.tags.outputs.web_image }}:latest \
+                  .
+              else
+                depot build -f apps/web/Dockerfile --platform linux/arm64 .
+              fi
 
-        - name: Build runner image
-          run: |
-            if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
-              depot build -f apps/runner/Dockerfile --platform linux/arm64 --push \
-                -t ${{ steps.tags.outputs.runner_image }}:${{ steps.tags.outputs.sha_tag }} \
-                -t ${{ steps.tags.outputs.runner_image }}:latest \
-                .
-            else
-              depot build -f apps/runner/Dockerfile --platform linux/arm64 .
-            fi
+          - name: Build runner image
+            run: |
+              if [ "${{ steps.tier.outputs.push }}" = "true" ]; then
+                depot build -f apps/runner/Dockerfile --platform linux/arm64 --push \
+                  -t ${{ steps.tags.outputs.runner_image }}:${{ steps.tags.outputs.sha_tag }} \
+                  -t ${{ steps.tags.outputs.runner_image }}:latest \
+                  .
+              else
+                depot build -f apps/runner/Dockerfile --platform linux/arm64 .
+              fi
 
       - name: Summary
         run: |
@@ -153,104 +153,104 @@ jobs:
         with:
           role-to-assume: arn:aws:iam::870923192739:role/yaffle-depot-ci
           aws-region: ${{ env.AWS_REGION }}
-      
+
       - parallel:
-        # - sequential:
+          # - sequential:
 
-        #   # -----------------------------------------------------------------
-        #   # Database migrations
-        #   # -----------------------------------------------------------------
+          #   # -----------------------------------------------------------------
+          #   # Database migrations
+          #   # -----------------------------------------------------------------
 
-        #   - name: Fetch database credentials
-        #     uses: aws-actions/aws-secretsmanager-get-secrets@v2
-        #     with:
-        #       secret-ids: |
-        #         DATABASE_URL, yaffle/main/database-url
-        #       parse-json-secrets: false
+          #   - name: Fetch database credentials
+          #     uses: aws-actions/aws-secretsmanager-get-secrets@v2
+          #     with:
+          #       secret-ids: |
+          #         DATABASE_URL, yaffle/main/database-url
+          #       parse-json-secrets: false
 
-        #   - name: Run database migrations
-        #     run: cd apps/control-plane && pnpm exec drizzle-kit migrate
+          #   - name: Run database migrations
+          #     run: cd apps/control-plane && pnpm exec drizzle-kit migrate
 
-        #   # -----------------------------------------------------------------
-        #   # Deploy control plane
-        #   # -----------------------------------------------------------------
+          #   # -----------------------------------------------------------------
+          #   # Deploy control plane
+          #   # -----------------------------------------------------------------
 
-        #   - name: Download control-plane task definition
-        #     run: |
-        #       aws ecs describe-task-definition \
-        #         --task-definition yaffle-cp-main-use1 \
-        #         --query 'taskDefinition' \
-        #         --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
-        #         > cp-task-definition.json
+          #   - name: Download control-plane task definition
+          #     run: |
+          #       aws ecs describe-task-definition \
+          #         --task-definition yaffle-cp-main-use1 \
+          #         --query 'taskDefinition' \
+          #         --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+          #         > cp-task-definition.json
 
-        #   - name: Render control-plane image
-        #     id: render-cp
-        #     uses: aws-actions/amazon-ecs-render-task-definition@v1
-        #     with:
-        #       task-definition: cp-task-definition.json
-        #       container-name: control-plane
-        #       image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-control-plane-production:sha-${{ github.sha }}
+          #   - name: Render control-plane image
+          #     id: render-cp
+          #     uses: aws-actions/amazon-ecs-render-task-definition@v1
+          #     with:
+          #       task-definition: cp-task-definition.json
+          #       container-name: control-plane
+          #       image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-control-plane-production:sha-${{ github.sha }}
 
-        #   - name: Deploy control plane
-        #     uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        #     with:
-        #       task-definition: ${{ steps.render-cp.outputs.task-definition }}
-        #       service: yaffle-cp-main-use1
-        #       cluster: yaffle-production-use1
-        #       wait-for-service-stability: true
+          #   - name: Deploy control plane
+          #     uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+          #     with:
+          #       task-definition: ${{ steps.render-cp.outputs.task-definition }}
+          #       service: yaffle-cp-main-use1
+          #       cluster: yaffle-production-use1
+          #       wait-for-service-stability: true
 
-        #   # -----------------------------------------------------------------
-        #   # Deploy web app
-        #   # -----------------------------------------------------------------
+          #   # -----------------------------------------------------------------
+          #   # Deploy web app
+          #   # -----------------------------------------------------------------
 
-        #   - name: Download web task definition
-        #     run: |
-        #       aws ecs describe-task-definition \
-        #         --task-definition yaffle-web-main-use1 \
-        #         --query 'taskDefinition' \
-        #         --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
-        #         > web-task-definition.json
+          #   - name: Download web task definition
+          #     run: |
+          #       aws ecs describe-task-definition \
+          #         --task-definition yaffle-web-main-use1 \
+          #         --query 'taskDefinition' \
+          #         --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+          #         > web-task-definition.json
 
-        #   - name: Render web image
-        #     id: render-web
-        #     uses: aws-actions/amazon-ecs-render-task-definition@v1
-        #     with:
-        #       task-definition: web-task-definition.json
-        #       container-name: web
-        #       image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-web-production:sha-${{ github.sha }}
+          #   - name: Render web image
+          #     id: render-web
+          #     uses: aws-actions/amazon-ecs-render-task-definition@v1
+          #     with:
+          #       task-definition: web-task-definition.json
+          #       container-name: web
+          #       image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-web-production:sha-${{ github.sha }}
 
-        #   - name: Deploy web app
-        #     uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-        #     with:
-        #       task-definition: ${{ steps.render-web.outputs.task-definition }}
-        #       service: yaffle-web-main-use1
-        #       cluster: yaffle-production-use1
-        #       wait-for-service-stability: true
-        - sequential:
-          # -----------------------------------------------------------------
-          # Update runner task definition
-          # -----------------------------------------------------------------
-          # Runner is ephemeral (no service) — just register a new revision.
-          # The control plane uses the family name to RunTask, picking up
-          # the latest revision automatically.
+          #   - name: Deploy web app
+          #     uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+          #     with:
+          #       task-definition: ${{ steps.render-web.outputs.task-definition }}
+          #       service: yaffle-web-main-use1
+          #       cluster: yaffle-production-use1
+          #       wait-for-service-stability: true
+          - sequential:
+              # -----------------------------------------------------------------
+              # Update runner task definition
+              # -----------------------------------------------------------------
+              # Runner is ephemeral (no service) — just register a new revision.
+              # The control plane uses the family name to RunTask, picking up
+              # the latest revision automatically.
 
-          - name: Download runner task definition
-            run: |
-              aws ecs describe-task-definition \
-                --task-definition yaffle-runner-main-use1 \
-                --query 'taskDefinition' \
-                --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
-                > runner-task-definition.json
+              - name: Download runner task definition
+                run: |
+                  aws ecs describe-task-definition \
+                    --task-definition yaffle-runner-main-use1 \
+                    --query 'taskDefinition' \
+                    --output json | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+                    > runner-task-definition.json
 
-          - name: Render runner image
-            id: render-runner
-            uses: aws-actions/amazon-ecs-render-task-definition@v1
-            with:
-              task-definition: runner-task-definition.json
-              container-name: runner
-              image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-runner-production:sha-${{ github.sha }}
+              - name: Render runner image
+                id: render-runner
+                uses: aws-actions/amazon-ecs-render-task-definition@v1
+                with:
+                  task-definition: runner-task-definition.json
+                  container-name: runner
+                  image: 870923192739.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/yaffle-runner-production:sha-${{ github.sha }}
 
-          - name: Register runner task definition
-            uses: aws-actions/amazon-ecs-deploy-task-definition@v2
-            with:
-              task-definition: ${{ steps.render-runner.outputs.task-definition }}
+              - name: Register runner task definition
+                uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+                with:
+                  task-definition: ${{ steps.render-runner.outputs.task-definition }}

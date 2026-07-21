@@ -192,7 +192,11 @@ export class Scheduler {
   private static readonly MAX_CONSECUTIVE_FAILURES = 5
   onAbdicate: (() => void) | null = null
 
-  constructor(spawner: IacEngineSpawner, config: SchedulerConfig = {}, spawnerType: string = "unknown") {
+  constructor(
+    spawner: IacEngineSpawner,
+    config: SchedulerConfig = {},
+    spawnerType: string = "unknown",
+  ) {
     this.workerId = `scheduler-${randomUUID().slice(0, 8)}`
     this.spawner = spawner
     this.spawnerType = spawnerType
@@ -260,24 +264,26 @@ export class Scheduler {
 
     // Start polling for jobs
     this.pollTimer = setInterval(() => {
-      this.pollForJobs().then(() => {
-        this.consecutivePollFailures = 0
-      }).catch((err) => {
-        this.consecutivePollFailures++
-        logger.error("Job poll failed", {
-          workerId: this.workerId,
-          error: err instanceof Error ? err.message : String(err),
-          consecutiveFailures: this.consecutivePollFailures,
+      this.pollForJobs()
+        .then(() => {
+          this.consecutivePollFailures = 0
         })
-        if (this.consecutivePollFailures >= Scheduler.MAX_CONSECUTIVE_FAILURES) {
-          logger.error("Scheduler abdicating leadership after repeated poll failures", {
+        .catch((err) => {
+          this.consecutivePollFailures++
+          logger.error("Job poll failed", {
             workerId: this.workerId,
+            error: err instanceof Error ? err.message : String(err),
             consecutiveFailures: this.consecutivePollFailures,
           })
-          this.stop()
-          this.onAbdicate?.()
-        }
-      })
+          if (this.consecutivePollFailures >= Scheduler.MAX_CONSECUTIVE_FAILURES) {
+            logger.error("Scheduler abdicating leadership after repeated poll failures", {
+              workerId: this.workerId,
+              consecutiveFailures: this.consecutivePollFailures,
+            })
+            this.stop()
+            this.onAbdicate?.()
+          }
+        })
     }, this.config.pollIntervalMs)
 
     // Start checking for stale jobs
@@ -358,7 +364,10 @@ export class Scheduler {
     this.pendingWarmRunnerLaunches.clear()
   }
 
-  private getPendingWarmRunnerLaunches(orgId: string, activeRunners: number): PendingWarmRunnerLaunch[] {
+  private getPendingWarmRunnerLaunches(
+    orgId: string,
+    activeRunners: number,
+  ): PendingWarmRunnerLaunch[] {
     const pendingLaunches = this.pendingWarmRunnerLaunches.get(orgId) ?? []
     const stillPending = pendingLaunches.filter((pending) => {
       if (pending.expiresAtMs <= Date.now()) {
@@ -383,7 +392,11 @@ export class Scheduler {
     return stillPending
   }
 
-  private trackPendingWarmRunnerLaunch(orgId: string, baselineActiveRunners: number, taskArn?: string): void {
+  private trackPendingWarmRunnerLaunch(
+    orgId: string,
+    baselineActiveRunners: number,
+    taskArn?: string,
+  ): void {
     const startedAtMs = Date.now()
     const expiresAtMs = startedAtMs + this.config.warmRunnerLaunchGraceMs
     const releaseTimer = setTimeout(() => {
@@ -423,7 +436,10 @@ export class Scheduler {
       return false
     }
 
-    if (input.currentActiveRunners + input.pendingLaunchCount >= this.config.warmRunnerAutoLaunchMaxRunnersPerOrg) {
+    if (
+      input.currentActiveRunners + input.pendingLaunchCount >=
+      this.config.warmRunnerAutoLaunchMaxRunnersPerOrg
+    ) {
       return false
     }
 
@@ -575,9 +591,7 @@ export class Scheduler {
       })
 
       // Spawn workers for each job in parallel
-      await Promise.all(
-        jobsToSpawn.map((job) => this.spawnWorker(job)),
-      )
+      await Promise.all(jobsToSpawn.map((job) => this.spawnWorker(job)))
     } finally {
       this.activePollCount = Math.max(0, this.activePollCount - 1)
     }
@@ -703,11 +717,7 @@ export class Scheduler {
         continue
       }
 
-      const lease = await acquireJobSpawnLease(
-        job.id,
-        this.workerId,
-        this.config.spawnBackoffMs,
-      )
+      const lease = await acquireJobSpawnLease(job.id, this.workerId, this.config.spawnBackoffMs)
       if (!lease.acquired || !lease.leaseToken) {
         getSchedulerSpawnSuppressedCounter().add(1, {
           reason: "active_spawn_lease",
@@ -755,9 +765,9 @@ export class Scheduler {
         }
 
         if (
-          this.config.warmRunnerAutoLaunchEnabled
-          && pendingLaunchCount + warmCapacity.activeRunners < desiredWarmRunners
-          && (warmCapacity.activeRunners === 0 || warmCapacity.availableSlots === 0)
+          this.config.warmRunnerAutoLaunchEnabled &&
+          pendingLaunchCount + warmCapacity.activeRunners < desiredWarmRunners &&
+          (warmCapacity.activeRunners === 0 || warmCapacity.availableSlots === 0)
         ) {
           await this.maybeAutoLaunchWarmRunner({
             orgId: jobContext.deployment.orgId,
@@ -838,7 +848,10 @@ export class Scheduler {
           const activePendingLaunch = pendingLaunches[0] ?? null
 
           if (activePendingLaunch) {
-            if (queueAgeMs < this.config.warmRunnerLaunchGraceMs || !this.config.warmRunnerBurstEnabled) {
+            if (
+              queueAgeMs < this.config.warmRunnerLaunchGraceMs ||
+              !this.config.warmRunnerBurstEnabled
+            ) {
               await releaseJobSpawnLease(job.id, lease.leaseToken)
               getSchedulerSpawnSuppressedCounter().add(1, {
                 reason: "warm_runner_launching",
@@ -934,7 +947,7 @@ export class Scheduler {
 
   /**
    * Check for stale jobs (workers that stopped heartbeating).
-   * 
+   *
    * We mark these as failed rather than requeuing because:
    * 1. Terraform operations can legitimately take 10+ minutes
    * 2. Auto-requeuing causes duplicate runs and state lock conflicts
@@ -1092,15 +1105,16 @@ async function resolveEcsSchedulerHolderId(): Promise<string | null> {
       return null
     }
 
-    const payload = await response.json() as {
+    const payload = (await response.json()) as {
       TaskARN?: unknown
       TaskArn?: unknown
     }
-    const taskArn = typeof payload.TaskARN === "string"
-      ? payload.TaskARN
-      : typeof payload.TaskArn === "string"
-        ? payload.TaskArn
-        : null
+    const taskArn =
+      typeof payload.TaskARN === "string"
+        ? payload.TaskARN
+        : typeof payload.TaskArn === "string"
+          ? payload.TaskArn
+          : null
 
     if (!taskArn) {
       return null
@@ -1158,7 +1172,7 @@ async function isCurrentEcsTaskDrainingOrStopping(): Promise<boolean> {
       return false
     }
 
-    const payload = await response.json() as Record<string, unknown>
+    const payload = (await response.json()) as Record<string, unknown>
     return isEcsTaskDrainingOrStopping(payload)
   } catch (error) {
     logger.warn("Failed to inspect ECS task drain state", {
@@ -1195,11 +1209,7 @@ async function acquireSchedulerLeadership(): Promise<boolean> {
 
   const holderId = await ensureSchedulerHolderIdResolved()
 
-  const handle = await acquireLease(
-    SCHEDULER_LEASE_KEY,
-    holderId,
-    SCHEDULER_LEASE_TTL_MS,
-  )
+  const handle = await acquireLease(SCHEDULER_LEASE_KEY, holderId, SCHEDULER_LEASE_TTL_MS)
 
   if (!handle) {
     logger.info("Scheduler leadership held by another instance")
@@ -1286,21 +1296,24 @@ export function getSchedulerRuntimeInfo(): {
   electionRunning: boolean
 } {
   const scheduler = schedulerState.schedulerInstance as SchedulerRuntimeLike | null
-  const workerId = typeof scheduler?.getWorkerId === "function"
-    ? scheduler.getWorkerId()
-    : typeof scheduler?.workerId === "string"
-      ? scheduler.workerId
-      : null
-  const spawnerType = typeof scheduler?.getSpawnerType === "function"
-    ? scheduler.getSpawnerType()
-    : typeof scheduler?.spawnerType === "string"
-      ? scheduler.spawnerType
-      : null
-  const isRunning = typeof scheduler?.isRunning === "function"
-    ? scheduler.isRunning()
-    : typeof scheduler?.running === "boolean"
-      ? scheduler.running
-      : false
+  const workerId =
+    typeof scheduler?.getWorkerId === "function"
+      ? scheduler.getWorkerId()
+      : typeof scheduler?.workerId === "string"
+        ? scheduler.workerId
+        : null
+  const spawnerType =
+    typeof scheduler?.getSpawnerType === "function"
+      ? scheduler.getSpawnerType()
+      : typeof scheduler?.spawnerType === "string"
+        ? scheduler.spawnerType
+        : null
+  const isRunning =
+    typeof scheduler?.isRunning === "function"
+      ? scheduler.isRunning()
+      : typeof scheduler?.running === "boolean"
+        ? scheduler.running
+        : false
 
   return {
     workerId,
@@ -1346,7 +1359,13 @@ export async function getScheduler(): Promise<Scheduler> {
     const securityGroups = (process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "").split(",").filter(Boolean)
     const apiUrl = process.env.YAFFLE_RUNNER_API_URL
 
-    if (!clusterArn || !taskDefinition || subnets.length === 0 || securityGroups.length === 0 || !apiUrl) {
+    if (
+      !clusterArn ||
+      !taskDefinition ||
+      subnets.length === 0 ||
+      securityGroups.length === 0 ||
+      !apiUrl
+    ) {
       throw new Error("Missing ECS spawner configuration (cluster/task/subnets/sg/apiUrl)")
     }
 
@@ -1377,19 +1396,23 @@ export async function getScheduler(): Promise<Scheduler> {
 
   const { maxConcurrentJobs, maxJobsPerRunGroup } = getConfiguredSchedulerConcurrencyLimits()
 
-  schedulerState.schedulerInstance = new Scheduler(spawner, {
-    // Faster polling in dev, slower in prod
-    pollIntervalMs: isProduction ? 2000 : 500,
-    staleCheckIntervalMs: isProduction ? 60000 : 30000,
-    maxConcurrentJobs,
-    maxJobsPerRunGroup,
-    warmRunnerAutoLaunchEnabled: isWarmRunnerAutoLaunchEnabled(),
-    warmRunnerAutoLaunchMaxRunnersPerOrg: getWarmRunnerAutoLaunchMaxRunnersPerOrg(),
-    warmRunnerAutoLaunchMaxSlots: getWarmRunnerAutoLaunchMaxSlots(),
-    warmRunnerLaunchGraceMs: getWarmRunnerLaunchGraceMs(),
-    warmRunnerBurstEnabled: isWarmRunnerBurstEnabled(),
-    warmRunnerBurstAfterMs: getWarmRunnerBurstAfterMs(),
-  }, spawnerType)
+  schedulerState.schedulerInstance = new Scheduler(
+    spawner,
+    {
+      // Faster polling in dev, slower in prod
+      pollIntervalMs: isProduction ? 2000 : 500,
+      staleCheckIntervalMs: isProduction ? 60000 : 30000,
+      maxConcurrentJobs,
+      maxJobsPerRunGroup,
+      warmRunnerAutoLaunchEnabled: isWarmRunnerAutoLaunchEnabled(),
+      warmRunnerAutoLaunchMaxRunnersPerOrg: getWarmRunnerAutoLaunchMaxRunnersPerOrg(),
+      warmRunnerAutoLaunchMaxSlots: getWarmRunnerAutoLaunchMaxSlots(),
+      warmRunnerLaunchGraceMs: getWarmRunnerLaunchGraceMs(),
+      warmRunnerBurstEnabled: isWarmRunnerBurstEnabled(),
+      warmRunnerBurstAfterMs: getWarmRunnerBurstAfterMs(),
+    },
+    spawnerType,
+  )
 
   logger.info("Scheduler configured", {
     maxConcurrentJobs,
@@ -1418,10 +1441,7 @@ export function getConfiguredSchedulerConcurrencyLimits(): {
       process.env.YAFFLE_MAX_CONCURRENT_JOBS ?? String(defaultMaxConcurrent),
       10,
     ),
-    maxJobsPerRunGroup: parseInt(
-      process.env.YAFFLE_MAX_JOBS_PER_RUN_GROUP ?? "3",
-      10,
-    ),
+    maxJobsPerRunGroup: parseInt(process.env.YAFFLE_MAX_JOBS_PER_RUN_GROUP ?? "3", 10),
   }
 }
 

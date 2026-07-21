@@ -1,15 +1,10 @@
-import type {
-  EnsureRouteableDeploymentRequest,
-  TrafficControllerApiResponse,
-} from "../contract.ts"
+import type { EnsureRouteableDeploymentRequest, TrafficControllerApiResponse } from "../contract.ts"
 import {
   createTrafficControlOperation,
   findInFlightOperationByRequestIdAndType,
   type TrafficControlOperation,
 } from "../db/queries/operations.ts"
-import {
-  findRouteableDeploymentByExternalId,
-} from "../db/queries/routeable-deployments.ts"
+import { findRouteableDeploymentByExternalId } from "../db/queries/routeable-deployments.ts"
 import { createTrafficControlAuditEvent } from "../db/queries/audit-events.ts"
 import type { ReconcileQueueClient } from "../reconcile-queue.ts"
 
@@ -21,10 +16,12 @@ interface EnsureRouteableDeploymentDeps {
   queue: ReconcileQueueClient
 }
 
-export function createEnsureRouteableDeploymentDeps(queue: ReconcileQueueClient): EnsureRouteableDeploymentDeps {
+export function createEnsureRouteableDeploymentDeps(
+  queue: ReconcileQueueClient,
+): EnsureRouteableDeploymentDeps {
   return {
-  findExistingOperation: findInFlightOperationByRequestIdAndType,
-  createOperation: createTrafficControlOperation,
+    findExistingOperation: findInFlightOperationByRequestIdAndType,
+    createOperation: createTrafficControlOperation,
     findRouteableDeploymentByExternalId,
     createAuditEvent: createTrafficControlAuditEvent,
     queue,

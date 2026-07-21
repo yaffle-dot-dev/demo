@@ -3,7 +3,10 @@ import { and, eq, ne, gte, countDistinct, count } from "drizzle-orm"
 import { db } from "./db.ts"
 import { runGroups, workspaceDeployments } from "../db/schema.ts"
 import type { Organization } from "../db/queries/organizations.ts"
-import { findPlanLimitedDeployments, updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
+import {
+  findPlanLimitedDeployments,
+  updateDeploymentStatus,
+} from "../db/queries/workspace-deployments.ts"
 import { createIacJob } from "../db/queries/iac-jobs.ts"
 import { logger } from "./telemetry.ts"
 
@@ -130,7 +133,10 @@ async function checkFreePreviewLimits(org: Organization): Promise<EntitlementRes
  * - Max 1 named environment
  * - Pushes to an existing environment are always allowed
  */
-async function checkFreeEnvironmentLimits(org: Organization, environmentName?: string): Promise<EntitlementResult> {
+async function checkFreeEnvironmentLimits(
+  org: Organization,
+  environmentName?: string,
+): Promise<EntitlementResult> {
   // Count distinct named environments this org has deployments for
   const result = await db
     .select({ count: countDistinct(workspaceDeployments.environmentName) })

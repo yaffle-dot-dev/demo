@@ -89,11 +89,14 @@ class OctokitGithubPolicyClient implements GithubPolicyClient {
     const octokit = await app.getInstallationOctokit(installation.data.id)
 
     try {
-      const response = await octokit.request("GET /repos/{owner}/{repo}/collaborators/{username}/permission", {
-        owner: YAFFLE_MONOREPO_OWNER,
-        repo: YAFFLE_MONOREPO_REPO,
-        username: actorLogin,
-      })
+      const response = await octokit.request(
+        "GET /repos/{owner}/{repo}/collaborators/{username}/permission",
+        {
+          owner: YAFFLE_MONOREPO_OWNER,
+          repo: YAFFLE_MONOREPO_REPO,
+          username: actorLogin,
+        },
+      )
 
       const permission = (response.data as { permission?: string }).permission
       if (!permission || !["admin", "maintain", "write"].includes(permission)) {
@@ -138,13 +141,18 @@ class OctokitGithubPolicyClient implements GithubPolicyClient {
     githubOwnerLogin: string
   }> {
     const app = await getApp()
-    const installationResponse = await app.octokit.request("GET /app/installations/{installation_id}", {
-      installation_id: params.installationId,
-    })
+    const installationResponse = await app.octokit.request(
+      "GET /app/installations/{installation_id}",
+      {
+        installation_id: params.installationId,
+      },
+    )
 
-    const account = (installationResponse.data as {
-      account?: { id?: number; login?: string; type?: string }
-    }).account
+    const account = (
+      installationResponse.data as {
+        account?: { id?: number; login?: string; type?: string }
+      }
+    ).account
 
     if (!account?.id || !account.login || account.type !== "User") {
       throw new Error("PERSONAL_SCOPE_REQUIRED")
@@ -168,9 +176,11 @@ class OctokitGithubPolicyClient implements GithubPolicyClient {
       const repositoryResponse = await octokit.request("GET /repositories/{repository_id}", {
         repository_id: params.repositoryId,
       })
-      const owner = (repositoryResponse.data as {
-        owner?: { id?: number; login?: string; type?: string }
-      }).owner
+      const owner = (
+        repositoryResponse.data as {
+          owner?: { id?: number; login?: string; type?: string }
+        }
+      ).owner
 
       if (!owner?.id || !owner.login || owner.type !== "User") {
         throw new Error("PERSONAL_SCOPE_REQUIRED")

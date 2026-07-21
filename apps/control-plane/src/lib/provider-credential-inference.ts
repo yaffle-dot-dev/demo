@@ -4,11 +4,9 @@ import {
 } from "../db/queries/provider-credential-signatures.ts"
 
 export interface InferProviderTypeOptions {
-  signatures: Array<Pick<ProviderCredentialSignature,
-    | "providerType"
-    | "exactEnvVars"
-    | "prefixEnvVars"
-  >>
+  signatures: Array<
+    Pick<ProviderCredentialSignature, "providerType" | "exactEnvVars" | "prefixEnvVars">
+  >
 }
 
 export function inferProviderTypeFromEnvVarKeysWithSignatures(

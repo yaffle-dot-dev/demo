@@ -92,8 +92,9 @@ export async function buildDeployableExecutionGraph(
   const inferred = await scanAllWorkspaceDependencies(REPO_ROOT, workspacePaths)
   const workspaceGraph = buildGraphFromInferred(inferred.workspaces, inferred.edges)
 
-  return computeDeployableDependencies(deployables, workspaceGraph)
-    .filter((node) => deployableByNameHas(deployables, node.deployable.name))
+  return computeDeployableDependencies(deployables, workspaceGraph).filter((node) =>
+    deployableByNameHas(deployables, node.deployable.name),
+  )
 }
 
 function deployableByNameHas(deployables: DiscoveredDeployable[], name: string): boolean {

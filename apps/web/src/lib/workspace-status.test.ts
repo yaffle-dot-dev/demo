@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import type { DependencyGraph, WorkspaceWithRuns } from "$lib/api"
+import type { DependencyGraph, WorkspaceWithRuns } from "./api"
 
 import {
   getBlockingUpstreamWorkspacePaths,
@@ -63,24 +63,28 @@ describe("workspace-status", () => {
   test("uses live preview status for latest workspaces without runs", () => {
     const workspace = createWorkspace("infra", "pending")
 
-    expect(getWorkspaceDisplayStatus({
-      workspace,
-      workspaces: [workspace],
-      dependencyGraph: null,
-      isViewingLatest: true,
-    })).toBe("pending")
+    expect(
+      getWorkspaceDisplayStatus({
+        workspace,
+        workspaces: [workspace],
+        dependencyGraph: null,
+        isViewingLatest: true,
+      }),
+    ).toBe("pending")
   })
 
   test("normalizes awaiting_apply to planned", () => {
     const workspace = createWorkspace("infra", "awaiting_apply")
 
     expect(normalizeWorkspaceStatus("awaiting_apply")).toBe("planned")
-    expect(getWorkspaceDisplayStatus({
-      workspace,
-      workspaces: [workspace],
-      dependencyGraph: null,
-      isViewingLatest: true,
-    })).toBe("planned")
+    expect(
+      getWorkspaceDisplayStatus({
+        workspace,
+        workspaces: [workspace],
+        dependencyGraph: null,
+        isViewingLatest: true,
+      }),
+    ).toBe("planned")
   })
 
   test("treats historical no-run workspaces with failed upstreams as skipped-success", () => {
@@ -91,23 +95,27 @@ describe("workspace-status", () => {
     const upstream = createWorkspace("infra", "failed", [createRun("plan", "failed")])
     const downstream = createWorkspace("app", "pending")
 
-    expect(getWorkspaceDisplayStatus({
-      workspace: downstream,
-      workspaces: [downstream, upstream],
-      dependencyGraph: graph,
-      isViewingLatest: false,
-    })).toBe("ready")
+    expect(
+      getWorkspaceDisplayStatus({
+        workspace: downstream,
+        workspaces: [downstream, upstream],
+        dependencyGraph: graph,
+        isViewingLatest: false,
+      }),
+    ).toBe("ready")
   })
 
   test("prefers apply and plan run states over preview placeholders", () => {
     const workspace = createWorkspace("infra", "pending", [createRun("apply", "running")])
 
-    expect(getWorkspaceDisplayStatus({
-      workspace,
-      workspaces: [workspace],
-      dependencyGraph: null,
-      isViewingLatest: true,
-    })).toBe("applying")
+    expect(
+      getWorkspaceDisplayStatus({
+        workspace,
+        workspaces: [workspace],
+        dependencyGraph: null,
+        isViewingLatest: true,
+      }),
+    ).toBe("applying")
   })
 
   test("hides stale failed runs when a rerun is queued for the latest view", () => {
@@ -122,12 +130,14 @@ describe("workspace-status", () => {
     })
 
     expect(displayRuns).toEqual([])
-    expect(getWorkspaceDisplayStatus({
-      workspace: { ...workspace, runs: displayRuns },
-      workspaces: [{ ...workspace, runs: displayRuns }],
-      dependencyGraph: null,
-      isViewingLatest: true,
-    })).toBe("pending")
+    expect(
+      getWorkspaceDisplayStatus({
+        workspace: { ...workspace, runs: displayRuns },
+        workspaces: [{ ...workspace, runs: displayRuns }],
+        dependencyGraph: null,
+        isViewingLatest: true,
+      }),
+    ).toBe("pending")
   })
 
   test("filters stale apply runs after a newer plan starts", () => {
@@ -137,12 +147,12 @@ describe("workspace-status", () => {
       createRun("plan", "success", "2024-01-01T00:00:00.000Z"),
     ])
 
-    expect(getWorkspaceDisplayRuns({
-      workspace,
-      isViewingLatest: true,
-    })).toEqual([
-      expect.objectContaining({ runType: "plan", status: "running" }),
-    ])
+    expect(
+      getWorkspaceDisplayRuns({
+        workspace,
+        isViewingLatest: true,
+      }),
+    ).toEqual([expect.objectContaining({ runType: "plan", status: "running" })])
   })
 
   test("builds a connection block reason from connection readiness", () => {
@@ -166,7 +176,8 @@ describe("workspace-status", () => {
     workspace.preview.degradation = {
       kind: "provider_requirements_unavailable",
       errorKind: "workspace_cache_missing",
-      message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+      message:
+        "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
       retryable: false,
     }
 
@@ -185,7 +196,9 @@ describe("workspace-status", () => {
     upstream.preview.missingProviders = ["aws"]
     const downstream = createWorkspace("app", "pending")
 
-    expect(getBlockingUpstreamWorkspacePaths("app", [downstream, upstream], graph)).toEqual(["infra"])
+    expect(getBlockingUpstreamWorkspacePaths("app", [downstream, upstream], graph)).toEqual([
+      "infra",
+    ])
   })
 
   test("classifies active and in-progress statuses consistently", () => {

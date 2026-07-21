@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, test } from "@yaffle/test"
 
-import { handleProviderDiscoveryJob, resolveProviderDiscoveryCallbackUrl } from "./provider-discovery.ts"
+import {
+  handleProviderDiscoveryJob,
+  resolveProviderDiscoveryCallbackUrl,
+} from "./provider-discovery.ts"
 
 const originalPublicApiUrl = process.env.YAFFLE_PUBLIC_API_URL
 const originalBetterAuthUrl = process.env.BETTER_AUTH_URL
@@ -70,7 +73,8 @@ describe("resolveProviderDiscoveryCallbackUrl", () => {
 describe("handleProviderDiscoveryJob", () => {
   test("dispatches with callback derived from public api url", async () => {
     process.env.YAFFLE_PROVIDER_DISCOVERY_ENABLED = "true"
-    process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT = "https://provider-discovery-agent.test/discover"
+    process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_ENDPOINT =
+      "https://provider-discovery-agent.test/discover"
     process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN = "provider-agent-token"
     process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET = "provider-callback-secret"
     process.env.YAFFLE_PUBLIC_API_URL = "https://api.yaffle.test"
@@ -81,7 +85,7 @@ describe("handleProviderDiscoveryJob", () => {
     globalThis.fetch = Object.assign(
       async (input: string | URL | Request, init?: RequestInit) => {
         const request = input instanceof Request ? input : new Request(String(input), init)
-        requestBody = await request.json() as Record<string, unknown>
+        requestBody = (await request.json()) as Record<string, unknown>
         return Response.json({ data: { accepted: true } }, { status: 202 })
       },
       { preconnect: originalFetch.preconnect },

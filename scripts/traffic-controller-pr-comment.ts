@@ -1,5 +1,8 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda"
-import { buildDefaultDeploymentId, parseTrafficControllerComment } from "./lib/traffic-controller-comment"
+import {
+  buildDefaultDeploymentId,
+  parseTrafficControllerComment,
+} from "./lib/traffic-controller-comment"
 
 const COMMENT_MARKER = "<!-- yaffle:traffic-controller -->"
 
@@ -32,14 +35,18 @@ function requireEnv(name: string): string {
   return value
 }
 
-async function invokeTrafficController(payload: Record<string, unknown>): Promise<TrafficControllerResponse> {
+async function invokeTrafficController(
+  payload: Record<string, unknown>,
+): Promise<TrafficControllerResponse> {
   const functionName = requireEnv("TRAFFIC_CONTROLLER_FUNCTION_NAME")
   const region = process.env.AWS_REGION?.trim() || "us-east-1"
   const lambda = new LambdaClient({ region })
-  const response = await lambda.send(new InvokeCommand({
-    FunctionName: functionName,
-    Payload: new TextEncoder().encode(JSON.stringify(payload)),
-  }))
+  const response = await lambda.send(
+    new InvokeCommand({
+      FunctionName: functionName,
+      Payload: new TextEncoder().encode(JSON.stringify(payload)),
+    }),
+  )
 
   const decoded = new TextDecoder().decode(response.Payload)
   return JSON.parse(decoded) as TrafficControllerResponse
@@ -85,7 +92,9 @@ function formatOperationComment(params: {
     `- command: \`${params.commandBody.trim()}\``,
     ...(operation?.operationId ? [`- operation: \`${operation.operationId}\``] : []),
     ...(operation?.leaseId ? [`- lease: \`${operation.leaseId}\``] : []),
-    ...(operation?.routeableDeploymentId ? [`- deployment: \`${operation.routeableDeploymentId}\``] : []),
+    ...(operation?.routeableDeploymentId
+      ? [`- deployment: \`${operation.routeableDeploymentId}\``]
+      : []),
     ...(operation?.resultCode ? [`- code: \`${operation.resultCode}\``] : []),
     ...(operation?.resultMessage ? [`- message: ${operation.resultMessage}`] : []),
     ...(operation?.output ? ["", "```json", JSON.stringify(operation.output, null, 2), "```"] : []),
@@ -94,14 +103,13 @@ function formatOperationComment(params: {
 
 async function githubApi<T>(repo: string, path: string, init?: RequestInit): Promise<T> {
   const token = requireEnv("GH_TOKEN")
+  const headers = new Headers(init?.headers)
+  headers.set("Accept", "application/vnd.github+json")
+  headers.set("Authorization", `Bearer ${token}`)
+  headers.set("X-GitHub-Api-Version", "2022-11-28")
   const response = await fetch(`https://api.github.com/repos/${repo}${path}`, {
     ...init,
-    headers: {
-      Accept: "application/vnd.github+json",
-      Authorization: `Bearer ${token}`,
-      "X-GitHub-Api-Version": "2022-11-28",
-      ...init?.headers,
-    },
+    headers,
   })
 
   if (!response.ok) {
@@ -115,7 +123,10 @@ async function githubApi<T>(repo: string, path: string, init?: RequestInit): Pro
   return response.json() as Promise<T>
 }
 
-async function findExistingMarkedComment(repo: string, prNumber: number): Promise<number | undefined> {
+async function findExistingMarkedComment(
+  repo: string,
+  prNumber: number,
+): Promise<number | undefined> {
   let page = 1
   while (true) {
     const comments = await githubApi<Array<{ id: number; body?: string }>>(
@@ -160,7 +171,9 @@ async function postPrComment(repo: string, prNumber: number, body: string): Prom
   })
 }
 
-async function waitForFinalOperation(initial: TrafficControllerResponse): Promise<TrafficControllerResponse> {
+async function waitForFinalOperation(
+  initial: TrafficControllerResponse,
+): Promise<TrafficControllerResponse> {
   if (initial.data.status !== "accepted" || !initial.data.operationId) {
     return initial
   }
@@ -193,9 +206,10 @@ async function main(): Promise<void> {
 
   const parsed = parseTrafficControllerComment(commentBody)
   const requestId = `comment-${commentId}`
-  const deploymentId = parsed.target === "this_preview"
-    ? buildDefaultDeploymentId({ prNumber, actorLogin })
-    : parsed.target.deploymentId
+  const deploymentId =
+    parsed.target === "this_preview"
+      ? buildDefaultDeploymentId({ prNumber, actorLogin })
+      : parsed.target.deploymentId
 
   const response = await invokeTrafficController({
     command: "ensure_live_webhook_lease",

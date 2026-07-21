@@ -68,7 +68,10 @@ export function resolveModuleAccessDecision(params: {
   producerConfig: YaffleTomlConfig | null
   consumerWorkspace: ModuleConsumerWorkspace | null
 }): ModuleAccessDecision {
-  const workspaceConfig = getWorkspaceConfig(params.producerConfig, params.producerWorkspace.workspacePath)
+  const workspaceConfig = getWorkspaceConfig(
+    params.producerConfig,
+    params.producerWorkspace.workspacePath,
+  )
   const outputPolicies = workspaceConfig?.outputs ?? {}
   const hasExplicitOutputPolicies = Object.keys(outputPolicies).length > 0
 
@@ -78,7 +81,8 @@ export function resolveModuleAccessDecision(params: {
         allowed: false,
         errorStatus: 403,
         errorTitle: "Consumer workspace not found",
-        errorDetail: "This run token is missing a valid consumer workspace context for module authorization.",
+        errorDetail:
+          "This run token is missing a valid consumer workspace context for module authorization.",
         allowedOutputs: null,
       }
     }
@@ -88,7 +92,8 @@ export function resolveModuleAccessDecision(params: {
         allowed: false,
         errorStatus: 503,
         errorTitle: "Producer config unavailable",
-        errorDetail: "Yaffle could not load the producer workspace configuration needed for module authorization.",
+        errorDetail:
+          "Yaffle could not load the producer workspace configuration needed for module authorization.",
         allowedOutputs: null,
       }
     }
@@ -104,7 +109,8 @@ export function resolveModuleAccessDecision(params: {
       allowed: false,
       errorStatus: 403,
       errorTitle: "Workspace-scoped token required",
-      errorDetail: "This module defines output access policies. Use a Yaffle run token so the consumer workspace can be authorized.",
+      errorDetail:
+        "This module defines output access policies. Use a Yaffle run token so the consumer workspace can be authorized.",
       allowedOutputs: null,
     }
   }
@@ -121,7 +127,8 @@ export function resolveModuleAccessDecision(params: {
       allowed: false,
       errorStatus: 503,
       errorTitle: "Producer config unavailable",
-      errorDetail: "Yaffle could not load the producer workspace configuration needed to verify public outputs.",
+      errorDetail:
+        "Yaffle could not load the producer workspace configuration needed to verify public outputs.",
       allowedOutputs: null,
     }
   }
@@ -131,7 +138,8 @@ export function resolveModuleAccessDecision(params: {
       allowed: false,
       errorStatus: 403,
       errorTitle: "Module not exported to this workspace",
-      errorDetail: "This workspace has no public outputs configured. External access requires explicit output policies in yaffle.toml.",
+      errorDetail:
+        "This workspace has no public outputs configured. External access requires explicit output policies in yaffle.toml.",
       allowedOutputs: null,
     }
   }
@@ -147,7 +155,7 @@ export function resolveModuleAccessDecision(params: {
         org: params.consumerWorkspace!.orgSlug,
         repo: normalizeRepoName(params.consumerWorkspace!.repo),
         workspacePath: params.consumerWorkspace!.workspacePath,
-      })
+      }),
     )
 
     if (!isMatch) {
@@ -162,7 +170,8 @@ export function resolveModuleAccessDecision(params: {
       allowed: false,
       errorStatus: 403,
       errorTitle: "Module not exported to this workspace",
-      errorDetail: "The producer workspace has not allowlisted this consumer workspace for any public outputs.",
+      errorDetail:
+        "The producer workspace has not allowlisted this consumer workspace for any public outputs.",
       allowedOutputs: null,
     }
   }

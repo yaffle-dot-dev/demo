@@ -7,14 +7,16 @@ describe("buildOrgBrokerPolicy", () => {
     process.env.YAFFLE_STATE_BUCKET = "test-state-bucket"
     process.env.YAFFLE_CONTROL_PLANE_ROLE_ARN = "arn:aws:iam::123456789012:role/test-control-plane"
 
-    const policy = JSON.parse(buildOrgBrokerPolicy({
-      orgSlug: "yaffle-dot-dev",
-      kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/example",
-      customerRoleArns: [
-        "arn:aws:iam::123456789012:role/app-main",
-        "arn:aws:iam::123456789012:role/app-preview",
-      ],
-    })) as {
+    const policy = JSON.parse(
+      buildOrgBrokerPolicy({
+        orgSlug: "yaffle-dot-dev",
+        kmsKeyArn: "arn:aws:kms:us-east-1:123456789012:key/example",
+        customerRoleArns: [
+          "arn:aws:iam::123456789012:role/app-main",
+          "arn:aws:iam::123456789012:role/app-preview",
+        ],
+      }),
+    ) as {
       Statement: Array<{
         Sid: string
         Effect: string

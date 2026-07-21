@@ -39,31 +39,32 @@ Treat its step outputs as trusted workflow data and do not forward them across a
 boundary.
 
 <Aside type="tip">
-When `wait: true`, the action uses Server-Sent Events (SSE) for efficient real-time updates. No polling, instant response when ready.
+  When `wait: true`, the action uses Server-Sent Events (SSE) for efficient real-time updates. No
+  polling, instant response when ready.
 </Aside>
 
 ## Inputs
 
-| Input | Description | Default |
-|-------|-------------|---------|
-| `workspace` | Workspace path | `.` |
-| `wait` | Wait for preview to be ready | `false` |
-| `wait-timeout` | Timeout in seconds | `300` |
-| `environment` | Environment name, such as `pr-42` or `main` | Auto-detected |
-| `pr-number` | PR number (auto-detected) | Current PR |
-| `org` | Organization name | Repository owner |
-| `repo` | Repository name | Current repository |
-| `head-sha` | Commit SHA used to select the environment revision | Workflow SHA |
-| `token` | Yaffle API token (`yfl_...`) | `YAFFLE_API_TOKEN` environment variable |
+| Input          | Description                                        | Default                                 |
+| -------------- | -------------------------------------------------- | --------------------------------------- |
+| `workspace`    | Workspace path                                     | `.`                                     |
+| `wait`         | Wait for preview to be ready                       | `false`                                 |
+| `wait-timeout` | Timeout in seconds                                 | `300`                                   |
+| `environment`  | Environment name, such as `pr-42` or `main`        | Auto-detected                           |
+| `pr-number`    | PR number (auto-detected)                          | Current PR                              |
+| `org`          | Organization name                                  | Repository owner                        |
+| `repo`         | Repository name                                    | Current repository                      |
+| `head-sha`     | Commit SHA used to select the environment revision | Workflow SHA                            |
+| `token`        | Yaffle API token (`yfl_...`)                       | `YAFFLE_API_TOKEN` environment variable |
 
 ## Outputs
 
-| Output | Description |
-|--------|-------------|
-| `preview-id` | The Yaffle preview ID |
+| Output           | Description                                       |
+| ---------------- | ------------------------------------------------- |
+| `preview-id`     | The Yaffle preview ID                             |
 | `preview-status` | Status: `ready`, `planning`, `applying`, `failed` |
-| `outputs-json` | All outputs as JSON |
-| `<name>` | Each OpenTofu output as a separate output |
+| `outputs-json`   | All outputs as JSON                               |
+| `<name>`         | Each OpenTofu output as a separate output         |
 
 ## Examples
 
@@ -93,7 +94,7 @@ jobs:
         run: |
           echo "Deploying to cluster: ${{ steps.infra.outputs.cluster_arn }}"
           echo "Using ALB: ${{ steps.infra.outputs.alb_dns }}"
-          
+
           # Your deployment commands here
           ./deploy.sh \
             --cluster "${{ steps.infra.outputs.cluster_arn }}" \
@@ -203,7 +204,7 @@ jobs:
             --cluster ${{ steps.infra.outputs.cluster_arn }} \
             --service ${{ steps.infra.outputs.service_name }} \
             --force-new-deployment
-          
+
           aws ecs wait services-stable \
             --cluster ${{ steps.infra.outputs.cluster_arn }} \
             --services ${{ steps.infra.outputs.service_name }}

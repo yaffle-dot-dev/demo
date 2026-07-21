@@ -44,7 +44,9 @@ providerDiscoveryRoute.post("/results", async (c) => {
   const nonceAccepted = consumeProviderDiscoveryCallbackNonce(c.req.header("x-yaffle-nonce"))
   if (!nonceAccepted) {
     return c.json(
-      { error: { code: "REPLAY_DETECTED", message: "Provider discovery callback replay detected" } },
+      {
+        error: { code: "REPLAY_DETECTED", message: "Provider discovery callback replay detected" },
+      },
       409,
     )
   }
@@ -91,20 +93,28 @@ providerDiscoveryRoute.post("/results", async (c) => {
 
   if (job.jobType !== "provider_discovery") {
     return c.json(
-      { error: { code: "CONFLICT", message: "Request ID does not reference a provider discovery job" } },
+      {
+        error: {
+          code: "CONFLICT",
+          message: "Request ID does not reference a provider discovery job",
+        },
+      },
       409,
     )
   }
 
-  const payloadProviderType = typeof job.payload === "object" && job.payload !== null
-    ? (job.payload as Record<string, unknown>).providerType
-    : undefined
-  const normalizedPayloadProviderType = typeof payloadProviderType === "string"
-    ? payloadProviderType.trim().toLowerCase()
-    : ""
+  const payloadProviderType =
+    typeof job.payload === "object" && job.payload !== null
+      ? (job.payload as Record<string, unknown>).providerType
+      : undefined
+  const normalizedPayloadProviderType =
+    typeof payloadProviderType === "string" ? payloadProviderType.trim().toLowerCase() : ""
   const normalizedResultProviderType = result.providerType.trim().toLowerCase()
 
-  if (normalizedPayloadProviderType && normalizedPayloadProviderType !== normalizedResultProviderType) {
+  if (
+    normalizedPayloadProviderType &&
+    normalizedPayloadProviderType !== normalizedResultProviderType
+  ) {
     return c.json(
       { error: { code: "CONFLICT", message: "Provider type mismatch for discovery request" } },
       409,
@@ -119,7 +129,10 @@ providerDiscoveryRoute.post("/results", async (c) => {
       providerType: result.providerType,
       error: error instanceof Error ? error.message : String(error),
     })
-    return c.json({ error: { code: "INTERNAL_ERROR", message: "Failed to apply discovery result" } }, 500)
+    return c.json(
+      { error: { code: "INTERNAL_ERROR", message: "Failed to apply discovery result" } },
+      500,
+    )
   }
 
   logger.info("provider_discovery.callback_applied", {

@@ -42,11 +42,13 @@ describe("WriteQueue", () => {
       results.push("before-error")
     })
 
-    const p2 = queue.enqueue(async () => {
-      throw new Error("boom")
-    }).catch(() => {
-      results.push("caught-error")
-    })
+    const p2 = queue
+      .enqueue(async () => {
+        throw new Error("boom")
+      })
+      .catch(() => {
+        results.push("caught-error")
+      })
 
     const p3 = queue.enqueue(async () => {
       results.push("after-error")
@@ -61,12 +63,12 @@ describe("WriteQueue", () => {
     const queue = new WriteQueue()
     const results: number[] = []
 
-    queue.enqueue(async () => {
+    void queue.enqueue(async () => {
       await new Promise((r) => setTimeout(r, 30))
       results.push(1)
     })
 
-    queue.enqueue(async () => {
+    void queue.enqueue(async () => {
       results.push(2)
     })
 
@@ -79,9 +81,13 @@ describe("WriteQueue", () => {
     expect(queue.size).toBe(0)
 
     let resolve1!: () => void
-    const blocker = new Promise<void>((r) => { resolve1 = r })
+    const blocker = new Promise<void>((r) => {
+      resolve1 = r
+    })
 
-    const p1 = queue.enqueue(async () => { await blocker })
+    const p1 = queue.enqueue(async () => {
+      await blocker
+    })
     const p2 = queue.enqueue(async () => {})
 
     // Give microtasks a chance to run

@@ -50,10 +50,7 @@ export interface RunOpts {
  * Transient environment: transient-{environment}/{workspacePath}/terraform.tfstate
  * Named environment: named-{environment}/{workspacePath}/terraform.tfstate
  */
-export function buildStateKey(
-  prefix: string,
-  workspacePath: string,
-): string {
+export function buildStateKey(prefix: string, workspacePath: string): string {
   return `${prefix}/${workspacePath}/terraform.tfstate`
 }
 

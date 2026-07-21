@@ -56,7 +56,9 @@ type CreatedApiKey = {
 
 type AuthApi = {
   getSession(args: { headers: Headers }): Promise<Session | null>
-  verifyApiKey(args: { body: { key: string; permissions?: ApiKeyPermissions } }): Promise<VerifyApiKeyResult>
+  verifyApiKey(args: {
+    body: { key: string; permissions?: ApiKeyPermissions }
+  }): Promise<VerifyApiKeyResult>
   listApiKeys(args: { headers: Headers }): Promise<{ apiKeys?: ListedApiKey[] }>
   createApiKey(args: {
     body: {

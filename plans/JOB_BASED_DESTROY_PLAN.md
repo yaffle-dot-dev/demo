@@ -21,13 +21,14 @@ already done for plan/apply operations.
 
 The webhook handler has evolved to use job-based execution for plan and apply:
 
-| Operation | Execution Model | Location |
-|-----------|-----------------|----------|
-| Plan | Job-based | IaC engine |
-| Apply | Job-based | IaC engine |
-| **Destroy** | **Inline** | webhook-handler.ts |
+| Operation   | Execution Model | Location           |
+| ----------- | --------------- | ------------------ |
+| Plan        | Job-based       | IaC engine         |
+| Apply       | Job-based       | IaC engine         |
+| **Destroy** | **Inline**      | webhook-handler.ts |
 
 This inconsistency means:
+
 - `webhook-handler.ts` is ~1400 lines with mixed responsibilities
 - Destroy bypasses the job queue, heartbeats, and DAG coordination
 - The `executeRun` function (~240 lines) exists solely for inline destroy
@@ -70,10 +71,8 @@ dependencies) and should be destroyed first.
 const deployments = await findDeploymentsByEnvironment(org.id, ctx.repo, environmentName)
 
 // Find leaf workspaces (those with no other workspace depending on them)
-const leafDeployments = deployments.filter(d => {
-  const hasDownstreams = deployments.some(other => 
-    other.upstreamIds.includes(d.id)
-  )
+const leafDeployments = deployments.filter((d) => {
+  const hasDownstreams = deployments.some((other) => other.upstreamIds.includes(d.id))
   return !hasDownstreams
 })
 ```
@@ -155,7 +154,7 @@ Add TFC workspace archival to the destroy success path:
 ```typescript
 if (job.jobType === "destroy") {
   await updateDeploymentStatus(preview.id, "destroyed")
-  
+
   // Archive TFC workspace if applicable
   if (tfcWorkspaceId) {
     const { completeWorkspaceArchive } = await import("./workspace-service.ts")
@@ -191,8 +190,8 @@ async function notifyDestroyComplete(deploymentId: string): Promise<void> {
   // For each upstream, check if all its downstreams are now destroyed
   for (const upstreamId of deployment.upstreamIds) {
     const downstreams = await findDownstreamDeployments(upstreamId)
-    const allDestroyed = downstreams.every(d => d.status === "destroyed")
-    
+    const allDestroyed = downstreams.every((d) => d.status === "destroyed")
+
     if (allDestroyed) {
       const upstream = await findDeploymentById(upstreamId)
       // Only queue if upstream is pending (waiting for destroy)
@@ -216,7 +215,7 @@ Modify `executeJob` to call this after successful destroy:
 ```typescript
 if (result.success) {
   await completeJob(jobId, { ... })
-  
+
   if (job.jobType === "destroy") {
     await notifyDestroyComplete(preview.id)
   } else {
@@ -258,7 +257,7 @@ async function updatePrCommentFromDb(deployment: WorkspaceDeployment): Promise<v
         planSummary: latestRun?.planSummary,
         outputs: latestRun?.outputs,
       }
-    })
+    }),
   )
 
   // Render comment body
@@ -301,7 +300,11 @@ After removing `executeRun`, these imports may become unused:
 ```typescript
 // Potentially removable (verify with linter):
 import { LocalRunner } from "./local-runner.ts"
-import { getRunDurationHistogram, getRunResultCounter, getRunQueueTimeHistogram } from "./telemetry.ts"
+import {
+  getRunDurationHistogram,
+  getRunResultCounter,
+  getRunQueueTimeHistogram,
+} from "./telemetry.ts"
 // ... check for others
 ```
 
@@ -379,18 +382,18 @@ test("multi-workspace destroy: queues leaf workspaces first", async () => {
     },
     approvals: [],
   }
-  
+
   // Mock dependency: monitoring depends on infra
   // (This requires setup in the dependency scanner mock)
-  
+
   handler = createHandler(runner, { configLoader: fakeConfigLoader(config) })
 
   await handler.handleWebhookEvent(makePrContext({ action: "opened" }))
-  
+
   // Set up dependency relationship (infra/monitoring depends on infra)
   const pvs = await db.select().from(previews)
-  const infraPreview = pvs.find(p => p.workspacePath === "infra")!
-  const monitoringPreview = pvs.find(p => p.workspacePath === "infra/monitoring")!
+  const infraPreview = pvs.find((p) => p.workspacePath === "infra")!
+  const monitoringPreview = pvs.find((p) => p.workspacePath === "infra/monitoring")!
   await setDeploymentUpstreams(monitoringPreview.id, [infraPreview.id])
 
   await handler.handleWebhookEvent(makePrContext({ action: "closed" }))
@@ -423,14 +426,15 @@ handler = createHandler({ configLoader: fakeConfigLoader(DEFAULT_CONFIG) })
 
 ### Lines of Code
 
-| File | Before | After | Change |
-|------|--------|-------|--------|
-| webhook-handler.ts | ~1400 | ~1100 | -300 |
-| iac-engine.ts | ~520 | ~620 | +100 |
+| File               | Before | After | Change |
+| ------------------ | ------ | ----- | ------ |
+| webhook-handler.ts | ~1400  | ~1100 | -300   |
+| iac-engine.ts      | ~520   | ~620  | +100   |
 
 ### Architecture
 
 After this migration:
+
 - **webhook-handler.ts** becomes a pure orchestrator (routes events, queues jobs)
 - **iac-engine.ts** handles all terraform execution
 - Clean separation enables SRP refactoring of webhook-handler
@@ -438,6 +442,7 @@ After this migration:
 ### Future Work
 
 With destroy job-based, the webhook-handler can be further refactored:
+
 - Extract `deployment-orchestrator.ts` for DAG setup logic
 - Extract `apply-service.ts` for `triggerApply` and `rerunPreview`
 - Reduce webhook-handler to ~200-300 lines of pure dispatch

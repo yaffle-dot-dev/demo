@@ -158,7 +158,10 @@ function parseGitHubTeamApprover(identifier: string, raw: string): GitHubTeamApp
   }
 
   const org = identifier.slice(0, slashIndex).toLowerCase().trim()
-  const team = identifier.slice(slashIndex + 1).toLowerCase().trim()
+  const team = identifier
+    .slice(slashIndex + 1)
+    .toLowerCase()
+    .trim()
 
   if (!org) {
     throw new ApproverParseError(`Empty org in GitHub team approver: "${raw}"`, raw)

@@ -54,11 +54,14 @@ export async function reconcileRouteableDeployment(
   await deps.markOperationRunning(input.operationId)
 
   try {
-    const existingDeployment = await deps.findRouteableDeploymentByExternalId(input.command.deploymentId)
+    const existingDeployment = await deps.findRouteableDeploymentByExternalId(
+      input.command.deploymentId,
+    )
     const hookdeck = await deps.createHookdeckRoutingClient()
     const hookdeckDestination = await hookdeck.upsertDestination({
-      name: existingDeployment?.hookdeckDestinationName
-        ?? buildHookdeckDestinationName(input.command.deploymentId),
+      name:
+        existingDeployment?.hookdeckDestinationName ??
+        buildHookdeckDestinationName(input.command.deploymentId),
       description: `Routeable deployment for Yaffle PR ${input.command.prNumber}`,
       url: input.command.receiverUrl,
       pathForwardingDisabled: true,
@@ -74,7 +77,10 @@ export async function reconcileRouteableDeployment(
       receiverUrl: input.command.receiverUrl,
       receiverKind: input.command.receiverKind,
       hookdeckDestinationId: hookdeckDestination.id,
-      hookdeckDestinationName: hookdeckDestination.name ?? existingDeployment?.hookdeckDestinationName ?? buildHookdeckDestinationName(input.command.deploymentId),
+      hookdeckDestinationName:
+        hookdeckDestination.name ??
+        existingDeployment?.hookdeckDestinationName ??
+        buildHookdeckDestinationName(input.command.deploymentId),
       lastReconciledAt: new Date(),
       lastSyncError: null,
       state: input.command.desiredState,

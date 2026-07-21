@@ -52,11 +52,14 @@ async function getSession(headers: Headers): Promise<Session | null> {
   return withSpan("auth.getSession", async (span) => {
     try {
       const session = await auth.api.getSession({ headers })
-      
+
       if (!session) {
         span.setAttributes({ "auth.session_found": false })
         getAuthCounter().add(1, { operation: "get_session", result: "no_session" })
-        getAuthDurationHistogram().record(Date.now() - start, { operation: "get_session", result: "no_session" })
+        getAuthDurationHistogram().record(Date.now() - start, {
+          operation: "get_session",
+          result: "no_session",
+        })
         return null
       }
 
@@ -67,14 +70,20 @@ async function getSession(headers: Headers): Promise<Session | null> {
       })
 
       getAuthCounter().add(1, { operation: "get_session", result: "success" })
-      getAuthDurationHistogram().record(Date.now() - start, { operation: "get_session", result: "success" })
+      getAuthDurationHistogram().record(Date.now() - start, {
+        operation: "get_session",
+        result: "success",
+      })
 
       return session
     } catch (err) {
       span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
       logger.error("session lookup error", { error: String(err) })
       getAuthCounter().add(1, { operation: "get_session", result: "error" })
-      getAuthDurationHistogram().record(Date.now() - start, { operation: "get_session", result: "error" })
+      getAuthDurationHistogram().record(Date.now() - start, {
+        operation: "get_session",
+        result: "error",
+      })
       return null
     }
   })
@@ -110,7 +119,10 @@ async function verifyApiKey(
       if (!result.valid || !result.key) {
         span.setAttributes({ "auth.apikey_valid": false })
         getAuthCounter().add(1, { operation: "verify_apikey", result: "invalid" })
-        getAuthDurationHistogram().record(Date.now() - start, { operation: "verify_apikey", result: "invalid" })
+        getAuthDurationHistogram().record(Date.now() - start, {
+          operation: "verify_apikey",
+          result: "invalid",
+        })
         return null
       }
 
@@ -134,7 +146,10 @@ async function verifyApiKey(
       if (!foundUser) {
         span.setAttributes({ "auth.apikey_valid": true, "auth.user_found": false })
         getAuthCounter().add(1, { operation: "verify_apikey", result: "user_not_found" })
-        getAuthDurationHistogram().record(Date.now() - start, { operation: "verify_apikey", result: "user_not_found" })
+        getAuthDurationHistogram().record(Date.now() - start, {
+          operation: "verify_apikey",
+          result: "user_not_found",
+        })
         return null
       }
 
@@ -145,7 +160,10 @@ async function verifyApiKey(
       })
 
       getAuthCounter().add(1, { operation: "verify_apikey", result: "success" })
-      getAuthDurationHistogram().record(Date.now() - start, { operation: "verify_apikey", result: "success" })
+      getAuthDurationHistogram().record(Date.now() - start, {
+        operation: "verify_apikey",
+        result: "success",
+      })
 
       return {
         userId: foundUser.id,
@@ -162,7 +180,10 @@ async function verifyApiKey(
       span.setStatus({ code: SpanStatusCode.ERROR, message: String(err) })
       logger.error("API key verification error", { error: String(err) })
       getAuthCounter().add(1, { operation: "verify_apikey", result: "error" })
-      getAuthDurationHistogram().record(Date.now() - start, { operation: "verify_apikey", result: "error" })
+      getAuthDurationHistogram().record(Date.now() - start, {
+        operation: "verify_apikey",
+        result: "error",
+      })
       return null
     }
   })
@@ -181,7 +202,7 @@ interface RequireAuthOptions {
 function extractBearerToken(headers: Headers): string | null {
   const authHeader = headers.get("authorization")
   if (!authHeader) return null
-  
+
   const match = authHeader.match(/^Bearer\s+(.+)$/i)
   return match ? match[1] : null
 }
@@ -207,13 +228,21 @@ export async function requireAuth(
     const bearerToken = extractBearerToken(headers)
     if (bearerToken) {
       span.setAttributes({ "auth.method": "bearer" })
-      
+
       // Check if it looks like an API key (has prefix)
       if (bearerToken.startsWith("yfl_")) {
         const authContext = await verifyApiKey(bearerToken, options.apiKeyPermissions)
         if (authContext) {
-          getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "apikey" })
-          getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "apikey" })
+          getAuthCounter().add(1, {
+            operation: "require_auth",
+            result: "success",
+            method: "apikey",
+          })
+          getAuthDurationHistogram().record(Date.now() - start, {
+            operation: "require_auth",
+            result: "success",
+            method: "apikey",
+          })
           return authContext
         }
       }
@@ -227,8 +256,16 @@ export async function requireAuth(
       if (options.token.startsWith("yfl_")) {
         const authContext = await verifyApiKey(options.token, options.apiKeyPermissions)
         if (authContext) {
-          getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "query_apikey" })
-          getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "query_apikey" })
+          getAuthCounter().add(1, {
+            operation: "require_auth",
+            result: "success",
+            method: "query_apikey",
+          })
+          getAuthDurationHistogram().record(Date.now() - start, {
+            operation: "require_auth",
+            result: "success",
+            method: "query_apikey",
+          })
           return authContext
         }
       }
@@ -244,7 +281,11 @@ export async function requireAuth(
       })
 
       getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "session" })
-      getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "session" })
+      getAuthDurationHistogram().record(Date.now() - start, {
+        operation: "require_auth",
+        result: "success",
+        method: "session",
+      })
 
       return {
         userId: session.user.id,
@@ -268,8 +309,14 @@ export async function requireAuth(
       if (!userId || !email) {
         span.setStatus({ code: SpanStatusCode.ERROR, message: "missing dev auth headers" })
         getAuthCounter().add(1, { operation: "require_auth", result: "missing_headers" })
-        getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "missing_headers" })
-        throw new AuthError("missing dev auth headers (x-yaffle-user-id, x-yaffle-user-email)", "AUTH_REQUIRED")
+        getAuthDurationHistogram().record(Date.now() - start, {
+          operation: "require_auth",
+          result: "missing_headers",
+        })
+        throw new AuthError(
+          "missing dev auth headers (x-yaffle-user-id, x-yaffle-user-email)",
+          "AUTH_REQUIRED",
+        )
       }
 
       span.setAttributes({
@@ -280,7 +327,11 @@ export async function requireAuth(
       })
 
       getAuthCounter().add(1, { operation: "require_auth", result: "success", method: "dev" })
-      getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "success", method: "dev" })
+      getAuthDurationHistogram().record(Date.now() - start, {
+        operation: "require_auth",
+        result: "success",
+        method: "dev",
+      })
 
       return {
         userId,
@@ -294,7 +345,10 @@ export async function requireAuth(
 
     span.setStatus({ code: SpanStatusCode.ERROR, message: "no valid authentication provided" })
     getAuthCounter().add(1, { operation: "require_auth", result: "no_auth" })
-    getAuthDurationHistogram().record(Date.now() - start, { operation: "require_auth", result: "no_auth" })
+    getAuthDurationHistogram().record(Date.now() - start, {
+      operation: "require_auth",
+      result: "no_auth",
+    })
     throw new AuthError("no valid authentication provided", "AUTH_REQUIRED")
   })
 }

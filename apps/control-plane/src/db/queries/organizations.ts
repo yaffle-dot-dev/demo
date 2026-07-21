@@ -14,11 +14,7 @@ export type OrgMembership = typeof orgMemberships.$inferSelect
  */
 export async function findOrgBySlug(slug: string): Promise<Organization | undefined> {
   return withDbSpan("select", "organizations", async () => {
-    const rows = await db
-      .select()
-      .from(organizations)
-      .where(eq(organizations.slug, slug))
-      .limit(1)
+    const rows = await db.select().from(organizations).where(eq(organizations.slug, slug)).limit(1)
     return rows[0]
   })
 }
@@ -28,11 +24,7 @@ export async function findOrgBySlug(slug: string): Promise<Organization | undefi
  */
 export async function findOrgById(id: string): Promise<Organization | undefined> {
   return withDbSpan("select", "organizations", async () => {
-    const rows = await db
-      .select()
-      .from(organizations)
-      .where(eq(organizations.id, id))
-      .limit(1)
+    const rows = await db.select().from(organizations).where(eq(organizations.id, id)).limit(1)
     return rows[0]
   })
 }
@@ -65,21 +57,24 @@ export async function createOrg(data: {
  */
 export async function updateOrg(
   id: string,
-  data: Partial<Pick<Organization,
-    | "name"
-    | "stateBucket"
-    | "membershipMode"
-    | "runnerMode"
-    | "kmsKeyArn"
-    | "kmsKeyAlias"
-    | "iamRoleArn"
-    | "provisioningStatus"
-    | "provisioningError"
-    | "provisioningAttempts"
-    | "stripeCustomerId"
-    | "subscriptionStatus"
-    | "planTier"
-  >>,
+  data: Partial<
+    Pick<
+      Organization,
+      | "name"
+      | "stateBucket"
+      | "membershipMode"
+      | "runnerMode"
+      | "kmsKeyArn"
+      | "kmsKeyAlias"
+      | "iamRoleArn"
+      | "provisioningStatus"
+      | "provisioningError"
+      | "provisioningAttempts"
+      | "stripeCustomerId"
+      | "subscriptionStatus"
+      | "planTier"
+    >
+  >,
 ): Promise<Organization | undefined> {
   return withDbSpan("update", "organizations", async () => {
     const rows = await db
@@ -114,14 +109,9 @@ export async function findGithubInstallation(
 /**
  * Find GitHub installations for an organization.
  */
-export async function findGithubInstallationsForOrg(
-  orgId: string,
-): Promise<GithubInstallation[]> {
+export async function findGithubInstallationsForOrg(orgId: string): Promise<GithubInstallation[]> {
   return withDbSpan("select", "github_installations", async () => {
-    return db
-      .select()
-      .from(githubInstallations)
-      .where(eq(githubInstallations.orgId, orgId))
+    return db.select().from(githubInstallations).where(eq(githubInstallations.orgId, orgId))
   })
 }
 

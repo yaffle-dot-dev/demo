@@ -77,10 +77,10 @@ function formatAwsSecretError(secretId: string, error: unknown): Error {
   const normalized = message.toLowerCase()
 
   if (
-    normalized.includes("your session has expired")
-    || normalized.includes("aws login")
-    || normalized.includes("expiredtoken")
-    || normalized.includes("security token included in the request is expired")
+    normalized.includes("your session has expired") ||
+    normalized.includes("aws login") ||
+    normalized.includes("expiredtoken") ||
+    normalized.includes("security token included in the request is expired")
   ) {
     return new Error(
       `AWS authentication failed while reading secret ${secretId}: your AWS session has expired. Reauthenticate and retry.\n${message}`,
@@ -88,10 +88,10 @@ function formatAwsSecretError(secretId: string, error: unknown): Error {
   }
 
   if (
-    normalized.includes("unable to locate credentials")
-    || normalized.includes("could not find credentials")
-    || normalized.includes("unrecognizedclientexception")
-    || normalized.includes("invalidclienttokenid")
+    normalized.includes("unable to locate credentials") ||
+    normalized.includes("could not find credentials") ||
+    normalized.includes("unrecognizedclientexception") ||
+    normalized.includes("invalidclienttokenid")
   ) {
     return new Error(
       `AWS authentication failed while reading secret ${secretId}: no valid AWS credentials are available.\n${message}`,
@@ -178,13 +178,18 @@ async function resolveSecretReference(
 ): Promise<string | undefined> {
   switch (source.type) {
     case "literal":
-      return assertNotPlaceholderSecret(
-        interpolateTemplate(source.value, target).trim(),
-        "Literal secret source",
-      ) || undefined
+      return (
+        assertNotPlaceholderSecret(
+          interpolateTemplate(source.value, target).trim(),
+          "Literal secret source",
+        ) || undefined
+      )
     case "env":
       return process.env[source.name]?.trim()
-        ? assertNotPlaceholderSecret(process.env[source.name]!.trim(), `Environment variable ${source.name}`)
+        ? assertNotPlaceholderSecret(
+            process.env[source.name]!.trim(),
+            `Environment variable ${source.name}`,
+          )
         : undefined
     case "aws-secretsmanager":
       return interpolateTemplate(source.secretId, target).trim() || undefined
@@ -195,7 +200,12 @@ async function resolveSecretReference(
         return undefined
       }
       const trimmed = value.trim()
-      return trimmed ? assertNotPlaceholderSecret(trimmed, `Workspace output ${source.workspace}.${source.output}`) : undefined
+      return trimmed
+        ? assertNotPlaceholderSecret(
+            trimmed,
+            `Workspace output ${source.workspace}.${source.output}`,
+          )
+        : undefined
     }
   }
 }
@@ -243,9 +253,10 @@ async function resolveDefinitionValue(
 
   for (const source of candidates) {
     try {
-      const value = definition.access === "reference"
-        ? await resolveSecretReference(source, target, cache)
-        : await resolveSecretValue(definition, source, target, cache)
+      const value =
+        definition.access === "reference"
+          ? await resolveSecretReference(source, target, cache)
+          : await resolveSecretValue(definition, source, target, cache)
 
       if (value) {
         return value
@@ -279,8 +290,8 @@ async function resolveDefinitionWriteTarget(
     }
 
     if (
-      source.type === "workspace-output"
-      && (source.outputType === "aws-secret-id" || source.outputType === "aws-secret-arn")
+      source.type === "workspace-output" &&
+      (source.outputType === "aws-secret-id" || source.outputType === "aws-secret-arn")
     ) {
       return resolveSecretReference(source, target, cache)
     }
@@ -346,9 +357,9 @@ async function createBinding(
     return definition.optional
       ? null
       : {
-        env: {},
-        cleanup: async () => {},
-      }
+          env: {},
+          cleanup: async () => {},
+        }
   }
 
   if (definition.delivery.type === "none") {
@@ -388,7 +399,9 @@ export async function withDeployablePhaseSecrets<T>(options: {
   target: CiTarget
   fn: () => Promise<T>
 }): Promise<T> {
-  const definitions = (options.deployable.secrets ?? []).filter((secret) => secret.phase === options.phase)
+  const definitions = (options.deployable.secrets ?? []).filter(
+    (secret) => secret.phase === options.phase,
+  )
 
   if (definitions.length === 0) {
     return options.fn()

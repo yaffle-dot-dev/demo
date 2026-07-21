@@ -300,7 +300,12 @@ export class EcsEngineSpawner implements IacEngineSpawner {
     if (status === "RUNNING") {
       return "RUNNING"
     }
-    if (status === "DEACTIVATING" || status === "STOPPING" || status === "DEPROVISIONING" || status === "STOPPED") {
+    if (
+      status === "DEACTIVATING" ||
+      status === "STOPPING" ||
+      status === "DEPROVISIONING" ||
+      status === "STOPPED"
+    ) {
       return "STOPPED"
     }
 
@@ -313,11 +318,16 @@ export class EcsEngineSpawner implements IacEngineSpawner {
  */
 export function createEcsSpawner(): EcsEngineSpawner {
   const clusterArn = process.env.YAFFLE_ECS_CLUSTER_ARN ?? process.env.YAFFLE_ECS_CLUSTER
-  const taskDefinition = process.env.YAFFLE_RUNNER_TASK_DEFINITION ?? process.env.YAFFLE_ECS_TASK_DEFINITION
+  const taskDefinition =
+    process.env.YAFFLE_RUNNER_TASK_DEFINITION ?? process.env.YAFFLE_ECS_TASK_DEFINITION
   const subnets = (process.env.YAFFLE_RUNNER_SUBNETS ?? process.env.YAFFLE_ECS_SUBNETS ?? "")
     .split(",")
     .filter(Boolean)
-  const securityGroups = (process.env.YAFFLE_RUNNER_SECURITY_GROUPS ?? process.env.YAFFLE_ECS_SECURITY_GROUPS ?? "")
+  const securityGroups = (
+    process.env.YAFFLE_RUNNER_SECURITY_GROUPS ??
+    process.env.YAFFLE_ECS_SECURITY_GROUPS ??
+    ""
+  )
     .split(",")
     .filter(Boolean)
   const region = process.env.AWS_REGION ?? "us-east-1"

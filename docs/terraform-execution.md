@@ -62,11 +62,13 @@ memory or single coordinator process.
 ### DAG Execution Gate
 
 Each task has:
+
 - **Task ID**: Unique identifier (workspace path within a run group)
 - **Upstream IDs**: Set of task IDs this task depends on
 - **Completed Upstreams**: Set of upstream task IDs that have finished successfully
 
 **Execution Rule**: A task may only begin execution when:
+
 ```
 completed_upstreams ⊇ upstream_ids
 ```
@@ -75,10 +77,12 @@ That is, every upstream task ID must be present in the completed set. This is
 checked atomically at job dispatch time.
 
 When an upstream task completes successfully:
+
 1. It adds its ID to the `completed_upstreams` set of all downstream tasks
 2. Any downstream task where `completed_upstreams = upstream_ids` becomes eligible
 
 When an upstream task fails:
+
 1. All downstream tasks transition directly to `skipped`
 2. They never become eligible for execution
 
@@ -136,31 +140,31 @@ CREATE TABLE previews (
   run_group_id UUID NOT NULL REFERENCES run_groups(id),
   org_id UUID NOT NULL REFERENCES organizations(id),
   workspace_path TEXT NOT NULL,
-  
+
   -- DAG coordination
   upstream_ids TEXT[] NOT NULL DEFAULT '{}',      -- Task IDs we depend on
   completed_upstreams TEXT[] NOT NULL DEFAULT '{}', -- Upstreams that finished
-  
+
   -- Execution state
   status TEXT NOT NULL,           -- See state machine above
   require_approval BOOLEAN NOT NULL DEFAULT FALSE,
   approved_at TIMESTAMPTZ,
   approved_by TEXT,
-  
+
   -- Metadata
   head_sha TEXT NOT NULL,
   branch TEXT NOT NULL,
   state_key TEXT NOT NULL,
-  
+
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   started_at TIMESTAMPTZ,
   completed_at TIMESTAMPTZ,
-  
+
   UNIQUE(run_group_id, workspace_path)
 );
 
 -- Index for finding eligible tasks
-CREATE INDEX idx_previews_eligible ON previews(run_group_id, status) 
+CREATE INDEX idx_previews_eligible ON previews(run_group_id, status)
   WHERE status IN ('pending', 'awaiting_apply');
 ```
 
@@ -173,7 +177,7 @@ CREATE TABLE iac_jobs (
   id UUID PRIMARY KEY,
   preview_id UUID NOT NULL REFERENCES previews(id),
   job_type TEXT NOT NULL,         -- 'plan', 'apply', 'destroy'
-  status TEXT NOT NULL,           -- 'queued', 'dispatched', 'running', 
+  status TEXT NOT NULL,           -- 'queued', 'dispatched', 'running',
                                   -- 'completed', 'failed', 'cancelled'
   worker_id TEXT,                 -- Claimed by which worker
   last_heartbeat TIMESTAMPTZ,     -- For stale job detection
@@ -188,11 +192,12 @@ CREATE TABLE iac_jobs (
 );
 
 -- Index for claiming work
-CREATE INDEX idx_jobs_queued ON iac_jobs(queued_at) 
+CREATE INDEX idx_jobs_queued ON iac_jobs(queued_at)
   WHERE status = 'queued';
 ```
 
 **Job Status Lifecycle**:
+
 - `queued`: Waiting for scheduler to claim
 - `dispatched`: Claimed by scheduler, engine starting
 - `running`: Engine executing terraform
@@ -289,10 +294,10 @@ and IaC Engine instances. It does NOT execute Terraform itself.
 
 The scheduler enforces two levels of concurrency limits:
 
-| Limit | Default (Dev) | Default (Prod) | Environment Variable |
-|-------|---------------|----------------|---------------------|
-| Global max concurrent | 5 | 50 | `YAFFLE_MAX_CONCURRENT_JOBS` |
-| Per-run-group max | 3 | 3 | `YAFFLE_MAX_JOBS_PER_RUN_GROUP` |
+| Limit                 | Default (Dev) | Default (Prod) | Environment Variable            |
+| --------------------- | ------------- | -------------- | ------------------------------- |
+| Global max concurrent | 5             | 50             | `YAFFLE_MAX_CONCURRENT_JOBS`    |
+| Per-run-group max     | 3             | 3              | `YAFFLE_MAX_JOBS_PER_RUN_GROUP` |
 
 **Why per-run-group limits?** Prevents one large DAG from starving others.
 Multiple PRs or environments can make progress concurrently.
@@ -354,7 +359,7 @@ correctly with `FOR UPDATE SKIP LOCKED`.
 ordering. If we query all jobs globally with `ORDER BY queued_at`, then sort
 by priority in application code, `FOR UPDATE SKIP LOCKED` may skip
 high-priority jobs locked by another scheduler and return lower-priority ones.
-By ordering by priority *in PostgreSQL*, `SKIP LOCKED` skips lower-priority
+By ordering by priority _in PostgreSQL_, `SKIP LOCKED` skips lower-priority
 jobs when high-priority ones are locked.
 
 ### Stale Job Recovery
@@ -369,35 +374,37 @@ If an IaC Engine instance dies without completing:
 
 The scheduler emits the following metrics:
 
-| Metric | Type | Description |
-|--------|------|-------------|
-| `yaffle.scheduler.jobs.claimed` | Counter | Jobs claimed for dispatch |
-| `yaffle.scheduler.jobs.blocked` | Counter | Jobs blocked (by `reason`: `global_limit` or `group_limit`) |
-| `yaffle.scheduler.jobs.active` | Gauge | Current active jobs count |
-| `yaffle.scheduler.jobs.queued` | Gauge | Current queued jobs count |
-| `yaffle.scheduler.groups.queued` | Gauge | Run groups with queued work |
-| `yaffle.scheduler.poll.duration` | Histogram | Poll cycle duration in ms |
-| `yaffle.scheduler.poll.groups_queried` | Histogram | Group queries per poll cycle |
-| `yaffle.scheduler.poll.jobs_fetched` | Histogram | Jobs fetched per poll cycle |
-| `yaffle.scheduler.claim.skip_locked_misses` | Counter | Jobs skipped due to lock contention |
+| Metric                                      | Type      | Description                                                 |
+| ------------------------------------------- | --------- | ----------------------------------------------------------- |
+| `yaffle.scheduler.jobs.claimed`             | Counter   | Jobs claimed for dispatch                                   |
+| `yaffle.scheduler.jobs.blocked`             | Counter   | Jobs blocked (by `reason`: `global_limit` or `group_limit`) |
+| `yaffle.scheduler.jobs.active`              | Gauge     | Current active jobs count                                   |
+| `yaffle.scheduler.jobs.queued`              | Gauge     | Current queued jobs count                                   |
+| `yaffle.scheduler.groups.queued`            | Gauge     | Run groups with queued work                                 |
+| `yaffle.scheduler.poll.duration`            | Histogram | Poll cycle duration in ms                                   |
+| `yaffle.scheduler.poll.groups_queried`      | Histogram | Group queries per poll cycle                                |
+| `yaffle.scheduler.poll.jobs_fetched`        | Histogram | Jobs fetched per poll cycle                                 |
+| `yaffle.scheduler.claim.skip_locked_misses` | Counter   | Jobs skipped due to lock contention                         |
 
 ### Scaling Characteristics
 
 The current scheduler implementation is designed for:
+
 - Up to ~100 concurrent run groups with queued work
 - Up to ~1000 queued jobs total
 - 1-3 scheduler instances
 
 **Metrics to watch for scaling issues:**
 
-| Metric | Warning Threshold | Indicates |
-|--------|-------------------|-----------|
-| `poll.duration` p99 | > 200ms | Query performance degrading |
-| `groups.queued` | > 50 consistently | May need query batching |
-| `poll.groups_queried` | > 20 consistently | Consider LATERAL join optimization |
-| `skip_locked_misses` / `jobs_fetched` | > 0.3 | High contention between schedulers |
+| Metric                                | Warning Threshold | Indicates                          |
+| ------------------------------------- | ----------------- | ---------------------------------- |
+| `poll.duration` p99                   | > 200ms           | Query performance degrading        |
+| `groups.queued`                       | > 50 consistently | May need query batching            |
+| `poll.groups_queried`                 | > 20 consistently | Consider LATERAL join optimization |
+| `skip_locked_misses` / `jobs_fetched` | > 0.3             | High contention between schedulers |
 
 **If scaling issues arise, consider:**
+
 1. Increase poll interval (reduces DB load, increases latency)
 2. Implement LATERAL join optimization (single query for all groups)
 3. Add a dedicated `job_queue` table with materialized priority
@@ -406,7 +413,7 @@ The current scheduler implementation is designed for:
 
 - **No idle compute**: Engine instances are ephemeral, spawn on demand
 - **Scheduler is stateless**: All state in DB, scheduler can restart safely
-- **Approvals are push-based**: Scheduler does not poll for approvals; 
+- **Approvals are push-based**: Scheduler does not poll for approvals;
   the approval API queues the job directly
 - **Concurrency controlled**: Global and per-group limits prevent overload
 - **Fair**: Round-robin prevents starvation across run groups
@@ -430,11 +437,11 @@ instance runs exactly one job then exits.
 
 ### Implementations
 
-| Environment | Implementation |
-|-------------|----------------|
-| Local dev | Child process spawned by scheduler |
-| Production | Container instance (ECS Fargate, etc.) |
-| BYOA | Customer-hosted runner with callback |
+| Environment | Implementation                         |
+| ----------- | -------------------------------------- |
+| Local dev   | Child process spawned by scheduler     |
+| Production  | Container instance (ECS Fargate, etc.) |
+| BYOA        | Customer-hosted runner with callback   |
 
 ### Heartbeat
 
@@ -462,10 +469,10 @@ which workspaces and environments Yaffle manages.
 `previews.require_approval` is derived from matching `[[cloud.approvals]]` rules in
 `yaffle.toml`.
 
-| Config state | UI Behavior | Approval Trigger |
-|--------------|-------------|------------------|
-| No matching `[[cloud.approvals]]` rule (or `approvers = []`) | 10-second countdown timer | Timer expiry OR manual click |
-| Matching `[[cloud.approvals]]` rule with one or more approvers | Approve button only | Manual click only |
+| Config state                                                   | UI Behavior               | Approval Trigger             |
+| -------------------------------------------------------------- | ------------------------- | ---------------------------- |
+| No matching `[[cloud.approvals]]` rule (or `approvers = []`)   | 10-second countdown timer | Timer expiry OR manual click |
+| Matching `[[cloud.approvals]]` rule with one or more approvers | Approve button only       | Manual click only            |
 
 ---
 
@@ -479,7 +486,7 @@ which workspaces and environments Yaffle manages.
 
 ### Apply Failure
 
-1. Preview status → `failed`  
+1. Preview status → `failed`
 2. All downstream previews → `skipped` (cascading)
 3. Terraform state may be partially applied
 4. Manual intervention may be required

@@ -110,14 +110,15 @@ function sleep(ms: number): Promise<void> {
 }
 
 function renderWranglerDeployConfig(infra: ProviderDiscoveryInfrastructure): string {
-  const callbackTimeoutMs = process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS?.trim()
-    || PROVIDER_DISCOVERY_DEFAULT_CALLBACK_TIMEOUT_MS
-  const maxDocs = process.env.YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS?.trim()
-    || PROVIDER_DISCOVERY_DEFAULT_MAX_DOCS
-  const aiModel = process.env.YAFFLE_PROVIDER_DISCOVERY_AI_MODEL?.trim()
-    || PROVIDER_DISCOVERY_DEFAULT_AI_MODEL
-  const aiGatewayId = process.env.YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_ID?.trim()
-    || infra.aiGatewayId
+  const callbackTimeoutMs =
+    process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS?.trim() ||
+    PROVIDER_DISCOVERY_DEFAULT_CALLBACK_TIMEOUT_MS
+  const maxDocs =
+    process.env.YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS?.trim() || PROVIDER_DISCOVERY_DEFAULT_MAX_DOCS
+  const aiModel =
+    process.env.YAFFLE_PROVIDER_DISCOVERY_AI_MODEL?.trim() || PROVIDER_DISCOVERY_DEFAULT_AI_MODEL
+  const aiGatewayId =
+    process.env.YAFFLE_PROVIDER_DISCOVERY_AI_GATEWAY_ID?.trim() || infra.aiGatewayId
 
   return [
     `name = ${JSON.stringify(infra.workerName)}`,
@@ -209,8 +210,8 @@ async function loadSecretValue(options: LoadSecretValueOptions): Promise<string 
     }
 
     throw new Error(
-      `Failed to load required secret ${options.secretId}. `
-      + `Set ${options.envKeys.join(" or ")} or ensure AWS access is configured.`,
+      `Failed to load required secret ${options.secretId}. ` +
+        `Set ${options.envKeys.join(" or ")} or ensure AWS access is configured.`,
       { cause: error },
     )
   }
@@ -220,37 +221,38 @@ async function loadSecretValue(options: LoadSecretValueOptions): Promise<string 
   }
 
   throw new Error(
-    `Required secret ${options.secretId} is empty. `
-    + `Set ${options.envKeys.join(" or ")} or populate the secret value in AWS Secrets Manager.`,
+    `Required secret ${options.secretId} is empty. ` +
+      `Set ${options.envKeys.join(" or ")} or populate the secret value in AWS Secrets Manager.`,
   )
 }
 
 async function resolveProviderDiscoverySecrets(
   infra: ProviderDiscoveryInfrastructure,
 ): Promise<ProviderDiscoverySecrets> {
-  const [cloudflareAccountId, cloudflareApiToken, agentToken, callbackSecret, githubToken] = await Promise.all([
-    loadSecretValue({
-      envKeys: ["CLOUDFLARE_ACCOUNT_ID"],
-      secretId: infra.cloudflareAccountIdSecretId,
-    }),
-    loadSecretValue({
-      envKeys: ["CLOUDFLARE_API_TOKEN"],
-      secretId: infra.cloudflareApiTokenSecretId,
-    }),
-    loadSecretValue({
-      envKeys: ["YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN"],
-      secretId: infra.agentTokenSecretId,
-    }),
-    loadSecretValue({
-      envKeys: ["YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET"],
-      secretId: infra.callbackSecretSecretId,
-    }),
-    loadSecretValue({
-      envKeys: ["GITHUB_TOKEN", "GITHUB_RESEARCH_TOKEN"],
-      secretId: infra.githubTokenSecretId,
-      optional: true,
-    }),
-  ])
+  const [cloudflareAccountId, cloudflareApiToken, agentToken, callbackSecret, githubToken] =
+    await Promise.all([
+      loadSecretValue({
+        envKeys: ["CLOUDFLARE_ACCOUNT_ID"],
+        secretId: infra.cloudflareAccountIdSecretId,
+      }),
+      loadSecretValue({
+        envKeys: ["CLOUDFLARE_API_TOKEN"],
+        secretId: infra.cloudflareApiTokenSecretId,
+      }),
+      loadSecretValue({
+        envKeys: ["YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN"],
+        secretId: infra.agentTokenSecretId,
+      }),
+      loadSecretValue({
+        envKeys: ["YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET"],
+        secretId: infra.callbackSecretSecretId,
+      }),
+      loadSecretValue({
+        envKeys: ["GITHUB_TOKEN", "GITHUB_RESEARCH_TOKEN"],
+        secretId: infra.githubTokenSecretId,
+        optional: true,
+      }),
+    ])
 
   return {
     cloudflareAccountId: cloudflareAccountId ?? "",
@@ -309,12 +311,12 @@ export async function buildProviderDiscoveryAgentBundle(
 
   console.log(`Bundling provider discovery agent to ${outDir}`)
   await exec(
-      [
-        "vp",
-        "exec",
-        "wrangler",
-        "deploy",
-        "--dry-run",
+    [
+      "vp",
+      "exec",
+      "wrangler",
+      "deploy",
+      "--dry-run",
       "--outdir",
       outDir,
       "--config",
@@ -399,17 +401,18 @@ export async function loadProviderDiscoveryInfrastructure(
 
   try {
     const waitOptions = wait ? { waitFor: "outputs" as const, waitTimeout: 600 } : {}
-    const outputs = target.type === "pr"
-      ? await fetchOutputs({
-        workspace: PROVIDER_DISCOVERY_INFRA_WORKSPACE,
-        prNumber: target.prNumber,
-        ...waitOptions,
-      })
-      : await fetchOutputs({
-        workspace: PROVIDER_DISCOVERY_INFRA_WORKSPACE,
-        environment: target.name,
-        ...waitOptions,
-      })
+    const outputs =
+      target.type === "pr"
+        ? await fetchOutputs({
+            workspace: PROVIDER_DISCOVERY_INFRA_WORKSPACE,
+            prNumber: target.prNumber,
+            ...waitOptions,
+          })
+        : await fetchOutputs({
+            workspace: PROVIDER_DISCOVERY_INFRA_WORKSPACE,
+            environment: target.name,
+            ...waitOptions,
+          })
 
     return {
       environment: getRequiredOutput(outputs, "environment", PROVIDER_DISCOVERY_INFRA_WORKSPACE),
@@ -484,7 +487,9 @@ export async function waitForProviderDiscoveryHealth(workerUrl: string): Promise
   throw new Error(`Provider discovery agent health check failed for ${healthUrl}`)
 }
 
-export async function deployProviderDiscoveryAgent(options: ProviderDiscoveryDeployArgs): Promise<void> {
+export async function deployProviderDiscoveryAgent(
+  options: ProviderDiscoveryDeployArgs,
+): Promise<void> {
   const targetLabel = formatProviderDiscoveryDeployTarget(options.target)
 
   console.log("=== Provider Discovery Agent Deploy ===")
@@ -509,7 +514,9 @@ export async function deployProviderDiscoveryAgent(options: ProviderDiscoveryDep
   console.log(`  URL: ${infra.workerUrl}`)
 
   if (options.dryRun) {
-    console.log("\n[dry-run] Would deploy the provider discovery agent with target-specific infra outputs")
+    console.log(
+      "\n[dry-run] Would deploy the provider discovery agent with target-specific infra outputs",
+    )
     return
   }
 

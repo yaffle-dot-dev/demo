@@ -3,8 +3,15 @@ import { fetchOutputs } from "../../lib/outputs"
 
 import { discoverDeployables } from "../deployables/discovery"
 import { resolveArtifactPlan } from "../deployables/artifact-resolution"
-import { buildDeployableExecutionGraph, getDeployableExecutionOrder } from "../deployables/execution-graph"
-import { assertSecretChecksPassed, checkDeployableSecrets, withDeployablePhaseSecrets } from "../secrets"
+import {
+  buildDeployableExecutionGraph,
+  getDeployableExecutionOrder,
+} from "../deployables/execution-graph"
+import {
+  assertSecretChecksPassed,
+  checkDeployableSecrets,
+  withDeployablePhaseSecrets,
+} from "../secrets"
 import { listChangedFiles } from "../git"
 import { planDeployables } from "../deployables/planner"
 import { readTarget } from "../target"
@@ -48,7 +55,10 @@ function getSelectedWorkspaces(deployables: DiscoveredDeployable[]): string[] {
   return unique(deployables.flatMap((deployable) => deployable.workspaces))
 }
 
-async function loadChangedFiles(target: CiTarget, forceAll: boolean): Promise<{ mode: "all" | "changed"; files: string[] }> {
+async function loadChangedFiles(
+  target: CiTarget,
+  forceAll: boolean,
+): Promise<{ mode: "all" | "changed"; files: string[] }> {
   if (forceAll || !target.git.baseSha) {
     return { mode: "all", files: [] }
   }
@@ -80,17 +90,19 @@ async function waitForWorkspaces(
   target: CiTarget,
   waitFor: WorkspaceWaitCondition,
 ): Promise<void> {
-  await parallel(workspaces.map((workspace) => ({
-    name: `workspace:${workspace}`,
-    fn: async () => {
-      await fetchOutputs({
-        workspace,
-        environment: target.environment.name,
-        waitFor,
-        waitTimeout: 600,
-      })
-    },
-  })))
+  await parallel(
+    workspaces.map((workspace) => ({
+      name: `workspace:${workspace}`,
+      fn: async () => {
+        await fetchOutputs({
+          workspace,
+          environment: target.environment.name,
+          waitFor,
+          waitTimeout: 600,
+        })
+      },
+    })),
+  )
 }
 
 async function withTargetEnvironment<T>(
@@ -133,23 +145,27 @@ async function buildDeployables(
   dryRun: boolean,
   artifactPlan: Map<string, DeployableArtifactResolution>,
 ): Promise<void> {
-  await parallel(deployables.map((deployable) => ({
-    name: `build:${deployable.name}`,
-    fn: async () => {
-      const artifact = artifactPlan.get(deployable.name)
-      if (artifact) {
-        console.log(`[build:${deployable.name}] strategy=${artifact.strategy} artifact=${artifact.artifactRef}`)
-      }
-      await withDeployablePhaseSecrets({
-        deployable,
-        phase: "build",
-        target,
-        fn: async () => {
-          await deployable.build({ target, dryRun, artifact })
-        },
-      })
-    },
-  })))
+  await parallel(
+    deployables.map((deployable) => ({
+      name: `build:${deployable.name}`,
+      fn: async () => {
+        const artifact = artifactPlan.get(deployable.name)
+        if (artifact) {
+          console.log(
+            `[build:${deployable.name}] strategy=${artifact.strategy} artifact=${artifact.artifactRef}`,
+          )
+        }
+        await withDeployablePhaseSecrets({
+          deployable,
+          phase: "build",
+          target,
+          fn: async () => {
+            await deployable.build({ target, dryRun, artifact })
+          },
+        })
+      },
+    })),
+  )
 }
 
 async function prepareDeployables(
@@ -179,19 +195,21 @@ async function prepareDeployables(
     return
   }
 
-  await parallel(remaining.map((deployable) => ({
-    name: `prepare:${deployable.name}`,
-    fn: async () => {
-      await withDeployablePhaseSecrets({
-        deployable,
-        phase: "prepare",
-        target,
-        fn: async () => {
-          await deployable.prepare?.({ target, dryRun })
-        },
-      })
-    },
-  })))
+  await parallel(
+    remaining.map((deployable) => ({
+      name: `prepare:${deployable.name}`,
+      fn: async () => {
+        await withDeployablePhaseSecrets({
+          deployable,
+          phase: "prepare",
+          target,
+          fn: async () => {
+            await deployable.prepare?.({ target, dryRun })
+          },
+        })
+      },
+    })),
+  )
 }
 
 async function deployDeployables(
@@ -215,7 +233,9 @@ async function deployDeployables(
         target,
         fn: async () => {
           if (artifact) {
-            console.log(`[deploy:${deployable.name}] strategy=${artifact.strategy} artifact=${artifact.artifactRef}`)
+            console.log(
+              `[deploy:${deployable.name}] strategy=${artifact.strategy} artifact=${artifact.artifactRef}`,
+            )
           }
           await deployable.deploy({ target, dryRun, artifact })
         },
@@ -255,19 +275,21 @@ async function verifyDeployables(
     return
   }
 
-  await parallel(remaining.map((deployable) => ({
-    name: `verify:${deployable.name}`,
-    fn: async () => {
-      await withDeployablePhaseSecrets({
-        deployable,
-        phase: "verify",
-        target,
-        fn: async () => {
-          await deployable.verify?.({ target, dryRun })
-        },
-      })
-    },
-  })))
+  await parallel(
+    remaining.map((deployable) => ({
+      name: `verify:${deployable.name}`,
+      fn: async () => {
+        await withDeployablePhaseSecrets({
+          deployable,
+          phase: "verify",
+          target,
+          fn: async () => {
+            await deployable.verify?.({ target, dryRun })
+          },
+        })
+      },
+    })),
+  )
 }
 
 async function convergeDeployable(
@@ -381,7 +403,7 @@ export async function convergeEnvironment(
   const statusByName = new Map<string, DeployableExecutionResult["status"]>()
   const dryRun = options.dryRun ?? false
   const artifactPlan = await withTargetEnvironment(target, dryRun, async () =>
-    resolveArtifactPlan({ deployables, target })
+    resolveArtifactPlan({ deployables, target }),
   )
 
   console.log(`Execution order: ${executionOrder.join(", ")}`)
@@ -392,7 +414,9 @@ export async function convergeEnvironment(
       continue
     }
 
-    const blockedBy = node.dependencies.filter((dependency) => statusByName.get(dependency) !== "completed")
+    const blockedBy = node.dependencies.filter(
+      (dependency) => statusByName.get(dependency) !== "completed",
+    )
     if (blockedBy.length > 0) {
       const result: DeployableExecutionResult = {
         name,

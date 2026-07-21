@@ -86,15 +86,17 @@ export async function findUsablePrivateBetaInviteForUser(input: {
     const rows = await db
       .select()
       .from(betaAccessInvites)
-      .where(and(
-        isNull(betaAccessInvites.revokedAt),
-        or(
-          eq(betaAccessInvites.claimedByUserId, input.userId),
-          unclaimedConditions.length > 0
-            ? and(isNull(betaAccessInvites.claimedByUserId), or(...unclaimedConditions))
-            : eq(betaAccessInvites.claimedByUserId, input.userId),
+      .where(
+        and(
+          isNull(betaAccessInvites.revokedAt),
+          or(
+            eq(betaAccessInvites.claimedByUserId, input.userId),
+            unclaimedConditions.length > 0
+              ? and(isNull(betaAccessInvites.claimedByUserId), or(...unclaimedConditions))
+              : eq(betaAccessInvites.claimedByUserId, input.userId),
+          ),
         ),
-      ))
+      )
       .orderBy(desc(betaAccessInvites.createdAt))
       .limit(1)
 

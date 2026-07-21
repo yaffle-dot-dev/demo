@@ -71,15 +71,15 @@
     }
   ],
   "layout": [
-    {"chartId": "webhook-volume", "x": 0, "y": 0, "w": 6, "h": 2},
-    {"chartId": "job-lifecycle-counts", "x": 6, "y": 0, "w": 6, "h": 2},
-    {"chartId": "queue-wait-p50", "x": 0, "y": 2, "w": 4, "h": 2},
-    {"chartId": "queue-wait-p95", "x": 4, "y": 2, "w": 4, "h": 2},
-    {"chartId": "active-jobs-gauge", "x": 8, "y": 2, "w": 2, "h": 2},
-    {"chartId": "jobs-by-type-pie", "x": 10, "y": 2, "w": 2, "h": 2},
-    {"chartId": "run-duration-by-type", "x": 0, "y": 4, "w": 6, "h": 2},
-    {"chartId": "success-rate", "x": 6, "y": 4, "w": 6, "h": 2},
-    {"chartId": "jobs-blocked", "x": 0, "y": 6, "w": 6, "h": 2},
-    {"chartId": "failed-jobs-table", "x": 6, "y": 6, "w": 6, "h": 3}
+    { "chartId": "webhook-volume", "x": 0, "y": 0, "w": 6, "h": 2 },
+    { "chartId": "job-lifecycle-counts", "x": 6, "y": 0, "w": 6, "h": 2 },
+    { "chartId": "queue-wait-p50", "x": 0, "y": 2, "w": 4, "h": 2 },
+    { "chartId": "queue-wait-p95", "x": 4, "y": 2, "w": 4, "h": 2 },
+    { "chartId": "active-jobs-gauge", "x": 8, "y": 2, "w": 2, "h": 2 },
+    { "chartId": "jobs-by-type-pie", "x": 10, "y": 2, "w": 2, "h": 2 },
+    { "chartId": "run-duration-by-type", "x": 0, "y": 4, "w": 6, "h": 2 },
+    { "chartId": "success-rate", "x": 6, "y": 4, "w": 6, "h": 2 },
+    { "chartId": "jobs-blocked", "x": 0, "y": 6, "w": 6, "h": 2 },
+    { "chartId": "failed-jobs-table", "x": 6, "y": 6, "w": 6, "h": 3 }
   ]
 }

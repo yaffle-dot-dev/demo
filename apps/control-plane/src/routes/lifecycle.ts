@@ -219,7 +219,7 @@ function mergeCallbackMetadata(
 ): Record<string, unknown> {
   return {
     ...recordFromJson(existingMetadata),
-    ...(callbackMetadata ?? {}),
+    ...callbackMetadata,
     ...(externalUrl ? { externalUrl } : {}),
   }
 }
@@ -687,7 +687,7 @@ lifecycleRoute.post("/completions/:token", async (c) => {
   return c.json({ data: { id: consumed.item.id, state: item?.state ?? body.status } })
 })
 
-async function readJsonBody(request: Request): Promise<unknown | Response> {
+async function readJsonBody(request: Request): Promise<unknown> {
   try {
     const body = await readRequestBodyText(request, LIFECYCLE_BODY_MAX_BYTES)
     return body ? JSON.parse(body) : {}

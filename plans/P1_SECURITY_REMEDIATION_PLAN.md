@@ -223,7 +223,10 @@ Update `apps/control-plane/src/db/schema.ts` and corresponding Drizzle migration
 
 ```ts
 orgId: uuid("org_id").references(() => organizations.id)
-scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`)
+scopes: text("scopes")
+  .array()
+  .notNull()
+  .default(sql`ARRAY[]::text[]`)
 createdByFlow: text("created_by_flow")
 ```
 

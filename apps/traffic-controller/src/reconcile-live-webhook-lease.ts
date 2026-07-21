@@ -9,9 +9,7 @@ import {
   updateLiveWebhookLease,
 } from "./db/queries/live-webhook-leases.ts"
 import { createTrafficControlAuditEvent } from "./db/queries/audit-events.ts"
-import {
-  updateRouteableDeploymentHookdeckMetadata,
-} from "./db/queries/routeable-deployments.ts"
+import { updateRouteableDeploymentHookdeckMetadata } from "./db/queries/routeable-deployments.ts"
 import {
   createHookdeckRoutingClient,
   getHookdeckRoutingConfig,
@@ -61,8 +59,9 @@ async function ensureRouteableDeploymentDestination(params: {
   hookdeck: HookdeckRoutingClient
   updateRouteableDeploymentHookdeckMetadata: typeof updateRouteableDeploymentHookdeckMetadata
 }): Promise<{ destinationId: string; destinationName: string }> {
-  const destinationName = params.lease.routeableDeployment.hookdeckDestinationName
-    ?? buildHookdeckDestinationName(params.lease.routeableDeployment.externalDeploymentId)
+  const destinationName =
+    params.lease.routeableDeployment.hookdeckDestinationName ??
+    buildHookdeckDestinationName(params.lease.routeableDeployment.externalDeploymentId)
   const destination = await params.hookdeck.upsertDestination({
     name: destinationName,
     description: `Routeable deployment for Yaffle PR ${params.lease.routeableDeployment.prNumber}`,
@@ -126,7 +125,9 @@ export async function reconcileLiveWebhookLease(
         await hookdeck.deleteConnection(lease.hookdeckConnectionId)
       }
 
-      const activeLeases = (await deps.listActiveLeases()).filter((candidate) => candidate.id !== lease.id)
+      const activeLeases = (await deps.listActiveLeases()).filter(
+        (candidate) => candidate.id !== lease.id,
+      )
       await reconcileProductionConnections({
         hookdeck,
         config,
@@ -188,7 +189,8 @@ export async function reconcileLiveWebhookLease(
         hookdeckDestinationId: destinationId,
         hookdeckDestinationName: destinationName,
         hookdeckConnectionId: previewConnection.id,
-        hookdeckConnectionName: previewConnection.name ?? buildHookdeckPreviewConnectionName(lease.id),
+        hookdeckConnectionName:
+          previewConnection.name ?? buildHookdeckPreviewConnectionName(lease.id),
         routeableDeployment: {
           ...lease.routeableDeployment,
           hookdeckDestinationId: destinationId,
@@ -209,7 +211,8 @@ export async function reconcileLiveWebhookLease(
       hookdeckDestinationId: destinationId,
       hookdeckDestinationName: destinationName,
       hookdeckConnectionId: previewConnection.id,
-      hookdeckConnectionName: previewConnection.name ?? buildHookdeckPreviewConnectionName(lease.id),
+      hookdeckConnectionName:
+        previewConnection.name ?? buildHookdeckPreviewConnectionName(lease.id),
       lastReconciledAt: new Date(),
       lastSyncError: null,
     })
@@ -223,7 +226,8 @@ export async function reconcileLiveWebhookLease(
         hookdeckDestinationId: destinationId,
         hookdeckDestinationName: destinationName,
         hookdeckConnectionId: previewConnection.id,
-        hookdeckConnectionName: previewConnection.name ?? buildHookdeckPreviewConnectionName(lease.id),
+        hookdeckConnectionName:
+          previewConnection.name ?? buildHookdeckPreviewConnectionName(lease.id),
       },
     })
     await deps.createAuditEvent({
@@ -237,7 +241,8 @@ export async function reconcileLiveWebhookLease(
         hookdeckDestinationId: destinationId,
         hookdeckDestinationName: destinationName,
         hookdeckConnectionId: previewConnection.id,
-        hookdeckConnectionName: previewConnection.name ?? buildHookdeckPreviewConnectionName(lease.id),
+        hookdeckConnectionName:
+          previewConnection.name ?? buildHookdeckPreviewConnectionName(lease.id),
       },
     })
   } catch (error) {

@@ -34,7 +34,9 @@ export function isPrivateBetaOperator(input: {
   email?: string | null
   githubLogin?: string | null
 }): boolean {
-  const identifiers = new Set(parseCsvIdentifiers(process.env.YAFFLE_PRIVATE_BETA_OPERATOR_IDENTIFIERS))
+  const identifiers = new Set(
+    parseCsvIdentifiers(process.env.YAFFLE_PRIVATE_BETA_OPERATOR_IDENTIFIERS),
+  )
   if (identifiers.size === 0) {
     return false
   }
@@ -99,11 +101,12 @@ export async function getPrivateBetaAccessStatusForUser(input: {
     }
   }
 
-  const matchedBy = invite.claimedByUserId === input.userId
-    ? "claimed"
-    : (invite.email?.trim().toLowerCase() === input.email?.trim().toLowerCase()
+  const matchedBy =
+    invite.claimedByUserId === input.userId
+      ? "claimed"
+      : invite.email?.trim().toLowerCase() === input.email?.trim().toLowerCase()
         ? "email"
-        : "github_login")
+        : "github_login"
 
   return {
     invitesRequired,

@@ -137,7 +137,8 @@ describe("execution credential resolution", () => {
       expect(result.degradation).toEqual({
         kind: "provider_requirements_unavailable",
         errorKind: "workspace_cache_missing",
-        message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+        message:
+          "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
         retryable: false,
       })
     }
@@ -218,7 +219,8 @@ describe("connection readiness", () => {
     expect(readiness.degradation).toEqual({
       kind: "provider_requirements_unavailable",
       errorKind: "workspace_cache_missing",
-      message: "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
+      message:
+        "Cached workspace archive is missing. Rerun this environment to regenerate provider metadata.",
       retryable: false,
     })
     expect(formatConnectionBlockedReason(readiness)).toBeNull()

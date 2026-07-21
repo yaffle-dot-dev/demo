@@ -73,14 +73,30 @@ describe("renderTemplate", () => {
         pr_number: 123,
       })
 
-      expect(renderTemplate("{{ environment }}", ctx, { workspacePath: "x", variableName: "a" })).toBe("pr-123")
-      expect(renderTemplate("{{ environment_kind }}", ctx, { workspacePath: "x", variableName: "b" })).toBe("transient")
-      expect(renderTemplate("{{ org }}", ctx, { workspacePath: "x", variableName: "c" })).toBe("testorg")
-      expect(renderTemplate("{{ repo }}", ctx, { workspacePath: "x", variableName: "d" })).toBe("testrepo")
-      expect(renderTemplate("{{ workspace_path }}", ctx, { workspacePath: "x", variableName: "e" })).toBe("infra/staging")
-      expect(renderTemplate("{{ branch }}", ctx, { workspacePath: "x", variableName: "f" })).toBe("feature/test")
-      expect(renderTemplate("{{ commit_sha }}", ctx, { workspacePath: "x", variableName: "g" })).toBe("deadbeef")
-      expect(renderTemplate("{{ pr_number }}", ctx, { workspacePath: "x", variableName: "h" })).toBe("123")
+      expect(
+        renderTemplate("{{ environment }}", ctx, { workspacePath: "x", variableName: "a" }),
+      ).toBe("pr-123")
+      expect(
+        renderTemplate("{{ environment_kind }}", ctx, { workspacePath: "x", variableName: "b" }),
+      ).toBe("transient")
+      expect(renderTemplate("{{ org }}", ctx, { workspacePath: "x", variableName: "c" })).toBe(
+        "testorg",
+      )
+      expect(renderTemplate("{{ repo }}", ctx, { workspacePath: "x", variableName: "d" })).toBe(
+        "testrepo",
+      )
+      expect(
+        renderTemplate("{{ workspace_path }}", ctx, { workspacePath: "x", variableName: "e" }),
+      ).toBe("infra/staging")
+      expect(renderTemplate("{{ branch }}", ctx, { workspacePath: "x", variableName: "f" })).toBe(
+        "feature/test",
+      )
+      expect(
+        renderTemplate("{{ commit_sha }}", ctx, { workspacePath: "x", variableName: "g" }),
+      ).toBe("deadbeef")
+      expect(
+        renderTemplate("{{ pr_number }}", ctx, { workspacePath: "x", variableName: "h" }),
+      ).toBe("123")
     })
 
     it("renders null pr_number for named environments", () => {

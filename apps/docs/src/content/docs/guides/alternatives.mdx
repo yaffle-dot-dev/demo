@@ -7,14 +7,14 @@ import { Aside } from "@astrojs/starlight/components"
 
 ## Quick comparison
 
-| Feature | Yaffle | TFC/TFE | Spacelift | env0 | Atlantis |
-|---------|--------|---------|-----------|------|----------|
-| **Preview environments** | First-class | Plan only | Possible (complex) | Possible (extra cost) | No |
-| **OpenTofu native** | Yes | No (Terraform only) | Yes | Yes | Either |
-| **Pricing model** | Per workspace | Per resource/month | Per run/concurrency | Per environment | Free (self-hosted) |
-| **Self-hosted option** | Not currently offered | Enterprise only | Yes | No | Yes (only option) |
-| **Operational overhead** | None | None | None | None | High |
-| **Setup** | Repository config + cloud credentials | Workspace configuration | Stack configuration | Environment configuration | Operated by customer |
+| Feature                  | Yaffle                                | TFC/TFE                 | Spacelift           | env0                      | Atlantis             |
+| ------------------------ | ------------------------------------- | ----------------------- | ------------------- | ------------------------- | -------------------- |
+| **Preview environments** | First-class                           | Plan only               | Possible (complex)  | Possible (extra cost)     | No                   |
+| **OpenTofu native**      | Yes                                   | No (Terraform only)     | Yes                 | Yes                       | Either               |
+| **Pricing model**        | Per workspace                         | Per resource/month      | Per run/concurrency | Per environment           | Free (self-hosted)   |
+| **Self-hosted option**   | Not currently offered                 | Enterprise only         | Yes                 | No                        | Yes (only option)    |
+| **Operational overhead** | None                                  | None                    | None                | None                      | High                 |
+| **Setup**                | Repository config + cloud credentials | Workspace configuration | Stack configuration | Environment configuration | Operated by customer |
 
 ## vs Terraform Cloud / Enterprise
 
@@ -28,7 +28,8 @@ import { Aside } from "@astrojs/starlight/components"
 - **No IBM lock-in** — TFC is now IBM HCP Terraform; Yaffle is independent
 
 <Aside type="note">
-TFC's "speculative plans" show what would change but don't create infrastructure. Yaffle actually applies to isolated preview environments.
+  TFC's "speculative plans" show what would change but don't create infrastructure. Yaffle actually
+  applies to isolated preview environments.
 </Aside>
 
 **When TFC might be better:** If you're deeply invested in the HashiCorp ecosystem (Vault, Consul, Nomad) and need tight integration.
@@ -71,7 +72,8 @@ TFC's "speculative plans" show what would change but don't create infrastructure
 **When Atlantis might be better:** If you want fully self-hosted, open-source, and can accept the operational overhead.
 
 <Aside type="tip">
-Most teams outgrow Atlantis within 1-2 years. See [Migrating from Atlantis](/docs/guides/atlantis/) for the upgrade path.
+  Most teams outgrow Atlantis within 1-2 years. See [Migrating from
+  Atlantis](/docs/guides/atlantis/) for the upgrade path.
 </Aside>
 
 ## vs DIY (GitHub Actions)

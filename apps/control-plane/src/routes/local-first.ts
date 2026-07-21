@@ -9,7 +9,11 @@ import {
   publishHostedOutputModule,
 } from "../db/queries/principals.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
-import { enforceRateLimit, readRequestBodyText, RequestBodyTooLargeError } from "../lib/request-protection.ts"
+import {
+  enforceRateLimit,
+  readRequestBodyText,
+  RequestBodyTooLargeError,
+} from "../lib/request-protection.ts"
 import {
   DEFAULT_ANONYMOUS_SESSION_TTL_DAYS,
   DEFAULT_EXECUTION_TOKEN_TTL_MINUTES,
@@ -131,16 +135,19 @@ localFirstRoute.post("/sessions/anonymous", async (c) => {
   })
   recordLocalFirstOperation("anonymous_session_bootstrap", "success")
 
-  return c.json({
-    data: {
-      principalType: "anonymous_session",
-      principalId: principal.id,
-      sessionId: session.id,
-      token,
-      issuedAt: session.createdAt.toISOString(),
-      expiresAt: expiresAt.toISOString(),
+  return c.json(
+    {
+      data: {
+        principalType: "anonymous_session",
+        principalId: principal.id,
+        sessionId: session.id,
+        token,
+        issuedAt: session.createdAt.toISOString(),
+        expiresAt: expiresAt.toISOString(),
+      },
     },
-  }, 201)
+    201,
+  )
 })
 
 localFirstRoute.use("/execution-tokens", principalAuth())
@@ -156,13 +163,22 @@ localFirstRoute.post("/execution-tokens", async (c) => {
   const parseResult = executionTokenSchema.safeParse(requestBody)
   if (!parseResult.success) {
     recordLocalFirstOperation("execution_token_mint", "invalid_request")
-    return c.json({ error: { code: "INVALID_REQUEST", message: parseResult.error.errors[0]?.message ?? "invalid request" } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: parseResult.error.errors[0]?.message ?? "invalid request",
+        },
+      },
+      400,
+    )
   }
 
   const body = parseResult.data
-  const ttlMinutes = body.sessionKind === "shell_session"
-    ? DEFAULT_SHELL_SESSION_EXECUTION_TOKEN_TTL_MINUTES
-    : DEFAULT_EXECUTION_TOKEN_TTL_MINUTES
+  const ttlMinutes =
+    body.sessionKind === "shell_session"
+      ? DEFAULT_SHELL_SESSION_EXECUTION_TOKEN_TTL_MINUTES
+      : DEFAULT_EXECUTION_TOKEN_TTL_MINUTES
   const binding = await ensurePrincipalRepoBinding({
     principalId: principal.principalId,
     canonicalRepoNamespace: body.canonicalRepoNamespace,
@@ -181,13 +197,16 @@ localFirstRoute.post("/execution-tokens", async (c) => {
     session_kind: body.sessionKind,
   })
 
-  return c.json({
-    data: {
-      token,
-      repoBindingId: binding.id,
-      expiresAt: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+  return c.json(
+    {
+      data: {
+        token,
+        repoBindingId: binding.id,
+        expiresAt: new Date(Date.now() + ttlMinutes * 60 * 1000).toISOString(),
+      },
     },
-  }, 201)
+    201,
+  )
 })
 
 localFirstRoute.put("/output-modules", async (c) => {
@@ -200,7 +219,15 @@ localFirstRoute.put("/output-modules", async (c) => {
   const parseResult = publishOutputModuleSchema.safeParse(requestBody)
   if (!parseResult.success) {
     recordLocalFirstOperation("output_module_publish", "invalid_request")
-    return c.json({ error: { code: "INVALID_REQUEST", message: parseResult.error.errors[0]?.message ?? "invalid request" } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "INVALID_REQUEST",
+          message: parseResult.error.errors[0]?.message ?? "invalid request",
+        },
+      },
+      400,
+    )
   }
 
   const body = parseResult.data
@@ -224,23 +251,23 @@ localFirstRoute.put("/output-modules", async (c) => {
   })
   recordLocalFirstOperation("output_module_publish", "success")
 
-  return c.json({
-    data: {
-      id: published.id,
-      repoBindingId: published.repoBindingId,
-      workspacePath: published.workspacePath,
-      environmentName: published.environmentName,
-      versionSerial: published.versionSerial,
-      version: buildHostedModuleVersion(published.versionSerial),
-      createdAt: published.createdAt.toISOString(),
+  return c.json(
+    {
+      data: {
+        id: published.id,
+        repoBindingId: published.repoBindingId,
+        workspacePath: published.workspacePath,
+        environmentName: published.environmentName,
+        versionSerial: published.versionSerial,
+        version: buildHostedModuleVersion(published.versionSerial),
+        createdAt: published.createdAt.toISOString(),
+      },
     },
-  }, 201)
+    201,
+  )
 })
 
-async function readJsonBody(
-  request: Request,
-  operation: LocalFirstOperation,
-): Promise<unknown | Response> {
+async function readJsonBody(request: Request, operation: LocalFirstOperation): Promise<unknown> {
   try {
     const body = await readRequestBodyText(request, LOCAL_FIRST_BODY_MAX_BYTES)
     return body ? JSON.parse(body) : {}

@@ -102,7 +102,10 @@ export async function touchPrincipalActivity(values: {
 }): Promise<void> {
   return withDbSpan("update", "principals", async () => {
     const now = new Date()
-    await db.update(principals).set({ lastSeenAt: now }).where(eq(principals.id, values.principalId))
+    await db
+      .update(principals)
+      .set({ lastSeenAt: now })
+      .where(eq(principals.id, values.principalId))
     if (values.sessionId) {
       await db
         .update(anonymousSessions)

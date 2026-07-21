@@ -104,7 +104,9 @@ function providerDisplayName(
   signatures: ProviderCredentialSignatureSummary[],
 ): string {
   const normalized = providerType.trim().toLowerCase()
-  const match = signatures.find((signature) => signature.providerType.trim().toLowerCase() === normalized)
+  const match = signatures.find(
+    (signature) => signature.providerType.trim().toLowerCase() === normalized,
+  )
   if (match) {
     return match.displayName
   }
@@ -168,9 +170,7 @@ function inferProviderTypeFromEnvVarKeys(
 }
 
 function normalizeDraftEnvVarKeys(entries: DraftEnvVarEntry[]): string[] {
-  return entries
-    .map((entry) => entry.key.trim().toUpperCase())
-    .filter((key) => key.length > 0)
+  return entries.map((entry) => entry.key.trim().toUpperCase()).filter((key) => key.length > 0)
 }
 
 function buildProviderClaim(
@@ -217,21 +217,25 @@ function buildExistingConnectionMetadata(
   connection: OrgConnection,
   signatures: ProviderCredentialSignatureSummary[],
 ): ExistingConnectionMetadata {
-  const config = typeof connection.config === "object" && connection.config !== null
-    ? connection.config as Record<string, unknown>
-    : {}
+  const config =
+    typeof connection.config === "object" && connection.config !== null
+      ? (connection.config as Record<string, unknown>)
+      : {}
 
   const providerType = (
     typeof config.providerType === "string"
       ? config.providerType
-      : connection.providerType ?? connection.type
-  ).trim().toLowerCase()
+      : (connection.providerType ?? connection.type)
+  )
+    .trim()
+    .toLowerCase()
 
   const providerClaim = buildProviderClaim(providerType, signatures)
   const envVarKeys = Array.isArray(config.envVarKeys)
-    ? config.envVarKeys.filter((value): value is string => typeof value === "string")
-      .map((value) => value.trim().toUpperCase())
-      .filter((value) => value.length > 0)
+    ? config.envVarKeys
+        .filter((value): value is string => typeof value === "string")
+        .map((value) => value.trim().toUpperCase())
+        .filter((value) => value.length > 0)
     : []
 
   return {
@@ -245,17 +249,17 @@ function buildExistingConnectionMetadata(
   }
 }
 
-function buildDraftClaims(
-  input: ConnectionScopeValidationInput,
-): {
+function buildDraftClaims(input: ConnectionScopeValidationInput): {
   claims: CredentialClaim[]
   inferredProviderType: string
 } {
   if (input.selectedConnectionType === "iam-role") {
     return {
-      claims: uniqueClaims([buildProviderClaim("aws", input.providerSignatures)].filter(
-        (claim): claim is CredentialClaim => claim !== null,
-      )),
+      claims: uniqueClaims(
+        [buildProviderClaim("aws", input.providerSignatures)].filter(
+          (claim): claim is CredentialClaim => claim !== null,
+        ),
+      ),
       inferredProviderType: "aws",
     }
   }
@@ -317,11 +321,19 @@ function buildConflictMessages(
     return []
   }
 
-  const grouped = new Map<string, { label: string; kind: CredentialClaim["kind"]; environment: string; workspaces: Set<string> }>()
+  const grouped = new Map<
+    string,
+    { label: string; kind: CredentialClaim["kind"]; environment: string; workspaces: Set<string> }
+  >()
 
   for (const environment of selectedEnvironments) {
     for (const workspace of selectedWorkspaces) {
-      for (const conflict of conflictsForPair(environment, workspace, draftClaims, existingConnections)) {
+      for (const conflict of conflictsForPair(
+        environment,
+        workspace,
+        draftClaims,
+        existingConnections,
+      )) {
         const key = `${conflict.claim.key}:${environment}`
         const existing = grouped.get(key)
         if (existing) {
@@ -340,10 +352,11 @@ function buildConflictMessages(
   }
 
   return [...grouped.values()]
-    .sort((left, right) =>
-      (left.kind === right.kind ? 0 : left.kind === "envvar" ? -1 : 1)
-      || left.label.localeCompare(right.label)
-      || left.environment.localeCompare(right.environment)
+    .sort(
+      (left, right) =>
+        (left.kind === right.kind ? 0 : left.kind === "envvar" ? -1 : 1) ||
+        left.label.localeCompare(right.label) ||
+        left.environment.localeCompare(right.environment),
     )
     .map((group) => {
       const workspaces = [...group.workspaces].sort().join(", ")
@@ -369,13 +382,15 @@ function environmentOptionAvailable(
   }
 
   if (selectedWorkspaces.length > 0) {
-    return candidateWorkspaces.every((workspace) =>
-      conflictsForPair(environment, workspace, draftClaims, existingConnections).length === 0
+    return candidateWorkspaces.every(
+      (workspace) =>
+        conflictsForPair(environment, workspace, draftClaims, existingConnections).length === 0,
     )
   }
 
-  return candidateWorkspaces.some((workspace) =>
-    conflictsForPair(environment, workspace, draftClaims, existingConnections).length === 0
+  return candidateWorkspaces.some(
+    (workspace) =>
+      conflictsForPair(environment, workspace, draftClaims, existingConnections).length === 0,
   )
 }
 
@@ -390,19 +405,22 @@ function workspaceOptionAvailable(
     return true
   }
 
-  const candidateEnvironments = selectedEnvironments.length > 0 ? selectedEnvironments : knownEnvironments
+  const candidateEnvironments =
+    selectedEnvironments.length > 0 ? selectedEnvironments : knownEnvironments
   if (candidateEnvironments.length === 0) {
     return true
   }
 
   if (selectedEnvironments.length > 0) {
-    return candidateEnvironments.every((environment) =>
-      conflictsForPair(environment, workspace, draftClaims, existingConnections).length === 0
+    return candidateEnvironments.every(
+      (environment) =>
+        conflictsForPair(environment, workspace, draftClaims, existingConnections).length === 0,
     )
   }
 
-  return candidateEnvironments.some((environment) =>
-    conflictsForPair(environment, workspace, draftClaims, existingConnections).length === 0
+  return candidateEnvironments.some(
+    (environment) =>
+      conflictsForPair(environment, workspace, draftClaims, existingConnections).length === 0,
   )
 }
 
@@ -414,9 +432,10 @@ function collectKnownEnvironmentOptions(input: ConnectionScopeValidationInput): 
   ])
 
   for (const connection of input.connections) {
-    const config = typeof connection.config === "object" && connection.config !== null
-      ? connection.config as Record<string, unknown>
-      : {}
+    const config =
+      typeof connection.config === "object" && connection.config !== null
+        ? (connection.config as Record<string, unknown>)
+        : {}
 
     for (const scope of normalizeScopeList(config.environmentScope)) {
       values.add(scope)
@@ -435,9 +454,10 @@ function collectKnownWorkspaceOptions(input: ConnectionScopeValidationInput): st
   ])
 
   for (const connection of input.connections) {
-    const config = typeof connection.config === "object" && connection.config !== null
-      ? connection.config as Record<string, unknown>
-      : {}
+    const config =
+      typeof connection.config === "object" && connection.config !== null
+        ? (connection.config as Record<string, unknown>)
+        : {}
 
     for (const scope of normalizeScopeList(config.workspaceScope)) {
       values.add(scope)
@@ -468,9 +488,12 @@ export function buildConnectionScopeValidation(
       draftClaims,
       existingConnections,
     )
-    const conflicting = selected && input.selectedWorkspaces.some((workspace) =>
-      conflictsForPair(environment, workspace, draftClaims, existingConnections).length > 0
-    )
+    const conflicting =
+      selected &&
+      input.selectedWorkspaces.some(
+        (workspace) =>
+          conflictsForPair(environment, workspace, draftClaims, existingConnections).length > 0,
+      )
 
     return {
       value: environment,
@@ -489,9 +512,12 @@ export function buildConnectionScopeValidation(
       draftClaims,
       existingConnections,
     )
-    const conflicting = selected && input.selectedEnvironments.some((environment) =>
-      conflictsForPair(environment, workspace, draftClaims, existingConnections).length > 0
-    )
+    const conflicting =
+      selected &&
+      input.selectedEnvironments.some(
+        (environment) =>
+          conflictsForPair(environment, workspace, draftClaims, existingConnections).length > 0,
+      )
 
     return {
       value: workspace,

@@ -1,9 +1,6 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import {
-  buildOrthogonalEdgePaths,
-  computeCliAlignedColumns,
-} from "./dag-layout-cli"
+import { buildOrthogonalEdgePaths, computeCliAlignedColumns } from "./dag-layout-cli"
 
 describe("computeCliAlignedColumns", () => {
   test("mirrors cli stage ordering for dependency columns", () => {

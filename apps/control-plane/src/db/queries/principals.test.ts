@@ -51,9 +51,7 @@ describe("principal local-first lifecycle queries", () => {
       .set({ lastSeenAt: staleSeenAt })
       .where(eq(anonymousSessions.id, staleSession.id))
 
-    const result = await expireInactiveAnonymousSessions(
-      new Date("2026-04-15T00:00:00.000Z"),
-    )
+    const result = await expireInactiveAnonymousSessions(new Date("2026-04-15T00:00:00.000Z"))
 
     expect(result).toEqual({ principalCount: 1, sessionCount: 1 })
 

@@ -15,17 +15,17 @@ Fetch Terraform outputs from Yaffle environments. See [CI/CD Integration](/docs/
 
 ## Inputs
 
-| Input | Description | Default |
-|-------|-------------|---------|
-| `workspace` | Workspace path | `.` |
-| `wait` | Wait for preview to be ready | `false` |
-| `wait-timeout` | Timeout in seconds when waiting | `300` |
-| `environment` | Environment name (e.g., `main`, `pr-42`) | Auto-detected |
-| `pr-number` | PR number (sets environment to `pr-{n}`) | Current PR |
-| `org` | Organization/owner name | Repository owner |
-| `repo` | Repository name | Current repository |
-| `head-sha` | Commit SHA used to select the environment revision | Workflow SHA |
-| `token` | Yaffle API token (`yfl_...`) | `YAFFLE_API_TOKEN` environment variable |
+| Input          | Description                                        | Default                                 |
+| -------------- | -------------------------------------------------- | --------------------------------------- |
+| `workspace`    | Workspace path                                     | `.`                                     |
+| `wait`         | Wait for preview to be ready                       | `false`                                 |
+| `wait-timeout` | Timeout in seconds when waiting                    | `300`                                   |
+| `environment`  | Environment name (e.g., `main`, `pr-42`)           | Auto-detected                           |
+| `pr-number`    | PR number (sets environment to `pr-{n}`)           | Current PR                              |
+| `org`          | Organization/owner name                            | Repository owner                        |
+| `repo`         | Repository name                                    | Current repository                      |
+| `head-sha`     | Commit SHA used to select the environment revision | Workflow SHA                            |
+| `token`        | Yaffle API token (`yfl_...`)                       | `YAFFLE_API_TOKEN` environment variable |
 
 ### Environment auto-detection
 
@@ -40,12 +40,12 @@ When inferred from pull-request context, the resolved environment is always
 
 ## Outputs
 
-| Output | Description |
-|--------|-------------|
-| `preview-id` | Yaffle preview ID |
+| Output           | Description                                       |
+| ---------------- | ------------------------------------------------- |
+| `preview-id`     | Yaffle preview ID                                 |
 | `preview-status` | Status: `ready`, `planning`, `applying`, `failed` |
-| `outputs-json` | All outputs as JSON |
-| `<name>` | Each Terraform output as a separate action output |
+| `outputs-json`   | All outputs as JSON                               |
+| `<name>`         | Each Terraform output as a separate action output |
 
 The beta output contract requires authorized, immutable snapshots and redacts sensitive
 values before publication. The current Action still exposes the environment API's raw

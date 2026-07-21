@@ -146,13 +146,8 @@ export function findRunInGroup(
 }
 
 /** Get the latest run across all workspaces for a given workspace path */
-export function getLatestRunForWorkspace(
-  group: PreviewGroup,
-  workspacePath: string,
-): Run | null {
-  const ws = group.workspaces.find(
-    (w) => w.preview.workspacePath === workspacePath,
-  )
+export function getLatestRunForWorkspace(group: PreviewGroup, workspacePath: string): Run | null {
+  const ws = group.workspaces.find((w) => w.preview.workspacePath === workspacePath)
   if (!ws || ws.runs.length === 0) return null
   return ws.runs[0] // Runs are already sorted desc by createdAt from backend
 }
@@ -226,9 +221,11 @@ export function getCurrentRunGroup(group: PreviewGroup): RunGroup | null {
 export function getLastCompletedRunGroup(group: PreviewGroup): RunGroup | null {
   const runGroups = group.runGroups
   if (!runGroups || runGroups.length === 0) return null
-  return runGroups.find((rg) =>
-    rg.status === "success" || rg.status === "failed" || rg.status === "partial"
-  ) ?? null
+  return (
+    runGroups.find(
+      (rg) => rg.status === "success" || rg.status === "failed" || rg.status === "partial",
+    ) ?? null
+  )
 }
 
 /**
@@ -258,10 +255,10 @@ export function getWorkspacesInRunGroup(
   workspaces: WorkspaceWithRuns[],
   runGroupId: string,
 ): WorkspaceWithRuns[] {
-  return workspaces.filter((ws) =>
-    ws.runs.some((r) => r.runGroupId === runGroupId)
-  ).map((ws) => ({
-    ...ws,
-    runs: filterRunsByRunGroup(ws.runs, runGroupId),
-  }))
+  return workspaces
+    .filter((ws) => ws.runs.some((r) => r.runGroupId === runGroupId))
+    .map((ws) => ({
+      ...ws,
+      runs: filterRunsByRunGroup(ws.runs, runGroupId),
+    }))
 }

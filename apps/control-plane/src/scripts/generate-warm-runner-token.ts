@@ -11,7 +11,9 @@ function looksLikeUuid(value: string): boolean {
 }
 
 if (!identifier) {
-  console.error("Usage: pnpm exec tsx src/scripts/generate-warm-runner-token.ts <org-id-or-slug> [ttl-hours]")
+  console.error(
+    "Usage: pnpm exec tsx src/scripts/generate-warm-runner-token.ts <org-id-or-slug> [ttl-hours]",
+  )
   process.exit(1)
 }
 
@@ -22,7 +24,7 @@ if (!Number.isFinite(ttlHours) || ttlHours <= 0) {
 }
 
 const resolvedOrg = looksLikeUuid(identifier)
-  ? (await findOrgById(identifier)) ?? (await findOrgBySlug(identifier))
+  ? ((await findOrgById(identifier)) ?? (await findOrgBySlug(identifier)))
   : await findOrgBySlug(identifier)
 if (!resolvedOrg) {
   console.error(`Organization not found: ${identifier}`)
@@ -31,10 +33,16 @@ if (!resolvedOrg) {
 
 const token = await generateWarmRunnerToken(resolvedOrg.id, ttlHours)
 
-console.log(JSON.stringify({
-  orgId: resolvedOrg.id,
-  orgSlug: resolvedOrg.slug,
-  ttlHours,
-  token,
-  exportLine: `YAFFLE_WARM_RUNNER_TOKEN="${token}"`,
-}, null, 2))
+console.log(
+  JSON.stringify(
+    {
+      orgId: resolvedOrg.id,
+      orgSlug: resolvedOrg.slug,
+      ttlHours,
+      token,
+      exportLine: `YAFFLE_WARM_RUNNER_TOKEN="${token}"`,
+    },
+    null,
+    2,
+  ),
+)

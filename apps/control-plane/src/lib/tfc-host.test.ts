@@ -29,7 +29,9 @@ describe("getRunnerReachableTfcHost", () => {
   test("throws when not configured", () => {
     delete process.env.YAFFLE_RUNNER_TFC_API_HOST
 
-    expect(() => getRunnerReachableTfcHost()).toThrow("YAFFLE_RUNNER_TFC_API_HOST must be configured")
+    expect(() => getRunnerReachableTfcHost()).toThrow(
+      "YAFFLE_RUNNER_TFC_API_HOST must be configured",
+    )
   })
 })
 
@@ -38,9 +40,6 @@ describe("getRunnerCredentialHosts", () => {
     process.env.YAFFLE_RUNNER_TFC_API_HOST = "cp.internal.yaffle.dev"
     process.env.YAFFLE_MODULE_SOURCE_ALLOWED_HOSTS = "yaffle.dev,.ts.net"
 
-    expect(getRunnerCredentialHosts()).toEqual([
-      "cp.internal.yaffle.dev",
-      "yaffle.dev",
-    ])
+    expect(getRunnerCredentialHosts()).toEqual(["cp.internal.yaffle.dev", "yaffle.dev"])
   })
 })

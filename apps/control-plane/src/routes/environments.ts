@@ -7,10 +7,7 @@ import { findLatestRunsForDeployments } from "../db/queries/tf-runs.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import { listEnvironmentGroupProjections } from "../db/queries/environment-group-projections.ts"
 import { findRunGroupWorkspaceMetadataForRunGroups } from "../db/queries/run-group-workspace-metadata.ts"
-import {
-  findRunGroupsByIds,
-  type RunGroupWithRepoBinding,
-} from "../db/queries/run-groups.ts"
+import { findRunGroupsByIds, type RunGroupWithRepoBinding } from "../db/queries/run-groups.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
 import {
   formatConnectionBlockedReason,
@@ -76,10 +73,15 @@ function getMemorySnapshot(): MemorySnapshot {
   }
 }
 
-function summarizeEnvironmentCounts(environments: EnvironmentGroup[]): Pick<EnvironmentsLoadStats, "environmentCount" | "workspaceCount"> {
+function summarizeEnvironmentCounts(
+  environments: EnvironmentGroup[],
+): Pick<EnvironmentsLoadStats, "environmentCount" | "workspaceCount"> {
   return {
     environmentCount: environments.length,
-    workspaceCount: environments.reduce((total, environment) => total + environment.workspaces.length, 0),
+    workspaceCount: environments.reduce(
+      (total, environment) => total + environment.workspaces.length,
+      0,
+    ),
   }
 }
 
@@ -103,7 +105,9 @@ async function loadEnvironmentGroupsFromProjections(
   })
   const runGroupsById = await findRunGroupsByIds(
     payloads.flatMap((payload) =>
-      payload.workspaces.flatMap((workspace) => workspace.runGroupId ? [workspace.runGroupId] : []),
+      payload.workspaces.flatMap((workspace) =>
+        workspace.runGroupId ? [workspace.runGroupId] : [],
+      ),
     ),
     orgId,
   )
@@ -219,25 +223,21 @@ interface EnvironmentGroup {
  *
  * Returns latest production status grouped by branch.
  */
-environmentsRoute.get(
-  "/",
-  requireOrgAccess({ orgSource: "query", orgKey: "org" }),
-  async (c) => {
-    const parsed = listQuerySchema.safeParse(c.req.query())
-    if (!parsed.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0].message } },
-        400,
-      )
-    }
+environmentsRoute.get("/", requireOrgAccess({ orgSource: "query", orgKey: "org" }), async (c) => {
+  const parsed = listQuerySchema.safeParse(c.req.query())
+  if (!parsed.success) {
+    return c.json(
+      { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0].message } },
+      400,
+    )
+  }
 
-    const { repo, view } = parsed.data
-    const auth = getAuth(c)
+  const { repo, view } = parsed.data
+  const auth = getAuth(c)
 
-    const environments = await fetchEnvironments(auth.orgId, repo, view ?? "full")
-    return c.json({ data: environments })
-  },
-)
+  const environments = await fetchEnvironments(auth.orgId, repo, view ?? "full")
+  return c.json({ data: environments })
+})
 
 /**
  * GET /api/environments/stream?org=owner&repo=owner/repo
@@ -372,8 +372,8 @@ async function fetchEnvironments(
       span.setAttributes(spanAttrs)
 
       if (
-        durationMs >= ENVIRONMENTS_SLOW_REQUEST_MS
-        || heapUsedDeltaBytes >= ENVIRONMENTS_LARGE_HEAP_DELTA_BYTES
+        durationMs >= ENVIRONMENTS_SLOW_REQUEST_MS ||
+        heapUsedDeltaBytes >= ENVIRONMENTS_LARGE_HEAP_DELTA_BYTES
       ) {
         logger.warn("environments.fetch.profile", logAttrs)
       }
@@ -448,7 +448,10 @@ async function loadEnvironments(
     return {
       environments: projectedEnvironments,
       stats: {
-        deploymentCount: projectedEnvironments.reduce((total, environment) => total + environment.workspaces.length, 0),
+        deploymentCount: projectedEnvironments.reduce(
+          (total, environment) => total + environment.workspaces.length,
+          0,
+        ),
         runGroupCount: 0,
         ...summarizeEnvironmentCounts(projectedEnvironments),
       },
@@ -491,11 +494,13 @@ async function loadEnvironments(
   const metadataMemoryBefore = getMemorySnapshot()
 
   const deploymentIds = activePreviews.map((p) => p.id)
-  const deploymentRunGroupIds = [...new Set(
-    activePreviews
-      .map((preview) => preview.runGroupId)
-      .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
-  )]
+  const deploymentRunGroupIds = [
+    ...new Set(
+      activePreviews
+        .map((preview) => preview.runGroupId)
+        .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
+    ),
+  ]
   const runGroupsById = await findRunGroupsByIds(deploymentRunGroupIds, orgId)
 
   if (detailLevel === "dag") {
@@ -576,32 +581,33 @@ async function loadEnvironments(
   }
 
   // Batch fetch all supporting data in parallel, but profile each source separately.
-  const [applyRunsMap, allRunsMap, orgConnections, metadataByRunGroupWorkspaceKey] = await Promise.all([
-    profileSubphase(
-      phaseMetrics,
-      "loadSupportingData.applyRuns",
-      () => findLatestRunsForDeployments(deploymentIds, "apply"),
-      (result) => result.size,
-    ),
-    profileSubphase(
-      phaseMetrics,
-      "loadSupportingData.allRuns",
-      () => findLatestRunsForDeployments(deploymentIds),
-      (result) => result.size,
-    ),
-    profileSubphase(
-      phaseMetrics,
-      "loadSupportingData.orgConnections",
-      () => listConnectionsForOrg(orgId),
-      (result) => result.length,
-    ),
-    profileSubphase(
-      phaseMetrics,
-      "loadSupportingData.workspaceMetadata",
-      () => findRunGroupWorkspaceMetadataForRunGroups(deploymentRunGroupIds),
-      (result) => result.size,
-    ),
-  ])
+  const [applyRunsMap, allRunsMap, orgConnections, metadataByRunGroupWorkspaceKey] =
+    await Promise.all([
+      profileSubphase(
+        phaseMetrics,
+        "loadSupportingData.applyRuns",
+        () => findLatestRunsForDeployments(deploymentIds, "apply"),
+        (result) => result.size,
+      ),
+      profileSubphase(
+        phaseMetrics,
+        "loadSupportingData.allRuns",
+        () => findLatestRunsForDeployments(deploymentIds),
+        (result) => result.size,
+      ),
+      profileSubphase(
+        phaseMetrics,
+        "loadSupportingData.orgConnections",
+        () => listConnectionsForOrg(orgId),
+        (result) => result.length,
+      ),
+      profileSubphase(
+        phaseMetrics,
+        "loadSupportingData.workspaceMetadata",
+        () => findRunGroupWorkspaceMetadataForRunGroups(deploymentRunGroupIds),
+        (result) => result.size,
+      ),
+    ])
 
   setPhaseMetric(
     phaseMetrics,
@@ -623,7 +629,9 @@ async function loadEnvironments(
         getProviderRequirementsForDeployment: (deployment) =>
           getRequiredProviderRequirementsForDeployment(deployment, {
             metadata: deployment.runGroupId
-              ? metadataByRunGroupWorkspaceKey.get(`${deployment.runGroupId}:${deployment.workspacePath}`) ?? null
+              ? (metadataByRunGroupWorkspaceKey.get(
+                  `${deployment.runGroupId}:${deployment.workspacePath}`,
+                ) ?? null)
               : null,
           }),
         listConnectionsForOrg: async () => orgConnections,
@@ -748,8 +756,8 @@ function serializeEnvironmentExecutionContext(
     workspacePath: workspace.workspacePath,
   }
   if (
-    resource.environmentKind === "transient"
-    && !isExecutionContextAssociationValid({
+    resource.environmentKind === "transient" &&
+    !isExecutionContextAssociationValid({
       snapshot: runGroup.executionSnapshot,
       runGroup,
       resource,

@@ -40,9 +40,9 @@ export function getWorkspaceDisplayRuns(params: {
   const latestRun = workspace.runs[0]
 
   if (
-    latestRun
-    && QUEUED_WORKSPACE_STATUSES.has(previewStatus)
-    && TERMINAL_RUN_STATUSES.has(latestRun.status)
+    latestRun &&
+    QUEUED_WORKSPACE_STATUSES.has(previewStatus) &&
+    TERMINAL_RUN_STATUSES.has(latestRun.status)
   ) {
     return []
   }
@@ -99,7 +99,9 @@ export function getBlockingUpstreamWorkspacePaths(
     .map(([, target]) => target)
 
   return upstreamPaths.filter((upstreamPath) => {
-    const upstreamWorkspace = workspaces.find((workspace) => workspace.preview.workspacePath === upstreamPath)
+    const upstreamWorkspace = workspaces.find(
+      (workspace) => workspace.preview.workspacePath === upstreamPath,
+    )
     if (!upstreamWorkspace) {
       return false
     }
@@ -122,7 +124,9 @@ export function hasFailedUpstreamWorkspace(
     .map(([, target]) => target)
 
   for (const upstreamPath of upstreamPaths) {
-    const upstreamWorkspace = workspaces.find((workspace) => workspace.preview.workspacePath === upstreamPath)
+    const upstreamWorkspace = workspaces.find(
+      (workspace) => workspace.preview.workspacePath === upstreamPath,
+    )
     if (!upstreamWorkspace) {
       continue
     }
@@ -184,15 +188,22 @@ export function getWorkspaceDisplayStatus(params: {
 }
 
 export function isWorkspaceActivelyRunningStatus(status: string): boolean {
-  return status === "planning" || status === "applying" || status === "activating" || status === "destroying"
+  return (
+    status === "planning" ||
+    status === "applying" ||
+    status === "activating" ||
+    status === "destroying"
+  )
 }
 
 export function isWorkspaceInProgressStatus(status: string): boolean {
-  return status === "queued"
-    || status === "pending"
-    || status === "planning"
-    || status === "applying"
-    || status === "activating"
-    || status === "awaiting_approval"
-    || status === "destroying"
+  return (
+    status === "queued" ||
+    status === "pending" ||
+    status === "planning" ||
+    status === "applying" ||
+    status === "activating" ||
+    status === "awaiting_approval" ||
+    status === "destroying"
+  )
 }

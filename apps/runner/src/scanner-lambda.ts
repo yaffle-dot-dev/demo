@@ -63,7 +63,7 @@ async function ensureTailscale(): Promise<void> {
         { headers: { "X-Aws-Parameters-Secrets-Token": process.env.AWS_SESSION_TOKEN ?? "" } },
       )
       if (response.ok) {
-        const data = await response.json() as { SecretString: string }
+        const data = (await response.json()) as { SecretString: string }
         const parsed = JSON.parse(data.SecretString)
         authkey = parsed.authkey
       }
@@ -83,14 +83,18 @@ async function ensureTailscale(): Promise<void> {
 
     // Start tailscaled as a detached background process
     // Use HTTP proxy (not SOCKS5) so Node.js fetch can use it via undici ProxyAgent
-    const daemon = spawn("/opt/bin/tailscaled", [
-      "--tun=userspace-networking",
-      "--socks5-server=localhost:1055",
-      "--outbound-http-proxy-listen=localhost:1056",
-      "--state=/tmp/tailscale/state/tailscale.state",
-      "--socket=/tmp/tailscale/tailscaled.sock",
-      "--no-logs-no-support",
-    ], { detached: true, stdio: "ignore" })
+    const daemon = spawn(
+      "/opt/bin/tailscaled",
+      [
+        "--tun=userspace-networking",
+        "--socks5-server=localhost:1055",
+        "--outbound-http-proxy-listen=localhost:1056",
+        "--state=/tmp/tailscale/state/tailscale.state",
+        "--socket=/tmp/tailscale/tailscaled.sock",
+        "--no-logs-no-support",
+      ],
+      { detached: true, stdio: "ignore" },
+    )
     daemon.unref()
 
     // Wait for daemon to be ready
@@ -98,13 +102,17 @@ async function ensureTailscale(): Promise<void> {
 
     console.log("[lambda] Connecting to tailnet...")
     const { spawnSync } = await import("node:child_process")
-    const tsUp = spawnSync("/opt/bin/tailscale", [
-      "--socket=/tmp/tailscale/tailscaled.sock",
-      "up",
-      `--authkey=${authkey}`,
-      `--hostname=${process.env.TS_HOSTNAME ?? "yaffle-scanner-lambda"}`,
-      `--advertise-tags=${process.env.TS_ADVERTISE_TAGS ?? "tag:ecs-runner"}`,
-    ], { stdio: "pipe", encoding: "utf-8" })
+    const tsUp = spawnSync(
+      "/opt/bin/tailscale",
+      [
+        "--socket=/tmp/tailscale/tailscaled.sock",
+        "up",
+        `--authkey=${authkey}`,
+        `--hostname=${process.env.TS_HOSTNAME ?? "yaffle-scanner-lambda"}`,
+        `--advertise-tags=${process.env.TS_ADVERTISE_TAGS ?? "tag:ecs-runner"}`,
+      ],
+      { stdio: "pipe", encoding: "utf-8" },
+    )
 
     if (tsUp.status !== 0) {
       throw new Error(`tailscale up failed (exit ${tsUp.status}): ${tsUp.stderr}`)
@@ -225,7 +233,8 @@ export async function handler(event: LambdaEvent): Promise<LambdaResponse> {
   await ensureTailscale()
 
   // Default to healthcheck if no action specified (backwards compat with old events)
-  const action = ("action" in event && event.action) || (("YAFFLE_SCAN_JOB_ID" in event) ? "scan" : "healthcheck")
+  const action =
+    ("action" in event && event.action) || ("YAFFLE_SCAN_JOB_ID" in event ? "scan" : "healthcheck")
 
   if (action === "healthcheck") {
     return healthcheck(event as HealthCheckEvent)

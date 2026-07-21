@@ -28,32 +28,36 @@ describe("verifyProviderDiscoveryCallbackSignature", () => {
     const secret = "callback-test-secret"
     const signature = await sign(payload, secret)
 
-    await expect(verifyProviderDiscoveryCallbackSignature({
-      body,
-      timestampHeader: timestamp,
-      nonceHeader: nonce,
-      signatureHeader: signature,
-      secret,
-    })).resolves.toBe(true)
+    await expect(
+      verifyProviderDiscoveryCallbackSignature({
+        body,
+        timestampHeader: timestamp,
+        nonceHeader: nonce,
+        signatureHeader: signature,
+        secret,
+      }),
+    ).resolves.toBe(true)
   })
 
   test("rejects stale signatures", async () => {
     const now = Date.now()
-    const staleTimestamp = (now - (6 * 60 * 1000)).toString()
+    const staleTimestamp = (now - 6 * 60 * 1000).toString()
     const nonce = "nonce-2"
     const body = JSON.stringify({ requestId: "9ec80f4c-bec6-45f8-84f6-db1b3a998722" })
     const payload = `${staleTimestamp}.${nonce}.${body}`
     const secret = "callback-test-secret"
     const signature = await sign(payload, secret)
 
-    await expect(verifyProviderDiscoveryCallbackSignature({
-      body,
-      timestampHeader: staleTimestamp,
-      nonceHeader: nonce,
-      signatureHeader: signature,
-      secret,
-      now,
-    })).resolves.toBe(false)
+    await expect(
+      verifyProviderDiscoveryCallbackSignature({
+        body,
+        timestampHeader: staleTimestamp,
+        nonceHeader: nonce,
+        signatureHeader: signature,
+        secret,
+        now,
+      }),
+    ).resolves.toBe(false)
   })
 
   test("rejects when nonce is missing", async () => {
@@ -63,13 +67,15 @@ describe("verifyProviderDiscoveryCallbackSignature", () => {
     const secret = "callback-test-secret"
     const signature = await sign(`${timestamp}.nonce.${body}`, secret)
 
-    await expect(verifyProviderDiscoveryCallbackSignature({
-      body,
-      timestampHeader: timestamp,
-      nonceHeader: undefined,
-      signatureHeader: signature,
-      secret,
-      now,
-    })).resolves.toBe(false)
+    await expect(
+      verifyProviderDiscoveryCallbackSignature({
+        body,
+        timestampHeader: timestamp,
+        nonceHeader: undefined,
+        signatureHeader: signature,
+        secret,
+        now,
+      }),
+    ).resolves.toBe(false)
   })
 })

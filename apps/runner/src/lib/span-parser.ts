@@ -19,13 +19,13 @@
  */
 
 export interface ResourceSpanEvent {
-  resourceAddress: string    // "module.vpc.aws_subnet.public[0]"
-  resourceType: string       // "aws_subnet"
+  resourceAddress: string // "module.vpc.aws_subnet.public[0]"
+  resourceType: string // "aws_subnet"
   action: "create" | "update" | "delete" | "refresh" | "read"
   event: "started" | "progress" | "complete" | "error"
-  timestamp: number          // Date.now() wall-clock
-  elapsedMs?: number         // parsed from "after Xs" on complete events
-  message?: string           // error message or resource ID
+  timestamp: number // Date.now() wall-clock
+  elapsedMs?: number // parsed from "after Xs" on complete events
+  message?: string // error message or resource ID
 }
 
 type SpanEventCallback = (event: ResourceSpanEvent) => void
@@ -41,12 +41,8 @@ const RESOURCE_ADDR = String.raw`((?:module\.[^\s:]+\.)?(?:data\.)?[a-zA-Z][a-zA
 //   "Destroying..."
 //   "Refreshing state... [id=...]"
 //   "Reading..."
-const START_RE = new RegExp(
-  `^${RESOURCE_ADDR}: (Creating|Modifying|Destroying|Reading)\\.\\.\\.`,
-)
-const REFRESH_START_RE = new RegExp(
-  `^${RESOURCE_ADDR}: Refreshing state\\.\\.\\.`,
-)
+const START_RE = new RegExp(`^${RESOURCE_ADDR}: (Creating|Modifying|Destroying|Reading)\\.\\.\\.`)
+const REFRESH_START_RE = new RegExp(`^${RESOURCE_ADDR}: Refreshing state\\.\\.\\.`)
 
 // Progress events:
 //   "Still modifying... [id=EWVN2QG1SE6JF, 10s elapsed]"
@@ -66,9 +62,7 @@ const COMPLETE_RE = new RegExp(
 )
 
 // Error events: "Error: ..." after a resource address context
-const ERROR_RE = new RegExp(
-  `^Error: (.+)`,
-)
+const ERROR_RE = new RegExp(`^Error: (.+)`)
 
 // Maps terraform verbs to our action types
 const VERB_TO_ACTION: Record<string, ResourceSpanEvent["action"]> = {

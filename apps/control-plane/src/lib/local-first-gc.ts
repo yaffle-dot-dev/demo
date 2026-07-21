@@ -4,11 +4,7 @@ import {
 } from "../db/queries/principals.ts"
 import { getSchedulerRuntimeInfo } from "./scheduler.ts"
 import { DEFAULT_ANONYMOUS_SESSION_TTL_DAYS } from "./principal-tokens.ts"
-import {
-  getLocalFirstGcRowsCounter,
-  getLocalFirstGcRunsCounter,
-  logger,
-} from "./telemetry.ts"
+import { getLocalFirstGcRowsCounter, getLocalFirstGcRunsCounter, logger } from "./telemetry.ts"
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const DEFAULT_LOCAL_FIRST_GC_INTERVAL_MS = 60 * 60 * 1000
@@ -72,7 +68,9 @@ function parsePositiveIntEnv(name: string, fallback: number): number {
 
 export function startLocalFirstGcLoop(): void {
   if (state.timer) {
-    logger.warn("Local-first GC loop already running", { intervalMs: state.intervalMs ?? undefined })
+    logger.warn("Local-first GC loop already running", {
+      intervalMs: state.intervalMs ?? undefined,
+    })
     return
   }
 
@@ -113,9 +111,12 @@ export function getLocalFirstGcRuntimeInfo(): {
 
 export async function runLocalFirstGcIfLeader(reason: string): Promise<LocalFirstGcResult | null> {
   if (!getSchedulerRuntimeInfo().isLeader) {
-    logger.debug("Skipping local-first GC because this process does not hold scheduler leadership", {
-      reason,
-    })
+    logger.debug(
+      "Skipping local-first GC because this process does not hold scheduler leadership",
+      {
+        reason,
+      },
+    )
     return null
   }
 
@@ -126,8 +127,8 @@ export async function runLocalFirstGcOnce(reason: string): Promise<LocalFirstGcR
   const now = new Date()
   const expireBefore = new Date(now.getTime() - DEFAULT_ANONYMOUS_SESSION_TTL_DAYS * DAY_MS)
   const deleteBefore = new Date(
-    now.getTime()
-      - (DEFAULT_ANONYMOUS_SESSION_TTL_DAYS + DEFAULT_ANONYMOUS_ARTIFACT_RETENTION_DAYS) * DAY_MS,
+    now.getTime() -
+      (DEFAULT_ANONYMOUS_SESSION_TTL_DAYS + DEFAULT_ANONYMOUS_ARTIFACT_RETENTION_DAYS) * DAY_MS,
   )
 
   try {

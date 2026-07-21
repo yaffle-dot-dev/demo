@@ -38,12 +38,15 @@ describe("dispatchDiscovery", () => {
         return {
           fetch: async (request) => {
             capturedRequest = request
-            return Response.json({
-              data: {
-                accepted: true,
-                requestId: payload.requestId,
+            return Response.json(
+              {
+                data: {
+                  accepted: true,
+                  requestId: payload.requestId,
+                },
               },
-            }, { status: 202 })
+              { status: 202 },
+            )
           },
         }
       },
@@ -54,7 +57,7 @@ describe("dispatchDiscovery", () => {
     }
 
     const forwardedRequest = capturedRequest as Request
-    const forwardedPayload = await forwardedRequest.json() as DiscoveryDispatchRequest
+    const forwardedPayload = (await forwardedRequest.json()) as DiscoveryDispatchRequest
 
     expect(requestedName).toBe("hashicorp-tfe")
     expect(forwardedRequest.url).toBe("https://provider-discovery-agent.internal/run")

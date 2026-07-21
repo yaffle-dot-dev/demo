@@ -9,7 +9,9 @@ import { buildImageArchive, pushImageArchive } from "./lib/nix-image"
 export async function buildRunner(artifact?: DeployableArtifactResolution) {
   if (shouldSkipArtifactBuild(artifact)) {
     if (artifact) {
-      console.log(`Skipping runner image build (${artifact.strategy}). Using ${artifact.artifactRef}`)
+      console.log(
+        `Skipping runner image build (${artifact.strategy}). Using ${artifact.artifactRef}`,
+      )
     }
     return
   }

@@ -42,18 +42,17 @@ function buildVector(items: Array<{ state: string }>): LifecycleVector {
 }
 
 function usableMet(vector: LifecycleVector): boolean {
-  return vector.pending === 0
-    && vector.running === 0
-    && vector.blocked === 0
-    && vector.failed === 0
+  return vector.pending === 0 && vector.running === 0 && vector.blocked === 0 && vector.failed === 0
 }
 
 function acceptableMet(vector: LifecycleVector): boolean {
-  return vector.pending === 0
-    && vector.running === 0
-    && vector.degraded === 0
-    && vector.blocked === 0
-    && vector.failed === 0
+  return (
+    vector.pending === 0 &&
+    vector.running === 0 &&
+    vector.degraded === 0 &&
+    vector.blocked === 0 &&
+    vector.failed === 0
+  )
 }
 
 export function deriveLifecycleAggregateStatus(params: {
@@ -69,7 +68,17 @@ export function deriveLifecycleAggregateStatus(params: {
       return "failed"
     }
 
-    if (["pending", "planning", "awaiting_apply", "applying", "awaiting_approval", "activating", "destroying"].includes(workspace.preview.status)) {
+    if (
+      [
+        "pending",
+        "planning",
+        "awaiting_apply",
+        "applying",
+        "awaiting_approval",
+        "activating",
+        "destroying",
+      ].includes(workspace.preview.status)
+    ) {
       return "running"
     }
 
@@ -77,7 +86,9 @@ export function deriveLifecycleAggregateStatus(params: {
       continue
     }
 
-    const workspaceItems = params.lifecycle.items.filter((item) => item.workspacePath === workspace.preview.workspacePath)
+    const workspaceItems = params.lifecycle.items.filter(
+      (item) => item.workspacePath === workspace.preview.workspacePath,
+    )
     const usable = buildVector(workspaceItems.filter((item) => item.scopes.includes("usable")))
     if (!usableMet(usable)) {
       if (usable.failed > 0 || usable.blocked > 0) {
@@ -86,7 +97,9 @@ export function deriveLifecycleAggregateStatus(params: {
       return "running"
     }
 
-    const acceptable = buildVector(workspaceItems.filter((item) => item.scopes.includes("acceptable")))
+    const acceptable = buildVector(
+      workspaceItems.filter((item) => item.scopes.includes("acceptable")),
+    )
     if (!acceptableMet(acceptable)) {
       if (acceptable.failed > 0 || acceptable.blocked > 0) {
         return "failed"

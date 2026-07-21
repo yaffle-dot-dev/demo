@@ -7,12 +7,7 @@
 
 import { randomUUID } from "node:crypto"
 
-import {
-  claimJob,
-  completeJob,
-  releaseJob,
-  type Job,
-} from "../db/queries/jobs.ts"
+import { claimJob, completeJob, releaseJob, type Job } from "../db/queries/jobs.ts"
 import {
   handleOrgProvisionJob,
   calculateBackoffMs,
@@ -73,7 +68,10 @@ export function startJobWorker(config: JobWorkerConfig = {}): void {
   const cfg = { ...DEFAULT_CONFIG, ...config }
   state.workerId = `job-worker-${randomUUID().slice(0, 8)}`
 
-  logger.info("Starting job worker", { workerId: state.workerId, pollIntervalMs: cfg.pollIntervalMs })
+  logger.info("Starting job worker", {
+    workerId: state.workerId,
+    pollIntervalMs: cfg.pollIntervalMs,
+  })
 
   // Start polling
   state.pollInterval = setInterval(() => {

@@ -2,9 +2,7 @@ import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { z } from "zod"
 
-import {
-  findDeploymentsByEnvironment,
-} from "../db/queries/workspace-deployments.ts"
+import { findDeploymentsByEnvironment } from "../db/queries/workspace-deployments.ts"
 import { findEnvironmentPolicy } from "../db/queries/environment-policies.ts"
 import {
   type LifecycleEvent,
@@ -33,7 +31,12 @@ import {
   type RunGroup,
 } from "../db/queries/run-groups.ts"
 import { requireOrgAccess, getAuth } from "../middleware/org-auth.ts"
-import { events, type DeploymentUpdateEvent, type JobUpdateEvent, type RunUpdateEvent } from "../lib/events.ts"
+import {
+  events,
+  type DeploymentUpdateEvent,
+  type JobUpdateEvent,
+  type RunUpdateEvent,
+} from "../lib/events.ts"
 import { buildPrEnvironmentName } from "../lib/config-toml.ts"
 import {
   getSseSnapshotDurationHistogram,
@@ -257,21 +260,22 @@ reposRoute.get(
           const runGroupsData = await listRunGroupsForPr(auth.orgId, repo, prNumber)
 
           if (deployments.length === 0) {
-            const emptyPayload = runGroupsData.length === 0
-              ? JSON.stringify({ data: null })
-              : JSON.stringify({
-                  data: {
-                    org: c.req.param("org"),
-                    repo,
-                    prNumber,
-                    ref: runGroupsData[0]?.ref ?? `refs/heads/pr-${prNumber}`,
-                    headSha: runGroupsData[0]?.headSha ?? "",
-                    authorGithubId: null,
-                    authorLogin: null,
-                    workspaces: [],
-                    runGroups: await serializeRunGroups(runGroupsData),
-                  },
-                })
+            const emptyPayload =
+              runGroupsData.length === 0
+                ? JSON.stringify({ data: null })
+                : JSON.stringify({
+                    data: {
+                      org: c.req.param("org"),
+                      repo,
+                      prNumber,
+                      ref: runGroupsData[0]?.ref ?? `refs/heads/pr-${prNumber}`,
+                      headSha: runGroupsData[0]?.headSha ?? "",
+                      authorGithubId: null,
+                      authorLogin: null,
+                      workspaces: [],
+                      runGroups: await serializeRunGroups(runGroupsData),
+                    },
+                  })
             if (emptyPayload !== lastPayload) {
               lastPayload = emptyPayload
               await stream.writeSSE({ event: "update", data: emptyPayload })
@@ -287,7 +291,10 @@ reposRoute.get(
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
 
               // Include resource spans for running deployments
-              const isRunning = deployment.status === "planning" || deployment.status === "applying" || deployment.status === "destroying"
+              const isRunning =
+                deployment.status === "planning" ||
+                deployment.status === "applying" ||
+                deployment.status === "destroying"
               const runningRun = isRunning ? runs.find((r) => r.status === "running") : null
               const resourceSpans = runningRun
                 ? (await getSpansForRun(runningRun.id)).map(serializeResourceSpan)
@@ -353,7 +360,11 @@ reposRoute.get(
 
       // Listen for deployment updates matching this environment
       const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
-        if (event.orgId === auth.orgId && event.repo === repo && event.environmentName === environmentName) {
+        if (
+          event.orgId === auth.orgId &&
+          event.repo === repo &&
+          event.environmentName === environmentName
+        ) {
           updateDeploymentIds()
             .then(() => sendSnapshot())
             .catch((err) => console.error(`[sse:pr] error in handleDeploymentUpdate:`, err))
@@ -379,8 +390,11 @@ reposRoute.get(
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
-        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
-          .catch(() => { /* connection likely closed */ })
+        stream
+          .writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+          .catch(() => {
+            /* connection likely closed */
+          })
       }, 30_000)
 
       // Block the callback so Hono doesn't call stream.close() in its
@@ -417,7 +431,10 @@ reposRoute.get(
     const repo = c.req.param("repo")
     const branch = c.req.param("branch")
     if (!repo || !branch) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and branch are required" } }, 400)
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "repo and branch are required" } },
+        400,
+      )
     }
 
     // For legacy env routes, branch name is the environment name
@@ -488,7 +505,10 @@ reposRoute.get(
     const repo = c.req.param("repo")
     const branch = c.req.param("branch")
     if (!repo || !branch) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "repo and branch are required" } }, 400)
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "repo and branch are required" } },
+        400,
+      )
     }
 
     // For legacy env routes, branch name is the environment name
@@ -515,18 +535,19 @@ reposRoute.get(
           const runGroupsData = await listRunGroupsForBranch(auth.orgId, repo, branch)
 
           if (deployments.length === 0) {
-            const emptyPayload = runGroupsData.length === 0
-              ? JSON.stringify({ data: null })
-              : JSON.stringify({
-                  data: {
-                    org: c.req.param("org"),
-                    repo,
-                    branch,
-                    headSha: runGroupsData[0]?.headSha ?? "",
-                    workspaces: [],
-                    runGroups: await serializeRunGroups(runGroupsData),
-                  },
-                })
+            const emptyPayload =
+              runGroupsData.length === 0
+                ? JSON.stringify({ data: null })
+                : JSON.stringify({
+                    data: {
+                      org: c.req.param("org"),
+                      repo,
+                      branch,
+                      headSha: runGroupsData[0]?.headSha ?? "",
+                      workspaces: [],
+                      runGroups: await serializeRunGroups(runGroupsData),
+                    },
+                  })
             if (emptyPayload !== lastPayload) {
               lastPayload = emptyPayload
               await stream.writeSSE({ event: "update", data: emptyPayload })
@@ -542,7 +563,10 @@ reposRoute.get(
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
 
               // Include resource spans for running deployments
-              const isRunning = deployment.status === "planning" || deployment.status === "applying" || deployment.status === "destroying"
+              const isRunning =
+                deployment.status === "planning" ||
+                deployment.status === "applying" ||
+                deployment.status === "destroying"
               const runningRun = isRunning ? runs.find((r) => r.status === "running") : null
               const resourceSpans = runningRun
                 ? (await getSpansForRun(runningRun.id)).map(serializeResourceSpan)
@@ -605,7 +629,11 @@ reposRoute.get(
 
       // Listen for deployment updates matching this environment
       const handleDeploymentUpdate = (event: DeploymentUpdateEvent): void => {
-        if (event.orgId === auth.orgId && event.repo === repo && event.environmentName === environmentName) {
+        if (
+          event.orgId === auth.orgId &&
+          event.repo === repo &&
+          event.environmentName === environmentName
+        ) {
           updateDeploymentIds()
             .then(() => sendSnapshot())
             .catch((err) => console.error(`[sse:env] error in handleDeploymentUpdate:`, err))
@@ -631,8 +659,11 @@ reposRoute.get(
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
-        stream.writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
-          .catch(() => { /* connection likely closed */ })
+        stream
+          .writeSSE({ event: "heartbeat", data: JSON.stringify({ ts: Date.now() }) })
+          .catch(() => {
+            /* connection likely closed */
+          })
       }, 30_000)
 
       // Block the callback so Hono doesn't call stream.close() in its
@@ -795,10 +826,10 @@ async function buildEnvironmentSnapshotData(params: {
 
   if (params.detailLevel === "dag") {
     const readinessEntries = await Promise.all(
-      deployments.map(async (deployment) => [
-        deployment.id,
-        await getConnectionReadinessForDeployment(deployment),
-      ] as const),
+      deployments.map(
+        async (deployment) =>
+          [deployment.id, await getConnectionReadinessForDeployment(deployment)] as const,
+      ),
     )
     const readinessByDeployment = new Map(readinessEntries)
 
@@ -830,13 +861,20 @@ async function buildEnvironmentSnapshotData(params: {
   }
 
   const visibleRunGroupIds = [...new Set(runGroupsData.map((runGroup) => runGroup.id))]
-  const deploymentRunGroupIds = [...new Set(
-    deployments
-      .map((deployment) => deployment.runGroupId)
-      .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
-  )]
+  const deploymentRunGroupIds = [
+    ...new Set(
+      deployments
+        .map((deployment) => deployment.runGroupId)
+        .filter((runGroupId): runGroupId is string => typeof runGroupId === "string"),
+    ),
+  ]
 
-  const [runsByDeployment, latestApplyByDeployment, orgConnections, metadataByRunGroupWorkspaceKey] = await Promise.all([
+  const [
+    runsByDeployment,
+    latestApplyByDeployment,
+    orgConnections,
+    metadataByRunGroupWorkspaceKey,
+  ] = await Promise.all([
     visibleRunGroupIds.length > 0
       ? listRunsForDeployments(deploymentIds, { runGroupIds: visibleRunGroupIds })
       : listRunsForDeployments(deploymentIds),
@@ -851,13 +889,17 @@ async function buildEnvironmentSnapshotData(params: {
         getProvidersForDeployment: (currentDeployment) =>
           getRequiredProvidersForDeployment(currentDeployment, {
             metadata: currentDeployment.runGroupId
-              ? metadataByRunGroupWorkspaceKey.get(`${currentDeployment.runGroupId}:${currentDeployment.workspacePath}`) ?? null
+              ? (metadataByRunGroupWorkspaceKey.get(
+                  `${currentDeployment.runGroupId}:${currentDeployment.workspacePath}`,
+                ) ?? null)
               : null,
           }),
         getProviderRequirementsForDeployment: (currentDeployment) =>
           getRequiredProviderRequirementsForDeployment(currentDeployment, {
             metadata: currentDeployment.runGroupId
-              ? metadataByRunGroupWorkspaceKey.get(`${currentDeployment.runGroupId}:${currentDeployment.workspacePath}`) ?? null
+              ? (metadataByRunGroupWorkspaceKey.get(
+                  `${currentDeployment.runGroupId}:${currentDeployment.workspacePath}`,
+                ) ?? null)
               : null,
           }),
         listConnectionsForOrg: async () => orgConnections,
@@ -873,9 +915,10 @@ async function buildEnvironmentSnapshotData(params: {
   if (params.includeResourceSpans) {
     const runningRuns = deployments
       .map((deployment) => {
-        const isRunning = deployment.status === "planning"
-          || deployment.status === "applying"
-          || deployment.status === "destroying"
+        const isRunning =
+          deployment.status === "planning" ||
+          deployment.status === "applying" ||
+          deployment.status === "destroying"
         if (!isRunning) {
           return null
         }
@@ -904,15 +947,10 @@ async function buildEnvironmentSnapshotData(params: {
     const runningRun = params.includeResourceSpans
       ? runs.find((run) => run.status === "running")
       : undefined
-    const resourceSpans = runningRun
-      ? resourceSpansByRunId.get(runningRun.id)
-      : undefined
+    const resourceSpans = runningRun ? resourceSpansByRunId.get(runningRun.id) : undefined
 
     return {
-      preview: serializePreview(
-        deployment,
-        connectionReadiness,
-      ),
+      preview: serializePreview(deployment, connectionReadiness),
       runs: runs.map(serializeRun),
       outputs: latestApply?.outputs ?? null,
       ...(resourceSpans && resourceSpans.length > 0 ? { resourceSpans } : {}),
@@ -937,7 +975,11 @@ async function buildEnvironmentSnapshotData(params: {
   }
 }
 
-function serializeEnvironmentPolicy(policy: Awaited<ReturnType<typeof findEnvironmentPolicy>> extends infer T ? Exclude<T, undefined> : never): SerializedEnvironmentPolicy {
+function serializeEnvironmentPolicy(
+  policy: Awaited<ReturnType<typeof findEnvironmentPolicy>> extends infer T
+    ? Exclude<T, undefined>
+    : never,
+): SerializedEnvironmentPolicy {
   return {
     minimumPrincipalTier: policy.minimumPrincipalTier,
     lifecycleDispatch: policy.lifecycleDispatch,
@@ -959,11 +1001,19 @@ function serializeEnvironmentLifecycle(
       startedAt: run.startedAt.toISOString(),
       finishedAt: run.finishedAt?.toISOString() ?? null,
     },
-    items: items.map((item) => serializeLifecycleItem(item, events.filter((event) => event.itemId === item.id))),
+    items: items.map((item) =>
+      serializeLifecycleItem(
+        item,
+        events.filter((event) => event.itemId === item.id),
+      ),
+    ),
   }
 }
 
-function serializeLifecycleItem(item: LifecycleItem, events: LifecycleEvent[]): SerializedLifecycleItem {
+function serializeLifecycleItem(
+  item: LifecycleItem,
+  events: LifecycleEvent[],
+): SerializedLifecycleItem {
   return {
     id: item.id,
     runId: item.runId,
@@ -1007,13 +1057,26 @@ reposRoute.get(
     const repo = c.req.param("repo")
     const environmentName = c.req.param("name")
     if (!org || !repo || !environmentName) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "org, repo, and environment name are required" } }, 400)
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "org, repo, and environment name are required",
+          },
+        },
+        400,
+      )
     }
 
     const parsedQuery = environmentQuerySchema.safeParse(c.req.query())
     if (!parsedQuery.success) {
       return c.json(
-        { error: { code: "VALIDATION_ERROR", message: parsedQuery.error.issues[0]?.message ?? "invalid query" } },
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: parsedQuery.error.issues[0]?.message ?? "invalid query",
+          },
+        },
         400,
       )
     }
@@ -1032,7 +1095,12 @@ reposRoute.get(
 
     if (!snapshot) {
       return c.json(
-        { error: { code: "NOT_FOUND", message: `no deployments found for environment ${environmentName}` } },
+        {
+          error: {
+            code: "NOT_FOUND",
+            message: `no deployments found for environment ${environmentName}`,
+          },
+        },
         404,
       )
     }
@@ -1052,20 +1120,36 @@ reposRoute.post(
     const repo = c.req.param("repo")
     const environmentName = c.req.param("name")
     if (!org || !repo || !environmentName) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "org, repo, and environment name are required" } }, 400)
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "org, repo, and environment name are required",
+          },
+        },
+        400,
+      )
     }
 
     let body: unknown
     try {
       body = await c.req.json()
     } catch {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "body must be valid JSON" } }, 400)
+      return c.json(
+        { error: { code: "VALIDATION_ERROR", message: "body must be valid JSON" } },
+        400,
+      )
     }
 
     const parsed = runViewTelemetryBatchSchema.safeParse(body)
     if (!parsed.success) {
       return c.json(
-        { error: { code: "VALIDATION_ERROR", message: parsed.error.issues[0]?.message ?? "invalid telemetry payload" } },
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: parsed.error.issues[0]?.message ?? "invalid telemetry payload",
+          },
+        },
         400,
       )
     }
@@ -1123,13 +1207,26 @@ reposRoute.get(
     const repo = c.req.param("repo")
     const environmentName = c.req.param("name")
     if (!org || !repo || !environmentName) {
-      return c.json({ error: { code: "VALIDATION_ERROR", message: "org, repo, and environment name are required" } }, 400)
+      return c.json(
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: "org, repo, and environment name are required",
+          },
+        },
+        400,
+      )
     }
 
     const parsedQuery = environmentQuerySchema.safeParse(c.req.query())
     if (!parsedQuery.success) {
       return c.json(
-        { error: { code: "VALIDATION_ERROR", message: parsedQuery.error.issues[0]?.message ?? "invalid query" } },
+        {
+          error: {
+            code: "VALIDATION_ERROR",
+            message: parsedQuery.error.issues[0]?.message ?? "invalid query",
+          },
+        },
         400,
       )
     }
@@ -1185,7 +1282,9 @@ reposRoute.get(
             headSha,
             includeResourceSpans: true,
           })
-          deploymentIds = new Set(snapshot?.workspaces.map((workspace) => workspace.preview.id) ?? [])
+          deploymentIds = new Set(
+            snapshot?.workspaces.map((workspace) => workspace.preview.id) ?? [],
+          )
 
           const elapsed = Date.now() - start
           getSseSnapshotDurationHistogram().record(elapsed, { type: "environment" })
@@ -1243,7 +1342,9 @@ reposRoute.get(
           requestSnapshot({
             sourceEventType: "deployment_update",
             sourceEventAt: event.emittedAt,
-          }).catch((err) => console.error(`[sse:environment] error in handleDeploymentUpdate:`, err))
+          }).catch((err) =>
+            console.error(`[sse:environment] error in handleDeploymentUpdate:`, err),
+          )
         }
       }
 
@@ -1272,18 +1373,21 @@ reposRoute.get(
 
       // Heartbeat to keep connection alive
       const heartbeat = setInterval(() => {
-        stream.writeSSE({
-          event: "heartbeat",
-          data: JSON.stringify({
-            ts: Date.now(),
-            meta: buildStreamPayloadMeta({
-              context: streamContext,
-              sourceEventType: "heartbeat",
-              sourceEventAt: new Date().toISOString(),
+        stream
+          .writeSSE({
+            event: "heartbeat",
+            data: JSON.stringify({
+              ts: Date.now(),
+              meta: buildStreamPayloadMeta({
+                context: streamContext,
+                sourceEventType: "heartbeat",
+                sourceEventAt: new Date().toISOString(),
+              }),
             }),
-          }),
-        })
-          .catch(() => { /* connection likely closed */ })
+          })
+          .catch(() => {
+            /* connection likely closed */
+          })
       }, 30_000)
 
       // Block until client disconnects
@@ -1323,10 +1427,7 @@ function filterDeploymentsByHeadSha<T extends { headSha: string }>(
   return deployments.filter((deployment) => deployment.headSha === headSha)
 }
 
-function filterRunGroupsByHeadSha(
-  runGroups: RunGroup[],
-  headSha?: string,
-): RunGroup[] {
+function filterRunGroupsByHeadSha(runGroups: RunGroup[], headSha?: string): RunGroup[] {
   if (!headSha) {
     return runGroups
   }
@@ -1349,22 +1450,25 @@ interface SerializedPreview {
   createdAt: string
 }
 
-function serializePreview(p: {
-  id: string
-  workspacePath: string
-  status: string
-  stateKey: string
-  mode: string
-  requireApproval: boolean
-  createdAt: Date
-  blockedReason?: string | null
-}, readiness: {
-  status: "ready" | "missing" | "conflict" | "not_required"
-  missingProviders: string[]
-  conflictProviders: string[]
-  matchedConnections: Array<{ id: string; name: string; provider: string }>
-  degradation?: WorkspaceDegradation | null
-}): SerializedPreview {
+function serializePreview(
+  p: {
+    id: string
+    workspacePath: string
+    status: string
+    stateKey: string
+    mode: string
+    requireApproval: boolean
+    createdAt: Date
+    blockedReason?: string | null
+  },
+  readiness: {
+    status: "ready" | "missing" | "conflict" | "not_required"
+    missingProviders: string[]
+    conflictProviders: string[]
+    matchedConnections: Array<{ id: string; name: string; provider: string }>
+    degradation?: WorkspaceDegradation | null
+  },
+): SerializedPreview {
   return {
     id: p.id,
     workspacePath: p.workspacePath,
@@ -1516,7 +1620,9 @@ async function serializeRunGroups(runGroups: RunGroup[]): Promise<SerializedRunG
   )
 }
 
-async function serializeRunGroupsWithLifecycle(runGroups: RunGroup[]): Promise<SerializedRunGroup[]> {
+async function serializeRunGroupsWithLifecycle(
+  runGroups: RunGroup[],
+): Promise<SerializedRunGroup[]> {
   return Promise.all(
     runGroups.map(async (runGroup) => {
       const [lifecycleState, repoBinding] = await Promise.all([
@@ -1544,15 +1650,18 @@ function serializeRunGroup(
   environmentLifecycle?: SerializedEnvironmentLifecycle | null,
   canonicalRepoNamespace?: string,
 ): SerializedRunGroup {
-  const rawGraph = rg.dependencyGraph as (SerializedDependencyGraph & { systemError?: SerializedSystemError }) | null
+  const rawGraph = rg.dependencyGraph as
+    | (SerializedDependencyGraph & { systemError?: SerializedSystemError })
+    | null
   const resource = {
     orgId: rg.orgId,
     repo: rg.repo,
     environmentKind: rg.environmentKind,
     environmentName: rg.environmentName,
   }
-  const executionContextValid = rg.environmentKind !== "transient"
-    || isExecutionContextAssociationValid({
+  const executionContextValid =
+    rg.environmentKind !== "transient" ||
+    isExecutionContextAssociationValid({
       snapshot: rg.executionSnapshot,
       runGroup: rg,
       resource,

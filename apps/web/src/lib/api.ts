@@ -106,7 +106,12 @@ export interface ApiError {
 
 export interface WorkspaceDegradation {
   kind: "provider_requirements_unavailable"
-  errorKind: "workspace_cache_missing" | "access_denied" | "metadata_missing" | "metadata_pending" | "unknown"
+  errorKind:
+    | "workspace_cache_missing"
+    | "access_denied"
+    | "metadata_missing"
+    | "metadata_pending"
+    | "unknown"
   message: string
   retryable: boolean
 }
@@ -147,8 +152,8 @@ export interface LifecycleItemSummary {
   runId: string
   workspacePath: string
   key: string
-  phase: "activation" | "verification" | string
-  state: "pending" | "running" | "succeeded" | "degraded" | "blocked" | "failed" | string
+  phase: "activation" | "verification" | (string & {})
+  state: "pending" | "running" | "succeeded" | "degraded" | "blocked" | "failed" | (string & {})
   failurePolicy: string
   scopes: string[]
   summary: string | null
@@ -249,7 +254,7 @@ export interface ResourceSpan {
   resourceAddress: string
   resourceType: string | null
   action: string
-  status: string        // started | complete | error
+  status: string // started | complete | error
   startedAt: string
   completedAt: string | null
   durationMs: number | null
@@ -258,7 +263,7 @@ export interface ResourceSpan {
 export interface WorkspaceWithRuns {
   preview: WorkspacePreview
   runs: Run[]
-  outputs: unknown | null
+  outputs: unknown
   resourceSpans?: ResourceSpan[]
 }
 
@@ -445,7 +450,10 @@ export async function listOrgs(): Promise<DetailResponse<OrgInfo[]>> {
   return fetchJson("/orgs")
 }
 
-export async function createOrg(params: { name: string; slug?: string }): Promise<DetailResponse<{ id: string; slug: string; name: string }>> {
+export async function createOrg(params: {
+  name: string
+  slug?: string
+}): Promise<DetailResponse<{ id: string; slug: string; name: string }>> {
   return postJson("/orgs", params)
 }
 
@@ -533,9 +541,7 @@ export async function createCheckoutSession(
   return postJson(`/orgs/${org}/billing/checkout`, params)
 }
 
-export async function createPortalSession(
-  org: string,
-): Promise<DetailResponse<{ url: string }>> {
+export async function createPortalSession(org: string): Promise<DetailResponse<{ url: string }>> {
   return postJson(`/orgs/${org}/billing/portal`)
 }
 
@@ -547,7 +553,10 @@ export async function listOrgConnections(org: string): Promise<DetailResponse<Or
   return fetchJson(`/orgs/${org}/connections`)
 }
 
-export async function getOrgConnection(org: string, connectionId: string): Promise<DetailResponse<OrgConnectionDetail>> {
+export async function getOrgConnection(
+  org: string,
+  connectionId: string,
+): Promise<DetailResponse<OrgConnectionDetail>> {
   return fetchJson(`/orgs/${org}/connections/${connectionId}`)
 }
 
@@ -604,13 +613,17 @@ export async function listPrivateBetaInvites(): Promise<DetailResponse<PrivateBe
   return fetchJson("/users/private-beta/invites")
 }
 
-export async function upsertPrivateBetaInvite(
-  params: { email?: string; githubLogin?: string; note?: string },
-): Promise<DetailResponse<PrivateBetaInvite>> {
+export async function upsertPrivateBetaInvite(params: {
+  email?: string
+  githubLogin?: string
+  note?: string
+}): Promise<DetailResponse<PrivateBetaInvite>> {
   return postJson("/users/private-beta/invites", params)
 }
 
-export async function revokePrivateBetaInvite(inviteId: string): Promise<DetailResponse<{ revoked: boolean }>> {
+export async function revokePrivateBetaInvite(
+  inviteId: string,
+): Promise<DetailResponse<{ revoked: boolean }>> {
   return deleteJson(`/users/private-beta/invites/${inviteId}`)
 }
 
@@ -666,8 +679,12 @@ export async function cancelRun(runId: string): Promise<{ cancelled: boolean }> 
 /**
  * Manually re-run a preview (plan + apply).
  */
-export async function rerunPreview(previewId: string): Promise<{ rerunStarted: boolean; runGroupId: string }> {
-  const res = await postJson<{ data: { rerunStarted: boolean; runGroupId: string } }>(`/previews/${previewId}/rerun`)
+export async function rerunPreview(
+  previewId: string,
+): Promise<{ rerunStarted: boolean; runGroupId: string }> {
+  const res = await postJson<{ data: { rerunStarted: boolean; runGroupId: string } }>(
+    `/previews/${previewId}/rerun`,
+  )
   return res.data
 }
 
@@ -675,8 +692,12 @@ export async function rerunPreview(previewId: string): Promise<{ rerunStarted: b
  * Trigger apply for a preview that has a successful plan.
  * Used for manual approval after pause or for requireApproval workspaces.
  */
-export async function triggerApply(previewId: string): Promise<{ applyStarted: boolean; runId: string }> {
-  const res = await postJson<{ data: { applyStarted: boolean; runId: string } }>(`/previews/${previewId}/apply`)
+export async function triggerApply(
+  previewId: string,
+): Promise<{ applyStarted: boolean; runId: string }> {
+  const res = await postJson<{ data: { applyStarted: boolean; runId: string } }>(
+    `/previews/${previewId}/apply`,
+  )
   return res.data
 }
 
@@ -685,8 +706,12 @@ export async function triggerApply(previewId: string): Promise<{ applyStarted: b
  * Transitions from awaiting_apply to awaiting_approval.
  * After pausing, the deployment requires explicit approval to apply.
  */
-export async function pauseApply(previewId: string): Promise<{ paused: boolean; status: string; message?: string }> {
-  const res = await postJson<{ data: { paused: boolean; status: string; message?: string } }>(`/previews/${previewId}/pause`)
+export async function pauseApply(
+  previewId: string,
+): Promise<{ paused: boolean; status: string; message?: string }> {
+  const res = await postJson<{ data: { paused: boolean; status: string; message?: string } }>(
+    `/previews/${previewId}/pause`,
+  )
   return res.data
 }
 
@@ -698,7 +723,9 @@ export async function getPreviewsByPr(
   repo: string,
   prNumber: number,
 ): Promise<DetailResponse<PrPreviewGroup>> {
-  return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${prNumber}`)
+  return fetchJson(
+    `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${prNumber}`,
+  )
 }
 
 /**
@@ -710,7 +737,9 @@ export async function getPreviewsByEnv(
   repo: string,
   branch: string,
 ): Promise<DetailResponse<EnvPreviewGroup>> {
-  return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(branch)}`)
+  return fetchJson(
+    `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(branch)}`,
+  )
 }
 
 /**
@@ -738,5 +767,7 @@ export async function getEnvironment(
   }
 
   const query = searchParams.size > 0 ? `?${searchParams}` : ""
-  return fetchJson(`/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environmentName)}${query}`)
+  return fetchJson(
+    `/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/environment/${encodeURIComponent(environmentName)}${query}`,
+  )
 }

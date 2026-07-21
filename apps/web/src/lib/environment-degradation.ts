@@ -24,11 +24,16 @@ export function getWorkspaceDegradationMessage(
   return message && message.length > 0 ? message : null
 }
 
-export function getDegradedWorkspaces<T extends WorkspaceWithOptionalDegradation>(workspaces: T[]): Array<T & {
-  degradation: WorkspaceDegradation
-}> {
-  return workspaces.filter((workspace): workspace is T & { degradation: WorkspaceDegradation } =>
-    workspace.degradation != null && getWorkspaceDegradationMessage(workspace) != null,
+export function getDegradedWorkspaces<T extends WorkspaceWithOptionalDegradation>(
+  workspaces: T[],
+): Array<
+  T & {
+    degradation: WorkspaceDegradation
+  }
+> {
+  return workspaces.filter(
+    (workspace): workspace is T & { degradation: WorkspaceDegradation } =>
+      workspace.degradation != null && getWorkspaceDegradationMessage(workspace) != null,
   )
 }
 
@@ -73,5 +78,6 @@ export function summarizeEnvironmentDegradation(
 }
 
 export function countDegradedEnvironments(environments: EnvironmentGroup[]): number {
-  return environments.filter((environment) => summarizeEnvironmentDegradation(environment) !== null).length
+  return environments.filter((environment) => summarizeEnvironmentDegradation(environment) !== null)
+    .length
 }

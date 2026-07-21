@@ -14,7 +14,11 @@ import {
 
 const loginByRegistry = new Map<string, Promise<void>>()
 
-function parseRepositoryFromImageUri(imageUri: string): { registry: string; repository: string; tag: string | null } {
+function parseRepositoryFromImageUri(imageUri: string): {
+  registry: string
+  repository: string
+  tag: string | null
+} {
   const [registryAndRepo, tagPart] = imageUri.split(":", 2)
   const slashIndex = registryAndRepo.indexOf("/")
   if (slashIndex === -1) {
@@ -37,10 +41,12 @@ export async function imageTagExists(imageUri: string, region: string): Promise<
   const client = new ECRClient({ region })
 
   try {
-    const response = await client.send(new DescribeImagesCommand({
-      repositoryName: repository,
-      imageIds: [{ imageTag: tag }],
-    }))
+    const response = await client.send(
+      new DescribeImagesCommand({
+        repositoryName: repository,
+        imageIds: [{ imageTag: tag }],
+      }),
+    )
     return (response.imageDetails?.length ?? 0) > 0
   } catch (error) {
     if (error instanceof ImageNotFoundException || error instanceof RepositoryNotFoundException) {

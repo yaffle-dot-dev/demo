@@ -55,38 +55,45 @@ describe("reconcileLiveWebhookLease", () => {
   test("activates a lease after Hookdeck routing converges", async () => {
     const calls: string[] = []
 
-    await reconcileLiveWebhookLease({
-      operationId: "op-1",
-      leaseId: "lease-1",
-    }, {
-      markOperationRunning: async () => undefined,
-      markOperationSucceeded: async () => undefined,
-      markOperationFailed: async () => undefined,
-      findLease: async () => lease as never,
-      listActiveLeases: async () => [],
-      updateLease: async (_leaseId, params) => {
-        calls.push(params.status ?? "updated")
-        return undefined
+    await reconcileLiveWebhookLease(
+      {
+        operationId: "op-1",
+        leaseId: "lease-1",
       },
-      updateRouteableDeploymentHookdeckMetadata: async () => undefined,
-      getHookdeckRoutingConfig: async () => ({
-        apiKey: "hookdeck-token",
-        githubSourceId: "src_123",
-        githubSourceName: "yaffle-github-app",
-        productionDestinationId: "dest_prod",
-        productionDestinationName: "yaffle-control-plane-main",
-        productionConnectionName: "github-app-to-control-plane-main",
-      }),
-      createHookdeckRoutingClient: async () => ({
-        upsertDestination: async () => ({ id: "dest_preview", name: "preview-dest" } as never),
-        upsertConnection: async (request) => ({
-          id: request.name === "yaffle-live-lease-lease-1" ? "conn_preview" : `conn_${request.name}`,
-          name: request.name,
-        } as never),
-        deleteConnection: async () => undefined,
-      }),
-      createAuditEvent: async () => ({ id: "audit-1" } as never),
-    })
+      {
+        markOperationRunning: async () => undefined,
+        markOperationSucceeded: async () => undefined,
+        markOperationFailed: async () => undefined,
+        findLease: async () => lease as never,
+        listActiveLeases: async () => [],
+        updateLease: async (_leaseId, params) => {
+          calls.push(params.status ?? "updated")
+          return undefined
+        },
+        updateRouteableDeploymentHookdeckMetadata: async () => undefined,
+        getHookdeckRoutingConfig: async () => ({
+          apiKey: "hookdeck-token",
+          githubSourceId: "src_123",
+          githubSourceName: "yaffle-github-app",
+          productionDestinationId: "dest_prod",
+          productionDestinationName: "yaffle-control-plane-main",
+          productionConnectionName: "github-app-to-control-plane-main",
+        }),
+        createHookdeckRoutingClient: async () => ({
+          upsertDestination: async () => ({ id: "dest_preview", name: "preview-dest" }) as never,
+          upsertConnection: async (request) =>
+            ({
+              id:
+                request.name === "yaffle-live-lease-lease-1"
+                  ? "conn_preview"
+                  : `conn_${request.name}`,
+              name: request.name,
+            }) as never,
+          deleteConnection: async () => undefined,
+        }),
+        createAuditEvent: async () => ({ id: "audit-1" }) as never,
+      },
+    )
 
     expect(calls).toContain("active")
   })
@@ -94,39 +101,44 @@ describe("reconcileLiveWebhookLease", () => {
   test("revokes a lease by deleting the preview connection and restoring prod routing", async () => {
     const deleteCalls: string[] = []
 
-    await reconcileLiveWebhookLease({
-      operationId: "op-2",
-      leaseId: "lease-2",
-    }, {
-      markOperationRunning: async () => undefined,
-      markOperationSucceeded: async () => undefined,
-      markOperationFailed: async () => undefined,
-      findLease: async () => ({
-        ...lease,
-        id: "lease-2",
-        status: "revoking",
-        hookdeckConnectionId: "conn_preview",
-      } as never),
-      listActiveLeases: async () => [],
-      updateLease: async () => undefined,
-      updateRouteableDeploymentHookdeckMetadata: async () => undefined,
-      getHookdeckRoutingConfig: async () => ({
-        apiKey: "hookdeck-token",
-        githubSourceId: "src_123",
-        githubSourceName: "yaffle-github-app",
-        productionDestinationId: "dest_prod",
-        productionDestinationName: "yaffle-control-plane-main",
-        productionConnectionName: "github-app-to-control-plane-main",
-      }),
-      createHookdeckRoutingClient: async () => ({
-        upsertDestination: async () => ({ id: "dest_preview", name: "preview-dest" } as never),
-        upsertConnection: async (request) => ({ id: `conn_${request.name}`, name: request.name } as never),
-        deleteConnection: async (id) => {
-          deleteCalls.push(id)
-        },
-      }),
-      createAuditEvent: async () => ({ id: "audit-1" } as never),
-    })
+    await reconcileLiveWebhookLease(
+      {
+        operationId: "op-2",
+        leaseId: "lease-2",
+      },
+      {
+        markOperationRunning: async () => undefined,
+        markOperationSucceeded: async () => undefined,
+        markOperationFailed: async () => undefined,
+        findLease: async () =>
+          ({
+            ...lease,
+            id: "lease-2",
+            status: "revoking",
+            hookdeckConnectionId: "conn_preview",
+          }) as never,
+        listActiveLeases: async () => [],
+        updateLease: async () => undefined,
+        updateRouteableDeploymentHookdeckMetadata: async () => undefined,
+        getHookdeckRoutingConfig: async () => ({
+          apiKey: "hookdeck-token",
+          githubSourceId: "src_123",
+          githubSourceName: "yaffle-github-app",
+          productionDestinationId: "dest_prod",
+          productionDestinationName: "yaffle-control-plane-main",
+          productionConnectionName: "github-app-to-control-plane-main",
+        }),
+        createHookdeckRoutingClient: async () => ({
+          upsertDestination: async () => ({ id: "dest_preview", name: "preview-dest" }) as never,
+          upsertConnection: async (request) =>
+            ({ id: `conn_${request.name}`, name: request.name }) as never,
+          deleteConnection: async (id) => {
+            deleteCalls.push(id)
+          },
+        }),
+        createAuditEvent: async () => ({ id: "audit-1" }) as never,
+      },
+    )
 
     expect(deleteCalls).toEqual(["conn_preview"])
   })

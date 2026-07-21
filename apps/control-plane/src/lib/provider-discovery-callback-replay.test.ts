@@ -24,6 +24,6 @@ describe("consumeProviderDiscoveryCallbackNonce", () => {
   test("accepts nonce again after ttl", () => {
     const now = Date.now()
     expect(consumeProviderDiscoveryCallbackNonce("nonce-1", now)).toBe(true)
-    expect(consumeProviderDiscoveryCallbackNonce("nonce-1", now + (6 * 60 * 1000))).toBe(true)
+    expect(consumeProviderDiscoveryCallbackNonce("nonce-1", now + 6 * 60 * 1000)).toBe(true)
   })
 })

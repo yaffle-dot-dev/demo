@@ -77,10 +77,12 @@ export async function initTelemetry(): Promise<void> {
 
     await hydrateTelemetrySecrets()
 
-    const tracesDataset = extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS)
-      ?? extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_HEADERS)
-    const logsDataset = extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS)
-      ?? extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_HEADERS)
+    const tracesDataset =
+      extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS) ??
+      extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_HEADERS)
+    const logsDataset =
+      extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS) ??
+      extractAxiomDataset(process.env.OTEL_EXPORTER_OTLP_HEADERS)
 
     if (tracerProviderInstance || loggerProviderInstance) {
       return
@@ -89,12 +91,10 @@ export async function initTelemetry(): Promise<void> {
     diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.WARN)
 
     const { resourceFromAttributes } = await import("@opentelemetry/resources")
-    const {
-      ATTR_SERVICE_NAME,
-      ATTR_SERVICE_VERSION,
-      SEMRESATTRS_DEPLOYMENT_ENVIRONMENT,
-    } = await import("@opentelemetry/semantic-conventions")
-    const { BasicTracerProvider, BatchSpanProcessor } = await import("@opentelemetry/sdk-trace-base")
+    const { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION, SEMRESATTRS_DEPLOYMENT_ENVIRONMENT } =
+      await import("@opentelemetry/semantic-conventions")
+    const { BasicTracerProvider, BatchSpanProcessor } =
+      await import("@opentelemetry/sdk-trace-base")
     const { OTLPTraceExporter } = await import("@opentelemetry/exporter-trace-otlp-proto")
     const { LoggerProvider, BatchLogRecordProcessor } = await import("@opentelemetry/sdk-logs")
     const { OTLPLogExporter } = await import("@opentelemetry/exporter-logs-otlp-proto")
@@ -107,22 +107,26 @@ export async function initTelemetry(): Promise<void> {
 
     const tracerProvider = new BasicTracerProvider({
       resource,
-      spanProcessors: [new BatchSpanProcessor(new OTLPTraceExporter(), {
-        scheduledDelayMillis: 500,
-        maxQueueSize: 2048,
-        maxExportBatchSize: 256,
-      })],
+      spanProcessors: [
+        new BatchSpanProcessor(new OTLPTraceExporter(), {
+          scheduledDelayMillis: 500,
+          maxQueueSize: 2048,
+          maxExportBatchSize: 256,
+        }),
+      ],
     })
     trace.setGlobalTracerProvider(tracerProvider)
     tracerProviderInstance = tracerProvider
 
     const loggerProvider = new LoggerProvider({
       resource,
-      processors: [new BatchLogRecordProcessor(new OTLPLogExporter(), {
-        scheduledDelayMillis: 500,
-        maxQueueSize: 2048,
-        maxExportBatchSize: 256,
-      })],
+      processors: [
+        new BatchLogRecordProcessor(new OTLPLogExporter(), {
+          scheduledDelayMillis: 500,
+          maxQueueSize: 2048,
+          maxExportBatchSize: 256,
+        }),
+      ],
     })
     loggerProviderInstance = loggerProvider
     otelLogger = loggerProvider.getLogger(SERVICE_NAME, SERVICE_VERSION)
@@ -146,7 +150,11 @@ export async function forceFlushTelemetry(reason: string): Promise<void> {
   }
 }
 
-function emitLog(severityText: "INFO" | "WARN" | "ERROR", body: string, attributes?: Record<string, unknown>): void {
+function emitLog(
+  severityText: "INFO" | "WARN" | "ERROR",
+  body: string,
+  attributes?: Record<string, unknown>,
+): void {
   const prefix = `[traffic-controller] ${severityText.toLowerCase()}`
   if (severityText === "ERROR") {
     console.error(`${prefix}: ${body}`, attributes ?? {})
@@ -160,21 +168,22 @@ function emitLog(severityText: "INFO" | "WARN" | "ERROR", body: string, attribut
     return
   }
 
-  const severityNumber = severityText === "ERROR"
-    ? SeverityNumber.ERROR
-    : severityText === "WARN"
-      ? SeverityNumber.WARN
-      : SeverityNumber.INFO
+  const severityNumber =
+    severityText === "ERROR"
+      ? SeverityNumber.ERROR
+      : severityText === "WARN"
+        ? SeverityNumber.WARN
+        : SeverityNumber.INFO
 
   try {
     const normalizedAttributes = attributes
       ? Object.fromEntries(
           Object.entries(attributes).map(([key, value]) => {
             if (
-              typeof value === "string"
-              || typeof value === "number"
-              || typeof value === "boolean"
-              || value == null
+              typeof value === "string" ||
+              typeof value === "number" ||
+              typeof value === "boolean" ||
+              value == null
             ) {
               return [key, value]
             }
@@ -192,7 +201,9 @@ function emitLog(severityText: "INFO" | "WARN" | "ERROR", body: string, attribut
       context: context.active(),
     })
   } catch (error) {
-    console.warn(`[traffic-controller telemetry] failed to emit log: ${error instanceof Error ? error.message : String(error)}`)
+    console.warn(
+      `[traffic-controller telemetry] failed to emit log: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
 }
 
@@ -215,7 +226,9 @@ export async function withSpan<T>(
   attributes: Record<string, string | number | boolean | undefined>,
   fn: () => Promise<T>,
 ): Promise<T> {
-  const filtered = Object.fromEntries(Object.entries(attributes).filter(([, value]) => value !== undefined))
+  const filtered = Object.fromEntries(
+    Object.entries(attributes).filter(([, value]) => value !== undefined),
+  )
 
   return tracer.startActiveSpan(name, async (span) => {
     span.setAttributes(filtered)

@@ -32,7 +32,7 @@ if (!Number.isFinite(ttlHours) || ttlHours <= 0) {
 }
 
 const org = looksLikeUuid(identifier)
-  ? (await findOrgById(identifier)) ?? (await findOrgBySlug(identifier))
+  ? ((await findOrgById(identifier)) ?? (await findOrgBySlug(identifier)))
   : await findOrgBySlug(identifier)
 
 if (!org) {
@@ -49,10 +49,16 @@ const taskArn = await spawner.spawnWarmRunner({
   maxSlots,
 })
 
-console.log(JSON.stringify({
-  orgId: org.id,
-  orgSlug: org.slug,
-  maxSlots,
-  ttlHours,
-  taskArn,
-}, null, 2))
+console.log(
+  JSON.stringify(
+    {
+      orgId: org.id,
+      orgSlug: org.slug,
+      maxSlots,
+      ttlHours,
+      taskArn,
+    },
+    null,
+    2,
+  ),
+)

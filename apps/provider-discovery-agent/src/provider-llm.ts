@@ -40,12 +40,7 @@ function buildDocumentBundle(material: ProviderResearchMaterial): string {
       continue
     }
 
-    sections.push([
-      `SOURCE: ${document.kind}`,
-      `URL: ${document.url}`,
-      "CONTENT:",
-      text,
-    ].join("\n"))
+    sections.push([`SOURCE: ${document.kind}`, `URL: ${document.url}`, "CONTENT:", text].join("\n"))
 
     totalChars += text.length
   }
@@ -54,7 +49,10 @@ function buildDocumentBundle(material: ProviderResearchMaterial): string {
 }
 
 function normalizeEnvVar(value: string): string {
-  return value.trim().toUpperCase().replace(/[^A-Z0-9_]/g, "")
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]/g, "")
 }
 
 function isCanonicalEnvVar(value: string): boolean {
@@ -121,9 +119,10 @@ function extractMessageContent(response: unknown): LlmExtractionResponse {
 
     const choices = asRecord.choices
     if (Array.isArray(choices)) {
-      const message = choices[0] && typeof choices[0] === "object"
-        ? (choices[0] as Record<string, unknown>).message
-        : undefined
+      const message =
+        choices[0] && typeof choices[0] === "object"
+          ? (choices[0] as Record<string, unknown>).message
+          : undefined
       if (message && typeof message === "object") {
         const content = (message as Record<string, unknown>).content
         if (typeof content === "string") {
@@ -136,20 +135,37 @@ function extractMessageContent(response: unknown): LlmExtractionResponse {
   throw new Error("LLM response did not include parseable content")
 }
 
-function validateAgainstDocuments(material: ProviderResearchMaterial, extracted: LlmExtractionResponse): ProviderCredentialExtractionResult {
+function validateAgainstDocuments(
+  material: ProviderResearchMaterial,
+  extracted: LlmExtractionResponse,
+): ProviderCredentialExtractionResult {
   const corpus = material.documents.map((document) => document.text.toUpperCase()).join("\n")
 
-  const exactEnvVars = [...new Set((extracted.exactEnvVars ?? [])
-    .map(normalizeEnvVar)
-    .filter((value) => value.length > 0 && corpus.includes(value))
-    .filter(isCanonicalEnvVar))]
+  const exactEnvVars = [
+    ...new Set(
+      (extracted.exactEnvVars ?? [])
+        .map(normalizeEnvVar)
+        .filter((value) => value.length > 0 && corpus.includes(value))
+        .filter(isCanonicalEnvVar),
+    ),
+  ]
 
-  const prefixEnvVars = [...new Set((extracted.prefixEnvVars ?? [])
-    .map(normalizePrefix)
-    .filter((value) => value.length > 1 && (corpus.includes(value) || exactEnvVars.some((envVar) => envVar.startsWith(value)))))]
+  const prefixEnvVars = [
+    ...new Set(
+      (extracted.prefixEnvVars ?? [])
+        .map(normalizePrefix)
+        .filter(
+          (value) =>
+            value.length > 1 &&
+            (corpus.includes(value) || exactEnvVars.some((envVar) => envVar.startsWith(value))),
+        ),
+    ),
+  ]
 
   const confidence = extracted.confidence ?? "low"
-  const reasoningSummary = extracted.reasoningSummary?.trim() || `Extracted credentials from official provider docs for ${material.providerType}.`
+  const reasoningSummary =
+    extracted.reasoningSummary?.trim() ||
+    `Extracted credentials from official provider docs for ${material.providerType}.`
 
   return {
     exactEnvVars,

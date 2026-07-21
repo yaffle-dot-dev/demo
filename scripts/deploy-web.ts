@@ -48,10 +48,14 @@ export async function deployWeb(artifact?: DeployableArtifactResolution) {
   await waitForStability(cluster, service)
 }
 
-export async function resolveWebDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
+export async function resolveWebDeploymentTarget(): Promise<{
+  cluster: string
+  service: string
+  appDeployerRoleArn: string
+}> {
   const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
-  const overrideCluster = process.env.YAFFLE_WEB_CLUSTER?.trim()
-    || process.env.YAFFLE_ECS_CLUSTER?.trim()
+  const overrideCluster =
+    process.env.YAFFLE_WEB_CLUSTER?.trim() || process.env.YAFFLE_ECS_CLUSTER?.trim()
   const overrideService = process.env.YAFFLE_WEB_SERVICE?.trim()
   const overrideAppDeployerRoleArn = process.env.YAFFLE_APP_DEPLOYER_ROLE_ARN?.trim()
 
@@ -80,22 +84,21 @@ export async function resolveWebDeploymentTarget(): Promise<{ cluster: string; s
     fetchOutputs({ workspace: "apps/control-plane/infra", environment }),
   ])
 
-  const cluster = typeof cpOutputs.ecs_cluster_name === "string"
-    ? cpOutputs.ecs_cluster_name.trim()
-    : ""
-  const service = typeof webOutputs.web_service_name === "string"
-    ? webOutputs.web_service_name.trim()
-    : ""
-  const appDeployerRoleArn = overrideAppDeployerRoleArn
-    || (typeof webOutputs.app_deployer_role_arn === "string"
+  const cluster =
+    typeof cpOutputs.ecs_cluster_name === "string" ? cpOutputs.ecs_cluster_name.trim() : ""
+  const service =
+    typeof webOutputs.web_service_name === "string" ? webOutputs.web_service_name.trim() : ""
+  const appDeployerRoleArn =
+    overrideAppDeployerRoleArn ||
+    (typeof webOutputs.app_deployer_role_arn === "string"
       ? webOutputs.app_deployer_role_arn.trim()
       : "")
 
   if (!cluster || !service || !appDeployerRoleArn) {
     throw new Error(
-      "Could not determine web cluster/service. "
-      + "Set YAFFLE_WEB_CLUSTER (or YAFFLE_ECS_CLUSTER), YAFFLE_WEB_SERVICE, and YAFFLE_APP_DEPLOYER_ROLE_ARN, "
-      + "or ensure apps/control-plane/infra exports ecs_cluster_name and apps/web/infra exports web_service_name and app_deployer_role_arn through Yaffle outputs.",
+      "Could not determine web cluster/service. " +
+        "Set YAFFLE_WEB_CLUSTER (or YAFFLE_ECS_CLUSTER), YAFFLE_WEB_SERVICE, and YAFFLE_APP_DEPLOYER_ROLE_ARN, " +
+        "or ensure apps/control-plane/infra exports ecs_cluster_name and apps/web/infra exports web_service_name and app_deployer_role_arn through Yaffle outputs.",
     )
   }
 

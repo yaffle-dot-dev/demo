@@ -72,57 +72,72 @@ export async function findLiveWebhookLeaseWithDeploymentById(
       routeableDeployment: routeableDeployments,
     })
     .from(liveWebhookLeases)
-    .innerJoin(routeableDeployments, eq(routeableDeployments.id, liveWebhookLeases.routeableDeploymentId))
+    .innerJoin(
+      routeableDeployments,
+      eq(routeableDeployments.id, liveWebhookLeases.routeableDeploymentId),
+    )
     .where(eq(liveWebhookLeases.id, id))
     .limit(1)
 
-  return rows[0] ? { ...rows[0].lease, routeableDeployment: rows[0].routeableDeployment } : undefined
+  return rows[0]
+    ? { ...rows[0].lease, routeableDeployment: rows[0].routeableDeployment }
+    : undefined
 }
 
-export async function findLiveWebhookLeaseByExactScope(params: {
-  routeableDeploymentId: string
-  event: LiveWebhookLease["event"]
-  installationId: number
-  repositoryId?: number | null
-  action?: string | null
-  pullRequestNumber?: number | null
-  ref?: string | null
-  statuses?: LiveWebhookLease["status"][]
-}, db?: TrafficControlDb): Promise<LiveWebhookLease | undefined> {
+export async function findLiveWebhookLeaseByExactScope(
+  params: {
+    routeableDeploymentId: string
+    event: LiveWebhookLease["event"]
+    installationId: number
+    repositoryId?: number | null
+    action?: string | null
+    pullRequestNumber?: number | null
+    ref?: string | null
+    statuses?: LiveWebhookLease["status"][]
+  },
+  db?: TrafficControlDb,
+): Promise<LiveWebhookLease | undefined> {
   const resolvedDb = await leasesDb(db)
   const rows = await resolvedDb
     .select()
     .from(liveWebhookLeases)
-    .where(and(
-      eq(liveWebhookLeases.routeableDeploymentId, params.routeableDeploymentId),
-      eq(liveWebhookLeases.event, params.event),
-      eq(liveWebhookLeases.installationId, params.installationId),
-      maybeEq(liveWebhookLeases.repositoryId, params.repositoryId ?? null),
-      maybeEq(liveWebhookLeases.action, params.action ?? null),
-      maybeEq(liveWebhookLeases.pullRequestNumber, params.pullRequestNumber ?? null),
-      maybeEq(liveWebhookLeases.ref, params.ref ?? null),
-    ))
+    .where(
+      and(
+        eq(liveWebhookLeases.routeableDeploymentId, params.routeableDeploymentId),
+        eq(liveWebhookLeases.event, params.event),
+        eq(liveWebhookLeases.installationId, params.installationId),
+        maybeEq(liveWebhookLeases.repositoryId, params.repositoryId ?? null),
+        maybeEq(liveWebhookLeases.action, params.action ?? null),
+        maybeEq(liveWebhookLeases.pullRequestNumber, params.pullRequestNumber ?? null),
+        maybeEq(liveWebhookLeases.ref, params.ref ?? null),
+      ),
+    )
     .limit(5)
 
   const statuses = params.statuses
   return rows.find((row) => !statuses || statuses.includes(row.status))
 }
 
-export async function listCandidateLiveWebhookLeasesForScope(params: {
-  event: LiveWebhookLease["event"]
-  installationId: number
-  repositoryId?: number | null
-  statuses?: LiveWebhookLease["status"][]
-}, db?: TrafficControlDb): Promise<LiveWebhookLease[]> {
+export async function listCandidateLiveWebhookLeasesForScope(
+  params: {
+    event: LiveWebhookLease["event"]
+    installationId: number
+    repositoryId?: number | null
+    statuses?: LiveWebhookLease["status"][]
+  },
+  db?: TrafficControlDb,
+): Promise<LiveWebhookLease[]> {
   const resolvedDb = await leasesDb(db)
   const rows = await resolvedDb
     .select()
     .from(liveWebhookLeases)
-    .where(and(
-      eq(liveWebhookLeases.event, params.event),
-      eq(liveWebhookLeases.installationId, params.installationId),
-      maybeEq(liveWebhookLeases.repositoryId, params.repositoryId ?? null),
-    ))
+    .where(
+      and(
+        eq(liveWebhookLeases.event, params.event),
+        eq(liveWebhookLeases.installationId, params.installationId),
+        maybeEq(liveWebhookLeases.repositoryId, params.repositoryId ?? null),
+      ),
+    )
 
   return params.statuses ? rows.filter((row) => params.statuses!.includes(row.status)) : rows
 }
@@ -137,7 +152,10 @@ export async function listActiveLiveWebhookLeasesWithDeployments(
       routeableDeployment: routeableDeployments,
     })
     .from(liveWebhookLeases)
-    .innerJoin(routeableDeployments, eq(routeableDeployments.id, liveWebhookLeases.routeableDeploymentId))
+    .innerJoin(
+      routeableDeployments,
+      eq(routeableDeployments.id, liveWebhookLeases.routeableDeploymentId),
+    )
     .where(eq(liveWebhookLeases.status, "active"))
 
   return rows.map((row) => ({
@@ -200,30 +218,40 @@ export async function markLiveWebhookLeaseRevoking(
   return updateLiveWebhookLease(leaseId, { status: "revoking" }, db)
 }
 
-export async function findOverlappingLiveWebhookLeases(params: {
-  event: LiveWebhookLease["event"]
-  installationId: number
-  repositoryId?: number | null
-  action?: string | null
-  pullRequestNumber?: number | null
-  ref?: string | null
-  excludeLeaseId?: string
-  statuses?: LiveWebhookLease["status"][]
-}, db?: TrafficControlDb): Promise<LiveWebhookLease[]> {
-  const candidates = await listCandidateLiveWebhookLeasesForScope({
-    event: params.event,
-    installationId: params.installationId,
-    repositoryId: params.repositoryId ?? null,
-    statuses: params.statuses,
-  }, db)
+export async function findOverlappingLiveWebhookLeases(
+  params: {
+    event: LiveWebhookLease["event"]
+    installationId: number
+    repositoryId?: number | null
+    action?: string | null
+    pullRequestNumber?: number | null
+    ref?: string | null
+    excludeLeaseId?: string
+    statuses?: LiveWebhookLease["status"][]
+  },
+  db?: TrafficControlDb,
+): Promise<LiveWebhookLease[]> {
+  const candidates = await listCandidateLiveWebhookLeasesForScope(
+    {
+      event: params.event,
+      installationId: params.installationId,
+      repositoryId: params.repositoryId ?? null,
+      statuses: params.statuses,
+    },
+    db,
+  )
 
   return candidates.filter((candidate) => {
     if (params.excludeLeaseId && candidate.id === params.excludeLeaseId) {
       return false
     }
 
-    const matchesAction = candidate.action == null || params.action == null || candidate.action === params.action
-    const matchesPr = candidate.pullRequestNumber == null || params.pullRequestNumber == null || candidate.pullRequestNumber === params.pullRequestNumber
+    const matchesAction =
+      candidate.action == null || params.action == null || candidate.action === params.action
+    const matchesPr =
+      candidate.pullRequestNumber == null ||
+      params.pullRequestNumber == null ||
+      candidate.pullRequestNumber === params.pullRequestNumber
     const matchesRef = candidate.ref == null || params.ref == null || candidate.ref === params.ref
 
     return matchesAction && matchesPr && matchesRef

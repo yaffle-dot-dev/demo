@@ -36,17 +36,20 @@ describe("publishHostedOutputModuleForRunGroupBinding", () => {
       isActive: true,
     })
 
-    const [runGroup] = await db.insert(runGroups).values({
-      orgId: org.id,
-      repoBindingId: binding.id,
-      repo: "fixture",
-      environmentKind: "named",
-      environmentName: "main",
-      ref: "refs/heads/main",
-      headSha: "abc123def456",
-      trigger: "manual",
-      status: "running",
-    }).returning()
+    const [runGroup] = await db
+      .insert(runGroups)
+      .values({
+        orgId: org.id,
+        repoBindingId: binding.id,
+        repo: "fixture",
+        environmentKind: "named",
+        environmentName: "main",
+        ref: "refs/heads/main",
+        headSha: "abc123def456",
+        trigger: "manual",
+        status: "running",
+      })
+      .returning()
 
     const version = await publishHostedOutputModuleForRunGroupBinding({
       runGroupId: runGroup.id,
@@ -59,7 +62,10 @@ describe("publishHostedOutputModuleForRunGroupBinding", () => {
 
     expect(version).toBe("1.0.1")
 
-    const rows = await db.select().from(hostedOutputModules).where(eq(hostedOutputModules.canonicalRepoNamespace, "test-org--fixture"))
+    const rows = await db
+      .select()
+      .from(hostedOutputModules)
+      .where(eq(hostedOutputModules.canonicalRepoNamespace, "test-org--fixture"))
     expect(rows).toHaveLength(1)
     expect(rows[0]?.principalId).toBe(principal.id)
     expect(rows[0]?.repoBindingId).toBe(binding.id)
@@ -79,16 +85,19 @@ describe("publishHostedOutputModuleForRunGroupBinding", () => {
       isActive: true,
     })
 
-    const [runGroup] = await db.insert(runGroups).values({
-      orgId: org.id,
-      repo: "fixture",
-      environmentKind: "named",
-      environmentName: "main",
-      ref: "refs/heads/main",
-      headSha: "fff111",
-      trigger: "push",
-      status: "running",
-    }).returning()
+    const [runGroup] = await db
+      .insert(runGroups)
+      .values({
+        orgId: org.id,
+        repo: "fixture",
+        environmentKind: "named",
+        environmentName: "main",
+        ref: "refs/heads/main",
+        headSha: "fff111",
+        trigger: "push",
+        status: "running",
+      })
+      .returning()
 
     const version = await publishHostedOutputModuleForRunGroupBinding({
       runGroupId: runGroup.id,
@@ -99,7 +108,10 @@ describe("publishHostedOutputModuleForRunGroupBinding", () => {
 
     expect(version).toBe("1.0.1")
 
-    const rows = await db.select().from(hostedOutputModules).where(eq(hostedOutputModules.canonicalRepoNamespace, "test-org-webhook--fixture"))
+    const rows = await db
+      .select()
+      .from(hostedOutputModules)
+      .where(eq(hostedOutputModules.canonicalRepoNamespace, "test-org-webhook--fixture"))
     expect(rows).toHaveLength(1)
     expect(rows[0]?.principalId).toBeNull()
     expect(rows[0]?.repoBindingId).toBeNull()

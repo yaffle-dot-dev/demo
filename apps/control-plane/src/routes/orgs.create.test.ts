@@ -41,7 +41,7 @@ describe("org creation", () => {
     })
 
     expect(res.status).toBe(201)
-    const body = await res.json() as { data: { slug: string } }
+    const body = (await res.json()) as { data: { slug: string } }
     expect(body.data.slug).toBe("new")
   })
 
@@ -56,7 +56,7 @@ describe("org creation", () => {
     })
 
     expect(res.status).toBe(201)
-    const body = await res.json() as { data: { slug: string } }
+    const body = (await res.json()) as { data: { slug: string } }
     expect(body.data.slug).toContain("okay-")
   })
 })

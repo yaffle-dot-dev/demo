@@ -23,18 +23,21 @@ export async function getConfig(): Promise<Config> {
   const environmentName = process.env.YAFFLE_ENVIRONMENT_NAME?.trim()
   const environmentKind = process.env.YAFFLE_ENVIRONMENT_KIND?.trim()
 
-  const sha = process.env.YAFFLE_SHA
-    ?? (await exec(["git", "rev-parse", "HEAD"], { quiet: true })).trim()
+  const sha =
+    process.env.YAFFLE_SHA ?? (await exec(["git", "rev-parse", "HEAD"], { quiet: true })).trim()
 
-  const branch = process.env.YAFFLE_BRANCH
-    ?? (await exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], { quiet: true })).trim()
+  const branch =
+    process.env.YAFFLE_BRANCH ??
+    (await exec(["git", "rev-parse", "--abbrev-ref", "HEAD"], { quiet: true })).trim()
 
-  const tier = process.env.YAFFLE_TIER
-    ?? ((environmentKind === "named" && environmentName === "main") || branch === "main"
+  const tier =
+    process.env.YAFFLE_TIER ??
+    ((environmentKind === "named" && environmentName === "main") || branch === "main"
       ? "production"
       : "nonprod")
   // Only push by default on main. Locally on feature branches, build-only unless explicitly told to push.
-  const shouldPush = process.env.YAFFLE_PUSH === "true" || (process.env.YAFFLE_PUSH !== "false" && branch === "main")
+  const shouldPush =
+    process.env.YAFFLE_PUSH === "true" || (process.env.YAFFLE_PUSH !== "false" && branch === "main")
   const dryRun = process.env.YAFFLE_DRY_RUN === "true"
 
   _config = { region, registry, tier, sha, shouldPush, dryRun }

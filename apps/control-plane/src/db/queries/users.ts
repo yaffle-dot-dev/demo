@@ -18,10 +18,7 @@ export async function findUserByGithubId(githubId: string): Promise<User | undef
       .select({ user: user })
       .from(account)
       .innerJoin(user, eq(account.userId, user.id))
-      .where(and(
-        eq(account.providerId, "github"),
-        eq(account.accountId, githubId),
-      ))
+      .where(and(eq(account.providerId, "github"), eq(account.accountId, githubId)))
       .limit(1)
     return rows[0]?.user
   })
@@ -36,10 +33,7 @@ export async function getGithubIdForUser(userId: string): Promise<number | null>
     const rows = await db
       .select({ accountId: account.accountId })
       .from(account)
-      .where(and(
-        eq(account.userId, userId),
-        eq(account.providerId, "github"),
-      ))
+      .where(and(eq(account.userId, userId), eq(account.providerId, "github")))
       .limit(1)
     const accountId = rows[0]?.accountId
     return accountId ? Number(accountId) : null
@@ -51,11 +45,7 @@ export async function getGithubIdForUser(userId: string): Promise<number | null>
  */
 export async function findUserById(id: string): Promise<User | undefined> {
   return withDbSpan("select", "user", async () => {
-    const rows = await db
-      .select()
-      .from(user)
-      .where(eq(user.id, id))
-      .limit(1)
+    const rows = await db.select().from(user).where(eq(user.id, id)).limit(1)
     return rows[0]
   })
 }
@@ -222,10 +212,7 @@ export async function listOrgMembers(orgId: string): Promise<
 /**
  * Remove a user's membership from an organization.
  */
-export async function removeMembership(opts: {
-  orgId: string
-  userId: string
-}): Promise<void> {
+export async function removeMembership(opts: { orgId: string; userId: string }): Promise<void> {
   return withDbSpan("delete", "org_memberships", async () => {
     await db
       .delete(orgMemberships)

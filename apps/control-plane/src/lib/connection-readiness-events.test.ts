@@ -33,7 +33,13 @@ describe("emitConnectionReadinessChangedForOrg", () => {
           },
         ] as never
       },
-      emitDeploymentUpdate: (deploymentId, emittedOrgId, repo, environmentKind, environmentName) => {
+      emitDeploymentUpdate: (
+        deploymentId,
+        emittedOrgId,
+        repo,
+        environmentKind,
+        environmentName,
+      ) => {
         emitted.push({
           deploymentId,
           orgId: emittedOrgId,

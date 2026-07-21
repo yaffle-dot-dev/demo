@@ -26,9 +26,12 @@ function serializeError(error: unknown): Record<string, unknown> {
       errorName: error.name,
       errorMessage: error.message,
       errorStack: error.stack,
-      errorCause: error.cause instanceof Error
-        ? `${error.cause.name}: ${error.cause.message}`
-        : (error.cause != null ? String(error.cause) : undefined),
+      errorCause:
+        error.cause instanceof Error
+          ? `${error.cause.name}: ${error.cause.message}`
+          : error.cause != null
+            ? JSON.stringify(error.cause)
+            : undefined,
     }
   }
 
@@ -66,7 +69,9 @@ function logWorkspaceMetadataDegradation(params: {
   degradation: ProviderRequirementsDegradation
   error?: unknown
 }): void {
-  const event = params.error ? "connection_readiness.degraded.error" : "connection_readiness.degraded"
+  const event = params.error
+    ? "connection_readiness.degraded.error"
+    : "connection_readiness.degraded"
 
   logger.warn(event, {
     orgId: params.runGroup.orgId,
@@ -106,7 +111,9 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
     const extractedAt = new Date()
 
     if (!params.workspaceS3Key) {
-      const degradation = buildProviderRequirementsDegradation(new Error("The specified key does not exist."))
+      const degradation = buildProviderRequirementsDegradation(
+        new Error("The specified key does not exist."),
+      )
       const rows = params.workspacePaths.map((workspacePath) => {
         logWorkspaceMetadataDegradation({
           runGroup: params.runGroup,
@@ -210,13 +217,15 @@ export async function persistRunGroupWorkspaceMetadataFromArchive(params: {
             error,
           })
 
-          rows.push(buildFailedMetadataRow({
-            runGroupId: params.runGroup.id,
-            workspacePath,
-            degradation,
-            source: params.source,
-            extractedAt,
-          }))
+          rows.push(
+            buildFailedMetadataRow({
+              runGroupId: params.runGroup.id,
+              workspacePath,
+              degradation,
+              source: params.source,
+              extractedAt,
+            }),
+          )
           failedCount++
         }
       }

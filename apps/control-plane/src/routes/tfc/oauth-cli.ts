@@ -78,12 +78,15 @@ function escapeHtml(value: string): string {
     .replaceAll("'", "&#39;")
 }
 
-function renderOrgSelectionPage(currentRequestUrl: URL, orgs: Array<{
-  id: string
-  name: string
-  slug: string
-  role: string
-}>): string {
+function renderOrgSelectionPage(
+  currentRequestUrl: URL,
+  orgs: Array<{
+    id: string
+    name: string
+    slug: string
+    role: string
+  }>,
+): string {
   const orgLinks = orgs
     .map((org) => {
       const authorizeUrl = new URL(currentRequestUrl.toString())
@@ -210,7 +213,10 @@ oauthCliRoute.get("/authorize", async (c) => {
     // BetterAuth requires POST with JSON, so we use a minimal page that auto-submits
     // Ensure we use HTTPS for the callback (Caddy terminates TLS)
     const currentRequestUrl = new URL(c.req.url)
-    const currentUrl = buildPublicUrl(c.req.url, `${currentRequestUrl.pathname}${currentRequestUrl.search}`)
+    const currentUrl = buildPublicUrl(
+      c.req.url,
+      `${currentRequestUrl.pathname}${currentRequestUrl.search}`,
+    )
     const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -251,7 +257,7 @@ oauthCliRoute.get("/authorize", async (c) => {
   const userOrgs = await listUserOrgs(session.user.id)
   if (userOrgs.length === 0) {
     return c.html(
-      "<p style=\"font-family:monospace;padding:24px\">No Yaffle organizations available for this account.</p>",
+      '<p style="font-family:monospace;padding:24px">No Yaffle organizations available for this account.</p>',
       403,
     )
   }
@@ -270,7 +276,10 @@ oauthCliRoute.get("/authorize", async (c) => {
 
   if (!selectedOrg) {
     return c.json(
-      { error: "invalid_request", error_description: "organization must be one of your Yaffle orgs" },
+      {
+        error: "invalid_request",
+        error_description: "organization must be one of your Yaffle orgs",
+      },
       400,
     )
   }
@@ -458,10 +467,7 @@ oauthCliRoute.post("/token", async (c) => {
         )
       }
       if (err instanceof SyntaxError) {
-        return c.json(
-          { error: "invalid_request", error_description: "Malformed JSON body" },
-          400,
-        )
+        return c.json({ error: "invalid_request", error_description: "Malformed JSON body" }, 400)
       }
       throw err
     }

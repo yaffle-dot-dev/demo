@@ -236,7 +236,7 @@ cd infra && terraform apply   # TF apply (local dev)
 - **Database columns:** `snake_case` matching the Postgres schema in PLAN.md.
 - **Enums:** Prefer string union types over TypeScript enums.
   ```typescript
-  type RunStatus = 'pending' | 'running' | 'success' | 'failed'
+  type RunStatus = "pending" | "running" | "success" | "failed"
   ```
 
 ### Imports
@@ -264,7 +264,10 @@ cd infra && terraform apply   # TF apply (local dev)
 - Use typed errors. Define domain-specific error types:
   ```typescript
   class YaffleError extends Error {
-    constructor(message: string, public readonly code: string) {
+    constructor(
+      message: string,
+      public readonly code: string,
+    ) {
       super(message)
       this.name = "YaffleError"
     }

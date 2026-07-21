@@ -1,25 +1,12 @@
 import { z } from "zod"
 
-export const routeableDeploymentStateSchema = z.enum([
-  "active",
-  "inactive",
-  "destroyed",
-])
+export const routeableDeploymentStateSchema = z.enum(["active", "inactive", "destroyed"])
 
-export const routeableDeploymentReceiverKindSchema = z.enum([
-  "github_webhook",
-])
+export const routeableDeploymentReceiverKindSchema = z.enum(["github_webhook"])
 
-export const liveWebhookEventSchema = z.enum([
-  "pull_request",
-  "push",
-  "installation_repositories",
-])
+export const liveWebhookEventSchema = z.enum(["pull_request", "push", "installation_repositories"])
 
-export const liveWebhookDesiredStateSchema = z.enum([
-  "active",
-  "absent",
-])
+export const liveWebhookDesiredStateSchema = z.enum(["active", "absent"])
 
 export const trafficControlOperationStatusSchema = z.enum([
   "accepted",
@@ -43,31 +30,33 @@ export const ensureRouteableDeploymentRequestSchema = z.object({
   desiredState: routeableDeploymentStateSchema,
 })
 
-export const liveWebhookLeaseScopeSchema = z.object({
-  event: liveWebhookEventSchema,
-  installationId: z.number().int().positive(),
-  repositoryId: z.number().int().positive().optional(),
-  action: z.string().min(1).optional(),
-  pullRequestNumber: z.number().int().positive().optional(),
-  ref: z.string().min(1).optional(),
-}).superRefine((value, ctx) => {
-  const repositoryRequired = value.event === "pull_request" || value.event === "push"
-  if (repositoryRequired && value.repositoryId === undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "repositoryId is required for pull_request and push leases",
-      path: ["repositoryId"],
-    })
-  }
+export const liveWebhookLeaseScopeSchema = z
+  .object({
+    event: liveWebhookEventSchema,
+    installationId: z.number().int().positive(),
+    repositoryId: z.number().int().positive().optional(),
+    action: z.string().min(1).optional(),
+    pullRequestNumber: z.number().int().positive().optional(),
+    ref: z.string().min(1).optional(),
+  })
+  .superRefine((value, ctx) => {
+    const repositoryRequired = value.event === "pull_request" || value.event === "push"
+    if (repositoryRequired && value.repositoryId === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "repositoryId is required for pull_request and push leases",
+        path: ["repositoryId"],
+      })
+    }
 
-  if (value.event === "installation_repositories" && value.repositoryId !== undefined) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: "repositoryId is not allowed for installation_repositories leases",
-      path: ["repositoryId"],
-    })
-  }
-})
+    if (value.event === "installation_repositories" && value.repositoryId !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "repositoryId is not allowed for installation_repositories leases",
+        path: ["repositoryId"],
+      })
+    }
+  })
 
 export const ensureLiveWebhookLeaseRequestSchema = z.object({
   command: z.literal("ensure_live_webhook_lease"),
@@ -147,13 +136,19 @@ export const trafficControllerApiResponseSchema = z.union([
   rejectedCommandSchema,
 ])
 
-export type EnsureRouteableDeploymentRequest = z.infer<typeof ensureRouteableDeploymentRequestSchema>
+export type EnsureRouteableDeploymentRequest = z.infer<
+  typeof ensureRouteableDeploymentRequestSchema
+>
 export type EnsureLiveWebhookLeaseRequest = z.infer<typeof ensureLiveWebhookLeaseRequestSchema>
 export type GetOperationRequest = z.infer<typeof getOperationRequestSchema>
 export type TrafficControllerApiCommand = z.infer<typeof trafficControllerApiCommandSchema>
-export type TrafficControllerReconcileCommand = z.infer<typeof trafficControllerReconcileCommandSchema>
+export type TrafficControllerReconcileCommand = z.infer<
+  typeof trafficControllerReconcileCommandSchema
+>
 export type TrafficControllerApiResponse = z.infer<typeof trafficControllerApiResponseSchema>
 
-export function isFinalOperationStatus(status: z.infer<typeof trafficControlOperationStatusSchema>): boolean {
+export function isFinalOperationStatus(
+  status: z.infer<typeof trafficControlOperationStatusSchema>,
+): boolean {
   return status === "succeeded" || status === "failed" || status === "rejected"
 }

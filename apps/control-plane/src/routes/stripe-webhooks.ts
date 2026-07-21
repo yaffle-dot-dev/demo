@@ -61,14 +61,18 @@ stripeWebhooksRoute.post("/", async (c) => {
     return c.json({ error: "invalid signature" }, 400)
   }
 
-  logger.info(`stripe webhook: ${event.type}`, { "stripe.event_type": event.type, "stripe.event_id": event.id })
+  logger.info(`stripe webhook: ${event.type}`, {
+    "stripe.event_type": event.type,
+    "stripe.event_id": event.id,
+  })
 
   switch (event.type) {
     case "checkout.session.completed": {
       const session = event.data.object
       if (session.mode !== "subscription" || !session.customer || !session.subscription) break
 
-      const customerId = typeof session.customer === "string" ? session.customer : session.customer.id
+      const customerId =
+        typeof session.customer === "string" ? session.customer : session.customer.id
       const org = await findOrgByStripeCustomerId(customerId)
       if (!org) {
         logger.warn(`stripe webhook: no org for customer ${customerId}`)
@@ -105,7 +109,8 @@ stripeWebhooksRoute.post("/", async (c) => {
       const invoice = event.data.object
       if (!invoice.customer) break
 
-      const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer.id
+      const customerId =
+        typeof invoice.customer === "string" ? invoice.customer : invoice.customer.id
       const org = await findOrgByStripeCustomerId(customerId)
       if (!org) break
 
@@ -118,7 +123,8 @@ stripeWebhooksRoute.post("/", async (c) => {
       const invoice = event.data.object
       if (!invoice.customer) break
 
-      const customerId = typeof invoice.customer === "string" ? invoice.customer : invoice.customer.id
+      const customerId =
+        typeof invoice.customer === "string" ? invoice.customer : invoice.customer.id
       const org = await findOrgByStripeCustomerId(customerId)
       if (!org) break
 
@@ -131,7 +137,8 @@ stripeWebhooksRoute.post("/", async (c) => {
       const subscription = event.data.object
       if (!subscription.customer) break
 
-      const customerId = typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id
+      const customerId =
+        typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id
       const org = await findOrgByStripeCustomerId(customerId)
       if (!org) break
 
@@ -162,7 +169,8 @@ stripeWebhooksRoute.post("/", async (c) => {
       const subscription = event.data.object
       if (!subscription.customer) break
 
-      const customerId = typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id
+      const customerId =
+        typeof subscription.customer === "string" ? subscription.customer : subscription.customer.id
       const org = await findOrgByStripeCustomerId(customerId)
       if (!org) break
 

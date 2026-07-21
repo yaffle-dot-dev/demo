@@ -59,6 +59,7 @@ yaffle.dev (reverse proxy / CDN)
 ```
 
 The reverse proxy routes:
+
 - `/tfc/*` and `/api/*` → Control plane (Hono)
 - `/.well-known/*` → Control plane (Hono)
 - `/*` → Web frontend (SvelteKit)
@@ -153,6 +154,7 @@ CREATE TABLE workspaces (
 ```
 
 **Naming convention**: `{environment}-{identifier}-{workspace_path_slug}`
+
 - GitHub PR environment: public name `pr-42`; TFC workspace `pr-42-control-plane-infra`
 - Other transient sources use their canonical environment name in the same pattern
 - Production: `production-main-control-plane-infra`
@@ -215,6 +217,7 @@ Yaffle supports two authentication methods for the TFC API:
 Issued via `terraform login` OAuth flow. Long-lived, stored in `api_tokens` table.
 
 **Flow:**
+
 1. User runs `terraform login terraform.yaffle.dev`
 2. CLI fetches `/.well-known/terraform.json` for OAuth config
 3. CLI opens browser to `/oauth/authorize?client_id=terraform-cli&...`
@@ -231,6 +234,7 @@ Issued via `terraform login` OAuth flow. Long-lived, stored in `api_tokens` tabl
 Stateless JWTs for automated runs. Not stored in database.
 
 **Issuance**: When Yaffle starts a run, it generates a JWT:
+
 ```json
 {
   "sub": "run:run-uuid",
@@ -243,11 +247,13 @@ Stateless JWTs for automated runs. Not stored in database.
 ```
 
 **Injection**: Token provided to runner via environment variable:
+
 ```bash
 TF_TOKEN_yaffle_dev=<jwt>
 ```
 
 **Validation**: Two checks are performed:
+
 1. Verify JWT signature and expiry (stateless)
 2. Check that the run is still active (database lookup)
 
@@ -267,6 +273,7 @@ Authorization: Bearer <token>
 ```
 
 The middleware:
+
 1. Extracts token from header
 2. If JWT format: validate signature, check expiry, extract claims
 3. If opaque format: hash and lookup in `api_tokens` table
@@ -296,10 +303,12 @@ Terraform CLI discovers Yaffle's capabilities via:
 ```
 
 **Service identifiers:**
+
 - `tfe.v2`, `tfe.v2.1`, `tfe.v2.2`: TFC API versions (all point to `/tfc/api/v2/`)
 - `login.v1`: OAuth configuration for `terraform login`
 
 **OAuth config:**
+
 - `client`: Client ID (advisory only, Terraform is a public client)
 - `grant_types`: Only `authz_code` (authorization code grant with PKCE)
 - `authz`: Authorization endpoint (`/tfc/oauth/authorize`)
@@ -315,21 +324,25 @@ All TFC API endpoints are namespaced under `/tfc/api/v2/`.
 ### Workspace Management
 
 #### List Workspaces
+
 ```http
 GET /tfc/api/v2/organizations/:org_name/workspaces
 ```
 
 #### Get Workspace by Name
+
 ```http
 GET /tfc/api/v2/organizations/:org_name/workspaces/:name
 ```
 
 #### Get Workspace by ID
+
 ```http
 GET /tfc/api/v2/workspaces/:workspace_id
 ```
 
 #### Lock Workspace
+
 ```http
 POST /tfc/api/v2/workspaces/:workspace_id/actions/lock
 Content-Type: application/vnd.api+json
@@ -340,6 +353,7 @@ Content-Type: application/vnd.api+json
 ```
 
 **Response (200):**
+
 ```json
 {
   "data": {
@@ -356,6 +370,7 @@ Content-Type: application/vnd.api+json
 **Error (409 Conflict):** Workspace already locked by another user/run.
 
 #### Unlock Workspace
+
 ```http
 POST /tfc/api/v2/workspaces/:workspace_id/actions/unlock
 ```
@@ -363,6 +378,7 @@ POST /tfc/api/v2/workspaces/:workspace_id/actions/unlock
 Only the lock holder can unlock. Use `force-unlock` to override.
 
 #### Force Unlock
+
 ```http
 POST /tfc/api/v2/workspaces/:workspace_id/actions/force-unlock
 ```
@@ -372,6 +388,7 @@ Requires admin permissions on the workspace.
 ### State Versions
 
 #### Create State Version
+
 ```http
 POST /tfc/api/v2/workspaces/:workspace_id/state-versions
 Content-Type: application/vnd.api+json
@@ -389,6 +406,7 @@ Content-Type: application/vnd.api+json
 ```
 
 **Response (201):**
+
 ```json
 {
   "data": {
@@ -405,10 +423,12 @@ Content-Type: application/vnd.api+json
 ```
 
 **Preconditions:**
+
 - Workspace must be locked by the caller
 - Serial must be greater than current state version's serial
 
 #### Upload State
+
 ```http
 PUT /tfc/api/v2/state-versions/:state_version_id/upload
 Content-Type: application/octet-stream
@@ -420,15 +440,18 @@ Content-MD5: <base64-encoded-md5>
 **Response (200):** Empty body, state version status set to `finalized`.
 
 **Validation:**
+
 - Content-MD5 header must match body
 - MD5 must match the value provided at creation
 
 #### Get Current State Version
+
 ```http
 GET /tfc/api/v2/workspaces/:workspace_id/current-state-version
 ```
 
 **Response (200):**
+
 ```json
 {
   "data": {
@@ -449,6 +472,7 @@ GET /tfc/api/v2/workspaces/:workspace_id/current-state-version
 **Response (404):** Workspace has no state yet.
 
 #### Download State
+
 ```http
 GET /tfc/api/v2/state-versions/:state_version_id/download
 ```
@@ -458,6 +482,7 @@ GET /tfc/api/v2/state-versions/:state_version_id/download
 Or **Response (200):** Stream state bytes directly (simpler, avoids CORS issues).
 
 #### List State Versions
+
 ```http
 GET /tfc/api/v2/state-versions?filter[workspace][name]=ws-name&filter[organization][name]=org-name
 ```
@@ -492,6 +517,7 @@ Locking is advisory and enforced by Yaffle (not S3/DynamoDB):
   - `run:{run_id}` - Automated run holds lock
 
 **Lock flow for automated runs:**
+
 ```
 webhook received
   → create/find workspace
@@ -519,6 +545,7 @@ Production workspaces are never automatically destroyed.
 ### Current State (To Be Replaced)
 
 The current `local-runner.ts` generates `backend_override.tf` with S3 backend:
+
 ```hcl
 terraform {
   backend "s3" {
@@ -551,6 +578,7 @@ terraform {
 ```
 
 And inject credentials (token env var name derived from hostname):
+
 ```bash
 export YAFFLE_TFC_API_HOST="yaffle.dev"
 export TF_TOKEN_yaffle_dev="<run-jwt>"
@@ -576,6 +604,7 @@ State files stored in the bucket specified by `YAFFLE_TFC_STATE_S3_BUCKET`:
 ```
 
 Example:
+
 ```
 019d5b7a-1234-7def-8abc-000000000001/v1.tfstate
 019d5b7a-1234-7def-8abc-000000000001/v2.tfstate
@@ -584,20 +613,22 @@ Example:
 
 ### Environment Variables
 
-| Variable | Description | Example |
-|----------|-------------|---------|
+| Variable                     | Description                 | Example             |
+| ---------------------------- | --------------------------- | ------------------- |
 | `YAFFLE_TFC_STATE_S3_BUCKET` | S3 bucket for state storage | `yaffle-state-prod` |
-| `YAFFLE_TFC_STATE_S3_REGION` | AWS region for the bucket | `us-east-1` |
+| `YAFFLE_TFC_STATE_S3_REGION` | AWS region for the bucket   | `us-east-1`         |
 
 ### Lifecycle Policy
 
 Configure lifecycle rules on the S3 bucket:
+
 - Production: Non-current versions expire after 90 days
 - Preview: Non-current versions expire after 7 days
 
 ### Presigned URLs
 
 For downloads, generate S3 presigned GET URLs:
+
 - Expiry: 5 minutes
 - Returned via redirect or in API response
 
@@ -608,23 +639,27 @@ For uploads, Yaffle proxies the upload (validates MD5, writes to S3).
 ## Implementation Phases
 
 ### Phase 1: Database Schema
+
 - Add migrations for `workspaces`, `state_versions`, `api_tokens`
 - Add Drizzle schema definitions
 - **Effort**: Small
 
 ### Phase 2: Service Discovery & OAuth
+
 - `GET /.well-known/terraform.json`
 - OAuth endpoints for `terraform login`
 - API token issuance and storage
 - **Effort**: Medium
 
 ### Phase 3: Workspace API
+
 - CRUD endpoints for workspaces
 - Lock/unlock/force-unlock
 - JSON:API response formatting
 - **Effort**: Medium
 
 ### Phase 4: State Versions API
+
 - Create state version (two-phase upload)
 - Upload state content
 - Download state (presigned URLs)
@@ -633,6 +668,7 @@ For uploads, Yaffle proxies the upload (validates MD5, writes to S3).
 - **Effort**: Large
 
 ### Phase 5: Webhook Integration
+
 - Auto-create workspaces from webhook events
 - Lock workspace before runs
 - Unlock workspace after runs
@@ -641,6 +677,7 @@ For uploads, Yaffle proxies the upload (validates MD5, writes to S3).
 - **Effort**: Medium
 
 ### Phase 6: Cleanup Lifecycle
+
 - Archive workspaces on PR close
 - Destroy preview infrastructure
 - State version cleanup
@@ -747,6 +784,7 @@ URLs, so it works on any hostname:
 ```
 
 To test locally:
+
 ```bash
 # Start the control plane
 bun run dev:control-plane
@@ -760,6 +798,7 @@ export TF_TOKEN_localhost_3000="<dev-token>"
 
 For automated runs, the runner uses the `YAFFLE_TFC_API_HOST` environment variable
 to determine where to point Terraform. This allows flexibility across environments:
+
 - Local dev: `localhost:3000`
 - Preview environments: `pr-123.yaffle.dev`
 - Production: `yaffle.dev`
@@ -769,6 +808,7 @@ to determine where to point Terraform. This allows flexibility across environmen
 ## Future Enhancements
 
 ### State Encryption (BYOK)
+
 **Status:** Post-MVP, enterprise feature
 
 S3 already encrypts at rest with AWS-managed keys. Customer-managed keys (BYOK)
@@ -776,15 +816,18 @@ is an enterprise upsell. No schema/API changes needed - just add key ARN to
 org or workspace config later.
 
 ### State Diffing in PR Comments
+
 **Status:** Not planned
 
 Low value compared to plan output, and tends to be noisy. Easy to add later if
 users request it.
 
 ### Remote State Data Sources & State Inheritance
+
 **Status:** Requires separate design doc (not blocking MVP)
 
 `terraform_remote_state` should work within a Yaffle org:
+
 - Workspaces within the same org can reference each other
 - Preview workspaces can read production state (parent → PR inheritance)
 - External state access is out of scope
@@ -796,12 +839,14 @@ from production → preview is a follow-up feature. Phases 1-5 can ship without
 resolving the inheritance semantics.
 
 ### Workspace Variables
+
 **Status:** MVP, config-driven
 
 Variables are stored in `yaffle.toml`, not in the UI. The public syntax is documented at
 <https://yaffle.dev/docs/reference/configuration/#variable-templating>.
 
 Benefits:
+
 - Variables reviewable/auditable in PRs
 - Preview and named environments can diverge through templated values
 - No UI needed for MVP

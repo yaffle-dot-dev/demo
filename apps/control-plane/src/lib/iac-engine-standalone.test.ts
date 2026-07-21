@@ -115,13 +115,15 @@ test("passes snapshotted variables and revision to the runner", async () => {
         name: "pr-7",
         sourcePullRequestNumber: 7,
       },
-      workspaces: [{
-        path: "infra",
-        variables: { release: "snapshotted" },
-        approval: { required: false, approvers: [] },
-        lifecycle: { activation: [], verification: [] },
-        automaticPreviewIsolation: false,
-      }],
+      workspaces: [
+        {
+          path: "infra",
+          variables: { release: "snapshotted" },
+          approval: { required: false, approvers: [] },
+          lifecycle: { activation: [], verification: [] },
+          automaticPreviewIsolation: false,
+        },
+      ],
     },
   })
   const deployment = await upsertDeployment({

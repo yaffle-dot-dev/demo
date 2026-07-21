@@ -29,14 +29,14 @@ Any static assets, like images, can be placed in the `public/` directory.
 
 All commands are run from the root of the project, from a terminal:
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `vp install`              | Installs dependencies                            |
+| Command                            | Action                                           |
+| :--------------------------------- | :----------------------------------------------- |
+| `vp install`                       | Installs dependencies                            |
 | `vp run @yaffle/marketing#dev`     | Starts local dev server at `localhost:4321`      |
 | `vp run @yaffle/marketing#build`   | Build your production site to `./dist/`          |
 | `vp run @yaffle/marketing#preview` | Preview your build locally, before deploying     |
-| `vp exec astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `vp exec astro -- --help` | Get help using the Astro CLI                     |
+| `vp exec astro ...`                | Run CLI commands like `astro add`, `astro check` |
+| `vp exec astro -- --help`          | Get help using the Astro CLI                     |
 
 ## 👀 Want to learn more?
 

@@ -16,4 +16,6 @@ console.log(`event=${parsed.event}`)
 console.log(`action=${parsed.action ?? ""}`)
 console.log(`repository_owner=${parsed.repositoryOwner}`)
 console.log(`repository_name=${parsed.repositoryName}`)
-console.log(`target=${parsed.target === "this_preview" ? "this_preview" : parsed.target.deploymentId}`)
+console.log(
+  `target=${parsed.target === "this_preview" ? "this_preview" : parsed.target.deploymentId}`,
+)

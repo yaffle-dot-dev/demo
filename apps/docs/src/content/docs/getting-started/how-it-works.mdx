@@ -15,12 +15,12 @@ GitHub event → Control plane → Runner container → Results to GitHub
 
 ## Components
 
-| Component | What it does |
-|-----------|--------------|
+| Component         | What it does                                            |
+| ----------------- | ------------------------------------------------------- |
 | **Control plane** | API server that receives webhooks and orchestrates runs |
-| **Runner** | Executes OpenTofu in isolated containers |
-| **State storage** | Managed state with per-environment isolation |
-| **Locking** | Prevents concurrent modifications |
+| **Runner**        | Executes OpenTofu in isolated containers                |
+| **State storage** | Managed state with per-environment isolation            |
+| **Locking**       | Prevents concurrent modifications                       |
 
 ## Environments
 
@@ -93,6 +93,7 @@ previews/
 ```
 
 This means:
+
 - PRs use separate state; environment-specific resource names avoid provider-level collisions
 - Preview state is separate from named-environment state
 - Multiple workspaces stay isolated

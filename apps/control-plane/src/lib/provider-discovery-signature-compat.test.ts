@@ -18,12 +18,14 @@ describe("provider discovery signature compatibility", () => {
     })
     const secret = "compat-shared-secret"
 
-    const headers = new Headers(await buildSignedCallbackHeaders({
-      body,
-      secret,
-      timestampMs: 1_700_000_000_000,
-      nonce: "compat-nonce",
-    }))
+    const headers = new Headers(
+      await buildSignedCallbackHeaders({
+        body,
+        secret,
+        timestampMs: 1_700_000_000_000,
+        nonce: "compat-nonce",
+      }),
+    )
 
     const verified = await verifyProviderDiscoveryCallbackSignature({
       body,

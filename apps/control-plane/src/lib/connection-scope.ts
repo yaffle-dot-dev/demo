@@ -14,14 +14,18 @@ function normalizeScopeList(values: unknown): string[] {
   return values.filter((value): value is string => typeof value === "string" && value.length > 0)
 }
 
-export function getConnectionScopeConfig(connection: Pick<Connection, "type" | "providerType" | "config">): ConnectionScopeConfig {
-  const config = typeof connection.config === "object" && connection.config !== null
-    ? connection.config as Record<string, unknown>
-    : {}
+export function getConnectionScopeConfig(
+  connection: Pick<Connection, "type" | "providerType" | "config">,
+): ConnectionScopeConfig {
+  const config =
+    typeof connection.config === "object" && connection.config !== null
+      ? (connection.config as Record<string, unknown>)
+      : {}
 
-  const providerType = typeof config.providerType === "string"
-    ? config.providerType
-    : connection.providerType ?? connection.type
+  const providerType =
+    typeof config.providerType === "string"
+      ? config.providerType
+      : (connection.providerType ?? connection.type)
 
   return {
     providerType: providerType.toLowerCase(),
@@ -81,6 +85,8 @@ export function connectionScopesOverlap(
     return false
   }
 
-  return scopesOverlap(existingScope.environmentScope, incoming.environmentScope)
-    && scopesOverlap(existingScope.workspaceScope, incoming.workspaceScope)
+  return (
+    scopesOverlap(existingScope.environmentScope, incoming.environmentScope) &&
+    scopesOverlap(existingScope.workspaceScope, incoming.workspaceScope)
+  )
 }

@@ -53,11 +53,7 @@ export async function exec(cmd: string[], opts?: ExecOptions): Promise<string> {
   const proc = spawn(cmd[0]!, cmd.slice(1), {
     cwd: opts?.cwd,
     env: { ...process.env, ...opts?.env },
-    stdio: [
-      "ignore",
-      captureStdout ? "pipe" : "inherit",
-      captureStderr ? "pipe" : "inherit",
-    ],
+    stdio: ["ignore", captureStdout ? "pipe" : "inherit", captureStderr ? "pipe" : "inherit"],
   })
 
   if (captureStdout) {
@@ -104,16 +100,18 @@ export interface ParallelTask {
  * all errors are collected and reported.
  */
 export async function parallel(tasks: ParallelTask[]): Promise<void> {
-  const results = await Promise.allSettled(tasks.map(async (task) => {
-    console.log(`[${task.name}] starting`)
-    try {
-      await task.fn()
-      console.log(`[${task.name}] done`)
-    } catch (err) {
-      console.error(`[${task.name}] failed`)
-      throw err
-    }
-  }))
+  const results = await Promise.allSettled(
+    tasks.map(async (task) => {
+      console.log(`[${task.name}] starting`)
+      try {
+        await task.fn()
+        console.log(`[${task.name}] done`)
+      } catch (err) {
+        console.error(`[${task.name}] failed`)
+        throw err
+      }
+    }),
+  )
 
   const failures = results
     .map((r, i) => ({ result: r, name: tasks[i].name }))
@@ -121,9 +119,7 @@ export async function parallel(tasks: ParallelTask[]): Promise<void> {
 
   if (failures.length > 0) {
     const names = failures.map((f) => f.name).join(", ")
-    const errors = failures.map((f) =>
-      (f.result as PromiseRejectedResult).reason
-    )
+    const errors = failures.map((f) => (f.result as PromiseRejectedResult).reason)
     console.error(`\nFailed tasks: ${names}`)
     for (const err of errors) {
       console.error(err)

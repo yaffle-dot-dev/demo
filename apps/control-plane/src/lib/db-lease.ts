@@ -42,12 +42,8 @@ export interface LeaseHandle {
  * - If the row exists but is expired, the lease is taken over
  * - If the row exists and is still valid, the upsert is a no-op (returns no rows)
  */
-async function tryAcquire(
-  key: string,
-  holderId: string,
-  ttlMs: number,
-): Promise<boolean> {
-  const result = await db.execute(
+async function tryAcquire(key: string, holderId: string, ttlMs: number): Promise<boolean> {
+  const result = (await db.execute(
     sql`INSERT INTO leases (key, holder_id, acquired_at, renewed_at, expires_at)
      VALUES (${key}, ${holderId}, NOW(), NOW(), NOW() + ${sql.raw(`INTERVAL '${ttlMs} milliseconds'`)})
      ON CONFLICT (key) DO UPDATE
@@ -57,7 +53,7 @@ async function tryAcquire(
            expires_at = NOW() + ${sql.raw(`INTERVAL '${ttlMs} milliseconds'`)}
        WHERE leases.expires_at < NOW()
      RETURNING key`,
-  ) as unknown as { key: string }[]
+  )) as unknown as { key: string }[]
 
   return result.length > 0
 }

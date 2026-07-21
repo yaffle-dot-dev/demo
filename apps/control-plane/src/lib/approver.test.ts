@@ -262,7 +262,9 @@ describe("getApproverDisplayFromString", () => {
 
 describe("isUserAuthorizedApprover", () => {
   // Create a mock team membership checker for each test
-  function createMockChecker(returnValue: boolean): TeamMembershipChecker & { calls: Array<[number, string, string, string]> } {
+  function createMockChecker(
+    returnValue: boolean,
+  ): TeamMembershipChecker & { calls: Array<[number, string, string, string]> } {
     const calls: Array<[number, string, string, string]> = []
     const checker = ((installationId: number, org: string, team: string, username: string) => {
       calls.push([installationId, org, team, username])

@@ -146,11 +146,7 @@ export class LogStreamer {
    * Check if an error is a ResourceNotFoundException.
    */
   private isResourceNotFoundError(err: unknown): boolean {
-    return (
-      err instanceof Error &&
-      "name" in err &&
-      err.name === "ResourceNotFoundException"
-    )
+    return err instanceof Error && "name" in err && err.name === "ResourceNotFoundException"
   }
 
   /**

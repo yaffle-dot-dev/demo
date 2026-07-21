@@ -63,13 +63,15 @@ Yaffle automatically detects dependencies by scanning your OpenTofu files for mo
 2. B's outputs become available as a module
 3. A runs and can consume B's outputs
 
-<Mermaid chart={`
+<Mermaid
+  chart={`
 graph LR
     network --> database --> compute
-`} />
+`}
+/>
 
 <Aside type="tip">
-Dependencies are inferred from your OpenTofu code. You don't need to declare them manually.
+  Dependencies are inferred from your OpenTofu code. You don't need to declare them manually.
 </Aside>
 
 ## Using outputs from other workspaces
@@ -92,6 +94,7 @@ resource "aws_ecs_service" "app" {
 ```
 
 The module source follows this pattern:
+
 ```
 yaffle.dev/YAFFLE-ORG--REPO/WORKSPACE--PATH/yaffle
 ```
@@ -107,7 +110,9 @@ Examples:
 - `apps/web/infra` → `apps--web--infra`
 
 <Aside type="note">
-Only same-repo Yaffle module references become DAG edges. Cross-repo modules are valid, but they are treated as normal external Terraform modules and do not affect execution order inside the current repo.
+  Only same-repo Yaffle module references become DAG edges. Cross-repo modules are valid, but they
+  are treated as normal external Terraform modules and do not affect execution order inside the
+  current repo.
 </Aside>
 
 ## Internal vs public outputs
@@ -146,7 +151,8 @@ This means:
 - each consumer selector includes the target Yaffle org slug, repo slug, and workspace pattern
 
 <Aside type="tip">
-Use `public` outputs for stable platform APIs. Keep implementation details and sensitive internals out of that surface.
+  Use `public` outputs for stable platform APIs. Keep implementation details and sensitive internals
+  out of that surface.
 </Aside>
 
 The contract requires sensitive values to be redacted before a snapshot exists. Publish
@@ -190,6 +196,7 @@ graph LR
     monitoring --> database
     database --> compute
     appconfig --> compute
+
 `} />
 
 Root workspaces (no dependencies) run first, in parallel. Downstream workspaces wait for their dependencies to complete.
@@ -198,7 +205,8 @@ Root workspaces (no dependencies) run first, in parallel. Downstream workspaces 
 
 When you open a PR or push to a branch, Yaffle executes runs through several stages:
 
-<Mermaid chart={`
+<Mermaid
+  chart={`
 stateDiagram-v2
     [*] --> pending: Trigger received
     pending --> planning: Runner acquired
@@ -211,20 +219,22 @@ stateDiagram-v2
     success --> [*]
     failed --> [*]
     cancelled --> [*]
-`} />
+`}
+/>
 
-| Status | Description |
-|--------|-------------|
-| `pending` | Run is queued, waiting for a runner |
-| `planning` | OpenTofu plan is executing |
+| Status             | Description                            |
+| ------------------ | -------------------------------------- |
+| `pending`          | Run is queued, waiting for a runner    |
+| `planning`         | OpenTofu plan is executing             |
 | `waiting_approval` | Plan complete, awaiting human approval |
-| `applying` | Apply in progress (after approval) |
-| `success` | Run completed successfully |
-| `failed` | Run failed with error |
-| `cancelled` | Run was cancelled or rejected |
+| `applying`         | Apply in progress (after approval)     |
+| `success`          | Run completed successfully             |
+| `failed`           | Run failed with error                  |
+| `cancelled`        | Run was cancelled or rejected          |
 
 <Aside type="note">
-Preview environments require approval before `apply` runs. Configure auto-approval for specific environments in your `yaffle.toml` if needed.
+  Preview environments require approval before `apply` runs. Configure auto-approval for specific
+  environments in your `yaffle.toml` if needed.
 </Aside>
 
 ## Workspace variables

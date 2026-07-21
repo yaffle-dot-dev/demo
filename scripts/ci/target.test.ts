@@ -40,11 +40,13 @@ test("resolves pull requests to transient environments", () => {
 })
 
 test("creates manual targets", () => {
-  expect(createTarget({
-    environmentKind: "named",
-    environmentName: "main",
-    sha: "abc123",
-  })).toEqual({
+  expect(
+    createTarget({
+      environmentKind: "named",
+      environmentName: "main",
+      sha: "abc123",
+    }),
+  ).toEqual({
     environment: {
       kind: "named",
       name: "main",

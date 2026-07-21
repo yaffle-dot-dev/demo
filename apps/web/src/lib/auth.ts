@@ -85,10 +85,7 @@ export const authClient = createAuthClient({
 })
 
 // Re-export commonly used methods for convenience
-export const {
-  signIn,
-  signOut,
-} = authClient
+export const { signIn, signOut } = authClient
 
 export function useSession(): ReturnType<typeof authClient.useSession> {
   if (SMOKE_AUTH_ENABLED) {

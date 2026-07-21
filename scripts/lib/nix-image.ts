@@ -24,23 +24,17 @@ function getLastNonEmptyLine(output: string): string {
 
 export async function buildImageArchive(packageName: string): Promise<string> {
   console.log(`Building ${packageName}...`)
-  const output = await exec([
-    "nix", "build",
-    "-L",
-    "--no-link",
-    "--print-out-paths",
-    `.#${packageName}`,
-  ], { captureStdout: true })
+  const output = await exec(
+    ["nix", "build", "-L", "--no-link", "--print-out-paths", `.#${packageName}`],
+    { captureStdout: true },
+  )
 
   const archivePath = getLastNonEmptyLine(output)
   console.log(`Built ${packageName}: ${archivePath}`)
   return archivePath
 }
 
-export async function pushImageArchive(
-  archivePath: string,
-  destination: string,
-): Promise<void> {
+export async function pushImageArchive(archivePath: string, destination: string): Promise<void> {
   console.log(`Pushing ${archivePath} -> ${destination}`)
 
   const originalHome = process.env.HOME
@@ -55,19 +49,24 @@ export async function pushImageArchive(
   await writeFile(registriesConfigPath, SKOPEO_REGISTRIES_CONF)
 
   try {
-    await exec([
-      "skopeo",
-      "--registries-conf", registriesConfigPath,
-      "copy",
-      "--insecure-policy",
-      "--authfile", join(originalHome, ".docker", "config.json"),
-      `docker-archive:${archivePath}`,
-      `docker://${destination}`,
-    ], {
-      env: {
-        HOME: tempHome,
+    await exec(
+      [
+        "skopeo",
+        "--registries-conf",
+        registriesConfigPath,
+        "copy",
+        "--insecure-policy",
+        "--authfile",
+        join(originalHome, ".docker", "config.json"),
+        `docker-archive:${archivePath}`,
+        `docker://${destination}`,
+      ],
+      {
+        env: {
+          HOME: tempHome,
+        },
       },
-    })
+    )
   } finally {
     await rm(tempHome, { recursive: true, force: true })
   }

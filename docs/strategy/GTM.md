@@ -12,11 +12,11 @@ The critical overlap for Yaffle is the Terraform + GitHub intersection. Approxim
 
 **TAM/SAM/SOM framework:**
 
-| Level | Estimate | Basis |
-|-------|----------|-------|
-| **TAM** | $1.0–1.5B (2025–2026) | Intersection of US IaC tooling + platform engineering developer experience |
-| **SAM** | $250–300M | ~9,000–10,000 US Terraform + GitHub companies × $15–50K avg annual spend |
-| **SOM (Year 1–3)** | $2–10M | 50–180 customers at $10–50K ACV, scaling with enterprise penetration |
+| Level              | Estimate              | Basis                                                                      |
+| ------------------ | --------------------- | -------------------------------------------------------------------------- |
+| **TAM**            | $1.0–1.5B (2025–2026) | Intersection of US IaC tooling + platform engineering developer experience |
+| **SAM**            | $250–300M             | ~9,000–10,000 US Terraform + GitHub companies × $15–50K avg annual spend   |
+| **SOM (Year 1–3)** | $2–10M                | 50–180 customers at $10–50K ACV, scaling with enterprise penetration       |
 
 HashiCorp's own financials validate willingness to pay: **4,558 paying customers** with **934 exceeding $100K ARR**, and HCP Terraform cloud revenue growing **44% YoY** to ~$80M+ annualized. The money is already flowing — the question is whether it continues flowing to IBM.
 
@@ -52,18 +52,18 @@ AI-powered IaC tools (Firefly, Pulumi Neo, HashiCorp MCP Server) are acceleratin
 
 ### Segment prioritization based on pain, accessibility, and willingness to pay
 
-| Segment | US Companies | Pain | Access | WTP | Priority |
-|---------|-------------|------|--------|-----|----------|
-| Platform eng, Series B–D startups (20–100 eng) | 2,000–4,000 | High | High | Med-High | **#1 Beachhead** |
-| DevOps at growth-stage (50–500 employees) | 5,000–8,000 | Very High | High | Med-High | **#2 Core expansion** |
-| FinTech / regulated industries | ~13,100 | High | Medium | High | **#3 Vertical wedge** |
-| Enterprise platform teams | Thousands | High | Low | Very High | **#4 Upmarket** |
-| Data platform teams (dbt/Snowflake) | 11,000+ | Medium | Medium | Medium | **#5 Adjacent** |
-| Consultancies / agencies | 500–2,000 | High | Med-High | Medium | **#6 Channel** |
+| Segment                                        | US Companies | Pain      | Access   | WTP       | Priority              |
+| ---------------------------------------------- | ------------ | --------- | -------- | --------- | --------------------- |
+| Platform eng, Series B–D startups (20–100 eng) | 2,000–4,000  | High      | High     | Med-High  | **#1 Beachhead**      |
+| DevOps at growth-stage (50–500 employees)      | 5,000–8,000  | Very High | High     | Med-High  | **#2 Core expansion** |
+| FinTech / regulated industries                 | ~13,100      | High      | Medium   | High      | **#3 Vertical wedge** |
+| Enterprise platform teams                      | Thousands    | High      | Low      | Very High | **#4 Upmarket**       |
+| Data platform teams (dbt/Snowflake)            | 11,000+      | Medium    | Medium   | Medium    | **#5 Adjacent**       |
+| Consultancies / agencies                       | 500–2,000    | High      | Med-High | Medium    | **#6 Channel**        |
 
 **The primary beachhead — platform engineering teams at Series B–D startups — is optimal for three reasons.** First, these teams have the exact pain: they've outgrown Atlantis or manual GitHub Actions scripts, find Terraform Cloud's RUM pricing untenable, and need developer self-service for infrastructure changes. Second, procurement is fast — "a champion who wants your product can often get approval within days rather than quarters." Third, platform teams at this stage (typically **2–5 people** managing infrastructure for 20–100 engineers) are actively evaluating tooling during their growth phase.
 
-Community signals validate this urgency. A Hacker News "Show HN" for Layerform (open-source ephemeral TF environments) articulated the exact problem: *"Many teams have a single (or too few) staging environments, which developers have to queue to use... they end up with a cluttered Slack channel in which engineers wait for their turn."* On Medium, a widely-shared engineering post captured the state management nightmare: *"Lose it? You're fucked. Corrupt it? Fucked. Have two people run Terraform at the same time? Also fucked."* Reddit and community forums consistently surface complaints about Atlantis bottlenecks, TFC pricing unpredictability, and the absence of safe preview workflows.
+Community signals validate this urgency. A Hacker News "Show HN" for Layerform (open-source ephemeral TF environments) articulated the exact problem: _"Many teams have a single (or too few) staging environments, which developers have to queue to use... they end up with a cluttered Slack channel in which engineers wait for their turn."_ On Medium, a widely-shared engineering post captured the state management nightmare: _"Lose it? You're fucked. Corrupt it? Fucked. Have two people run Terraform at the same time? Also fucked."_ Reddit and community forums consistently surface complaints about Atlantis bottlenecks, TFC pricing unpredictability, and the absence of safe preview workflows.
 
 The expansion path moves naturally to DevOps teams at growth-stage companies (5,000–8,000 US companies with similar pain), then potentially into regulated industries. Preview evidence may support a customer's controls, but Yaffle does not currently claim SOC 2, HIPAA, PCI-DSS, or other compliance certification. Upmarket sales should be considered only after the required product and certification work exists.
 
@@ -101,10 +101,10 @@ Every competitor's pricing model reveals what works and what doesn't. TFC's RUM 
 
 **Recommended pricing model: per active preview workspace, with a generous free tier.**
 
-| Tier | Price | Includes |
-|------|-------|----------|
-| **Free** | $0/month | Limited concurrent and monthly previews, one named environment |
-| **Pro** | $99/month | Unlimited previews and named environments, approval workflows |
+| Tier     | Price      | Includes                                                                  |
+| -------- | ---------- | ------------------------------------------------------------------------- |
+| **Free** | $0/month   | Limited concurrent and monthly previews, one named environment            |
+| **Pro**  | $99/month  | Unlimited previews and named environments, approval workflows             |
 | **Team** | $299/month | Team workflows, BYOA runners, named-environment history, priority support |
 
 SSO/SCIM, self-hosting, compliance certifications, and custom SLAs are not current
@@ -117,6 +117,7 @@ This pricing is anchored below Spacelift's Starter ($399/month), dramatically be
 ### PLG-first with sales-assist above $10K ACV
 
 The DevOps market has proven that PLG works for initial adoption (GitHub, Datadog, Terraform Cloud itself all started this way), with sales-assist becoming necessary at **$10K+ ACV**. Yaffle should optimize for:
+
 - **Time to first plan** under 5 minutes (connect GitHub repo → first PR preview)
 - **Natural upgrade triggers:** workspace limits, team seat limits, RBAC requirements
 - **Product-qualified leads:** teams hitting 80%+ of their free-tier limits signal sales readiness
@@ -128,6 +129,7 @@ The DevOps market has proven that PLG works for initial adoption (GitHub, Datado
 ### Primary channels ranked by expected ROI
 
 **Tier 1 — Highest ROI, lowest cost:**
+
 - **"Show HN" launch** — the Terraform community is active on Hacker News; a well-executed launch post with a live demo can generate thousands of signups
 - **Platform Engineering Slack** (15,000+ members) — the exact buyer persona gathers here
 - **SweetOps Slack** (Cloud Posse, 9,000+ members) — Terraform-focused practitioners
@@ -135,12 +137,14 @@ The DevOps market has proven that PLG works for initial adoption (GitHub, Datado
 - **SEO content targeting "Terraform preview environments," "Terraform PR workflow," and "Atlantis alternatives"** — these are underserved keywords where Spacelift, env0, and Scalr currently dominate with comparison content
 
 **Tier 2 — Medium cost, high impact:**
+
 - **Weekly.tf newsletter** (Anton Babenko) — the Terraform community's most trusted voice
 - **DevOps Toolkit YouTube** (Viktor Farcic) — impartial tool reviews with significant viewership
 - **PlatformCon 2026** (50,000+ registrants, June 2026) — highest relevance conference for Yaffle's persona, startup-friendly sponsorship
 - **KubeCon NA 2025 Startup tier** ($12,000) — reaches 10,000+ attendees, 530 average booth leads
 
 **Tier 3 — Higher cost, brand building:**
+
 - **DevOpsDays** regional events ($2–10K sponsorship) — community-driven, authentic
 - **HashiConf** — direct access to Terraform users, though now IBM-owned
 - **Technical blog content** on dev.to, The New Stack — drive organic discovery

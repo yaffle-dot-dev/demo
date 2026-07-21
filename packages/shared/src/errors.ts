@@ -24,10 +24,7 @@ export class GitHubAuthError extends YaffleError {
 
 export class PreviewNotFoundError extends YaffleError {
   constructor(orgId: string, repo: string, prNumber: number) {
-    super(
-      `preview not found for ${repo}#${prNumber} in org ${orgId}`,
-      "PREVIEW_NOT_FOUND",
-    )
+    super(`preview not found for ${repo}#${prNumber} in org ${orgId}`, "PREVIEW_NOT_FOUND")
     this.name = "PreviewNotFoundError"
   }
 }

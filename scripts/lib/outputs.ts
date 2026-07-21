@@ -40,9 +40,11 @@ function resolveApiUrl(): string {
 }
 
 async function getOrgRepo(): Promise<{ org: string; repo: string }> {
-  const remote = (await exec(["git", "remote", "get-url", "origin"], {
-    quiet: true,
-  })).trim()
+  const remote = (
+    await exec(["git", "remote", "get-url", "origin"], {
+      quiet: true,
+    })
+  ).trim()
   const match = remote.match(/github\.com[:/]([^/]+)\/([^/.]+)/)
   if (!match) {
     throw new Error("Could not determine org/repo from git remote")
@@ -153,7 +155,8 @@ async function resolveTarget(opts: FetchOutputsOptions): Promise<Target> {
 }
 
 async function createClient(apiUrl: string): Promise<YaffleClient> {
-  let token = process.env.YAFFLE_TOKEN || process.env.YAFFLE_API_TOKEN || process.env.GITHUB_TOKEN || ""
+  let token =
+    process.env.YAFFLE_TOKEN || process.env.YAFFLE_API_TOKEN || process.env.GITHUB_TOKEN || ""
 
   if (!token) {
     const stored = await getCredentials(getHost(apiUrl))

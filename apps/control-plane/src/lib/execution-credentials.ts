@@ -18,19 +18,26 @@ import {
 import { queueUnknownProviderDiscovery } from "./provider-discovery.ts"
 import { logger } from "./telemetry.ts"
 
-export type ExecutionCredentialResolution = {
-  ok: true
-  env: Record<string, string>
-} | {
-  ok: false
-  missingProviders: string[]
-  conflictProviders: string[]
-  degradation: WorkspaceDegradation | null
-}
+export type ExecutionCredentialResolution =
+  | {
+      ok: true
+      env: Record<string, string>
+    }
+  | {
+      ok: false
+      missingProviders: string[]
+      conflictProviders: string[]
+      degradation: WorkspaceDegradation | null
+    }
 
 export interface WorkspaceDegradation {
   kind: "provider_requirements_unavailable"
-  errorKind: "workspace_cache_missing" | "access_denied" | "metadata_missing" | "metadata_pending" | "unknown"
+  errorKind:
+    | "workspace_cache_missing"
+    | "access_denied"
+    | "metadata_missing"
+    | "metadata_pending"
+    | "unknown"
   message: string
   retryable: boolean
 }
@@ -113,9 +120,9 @@ async function resolveConnectionEnvForDeployment(
       throw new Error(`Connection ${connection.id} is missing secretPath`)
     }
 
-    const secret = await getConnectionSecret(connection.secretPath, {
+    const secret = (await getConnectionSecret(connection.secretPath, {
       credentials: brokerCredentials,
-    }) as {
+    })) as {
       envVars?: Array<{ key: string; value: string }>
     }
 
@@ -127,9 +134,10 @@ async function resolveConnectionEnvForDeployment(
   }
 
   if (connection.credentialProviderType === "iam_role") {
-    const config = typeof connection.config === "object" && connection.config !== null
-      ? connection.config as Record<string, unknown>
-      : {}
+    const config =
+      typeof connection.config === "object" && connection.config !== null
+        ? (connection.config as Record<string, unknown>)
+        : {}
 
     const roleArn = typeof config.roleArn === "string" ? config.roleArn : null
     if (!roleArn) {
@@ -141,21 +149,27 @@ async function resolveConnectionEnvForDeployment(
       credentials: brokerCredentials,
     })
 
-    const assumed = await brokerSts.send(new AssumeRoleCommand({
-      RoleArn: roleArn,
-      RoleSessionName: `yaffle-run-${connection.id.slice(0, 8)}`,
-      ExternalId: typeof config.externalId === "string" ? config.externalId : undefined,
-      DurationSeconds: 3600,
-      Tags: [
-        {
-          Key: "environment",
-          Value: deployment.environmentName,
-        },
-      ],
-      TransitiveTagKeys: ["environment"],
-    }))
+    const assumed = await brokerSts.send(
+      new AssumeRoleCommand({
+        RoleArn: roleArn,
+        RoleSessionName: `yaffle-run-${connection.id.slice(0, 8)}`,
+        ExternalId: typeof config.externalId === "string" ? config.externalId : undefined,
+        DurationSeconds: 3600,
+        Tags: [
+          {
+            Key: "environment",
+            Value: deployment.environmentName,
+          },
+        ],
+        TransitiveTagKeys: ["environment"],
+      }),
+    )
 
-    if (!assumed.Credentials?.AccessKeyId || !assumed.Credentials.SecretAccessKey || !assumed.Credentials.SessionToken) {
+    if (
+      !assumed.Credentials?.AccessKeyId ||
+      !assumed.Credentials.SecretAccessKey ||
+      !assumed.Credentials.SessionToken
+    ) {
       throw new Error(`Failed to assume role for connection ${connection.id}`)
     }
 
@@ -167,11 +181,17 @@ async function resolveConnectionEnvForDeployment(
     }
   }
 
-  throw new Error(`Unsupported credential provider type: ${connection.credentialProviderType ?? connection.type}`)
+  throw new Error(
+    `Unsupported credential provider type: ${connection.credentialProviderType ?? connection.type}`,
+  )
 }
 
 export async function resolveExecutionCredentialsForDeployment(
-  deployment: Pick<WorkspaceDeployment, "orgId" | "environmentName" | "workspacePath" | "runGroupId"> & ProviderRequirementDeployment,
+  deployment: Pick<
+    WorkspaceDeployment,
+    "orgId" | "environmentName" | "workspacePath" | "runGroupId"
+  > &
+    ProviderRequirementDeployment,
 ): Promise<ExecutionCredentialResolution> {
   return resolveExecutionCredentialsForDeploymentWithDeps(deployment, {
     getProvidersForDeployment: getRequiredProvidersForDeployment,
@@ -182,7 +202,11 @@ export async function resolveExecutionCredentialsForDeployment(
 }
 
 export async function resolveExecutionCredentialsForDeploymentWithDeps(
-  deployment: Pick<WorkspaceDeployment, "orgId" | "environmentName" | "workspacePath" | "runGroupId"> & ProviderRequirementDeployment,
+  deployment: Pick<
+    WorkspaceDeployment,
+    "orgId" | "environmentName" | "workspacePath" | "runGroupId"
+  > &
+    ProviderRequirementDeployment,
   deps: ExecutionResolutionDeps,
 ): Promise<ExecutionCredentialResolution> {
   const connectionsPromise = deps.listConnectionsForOrg(deployment.orgId)
@@ -209,7 +233,7 @@ export async function resolveExecutionCredentialsForDeploymentWithDeps(
   for (const requirement of requirements) {
     const provider = requirement.providerType
     const matches = connections.filter((connection) =>
-      connectionMatches(connection, provider, deployment.environmentName, deployment.workspacePath)
+      connectionMatches(connection, provider, deployment.environmentName, deployment.workspacePath),
     )
 
     if (matches.length === 0) {
@@ -258,7 +282,11 @@ export async function resolveExecutionCredentialsForDeploymentWithDeps(
 }
 
 export async function getConnectionReadinessForDeployment(
-  deployment: Pick<WorkspaceDeployment, "orgId" | "environmentName" | "workspacePath" | "runGroupId"> & ProviderRequirementDeployment,
+  deployment: Pick<
+    WorkspaceDeployment,
+    "orgId" | "environmentName" | "workspacePath" | "runGroupId"
+  > &
+    ProviderRequirementDeployment,
 ): Promise<ConnectionReadiness> {
   return getConnectionReadinessForDeploymentWithDeps(deployment, {
     getProvidersForDeployment: getRequiredProvidersForDeployment,
@@ -269,7 +297,11 @@ export async function getConnectionReadinessForDeployment(
 }
 
 export async function getConnectionReadinessForDeploymentWithDeps(
-  deployment: Pick<WorkspaceDeployment, "orgId" | "environmentName" | "workspacePath" | "runGroupId"> & ProviderRequirementDeployment,
+  deployment: Pick<
+    WorkspaceDeployment,
+    "orgId" | "environmentName" | "workspacePath" | "runGroupId"
+  > &
+    ProviderRequirementDeployment,
   deps: ExecutionResolutionDeps,
 ): Promise<ConnectionReadiness> {
   const connectionsPromise = deps.listConnectionsForOrg(deployment.orgId)
@@ -311,7 +343,7 @@ export async function getConnectionReadinessForDeploymentWithDeps(
   for (const requirement of requirements) {
     const provider = requirement.providerType
     const matches = connections.filter((connection) =>
-      connectionMatches(connection, provider, deployment.environmentName, deployment.workspacePath)
+      connectionMatches(connection, provider, deployment.environmentName, deployment.workspacePath),
     )
 
     if (matches.length === 0) {
@@ -345,11 +377,8 @@ export async function getConnectionReadinessForDeploymentWithDeps(
   }
 
   return {
-    status: conflictProviders.length > 0
-      ? "conflict"
-      : missingProviders.length > 0
-        ? "missing"
-        : "ready",
+    status:
+      conflictProviders.length > 0 ? "conflict" : missingProviders.length > 0 ? "missing" : "ready",
     requiredProviders: providers,
     missingProviders,
     conflictProviders,

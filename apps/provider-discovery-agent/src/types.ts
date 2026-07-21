@@ -8,10 +8,12 @@ export const discoveryDispatchRequestSchema = z.object({
   environment: z.string().min(1).optional(),
   workspacePath: z.string().min(1).optional(),
   callbackUrl: z.string().url(),
-  callbackAuth: z.object({
-    mode: z.literal("hmac-sha256"),
-    secretRef: z.string().min(1).optional(),
-  }).optional(),
+  callbackAuth: z
+    .object({
+      mode: z.literal("hmac-sha256"),
+      secretRef: z.string().min(1).optional(),
+    })
+    .optional(),
   callbackTtlSeconds: z.number().int().min(1).max(3600).optional(),
 })
 

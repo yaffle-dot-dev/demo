@@ -34,9 +34,9 @@ export async function createApproval(values: CreateApproval): Promise<Approval> 
       ? await findPrincipalRepoBindingById(runGroup.repoBindingId)
       : undefined
     if (
-      !deployment
-      || !runGroup
-      || !isExecutionContextAssociationValid({
+      !deployment ||
+      !runGroup ||
+      !isExecutionContextAssociationValid({
         snapshot: runGroup.executionSnapshot,
         runGroup,
         resource: deployment,

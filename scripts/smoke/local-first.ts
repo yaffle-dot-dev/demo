@@ -127,7 +127,12 @@ https://yaffle.localhost:${proxyPort} {
     await waitForHttps(`${moduleApiUrl}/api/health`, 30_000)
     console.log(`[smoke] Caddy TLS proxy is healthy at ${moduleApiUrl}`)
 
-    await runCommand(["cargo", "build", "-p", "yaffle-cli"], REPO_ROOT, process.env, "build yaffle-cli")
+    await runCommand(
+      ["cargo", "build", "-p", "yaffle-cli"],
+      REPO_ROOT,
+      process.env,
+      "build yaffle-cli",
+    )
 
     const cliEnv = {
       ...process.env,
@@ -189,8 +194,13 @@ https://yaffle.localhost:${proxyPort} {
     )
     console.log("[smoke] raw tofu init succeeded with hosted output-module transport")
 
-    if (!stdoutBuffer.join("").includes("Anonymous") && !stderrBuffer.join("").includes("Anonymous")) {
-      console.log("[smoke] note: control-plane logs did not contain explicit anonymous-session text")
+    if (
+      !stdoutBuffer.join("").includes("Anonymous") &&
+      !stderrBuffer.join("").includes("Anonymous")
+    ) {
+      console.log(
+        "[smoke] note: control-plane logs did not contain explicit anonymous-session text",
+      )
     }
 
     console.log("[smoke] local-first smoke test passed")

@@ -77,7 +77,7 @@ describe("private beta invites", () => {
     })
 
     expect(res.status).toBe(403)
-    const body = await res.json() as { error: { code: string } }
+    const body = (await res.json()) as { error: { code: string } }
     expect(body.error.code).toBe("PRIVATE_BETA_CLOSED")
   })
 
@@ -96,7 +96,7 @@ describe("private beta invites", () => {
 
     const accessRes = await reqAs(invitedUser, "/api/users/private-beta/access")
     expect(accessRes.status).toBe(200)
-    const accessBody = await accessRes.json() as {
+    const accessBody = (await accessRes.json()) as {
       data: { hasAccess: boolean; matchedBy: string | null; invite: { id: string } | null }
     }
     expect(accessBody.data.hasAccess).toBe(true)
@@ -131,16 +131,26 @@ describe("private beta invites", () => {
       }),
     })
     expect(createInviteRes.status).toBe(201)
-    const createdInvite = await createInviteRes.json() as { data: { id: string } }
+    const createdInvite = (await createInviteRes.json()) as { data: { id: string } }
 
     const listRes = await reqAs(operatorUser, "/api/users/private-beta/invites")
     expect(listRes.status).toBe(200)
-    const listBody = await listRes.json() as { data: Array<{ id: string; githubLogin: string | null }> }
-    expect(listBody.data.some((invite) => invite.id === createdInvite.data.id && invite.githubLogin === "another-friend")).toBe(true)
+    const listBody = (await listRes.json()) as {
+      data: Array<{ id: string; githubLogin: string | null }>
+    }
+    expect(
+      listBody.data.some(
+        (invite) => invite.id === createdInvite.data.id && invite.githubLogin === "another-friend",
+      ),
+    ).toBe(true)
 
-    const revokeRes = await reqAs(operatorUser, `/api/users/private-beta/invites/${createdInvite.data.id}`, {
-      method: "DELETE",
-    })
+    const revokeRes = await reqAs(
+      operatorUser,
+      `/api/users/private-beta/invites/${createdInvite.data.id}`,
+      {
+        method: "DELETE",
+      },
+    )
     expect(revokeRes.status).toBe(200)
 
     const revokedInviteRows = await db

@@ -4,11 +4,7 @@ import { mkdtemp, rm, readFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-} from "@aws-sdk/client-s3"
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 import { getAwsClientConfig } from "./aws-client-config.ts"
@@ -34,11 +30,9 @@ export async function prepareWorkspace(opts: {
     : `https://github.com/${opts.owner}/${opts.repo}.git`
 
   // Shallow clone -- we only need the files at the target SHA
-  const cloneResult = spawnSync(
-    "git",
-    ["clone", "--depth", "1", cloneUrl, workDir],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  )
+  const cloneResult = spawnSync("git", ["clone", "--depth", "1", cloneUrl, workDir], {
+    stdio: ["ignore", "pipe", "pipe"],
+  })
 
   if ((cloneResult.status ?? 1) !== 0) {
     const stderr = cloneResult.stderr.toString()
@@ -59,11 +53,10 @@ export async function prepareWorkspace(opts: {
   })
 
   if (currentHead !== opts.headSha) {
-    const fetchResult = spawnSync(
-      "git",
-      ["fetch", "origin", opts.headSha, "--depth", "1"],
-      { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] },
-    )
+    const fetchResult = spawnSync("git", ["fetch", "origin", opts.headSha, "--depth", "1"], {
+      cwd: workDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
 
     if ((fetchResult.status ?? 1) !== 0) {
       const stderr = fetchResult.stderr.toString()
@@ -71,11 +64,10 @@ export async function prepareWorkspace(opts: {
       throw new Error(`git fetch failed (exit ${fetchResult.status ?? 1}): ${stderr}`)
     }
 
-    const checkoutResult = spawnSync(
-      "git",
-      ["checkout", opts.headSha],
-      { cwd: workDir, stdio: ["ignore", "pipe", "pipe"] },
-    )
+    const checkoutResult = spawnSync("git", ["checkout", opts.headSha], {
+      cwd: workDir,
+      stdio: ["ignore", "pipe", "pipe"],
+    })
 
     if ((checkoutResult.status ?? 1) !== 0) {
       const stderr = checkoutResult.stderr.toString()
@@ -105,7 +97,7 @@ export async function cleanupWorkspace(workDir: string): Promise<void> {
   } catch (err) {
     logger.warn(`failed to clean up workspace ${workDir}`, {
       "workspace.dir": workDir,
-      "error": err instanceof Error ? err.message : String(err),
+      error: err instanceof Error ? err.message : String(err),
     })
   }
 }
@@ -217,11 +209,9 @@ export class WorkspacePackager {
       tarballPath,
     })
 
-    const tarResult = spawnSync(
-      "tar",
-      ["-czf", tarballPath, "-C", sourceDir, "."],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    )
+    const tarResult = spawnSync("tar", ["-czf", tarballPath, "-C", sourceDir, "."], {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
 
     if ((tarResult.status ?? 1) !== 0) {
       const stderr = tarResult.stderr.toString()
@@ -366,9 +356,7 @@ export class WorkspacePackager {
 
   private isNotFoundError(err: unknown): boolean {
     return (
-      err instanceof Error &&
-      "name" in err &&
-      (err.name === "NoSuchKey" || err.name === "NotFound")
+      err instanceof Error && "name" in err && (err.name === "NoSuchKey" || err.name === "NotFound")
     )
   }
 }

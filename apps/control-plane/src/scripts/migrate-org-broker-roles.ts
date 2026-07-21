@@ -8,7 +8,9 @@ import {
   syncOrgBrokerRoleAssumeTargets,
 } from "../lib/org-provisioning.ts"
 
-function listIamRoleTargets(connections: Array<{ credentialProviderType: string | null; config: unknown }>): string[] {
+function listIamRoleTargets(
+  connections: Array<{ credentialProviderType: string | null; config: unknown }>,
+): string[] {
   const targets = new Set<string>()
 
   for (const connection of connections) {
@@ -16,9 +18,10 @@ function listIamRoleTargets(connections: Array<{ credentialProviderType: string 
       continue
     }
 
-    const config = typeof connection.config === "object" && connection.config !== null
-      ? connection.config as Record<string, unknown>
-      : {}
+    const config =
+      typeof connection.config === "object" && connection.config !== null
+        ? (connection.config as Record<string, unknown>)
+        : {}
 
     const roleArn = typeof config.roleArn === "string" ? config.roleArn : null
     if (roleArn) {
@@ -35,7 +38,9 @@ async function main(): Promise<void> {
   const allOrgs = await db.select().from(organizations)
   const candidateOrgs = allOrgs.filter((org) => org.provisioningStatus !== "pending")
 
-  console.info(`Found ${candidateOrgs.length} organizations to inspect (${apply ? "apply" : "dry-run"} mode)`)
+  console.info(
+    `Found ${candidateOrgs.length} organizations to inspect (${apply ? "apply" : "dry-run"} mode)`,
+  )
 
   for (const org of candidateOrgs) {
     const connections = await listConnectionsForOrg(org.id)
@@ -43,8 +48,8 @@ async function main(): Promise<void> {
 
     if (!apply) {
       console.info(
-        `[dry-run] org=${org.slug} currentRole=${org.iamRoleArn ?? "<none>"} `
-        + `kms=${org.kmsKeyArn ?? "<none>"} targets=${iamTargets.length}`,
+        `[dry-run] org=${org.slug} currentRole=${org.iamRoleArn ?? "<none>"} ` +
+          `kms=${org.kmsKeyArn ?? "<none>"} targets=${iamTargets.length}`,
       )
       continue
     }
@@ -63,7 +68,9 @@ async function main(): Promise<void> {
 
     await syncOrgKmsKeyPolicy(org.id, org.kmsKeyArn, brokerRoleArn)
     await syncOrgBrokerRoleAssumeTargets(org.id, org.slug, brokerRoleArn, org.kmsKeyArn, iamTargets)
-    console.info(`synced broker targets for org ${org.slug} (${iamTargets.length} role ARN${iamTargets.length === 1 ? "" : "s"})`)
+    console.info(
+      `synced broker targets for org ${org.slug} (${iamTargets.length} role ARN${iamTargets.length === 1 ? "" : "s"})`,
+    )
   }
 
   console.info(`org broker role migration complete (${apply ? "apply" : "dry-run"})`)

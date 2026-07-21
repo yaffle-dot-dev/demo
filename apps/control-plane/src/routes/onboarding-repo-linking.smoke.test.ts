@@ -64,7 +64,7 @@ function mockGithubApi(): { calls: string[]; restore: () => void } {
   globalThis.fetch = Object.assign(
     async (input: string | URL | Request, init?: RequestInit) => {
       const request = input instanceof Request ? input : null
-      const url = new URL(request ? request.url : String(input))
+      const url = input instanceof Request ? new URL(input.url) : new URL(input)
       const method = init?.method ?? request?.method ?? "GET"
       const key = `${method.toUpperCase()} ${url.pathname}${url.search}`
 
@@ -105,11 +105,17 @@ function mockGithubApi(): { calls: string[]; restore: () => void } {
         })
       }
 
-      if (url.pathname === "/user/installations/7777/repositories" && method.toUpperCase() === "GET") {
+      if (
+        url.pathname === "/user/installations/7777/repositories" &&
+        method.toUpperCase() === "GET"
+      ) {
         return Response.json({ message: "Not Found" }, { status: 404 })
       }
 
-      if (url.pathname === "/user/installations/4242/repositories" && method.toUpperCase() === "GET") {
+      if (
+        url.pathname === "/user/installations/4242/repositories" &&
+        method.toUpperCase() === "GET"
+      ) {
         return Response.json({
           repositories: [
             {
@@ -167,7 +173,7 @@ describe("onboarding and repo linking smoke flow", () => {
     try {
       const emptyOrgListRes = await req("/api/orgs")
       expect(emptyOrgListRes.status).toBe(200)
-      const emptyOrgList = await emptyOrgListRes.json() as {
+      const emptyOrgList = (await emptyOrgListRes.json()) as {
         data: Array<{ slug: string }>
       }
       expect(emptyOrgList.data).toEqual([])
@@ -180,7 +186,7 @@ describe("onboarding and repo linking smoke flow", () => {
         },
       })
       expect(createOrgRes.status).toBe(201)
-      const createdOrg = await createOrgRes.json() as {
+      const createdOrg = (await createOrgRes.json()) as {
         data: { id: string; slug: string; name: string }
       }
       expect(createdOrg.data.slug).toBe(orgSlug)
@@ -188,7 +194,7 @@ describe("onboarding and repo linking smoke flow", () => {
 
       const orgListRes = await req("/api/orgs")
       expect(orgListRes.status).toBe(200)
-      const orgList = await orgListRes.json() as {
+      const orgList = (await orgListRes.json()) as {
         data: Array<{ id: string; slug: string; role: string }>
       }
       expect(orgList.data).toHaveLength(1)
@@ -198,7 +204,7 @@ describe("onboarding and repo linking smoke flow", () => {
 
       const installationsRes = await req("/api/integrations/github/installations")
       expect(installationsRes.status).toBe(200)
-      const installations = await installationsRes.json() as {
+      const installations = (await installationsRes.json()) as {
         data: Array<{
           installationId: number
           githubOrgLogin: string
@@ -210,9 +216,11 @@ describe("onboarding and repo linking smoke flow", () => {
       expect(installations.data[0]?.githubOrgLogin).toBe("smoke-acme")
       expect(installations.data[0]?.accountType).toBe("Organization")
 
-      const repositoriesRes = await req(`/api/integrations/github/installations/4242/repositories?org=${orgSlug}`)
+      const repositoriesRes = await req(
+        `/api/integrations/github/installations/4242/repositories?org=${orgSlug}`,
+      )
       expect(repositoriesRes.status).toBe(200)
-      const repositories = await repositoriesRes.json() as {
+      const repositories = (await repositoriesRes.json()) as {
         data: Array<{
           githubId: number
           fullName: string
@@ -236,7 +244,7 @@ describe("onboarding and repo linking smoke flow", () => {
         },
       })
       expect(createMappingRes.status).toBe(201)
-      const createdMapping = await createMappingRes.json() as {
+      const createdMapping = (await createMappingRes.json()) as {
         data: {
           orgId: string
           installationId: number
@@ -251,7 +259,7 @@ describe("onboarding and repo linking smoke flow", () => {
 
       const mappingsRes = await req(`/api/orgs/${orgSlug}/repo-mappings`)
       expect(mappingsRes.status).toBe(200)
-      const mappings = await mappingsRes.json() as {
+      const mappings = (await mappingsRes.json()) as {
         data: Array<{
           installationId: number
           githubRepoId: number
@@ -267,7 +275,7 @@ describe("onboarding and repo linking smoke flow", () => {
         `/api/integrations/github/installations/4242/repositories?org=${orgSlug}`,
       )
       expect(linkedRepositoriesRes.status).toBe(200)
-      const linkedRepositories = await linkedRepositoriesRes.json() as {
+      const linkedRepositories = (await linkedRepositoriesRes.json()) as {
         data: Array<{
           githubId: number
           mappingStatus: string
@@ -297,7 +305,7 @@ describe("onboarding and repo linking smoke flow", () => {
       user: noGithubUser,
     })
     expect(noGithubAccountRes.status).toBe(400)
-    const noGithubAccountBody = await noGithubAccountRes.json() as {
+    const noGithubAccountBody = (await noGithubAccountRes.json()) as {
       error: { code: string; message: string }
     }
     expect(noGithubAccountBody.error.code).toBe("NO_GITHUB_ACCOUNT")
@@ -324,14 +332,16 @@ describe("onboarding and repo linking smoke flow", () => {
         },
       })
       expect(duplicateSlugRes.status).toBe(409)
-      const duplicateSlugBody = await duplicateSlugRes.json() as {
+      const duplicateSlugBody = (await duplicateSlugRes.json()) as {
         error: { code: string; message: string }
       }
       expect(duplicateSlugBody.error.code).toBe("SLUG_TAKEN")
 
-      const inaccessibleInstallationRes = await req("/api/integrations/github/installations/7777/repositories")
+      const inaccessibleInstallationRes = await req(
+        "/api/integrations/github/installations/7777/repositories",
+      )
       expect(inaccessibleInstallationRes.status).toBe(403)
-      const inaccessibleInstallationBody = await inaccessibleInstallationRes.json() as {
+      const inaccessibleInstallationBody = (await inaccessibleInstallationRes.json()) as {
         error: { code: string; message: string }
       }
       expect(inaccessibleInstallationBody.error.code).toBe("INSTALLATION_NOT_ACCESSIBLE")
@@ -344,7 +354,7 @@ describe("onboarding and repo linking smoke flow", () => {
         },
       })
       expect(inaccessibleMappingRes.status).toBe(403)
-      const inaccessibleMappingBody = await inaccessibleMappingRes.json() as {
+      const inaccessibleMappingBody = (await inaccessibleMappingRes.json()) as {
         error: { code: string; message: string }
       }
       expect(inaccessibleMappingBody.error.code).toBe("INSTALLATION_NOT_ACCESSIBLE")
@@ -371,7 +381,7 @@ describe("onboarding and repo linking smoke flow", () => {
         `/api/integrations/github/installations/4242/repositories?org=${secondOrgSlug}`,
       )
       expect(repositoriesForSecondOrgRes.status).toBe(200)
-      const repositoriesForSecondOrg = await repositoriesForSecondOrgRes.json() as {
+      const repositoriesForSecondOrg = (await repositoriesForSecondOrgRes.json()) as {
         data: Array<{
           githubId: number
           mappingStatus: string
@@ -391,7 +401,7 @@ describe("onboarding and repo linking smoke flow", () => {
         },
       })
       expect(duplicateMappingRes.status).toBe(409)
-      const duplicateMappingBody = await duplicateMappingRes.json() as {
+      const duplicateMappingBody = (await duplicateMappingRes.json()) as {
         error: { code: string; message: string }
       }
       expect(duplicateMappingBody.error.code).toBe("REPO_ALREADY_MAPPED")

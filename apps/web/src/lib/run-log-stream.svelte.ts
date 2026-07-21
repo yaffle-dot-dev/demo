@@ -4,7 +4,13 @@ import { getRunOutput } from "$lib/api"
 import { appendRunViewCorrelation, type RunViewCorrelation } from "$lib/run-view-monitoring"
 import type { StreamPayloadMeta } from "$lib/sse/types"
 
-type RunLogConnectionState = "idle" | "loading" | "connecting" | "connected" | "disconnected" | "error"
+type RunLogConnectionState =
+  | "idle"
+  | "loading"
+  | "connecting"
+  | "connected"
+  | "disconnected"
+  | "error"
 
 const INITIAL_BACKOFF_MS = 1_000
 const MAX_BACKOFF_MS = 30_000
@@ -77,7 +83,7 @@ export function useRunLogStream(
 
   const handleLogEvent = (event: MessageEvent): void => {
     try {
-      const parsed = JSON.parse(event.data) as { message?: string, meta?: StreamPayloadMeta }
+      const parsed = JSON.parse(event.data) as { message?: string; meta?: StreamPayloadMeta }
       latestMeta = parsed.meta ?? latestMeta
       if (parsed.message) {
         output += parsed.message
@@ -91,7 +97,7 @@ export function useRunLogStream(
 
   const handleResetEvent = (event: MessageEvent): void => {
     try {
-      const parsed = JSON.parse(event.data) as { output?: string, meta?: StreamPayloadMeta }
+      const parsed = JSON.parse(event.data) as { output?: string; meta?: StreamPayloadMeta }
       latestMeta = parsed.meta ?? latestMeta
       output = parsed.output ?? ""
       lastOutputAtMs = performance.now()
@@ -233,8 +239,8 @@ export function useRunLogStream(
 
     const runChanged = runId !== currentRunId
     const streamingChanged = shouldStream !== currentShouldStream
-    const correlationChanged = runViewSessionId !== currentRunViewSessionId
-      || pageViewId !== currentPageViewId
+    const correlationChanged =
+      runViewSessionId !== currentRunViewSessionId || pageViewId !== currentPageViewId
 
     if (!runChanged && !streamingChanged && !correlationChanged) {
       return
@@ -325,11 +331,23 @@ export function useRunLogStream(
   })
 
   return {
-    get output() { return output },
-    get isStreaming() { return isStreaming },
-    get connectionState() { return connectionState },
-    get error() { return error },
-    get latestMeta() { return latestMeta },
-    get lastOutputAtMs() { return lastOutputAtMs },
+    get output() {
+      return output
+    },
+    get isStreaming() {
+      return isStreaming
+    },
+    get connectionState() {
+      return connectionState
+    },
+    get error() {
+      return error
+    },
+    get latestMeta() {
+      return latestMeta
+    },
+    get lastOutputAtMs() {
+      return lastOutputAtMs
+    },
   }
 }

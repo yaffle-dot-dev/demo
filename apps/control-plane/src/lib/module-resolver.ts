@@ -67,15 +67,14 @@ export interface ResolveModuleOptions {
  * 3. Fall back to a named workspace when the transient workspace is
  *    missing or has no finalized state to serve
  */
-export async function resolveModule(
-  options: ResolveModuleOptions,
-): Promise<ResolvedModule | null> {
+export async function resolveModule(options: ResolveModuleOptions): Promise<ResolvedModule | null> {
   const { orgId, repo, workspacePath, serial, transientEnvironment } = options
 
   async function findUsableStateVersion(workspaceId: string): Promise<StateVersion | undefined> {
-    const stateVersion = serial === "latest"
-      ? await getCurrentStateVersion(workspaceId)
-      : await findStateVersionBySerial(workspaceId, serial)
+    const stateVersion =
+      serial === "latest"
+        ? await getCurrentStateVersion(workspaceId)
+        : await findStateVersionBySerial(workspaceId, serial)
 
     if (!stateVersion || stateVersion.status !== "finalized") {
       return undefined
@@ -110,13 +109,16 @@ export async function resolveModule(
         }
       }
 
-      logger.info("Transient workspace has no finalized state version, falling back to named workspace", {
-        repo,
-        workspacePath,
-        environmentName: transientEnvironment.environmentName,
-        workspaceId: transientWorkspace.id,
-        requestedSerial: serial,
-      })
+      logger.info(
+        "Transient workspace has no finalized state version, falling back to named workspace",
+        {
+          repo,
+          workspacePath,
+          environmentName: transientEnvironment.environmentName,
+          workspaceId: transientWorkspace.id,
+          requestedSerial: serial,
+        },
+      )
     }
   }
 

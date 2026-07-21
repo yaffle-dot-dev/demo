@@ -20,7 +20,9 @@ export function getDatabaseUrl(): string {
 }
 
 export function getDatabaseListenUrl(): string {
-  return cleanDbUrl(process.env.DATABASE_LISTEN_URL ?? process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL)
+  return cleanDbUrl(
+    process.env.DATABASE_LISTEN_URL ?? process.env.DATABASE_URL ?? DEFAULT_DATABASE_URL,
+  )
 }
 
 const connectionString = getDatabaseUrl()

@@ -10,7 +10,12 @@
  *   pnpm exec tsx src/scripts/backfill-repo-mappings.ts --apply   # apply changes
  */
 import { db } from "../lib/db.ts"
-import { organizations, githubInstallations, repositories, githubRepoMappings } from "../db/schema.ts"
+import {
+  organizations,
+  githubInstallations,
+  repositories,
+  githubRepoMappings,
+} from "../db/schema.ts"
 import { eq, and, isNull } from "drizzle-orm"
 
 async function main(): Promise<void> {
@@ -42,13 +47,12 @@ async function main(): Promise<void> {
       console.info(`  Installation ${install.installationId} (${install.githubOrgLogin})`)
 
       // Find repos belonging to this org that don't have installation_id set
-      const orgRepos = await db
-        .select()
-        .from(repositories)
-        .where(eq(repositories.orgId, org.id))
+      const orgRepos = await db.select().from(repositories).where(eq(repositories.orgId, org.id))
 
       const reposNeedingInstallationId = orgRepos.filter((r) => r.installationId === null)
-      console.info(`  ${orgRepos.length} repos total, ${reposNeedingInstallationId.length} need installation_id backfill`)
+      console.info(
+        `  ${orgRepos.length} repos total, ${reposNeedingInstallationId.length} need installation_id backfill`,
+      )
 
       // Step 2: Backfill repositories.installation_id
       if (reposNeedingInstallationId.length > 0) {
@@ -57,9 +61,13 @@ async function main(): Promise<void> {
             .update(repositories)
             .set({ installationId: install.installationId })
             .where(and(eq(repositories.orgId, org.id), isNull(repositories.installationId)))
-          console.info(`  [APPLIED] Set installation_id=${install.installationId} on ${reposNeedingInstallationId.length} repos`)
+          console.info(
+            `  [APPLIED] Set installation_id=${install.installationId} on ${reposNeedingInstallationId.length} repos`,
+          )
         } else {
-          console.info(`  [DRY-RUN] Would set installation_id=${install.installationId} on ${reposNeedingInstallationId.length} repos`)
+          console.info(
+            `  [DRY-RUN] Would set installation_id=${install.installationId} on ${reposNeedingInstallationId.length} repos`,
+          )
         }
       }
 
@@ -104,7 +112,9 @@ async function main(): Promise<void> {
       if (apply) {
         console.info(`  [APPLIED] Created ${created} mappings, skipped ${skipped} (already exist)`)
       } else {
-        console.info(`  [DRY-RUN] Would create ${created} mappings, skip ${skipped} (already exist)`)
+        console.info(
+          `  [DRY-RUN] Would create ${created} mappings, skip ${skipped} (already exist)`,
+        )
       }
     }
 

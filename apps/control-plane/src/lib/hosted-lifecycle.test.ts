@@ -4,10 +4,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "@yaffle/test"
 import { eq } from "drizzle-orm"
 
 import { createOrg } from "../db/queries/organizations.ts"
-import {
-  createPrincipal,
-  ensurePrincipalRepoBinding,
-} from "../db/queries/principals.ts"
+import { createPrincipal, ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
 import { createRunGroup } from "../db/queries/run-groups.ts"
 import { upsertDeployment } from "../db/queries/workspace-deployments.ts"
 import {
@@ -62,14 +59,10 @@ afterAll(async () => {
 test("dispatches lifecycle hooks from the immutable snapshot", async () => {
   const requests: Array<{ url: string; body: Record<string, unknown> }> = []
   globalThis.fetch = async (input, init): Promise<Response> => {
-    const url = typeof input === "string"
-      ? input
-      : input instanceof URL
-        ? input.toString()
-        : input.url
-    const body = typeof init?.body === "string"
-      ? JSON.parse(init.body) as Record<string, unknown>
-      : {}
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+    const body =
+      typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {}
     requests.push({
       url,
       body,
@@ -123,26 +116,30 @@ test("dispatches lifecycle hooks from the immutable snapshot", async () => {
         name: "pr-7",
         sourcePullRequestNumber: 7,
       },
-      workspaces: [{
-        path: "infra",
-        variables: {},
-        approval: { required: false, approvers: [] },
-        lifecycle: {
-          activation: [{
-            key: "deploy",
-            environments: ["pr-7"],
-            kind: "generic",
-            failure: "failed",
-            scopes: [],
-            request: {
-              url: "https://snapshot.example.test/deploy",
-              method: "POST",
-            },
-          }],
-          verification: [],
+      workspaces: [
+        {
+          path: "infra",
+          variables: {},
+          approval: { required: false, approvers: [] },
+          lifecycle: {
+            activation: [
+              {
+                key: "deploy",
+                environments: ["pr-7"],
+                kind: "generic",
+                failure: "failed",
+                scopes: [],
+                request: {
+                  url: "https://snapshot.example.test/deploy",
+                  method: "POST",
+                },
+              },
+            ],
+            verification: [],
+          },
+          automaticPreviewIsolation: false,
         },
-        automaticPreviewIsolation: false,
-      }],
+      ],
     },
   })
   const deployment = await upsertDeployment({
@@ -180,11 +177,13 @@ test("dispatches lifecycle hooks from the immutable snapshot", async () => {
     name: "Foreign Lifecycle Snapshot",
     slug: `foreign-lifecycle-snapshot-${randomUUID()}`,
   })
-  await expect(executeHostedLifecycleForDeployment({
-    runGroupId: runGroup.id,
-    deployment: { ...deployment, orgId: foreignOrg.id },
-    outputs: {},
-  })).rejects.toBeInstanceOf(ExecutionContextAssociationError)
+  await expect(
+    executeHostedLifecycleForDeployment({
+      runGroupId: runGroup.id,
+      deployment: { ...deployment, orgId: foreignOrg.id },
+      outputs: {},
+    }),
+  ).rejects.toBeInstanceOf(ExecutionContextAssociationError)
   expect(requests).toHaveLength(1)
   await db.delete(organizations).where(eq(organizations.id, foreignOrg.id))
 })

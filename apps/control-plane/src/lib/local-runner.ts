@@ -4,11 +4,7 @@ import type { TerraformResult } from "@yaffle/shared"
 
 import type { RunOpts, Runner } from "./runner.ts"
 import { configureProviderOverride, configureVariablesOverride } from "./state.ts"
-import {
-  configureTfcBackend,
-  buildTfcEnvVars,
-  writeEphemeralCredentials,
-} from "./tfc-backend.ts"
+import { configureTfcBackend, buildTfcEnvVars, writeEphemeralCredentials } from "./tfc-backend.ts"
 import { getTfcApiHost } from "./run-token.ts"
 import { forceUnlockWorkspace } from "../db/queries/workspaces.ts"
 import { logger, withSpan } from "./telemetry.ts"
@@ -57,9 +53,7 @@ export class LocalRunner implements Runner {
           "runner.work_dir": workDir,
         })
 
-        const tfDir = opts.workspacePath === "."
-          ? workDir
-          : `${workDir}/${opts.workspacePath}`
+        const tfDir = opts.workspacePath === "." ? workDir : `${workDir}/${opts.workspacePath}`
 
         // Verify the workspace path actually exists in the repo
         if (!existsSync(tfDir)) {

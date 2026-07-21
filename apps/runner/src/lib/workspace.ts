@@ -59,11 +59,9 @@ export async function downloadWorkspace(
   const extractDir = join(workDir, "extracted")
   await mkdir(extractDir, { recursive: true })
 
-  const tarResult = spawnSync(
-    "tar",
-    ["-xzf", tarballPath, "-C", extractDir],
-    { stdio: ["ignore", "pipe", "pipe"] },
-  )
+  const tarResult = spawnSync("tar", ["-xzf", tarballPath, "-C", extractDir], {
+    stdio: ["ignore", "pipe", "pipe"],
+  })
 
   if ((tarResult.status ?? 1) !== 0) {
     const stderr = tarResult.stderr.toString()

@@ -1,34 +1,44 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import { handleApiCommand, handler as apiHandler, handlerWithDeps as apiHandlerWithDeps } from "./api-lambda.ts"
-import { handler as reconcileHandler, handlerWithDeps as reconcileHandlerWithDeps } from "./reconcile-lambda.ts"
+import {
+  handleApiCommand,
+  handler as apiHandler,
+  handlerWithDeps as apiHandlerWithDeps,
+} from "./api-lambda.ts"
+import {
+  handler as reconcileHandler,
+  handlerWithDeps as reconcileHandlerWithDeps,
+} from "./reconcile-lambda.ts"
 
 describe("traffic-controller lambda scaffolds", () => {
   test("accepts direct invoke payloads without an API Gateway body wrapper", async () => {
-    const response = await apiHandlerWithDeps({
-      command: "ensure_live_webhook_lease",
-      requestId: "req-direct",
-      actorGithubUserId: 123,
-      actorGithubLogin: "octocat",
-      prNumber: 42,
-      deploymentId: "dep-123",
-      desiredState: "active",
-      reason: "test",
-      scope: {
-        event: "installation_repositories",
-        installationId: 999,
+    const response = await apiHandlerWithDeps(
+      {
+        command: "ensure_live_webhook_lease",
+        requestId: "req-direct",
+        actorGithubUserId: 123,
+        actorGithubLogin: "octocat",
+        prNumber: 42,
+        deploymentId: "dep-123",
+        desiredState: "active",
+        reason: "test",
+        scope: {
+          event: "installation_repositories",
+          installationId: 999,
+        },
       },
-    }, {
-      ensureRouteableDeployment: async () => {
-        throw new Error("ensureRouteableDeployment should not be called")
+      {
+        ensureRouteableDeployment: async () => {
+          throw new Error("ensureRouteableDeployment should not be called")
+        },
+        ensureLiveWebhookLease: async () => ({
+          status: "accepted",
+          operationId: "op-direct",
+          resourceId: "lease-direct",
+        }),
+        findOperationById: async () => undefined,
       },
-      ensureLiveWebhookLease: async () => ({
-        status: "accepted",
-        operationId: "op-direct",
-        resourceId: "lease-direct",
-      }),
-      findOperationById: async () => undefined,
-    })
+    )
 
     expect(response.statusCode).toBe(202)
   })
@@ -42,30 +52,33 @@ describe("traffic-controller lambda scaffolds", () => {
   })
 
   test("returns accepted receipts for ensure_live_webhook_lease when injected deps succeed", async () => {
-    const result = await handleApiCommand({
-      command: "ensure_live_webhook_lease",
-      requestId: "req-lease-1",
-      actorGithubUserId: 123,
-      actorGithubLogin: "octocat",
-      prNumber: 42,
-      deploymentId: "dep-123",
-      desiredState: "active",
-      reason: "test",
-      scope: {
-        event: "installation_repositories",
-        installationId: 999,
+    const result = await handleApiCommand(
+      {
+        command: "ensure_live_webhook_lease",
+        requestId: "req-lease-1",
+        actorGithubUserId: 123,
+        actorGithubLogin: "octocat",
+        prNumber: 42,
+        deploymentId: "dep-123",
+        desiredState: "active",
+        reason: "test",
+        scope: {
+          event: "installation_repositories",
+          installationId: 999,
+        },
       },
-    }, {
-      ensureRouteableDeployment: async () => {
-        throw new Error("ensureRouteableDeployment should not be called")
+      {
+        ensureRouteableDeployment: async () => {
+          throw new Error("ensureRouteableDeployment should not be called")
+        },
+        ensureLiveWebhookLease: async () => ({
+          status: "accepted",
+          operationId: "op-lease-1",
+          resourceId: "lease-1",
+        }),
+        findOperationById: async () => undefined,
       },
-      ensureLiveWebhookLease: async () => ({
-        status: "accepted",
-        operationId: "op-lease-1",
-        resourceId: "lease-1",
-      }),
-      findOperationById: async () => undefined,
-    })
+    )
 
     expect(result).toEqual({
       status: "accepted",
@@ -75,33 +88,36 @@ describe("traffic-controller lambda scaffolds", () => {
   })
 
   test("returns operation state for successful routeable deployment commands", async () => {
-    const result = await handleApiCommand({
-      command: "ensure_routeable_deployment",
-      requestId: "req-1",
-      deploymentId: "dep-123",
-      prNumber: 42,
-      environmentName: "pr-42",
-      environmentKind: "transient",
-      ownerGithubUserId: 12345,
-      ownerGithubLogin: "octocat",
-      receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
-      receiverKind: "github_webhook",
-      desiredState: "active",
-    }, {
-      ensureRouteableDeployment: async () => ({
-        status: "operation",
-        operation: {
-          operationId: "op-1",
-          operationType: "ensure_routeable_deployment",
-          status: "succeeded",
-          routeableDeploymentId: "rd-1",
-        },
-      }),
-      ensureLiveWebhookLease: async () => {
-        throw new Error("ensureLiveWebhookLease should not be called")
+    const result = await handleApiCommand(
+      {
+        command: "ensure_routeable_deployment",
+        requestId: "req-1",
+        deploymentId: "dep-123",
+        prNumber: 42,
+        environmentName: "pr-42",
+        environmentKind: "transient",
+        ownerGithubUserId: 12345,
+        ownerGithubLogin: "octocat",
+        receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
+        receiverKind: "github_webhook",
+        desiredState: "active",
       },
-      findOperationById: async () => undefined,
-    })
+      {
+        ensureRouteableDeployment: async () => ({
+          status: "operation",
+          operation: {
+            operationId: "op-1",
+            operationType: "ensure_routeable_deployment",
+            status: "succeeded",
+            routeableDeploymentId: "rd-1",
+          },
+        }),
+        ensureLiveWebhookLease: async () => {
+          throw new Error("ensureLiveWebhookLease should not be called")
+        },
+        findOperationById: async () => undefined,
+      },
+    )
 
     expect(result).toEqual({
       status: "operation",
@@ -115,65 +131,72 @@ describe("traffic-controller lambda scaffolds", () => {
   })
 
   test("accepts API Gateway style wrapped command payloads", async () => {
-    const response = await apiHandlerWithDeps({
-      body: JSON.stringify({
-        command: "ensure_live_webhook_lease",
-        requestId: "req-wrapped",
-        actorGithubUserId: 123,
-        actorGithubLogin: "octocat",
-        prNumber: 42,
-        deploymentId: "dep-123",
-        desiredState: "active",
-        reason: "test",
-        scope: {
-          event: "installation_repositories",
-          installationId: 999,
-        },
-      }),
-    }, {
-      ensureRouteableDeployment: async () => {
-        throw new Error("ensureRouteableDeployment should not be called")
+    const response = await apiHandlerWithDeps(
+      {
+        body: JSON.stringify({
+          command: "ensure_live_webhook_lease",
+          requestId: "req-wrapped",
+          actorGithubUserId: 123,
+          actorGithubLogin: "octocat",
+          prNumber: 42,
+          deploymentId: "dep-123",
+          desiredState: "active",
+          reason: "test",
+          scope: {
+            event: "installation_repositories",
+            installationId: 999,
+          },
+        }),
       },
-      ensureLiveWebhookLease: async () => ({
-        status: "accepted",
-        operationId: "op-wrapped",
-        resourceId: "lease-wrapped",
-      }),
-      findOperationById: async () => undefined,
-    })
+      {
+        ensureRouteableDeployment: async () => {
+          throw new Error("ensureRouteableDeployment should not be called")
+        },
+        ensureLiveWebhookLease: async () => ({
+          status: "accepted",
+          operationId: "op-wrapped",
+          resourceId: "lease-wrapped",
+        }),
+        findOperationById: async () => undefined,
+      },
+    )
 
     expect(response.statusCode).toBe(202)
   })
 
   test("returns operation state when querying an existing operation", async () => {
-    const result = await handleApiCommand({
-      command: "get_operation",
-      operationId: "op-123",
-    }, {
-      ensureRouteableDeployment: async () => {
-        throw new Error("ensureRouteableDeployment should not be called")
+    const result = await handleApiCommand(
+      {
+        command: "get_operation",
+        operationId: "op-123",
       },
-      ensureLiveWebhookLease: async () => {
-        throw new Error("ensureLiveWebhookLease should not be called")
+      {
+        ensureRouteableDeployment: async () => {
+          throw new Error("ensureRouteableDeployment should not be called")
+        },
+        ensureLiveWebhookLease: async () => {
+          throw new Error("ensureLiveWebhookLease should not be called")
+        },
+        findOperationById: async () =>
+          ({
+            id: "op-123",
+            requestId: "req-123",
+            operationType: "ensure_routeable_deployment",
+            status: "succeeded",
+            routeableDeploymentId: "rd-123",
+            liveWebhookLeaseId: null,
+            actorGithubUserId: null,
+            actorGithubLoginSnapshot: null,
+            input: {},
+            output: null,
+            resultCode: null,
+            resultMessage: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            completedAt: new Date(),
+          }) as never,
       },
-      findOperationById: async () => ({
-        id: "op-123",
-        requestId: "req-123",
-        operationType: "ensure_routeable_deployment",
-        status: "succeeded",
-        routeableDeploymentId: "rd-123",
-        liveWebhookLeaseId: null,
-        actorGithubUserId: null,
-        actorGithubLoginSnapshot: null,
-        input: {},
-        output: null,
-        resultCode: null,
-        resultMessage: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        completedAt: new Date(),
-      } as never),
-    })
+    )
 
     expect(result).toEqual({
       status: "operation",
@@ -190,56 +213,64 @@ describe("traffic-controller lambda scaffolds", () => {
   })
 
   test("rejects invalid reconcile payloads", async () => {
-    await expect(reconcileHandler({ command: "unknown" })).rejects.toThrow("Invalid reconcile payload")
+    await expect(reconcileHandler({ command: "unknown" })).rejects.toThrow(
+      "Invalid reconcile payload",
+    )
   })
 
   test("keeps reconcile path explicitly unimplemented for now", async () => {
-    await expect(reconcileHandler({
-      command: "sweep_drift",
-      requestId: "sweep-1",
-    })).rejects.toThrow("sweep_drift is not implemented yet")
+    await expect(
+      reconcileHandler({
+        command: "sweep_drift",
+        requestId: "sweep-1",
+      }),
+    ).rejects.toThrow("sweep_drift is not implemented yet")
   })
 
   test("reconcile handler processes routeable deployment messages", async () => {
-    const response = await reconcileHandlerWithDeps({
-      command: "reconcile_routeable_deployment",
-      operationId: "op-1",
-      routeableDeploymentId: "dep-123",
-    }, {
-      findOperationById: async () => ({
-        id: "op-1",
-        requestId: "req-1",
-        operationType: "ensure_routeable_deployment",
-        status: "accepted",
-        routeableDeploymentId: null,
-        liveWebhookLeaseId: null,
-        actorGithubUserId: 12345,
-        actorGithubLoginSnapshot: "octocat",
-        input: {
-          command: "ensure_routeable_deployment",
-          requestId: "req-1",
-          deploymentId: "dep-123",
-          prNumber: 42,
-          environmentName: "pr-42",
-          environmentKind: "transient",
-          ownerGithubUserId: 12345,
-          ownerGithubLogin: "octocat",
-          receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
-          receiverKind: "github_webhook",
-          desiredState: "active",
-        },
-        output: null,
-        resultCode: null,
-        resultMessage: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        completedAt: null,
-      } as never),
-      reconcileRouteableDeployment: async () => undefined,
-      reconcileLiveWebhookLease: async () => {
-        throw new Error("reconcileLiveWebhookLease should not be called")
+    const response = await reconcileHandlerWithDeps(
+      {
+        command: "reconcile_routeable_deployment",
+        operationId: "op-1",
+        routeableDeploymentId: "dep-123",
       },
-    })
+      {
+        findOperationById: async () =>
+          ({
+            id: "op-1",
+            requestId: "req-1",
+            operationType: "ensure_routeable_deployment",
+            status: "accepted",
+            routeableDeploymentId: null,
+            liveWebhookLeaseId: null,
+            actorGithubUserId: 12345,
+            actorGithubLoginSnapshot: "octocat",
+            input: {
+              command: "ensure_routeable_deployment",
+              requestId: "req-1",
+              deploymentId: "dep-123",
+              prNumber: 42,
+              environmentName: "pr-42",
+              environmentKind: "transient",
+              ownerGithubUserId: 12345,
+              ownerGithubLogin: "octocat",
+              receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
+              receiverKind: "github_webhook",
+              desiredState: "active",
+            },
+            output: null,
+            resultCode: null,
+            resultMessage: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            completedAt: null,
+          }) as never,
+        reconcileRouteableDeployment: async () => undefined,
+        reconcileLiveWebhookLease: async () => {
+          throw new Error("reconcileLiveWebhookLease should not be called")
+        },
+      },
+    )
 
     expect(response).toEqual({ ok: true })
   })
@@ -247,86 +278,94 @@ describe("traffic-controller lambda scaffolds", () => {
   test("reconcile handler processes SQS-wrapped routeable deployment messages", async () => {
     let invoked = 0
 
-    const response = await reconcileHandlerWithDeps({
-      Records: [
-        {
-          body: JSON.stringify({
-            command: "reconcile_routeable_deployment",
-            operationId: "op-1",
-            routeableDeploymentId: "dep-123",
-          }),
-        },
-      ],
-    }, {
-      findOperationById: async () => ({
-        id: "op-1",
-        requestId: "req-1",
-        operationType: "ensure_routeable_deployment",
-        status: "accepted",
-        routeableDeploymentId: null,
-        liveWebhookLeaseId: null,
-        actorGithubUserId: 12345,
-        actorGithubLoginSnapshot: "octocat",
-        input: {
-          command: "ensure_routeable_deployment",
-          requestId: "req-1",
-          deploymentId: "dep-123",
-          prNumber: 42,
-          environmentName: "pr-42",
-          environmentKind: "transient",
-          ownerGithubUserId: 12345,
-          ownerGithubLogin: "octocat",
-          receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
-          receiverKind: "github_webhook",
-          desiredState: "active",
-        },
-        output: null,
-        resultCode: null,
-        resultMessage: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        completedAt: null,
-      } as never),
-      reconcileRouteableDeployment: async () => {
-        invoked += 1
+    const response = await reconcileHandlerWithDeps(
+      {
+        Records: [
+          {
+            body: JSON.stringify({
+              command: "reconcile_routeable_deployment",
+              operationId: "op-1",
+              routeableDeploymentId: "dep-123",
+            }),
+          },
+        ],
       },
-      reconcileLiveWebhookLease: async () => {
-        throw new Error("reconcileLiveWebhookLease should not be called")
+      {
+        findOperationById: async () =>
+          ({
+            id: "op-1",
+            requestId: "req-1",
+            operationType: "ensure_routeable_deployment",
+            status: "accepted",
+            routeableDeploymentId: null,
+            liveWebhookLeaseId: null,
+            actorGithubUserId: 12345,
+            actorGithubLoginSnapshot: "octocat",
+            input: {
+              command: "ensure_routeable_deployment",
+              requestId: "req-1",
+              deploymentId: "dep-123",
+              prNumber: 42,
+              environmentName: "pr-42",
+              environmentKind: "transient",
+              ownerGithubUserId: 12345,
+              ownerGithubLogin: "octocat",
+              receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
+              receiverKind: "github_webhook",
+              desiredState: "active",
+            },
+            output: null,
+            resultCode: null,
+            resultMessage: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            completedAt: null,
+          }) as never,
+        reconcileRouteableDeployment: async () => {
+          invoked += 1
+        },
+        reconcileLiveWebhookLease: async () => {
+          throw new Error("reconcileLiveWebhookLease should not be called")
+        },
       },
-    })
+    )
 
     expect(invoked).toBe(1)
     expect(response).toEqual({ ok: true, processedCount: 1 })
   })
 
   test("reconcile handler processes live lease messages", async () => {
-    const response = await reconcileHandlerWithDeps({
-      command: "reconcile_live_webhook_lease",
-      operationId: "op-lease",
-      leaseId: "lease-1",
-    }, {
-      findOperationById: async () => ({
-        id: "op-lease",
-        requestId: "req-lease",
-        operationType: "ensure_live_webhook_lease",
-        status: "accepted",
-        routeableDeploymentId: "rd-1",
-        liveWebhookLeaseId: "lease-1",
-        actorGithubUserId: 12345,
-        actorGithubLoginSnapshot: "octocat",
-        input: {},
-        output: null,
-        resultCode: null,
-        resultMessage: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        completedAt: null,
-      } as never),
-      reconcileRouteableDeployment: async () => {
-        throw new Error("reconcileRouteableDeployment should not be called")
+    const response = await reconcileHandlerWithDeps(
+      {
+        command: "reconcile_live_webhook_lease",
+        operationId: "op-lease",
+        leaseId: "lease-1",
       },
-      reconcileLiveWebhookLease: async () => undefined,
-    })
+      {
+        findOperationById: async () =>
+          ({
+            id: "op-lease",
+            requestId: "req-lease",
+            operationType: "ensure_live_webhook_lease",
+            status: "accepted",
+            routeableDeploymentId: "rd-1",
+            liveWebhookLeaseId: "lease-1",
+            actorGithubUserId: 12345,
+            actorGithubLoginSnapshot: "octocat",
+            input: {},
+            output: null,
+            resultCode: null,
+            resultMessage: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            completedAt: null,
+          }) as never,
+        reconcileRouteableDeployment: async () => {
+          throw new Error("reconcileRouteableDeployment should not be called")
+        },
+        reconcileLiveWebhookLease: async () => undefined,
+      },
+    )
 
     expect(response).toEqual({ ok: true })
   })

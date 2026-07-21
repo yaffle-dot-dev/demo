@@ -6,53 +6,56 @@ describe("ensureRouteableDeployment", () => {
   test("creates an accepted operation and enqueues deployment reconciliation", async () => {
     const operations: Array<Record<string, unknown>> = []
 
-    const result = await ensureRouteableDeployment({
-      command: "ensure_routeable_deployment",
-      requestId: "req-1",
-      deploymentId: "dep-123",
-      prNumber: 42,
-      environmentName: "pr-42",
-      environmentKind: "transient",
-      ownerGithubUserId: 12345,
-      ownerGithubLogin: "octocat",
-      receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
-      receiverKind: "github_webhook",
-      desiredState: "active",
-    }, {
-      findExistingOperation: async () => undefined,
-      createOperation: async (input) => {
-        const operation = {
-          id: "op-1",
-          requestId: input.requestId,
-          operationType: input.operationType,
-          status: input.status ?? "accepted",
-          routeableDeploymentId: null,
-          liveWebhookLeaseId: null,
-          actorGithubUserId: input.actorGithubUserId ?? null,
-          actorGithubLoginSnapshot: input.actorGithubLoginSnapshot ?? null,
-          input: input.input,
-          output: null,
-          resultCode: null,
-          resultMessage: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-          completedAt: null,
-        }
-        operations.push(operation)
-        return operation as never
+    const result = await ensureRouteableDeployment(
+      {
+        command: "ensure_routeable_deployment",
+        requestId: "req-1",
+        deploymentId: "dep-123",
+        prNumber: 42,
+        environmentName: "pr-42",
+        environmentKind: "transient",
+        ownerGithubUserId: 12345,
+        ownerGithubLogin: "octocat",
+        receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
+        receiverKind: "github_webhook",
+        desiredState: "active",
       },
-      findRouteableDeploymentByExternalId: async () => undefined,
-      createAuditEvent: async () => ({ id: "audit-1" } as never),
-      queue: {
-        send: async (message) => {
-          expect(message).toEqual({
-            command: "reconcile_routeable_deployment",
-            operationId: "op-1",
-            routeableDeploymentId: "dep-123",
-          })
+      {
+        findExistingOperation: async () => undefined,
+        createOperation: async (input) => {
+          const operation = {
+            id: "op-1",
+            requestId: input.requestId,
+            operationType: input.operationType,
+            status: input.status ?? "accepted",
+            routeableDeploymentId: null,
+            liveWebhookLeaseId: null,
+            actorGithubUserId: input.actorGithubUserId ?? null,
+            actorGithubLoginSnapshot: input.actorGithubLoginSnapshot ?? null,
+            input: input.input,
+            output: null,
+            resultCode: null,
+            resultMessage: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            completedAt: null,
+          }
+          operations.push(operation)
+          return operation as never
+        },
+        findRouteableDeploymentByExternalId: async () => undefined,
+        createAuditEvent: async () => ({ id: "audit-1" }) as never,
+        queue: {
+          send: async (message) => {
+            expect(message).toEqual({
+              command: "reconcile_routeable_deployment",
+              operationId: "op-1",
+              routeableDeploymentId: "dep-123",
+            })
+          },
         },
       },
-    })
+    )
 
     expect(result).toEqual({
       status: "accepted",
@@ -81,31 +84,34 @@ describe("ensureRouteableDeployment", () => {
       completedAt: null,
     }
 
-    const result = await ensureRouteableDeployment({
-      command: "ensure_routeable_deployment",
-      requestId: "req-1",
-      deploymentId: "dep-123",
-      prNumber: 42,
-      environmentName: "pr-42",
-      environmentKind: "transient",
-      ownerGithubUserId: 12345,
-      ownerGithubLogin: "octocat",
-      receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
-      receiverKind: "github_webhook",
-      desiredState: "active",
-    }, {
-      findExistingOperation: async () => existing as never,
-      createOperation: async () => {
-        throw new Error("createOperation should not be called")
+    const result = await ensureRouteableDeployment(
+      {
+        command: "ensure_routeable_deployment",
+        requestId: "req-1",
+        deploymentId: "dep-123",
+        prNumber: 42,
+        environmentName: "pr-42",
+        environmentKind: "transient",
+        ownerGithubUserId: 12345,
+        ownerGithubLogin: "octocat",
+        receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
+        receiverKind: "github_webhook",
+        desiredState: "active",
       },
-      findRouteableDeploymentByExternalId: async () => undefined,
-      createAuditEvent: async () => ({ id: "audit-1" } as never),
-      queue: {
-        send: async () => {
-          throw new Error("queue.send should not be called")
+      {
+        findExistingOperation: async () => existing as never,
+        createOperation: async () => {
+          throw new Error("createOperation should not be called")
+        },
+        findRouteableDeploymentByExternalId: async () => undefined,
+        createAuditEvent: async () => ({ id: "audit-1" }) as never,
+        queue: {
+          send: async () => {
+            throw new Error("queue.send should not be called")
+          },
         },
       },
-    })
+    )
 
     expect(result).toEqual({
       status: "operation",
@@ -122,63 +128,68 @@ describe("ensureRouteableDeployment", () => {
   })
 
   test("returns the known deployment id when one already exists", async () => {
-    const result = await ensureRouteableDeployment({
-      command: "ensure_routeable_deployment",
-      requestId: "req-known",
-      deploymentId: "dep-123",
-      prNumber: 42,
-      environmentName: "pr-42",
-      environmentKind: "transient",
-      ownerGithubUserId: 12345,
-      ownerGithubLogin: "octocat",
-      receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
-      receiverKind: "github_webhook",
-      desiredState: "active",
-    }, {
-      findExistingOperation: async () => undefined,
-      createOperation: async (input) => ({
-        id: "op-known",
-        requestId: input.requestId,
-        operationType: input.operationType,
-        status: input.status ?? "accepted",
-        routeableDeploymentId: null,
-        liveWebhookLeaseId: null,
-        actorGithubUserId: input.actorGithubUserId ?? null,
-        actorGithubLoginSnapshot: input.actorGithubLoginSnapshot ?? null,
-        input: input.input,
-        output: null,
-        resultCode: null,
-        resultMessage: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        completedAt: null,
-      } as never),
-      findRouteableDeploymentByExternalId: async () => ({
-        id: "rd-existing",
-        externalDeploymentId: "dep-123",
+    const result = await ensureRouteableDeployment(
+      {
+        command: "ensure_routeable_deployment",
+        requestId: "req-known",
+        deploymentId: "dep-123",
         prNumber: 42,
         environmentName: "pr-42",
         environmentKind: "transient",
         ownerGithubUserId: 12345,
-        ownerGithubLoginSnapshot: "octocat",
+        ownerGithubLogin: "octocat",
         receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
         receiverKind: "github_webhook",
-        state: "active",
-        lastSeenAt: new Date(),
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      } as never),
-      createAuditEvent: async () => ({ id: "audit-1" } as never),
-      queue: {
-        send: async (message) => {
-          expect(message).toEqual({
-            command: "reconcile_routeable_deployment",
-            operationId: "op-known",
-            routeableDeploymentId: "rd-existing",
-          })
+        desiredState: "active",
+      },
+      {
+        findExistingOperation: async () => undefined,
+        createOperation: async (input) =>
+          ({
+            id: "op-known",
+            requestId: input.requestId,
+            operationType: input.operationType,
+            status: input.status ?? "accepted",
+            routeableDeploymentId: null,
+            liveWebhookLeaseId: null,
+            actorGithubUserId: input.actorGithubUserId ?? null,
+            actorGithubLoginSnapshot: input.actorGithubLoginSnapshot ?? null,
+            input: input.input,
+            output: null,
+            resultCode: null,
+            resultMessage: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            completedAt: null,
+          }) as never,
+        findRouteableDeploymentByExternalId: async () =>
+          ({
+            id: "rd-existing",
+            externalDeploymentId: "dep-123",
+            prNumber: 42,
+            environmentName: "pr-42",
+            environmentKind: "transient",
+            ownerGithubUserId: 12345,
+            ownerGithubLoginSnapshot: "octocat",
+            receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
+            receiverKind: "github_webhook",
+            state: "active",
+            lastSeenAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          }) as never,
+        createAuditEvent: async () => ({ id: "audit-1" }) as never,
+        queue: {
+          send: async (message) => {
+            expect(message).toEqual({
+              command: "reconcile_routeable_deployment",
+              operationId: "op-known",
+              routeableDeploymentId: "rd-existing",
+            })
+          },
         },
       },
-    })
+    )
 
     expect(result).toEqual({
       status: "accepted",
@@ -188,45 +199,49 @@ describe("ensureRouteableDeployment", () => {
   })
 
   test("returns rejected if queueing fails", async () => {
-    const result = await ensureRouteableDeployment({
-      command: "ensure_routeable_deployment",
-      requestId: "req-fail",
-      deploymentId: "dep-123",
-      prNumber: 42,
-      environmentName: "pr-42",
-      environmentKind: "transient",
-      ownerGithubUserId: 12345,
-      ownerGithubLogin: "octocat",
-      receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
-      receiverKind: "github_webhook",
-      desiredState: "active",
-    }, {
-      findExistingOperation: async () => undefined,
-      createOperation: async (input) => ({
-        id: "op-fail",
-        requestId: input.requestId,
-        operationType: input.operationType,
-        status: input.status ?? "accepted",
-        routeableDeploymentId: null,
-        liveWebhookLeaseId: null,
-        actorGithubUserId: input.actorGithubUserId ?? null,
-        actorGithubLoginSnapshot: input.actorGithubLoginSnapshot ?? null,
-        input: input.input,
-        output: null,
-        resultCode: null,
-        resultMessage: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        completedAt: null,
-      } as never),
-      findRouteableDeploymentByExternalId: async () => undefined,
-      createAuditEvent: async () => ({ id: "audit-1" } as never),
-      queue: {
-        send: async () => {
-          throw new Error("queue unavailable")
+    const result = await ensureRouteableDeployment(
+      {
+        command: "ensure_routeable_deployment",
+        requestId: "req-fail",
+        deploymentId: "dep-123",
+        prNumber: 42,
+        environmentName: "pr-42",
+        environmentKind: "transient",
+        ownerGithubUserId: 12345,
+        ownerGithubLogin: "octocat",
+        receiverUrl: "https://api-pr-42.preview.yaffle.dev/api/webhooks/github",
+        receiverKind: "github_webhook",
+        desiredState: "active",
+      },
+      {
+        findExistingOperation: async () => undefined,
+        createOperation: async (input) =>
+          ({
+            id: "op-fail",
+            requestId: input.requestId,
+            operationType: input.operationType,
+            status: input.status ?? "accepted",
+            routeableDeploymentId: null,
+            liveWebhookLeaseId: null,
+            actorGithubUserId: input.actorGithubUserId ?? null,
+            actorGithubLoginSnapshot: input.actorGithubLoginSnapshot ?? null,
+            input: input.input,
+            output: null,
+            resultCode: null,
+            resultMessage: null,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            completedAt: null,
+          }) as never,
+        findRouteableDeploymentByExternalId: async () => undefined,
+        createAuditEvent: async () => ({ id: "audit-1" }) as never,
+        queue: {
+          send: async () => {
+            throw new Error("queue unavailable")
+          },
         },
       },
-    })
+    )
 
     expect(result).toEqual({
       status: "rejected",

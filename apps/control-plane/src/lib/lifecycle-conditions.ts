@@ -68,7 +68,9 @@ export function deriveLifecycleConditions(
   }
 }
 
-export function deriveWorkspaceLifecycleState(items: LifecycleConditionItem[]): WorkspaceLifecycleState {
+export function deriveWorkspaceLifecycleState(
+  items: LifecycleConditionItem[],
+): WorkspaceLifecycleState {
   const conditions = deriveLifecycleConditions(items)
   const usable = conditions.usable
 
@@ -103,7 +105,17 @@ export function deriveRunGroupLifecycleState(params: {
       return { status: "failed", isComplete: true }
     }
 
-    if (["pending", "planning", "awaiting_apply", "applying", "awaiting_approval", "activating", "destroying"].includes(deployment.status)) {
+    if (
+      [
+        "pending",
+        "planning",
+        "awaiting_apply",
+        "applying",
+        "awaiting_approval",
+        "activating",
+        "destroying",
+      ].includes(deployment.status)
+    ) {
       return { status: "running", isComplete: false }
     }
 
@@ -201,25 +213,28 @@ function lifecycleConditionMet(
 ): boolean {
   switch (name) {
     case "infra_ready":
-      return vector.pending === 0
-        && vector.running === 0
-        && vector.degraded === 0
-        && vector.blocked === 0
-        && vector.failed === 0
+      return (
+        vector.pending === 0 &&
+        vector.running === 0 &&
+        vector.degraded === 0 &&
+        vector.blocked === 0 &&
+        vector.failed === 0
+      )
     case "activation_settled":
     case "verification_settled":
       return vector.pending === 0 && vector.running === 0
     case "usable":
-      return vector.pending === 0
-        && vector.running === 0
-        && vector.blocked === 0
-        && vector.failed === 0
+      return (
+        vector.pending === 0 && vector.running === 0 && vector.blocked === 0 && vector.failed === 0
+      )
     case "acceptable":
-      return vector.pending === 0
-        && vector.running === 0
-        && vector.degraded === 0
-        && vector.blocked === 0
-        && vector.failed === 0
+      return (
+        vector.pending === 0 &&
+        vector.running === 0 &&
+        vector.degraded === 0 &&
+        vector.blocked === 0 &&
+        vector.failed === 0
+      )
   }
 }
 

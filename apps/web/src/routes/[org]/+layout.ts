@@ -13,7 +13,7 @@ export const load: LayoutLoad = async ({ fetch, params }) => {
     throw error(503, "Failed to validate organization access")
   }
 
-  const body = await res.json() as OrgListResponse
+  const body = (await res.json()) as OrgListResponse
   const hasOrg = body.data?.some((org) => org.slug === params.org) ?? false
 
   if (!hasOrg) {

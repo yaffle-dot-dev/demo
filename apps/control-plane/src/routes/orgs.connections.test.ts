@@ -275,7 +275,7 @@ describe("org connections routes", () => {
         name: "aws split candidate",
         providerType: "aws",
         credentialProviderType: "iam_role",
-        environmentScope: ["pr-*"] ,
+        environmentScope: ["pr-*"],
         workspaceScope: ["infra/*"],
         roleArn: "arn:aws:iam::123456789012:role/yaffle-non-main",
         externalId: "non-main-external-id",
@@ -349,5 +349,4 @@ describe("org connections routes", () => {
     const body = await res.json()
     expect(body.data.success).toBe(true)
   })
-
 })

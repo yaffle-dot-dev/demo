@@ -50,33 +50,25 @@ async function bundleLambda(entrypoint: string, outfile: string, zipPath: string
   const bundleDir = outfile.replace(/\.mjs$/, "-bundle")
   await rm(bundleDir, { recursive: true, force: true })
 
-  await exec([
-    "vp",
-    "pack",
-    entrypoint,
-    "--out-dir",
-    bundleDir,
-    "--target",
-    "node25",
-    "--format",
-    "esm",
-  ], {
-    cwd: REPO_ROOT,
-  })
+  await exec(
+    ["vp", "pack", entrypoint, "--out-dir", bundleDir, "--target", "node25", "--format", "esm"],
+    {
+      cwd: REPO_ROOT,
+    },
+  )
 
-  await exec([
-    "bash",
-    "-lc",
-    `cp "${bundleDir}"/*.mjs "${TRAFFIC_CONTROLLER_DIST_DIR}" && zip -j "${zipPath}" "${bundleDir}"/*.mjs`,
-  ], {
-    cwd: REPO_ROOT,
-  })
+  await exec(
+    [
+      "bash",
+      "-lc",
+      `cp "${bundleDir}"/*.mjs "${TRAFFIC_CONTROLLER_DIST_DIR}" && zip -j "${zipPath}" "${bundleDir}"/*.mjs`,
+    ],
+    {
+      cwd: REPO_ROOT,
+    },
+  )
 
-  await exec([
-    "rm",
-    "-rf",
-    bundleDir,
-  ], { cwd: REPO_ROOT })
+  await exec(["rm", "-rf", bundleDir], { cwd: REPO_ROOT })
 }
 
 export async function buildTrafficController(

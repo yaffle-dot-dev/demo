@@ -84,7 +84,8 @@ resource "aws_ecs_service" "api" {
 Yaffle automatically sets `environment` to `pr-42`, `pr-99`, etc. for preview runs.
 
 <Aside type="tip">
-You probably already have an `environment` variable for staging vs production. The same pattern works for previews—just make sure resources use it for naming.
+  You probably already have an `environment` variable for staging vs production. The same pattern
+  works for previews—just make sure resources use it for naming.
 </Aside>
 
 ### 4. Keep your existing production workflow
@@ -127,6 +128,7 @@ branch_patterns = ["*"]
 ```
 
 Both tools can coexist:
+
 - Atlantis comments on PRs with production plans
 - Yaffle creates actual preview infrastructure
 - On merge, Atlantis applies to production, Yaffle cleans up the preview
@@ -160,13 +162,13 @@ TFC runs speculative plans on PRs. Yaffle creates real preview infrastructure. D
 
 Using Yaffle for previews only has different integration requirements:
 
-| Feature | Customer-CI production | Yaffle-managed named environment |
-|---------|---------------|-------------|
-| Ephemeral PR environments | Yes | Yes |
-| Cross-workspace modules (within preview) | Yes | Yes |
-| Production applies | Existing owner | Yaffle-managed or existing owner |
-| Named environment outputs | External publication (planned) | Managed publication; external publication planned |
-| Platform as product pattern | Planned through external snapshots | Managed snapshots; external snapshots planned |
+| Feature                                  | Customer-CI production             | Yaffle-managed named environment                  |
+| ---------------------------------------- | ---------------------------------- | ------------------------------------------------- |
+| Ephemeral PR environments                | Yes                                | Yes                                               |
+| Cross-workspace modules (within preview) | Yes                                | Yes                                               |
+| Production applies                       | Existing owner                     | Yaffle-managed or existing owner                  |
+| Named environment outputs                | External publication (planned)     | Managed publication; external publication planned |
+| Platform as product pattern              | Planned through external snapshots | Managed snapshots; external snapshots planned     |
 
 External named-environment snapshot publication is planned beta work, not a currently
 available integration. The frozen contract does not require Yaffle to own that producer's

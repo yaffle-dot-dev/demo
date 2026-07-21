@@ -71,15 +71,13 @@ describe("sanitizeOutput", () => {
   })
 
   test("handles multiple replacements in one string", () => {
-    const input =
-      "OpenTofu used terraform config. Run tofu plan at opentofu.org for details."
-    const expected =
-      "Yaffle used yaffle config. Run yaffle plan at yaffle.dev for details."
+    const input = "OpenTofu used terraform config. Run tofu plan at opentofu.org for details."
+    const expected = "Yaffle used yaffle config. Run yaffle plan at yaffle.dev for details."
     expect(sanitizeOutput(input)).toBe(expected)
   })
 
   test("does not modify unrelated content", () => {
-    const input = "resource \"null_resource\" \"test\" {}"
+    const input = 'resource "null_resource" "test" {}'
     expect(sanitizeOutput(input)).toBe(input)
   })
 })

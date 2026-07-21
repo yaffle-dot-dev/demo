@@ -14,23 +14,14 @@ export function githubRepoUrl({ org, repo }: GitHubUrlParams): string {
   return `https://github.com/${org}/${repo}`
 }
 
-export function githubTreeUrl(
-  { org, repo }: GitHubUrlParams,
-  branch: string,
-): string {
+export function githubTreeUrl({ org, repo }: GitHubUrlParams, branch: string): string {
   return `https://github.com/${org}/${repo}/tree/${branch}`
 }
 
-export function githubCommitUrl(
-  { org, repo }: GitHubUrlParams,
-  sha: string,
-): string {
+export function githubCommitUrl({ org, repo }: GitHubUrlParams, sha: string): string {
   return `https://github.com/${org}/${repo}/commit/${sha}`
 }
 
-export function githubPullUrl(
-  { org, repo }: GitHubUrlParams,
-  prNumber: number,
-): string {
+export function githubPullUrl({ org, repo }: GitHubUrlParams, prNumber: number): string {
   return `https://github.com/${org}/${repo}/pull/${prNumber}`
 }

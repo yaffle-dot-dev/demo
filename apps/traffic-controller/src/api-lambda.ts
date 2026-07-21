@@ -36,12 +36,19 @@ interface HandleApiCommandDeps {
 }
 
 const defaultDeps: HandleApiCommandDeps = {
-  ensureRouteableDeployment: (command) => ensureRouteableDeployment(command, createEnsureRouteableDeploymentDeps(createReconcileQueueClient())),
-  ensureLiveWebhookLease: (command) => ensureLiveWebhookLease(command, createEnsureLiveWebhookLeaseDeps(createReconcileQueueClient())),
+  ensureRouteableDeployment: (command) =>
+    ensureRouteableDeployment(
+      command,
+      createEnsureRouteableDeploymentDeps(createReconcileQueueClient()),
+    ),
+  ensureLiveWebhookLease: (command) =>
+    ensureLiveWebhookLease(command, createEnsureLiveWebhookLeaseDeps(createReconcileQueueClient())),
   findOperationById,
 }
 
-function operationToApiResponse(result: Awaited<ReturnType<typeof findOperationById>>): TrafficControllerApiResponse {
+function operationToApiResponse(
+  result: Awaited<ReturnType<typeof findOperationById>>,
+): TrafficControllerApiResponse {
   if (!result) {
     return {
       status: "rejected",
@@ -146,21 +153,27 @@ export async function handlerWithDeps(
       },
       () => handleApiCommand(parsed.data, deps),
     )
-    const statusCode = result.status === "rejected"
-      ? (result.code === "NOT_FOUND" ? 404 : result.code === "NOT_IMPLEMENTED" ? 501 : 400)
-      : result.status === "operation"
-        ? 200
-        : 202
+    const statusCode =
+      result.status === "rejected"
+        ? result.code === "NOT_FOUND"
+          ? 404
+          : result.code === "NOT_IMPLEMENTED"
+            ? 501
+            : 400
+        : result.status === "operation"
+          ? 200
+          : 202
 
     logger.info("traffic-controller api command handled", {
       command: parsed.data.command,
       statusCode,
       status: result.status,
-      operationId: result.status === "accepted"
-        ? result.operationId
-        : result.status === "operation"
-          ? result.operation.operationId
-          : undefined,
+      operationId:
+        result.status === "accepted"
+          ? result.operationId
+          : result.status === "operation"
+            ? result.operation.operationId
+            : undefined,
     })
 
     return {

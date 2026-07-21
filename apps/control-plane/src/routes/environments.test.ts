@@ -3,10 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, test } from "@yaffle
 import { Hono } from "hono"
 
 // Import test utils FIRST to set YAFFLE_AUTH_MODE=dev before other imports
-import {
-  createTestContext,
-  type TestContext,
-} from "../test-utils/auth.ts"
+import { createTestContext, type TestContext } from "../test-utils/auth.ts"
 
 import { db } from "../lib/db.ts"
 import { rebuildEnvironmentGroupProjections } from "../lib/projections/environment-groups.ts"
@@ -54,7 +51,7 @@ async function seedProductionPreview(
   const counter = ++seedCounter
   const workspacePath = overrides.workspacePath ?? "infra"
   const environmentName = overrides.environmentName ?? `main-${counter}`
-  
+
   const rows = await db
     .insert(previews)
     .values({
@@ -179,26 +176,30 @@ describe("GET /api/environments", () => {
             name: "main-status",
             sourcePullRequestNumber: null,
           },
-          workspaces: [{
-            path: "infra",
-            variables: { internal_marker: "do-not-expose" },
-            approval: { required: false, approvers: [] },
-            lifecycle: {
-              activation: [{
-                key: "deploy",
-                environments: ["main-status"],
-                kind: "generic",
-                failure: "failed",
-                scopes: [],
-                request: {
-                  url: "https://private-hook.example.test/deploy",
-                  method: "POST",
-                },
-              }],
-              verification: [],
+          workspaces: [
+            {
+              path: "infra",
+              variables: { internal_marker: "do-not-expose" },
+              approval: { required: false, approvers: [] },
+              lifecycle: {
+                activation: [
+                  {
+                    key: "deploy",
+                    environments: ["main-status"],
+                    kind: "generic",
+                    failure: "failed",
+                    scopes: [],
+                    request: {
+                      url: "https://private-hook.example.test/deploy",
+                      method: "POST",
+                    },
+                  },
+                ],
+                verification: [],
+              },
+              automaticPreviewIsolation: false,
             },
-            automaticPreviewIsolation: false,
-          }],
+          ],
         },
       })
       .returning()

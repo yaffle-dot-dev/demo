@@ -5,7 +5,11 @@ import { convergeEnvironment, runDeployableLifecyclePhase } from "./env/converge
 import { discoverDeployables } from "./deployables/discovery"
 import { planDeployables } from "./deployables/planner"
 import { listNamedEnvironments } from "./environments"
-import { assertSecretChecksPassed, checkDeployableSecrets, ensureDeployableSecrets } from "./secrets"
+import {
+  assertSecretChecksPassed,
+  checkDeployableSecrets,
+  ensureDeployableSecrets,
+} from "./secrets"
 import { readTarget, resolveGitHubTarget, writeTarget, createTarget } from "./target"
 import { listChangedFiles } from "./git"
 
@@ -41,7 +45,9 @@ async function handleTargetCreate(args: string[]): Promise<void> {
   const sha = values.sha
 
   if ((kind !== "named" && kind !== "transient") || !environmentName || !sha) {
-    throw new Error("Usage: ci target create --kind <named|transient> --environment <name> --sha <sha> [--base-sha <sha>] [--out <path>]")
+    throw new Error(
+      "Usage: ci target create --kind <named|transient> --environment <name> --sha <sha> [--base-sha <sha>] [--out <path>]",
+    )
   }
 
   const prNumber = values.pr ? Number.parseInt(values.pr, 10) : undefined
@@ -79,7 +85,9 @@ async function handleTargetResolve(args: string[]): Promise<void> {
   const eventPath = values["github-event-path"] ?? process.env.GITHUB_EVENT_PATH
 
   if (!eventName || !eventPath) {
-    throw new Error("Usage: ci target resolve --github-event-name <event> --github-event-path <path> [--github-ref <ref>] [--github-sha <sha>] [--out <path>]")
+    throw new Error(
+      "Usage: ci target resolve --github-event-name <event> --github-event-path <path> [--github-ref <ref>] [--github-sha <sha>] [--out <path>]",
+    )
   }
 
   const target = await resolveGitHubTarget({
@@ -109,9 +117,10 @@ async function handleDeployablesDetect(args: string[]): Promise<void> {
   })
 
   const target = await readTarget(values.target)
-  const changedFiles = values.all || !target.git.baseSha
-    ? []
-    : await listChangedFiles(target.git.baseSha, target.git.sha)
+  const changedFiles =
+    values.all || !target.git.baseSha
+      ? []
+      : await listChangedFiles(target.git.baseSha, target.git.sha)
   const plan = planDeployables({
     deployables: await discoverDeployables(),
     environmentKind: target.environment.kind,
@@ -146,9 +155,10 @@ async function handleSecretsCheck(args: string[]): Promise<void> {
   })
 
   const target = await readTarget(values.target)
-  const changedFiles = values.all || !target.git.baseSha
-    ? []
-    : await listChangedFiles(target.git.baseSha, target.git.sha)
+  const changedFiles =
+    values.all || !target.git.baseSha
+      ? []
+      : await listChangedFiles(target.git.baseSha, target.git.sha)
   const plan = planDeployables({
     deployables: await discoverDeployables(),
     environmentKind: target.environment.kind,
@@ -192,9 +202,10 @@ async function handleSecretsEnsure(args: string[]): Promise<void> {
   })
 
   const target = await readTarget(values.target)
-  const changedFiles = values.all || !target.git.baseSha
-    ? []
-    : await listChangedFiles(target.git.baseSha, target.git.sha)
+  const changedFiles =
+    values.all || !target.git.baseSha
+      ? []
+      : await listChangedFiles(target.git.baseSha, target.git.sha)
   const plan = planDeployables({
     deployables: await discoverDeployables(),
     environmentKind: target.environment.kind,
@@ -243,18 +254,24 @@ async function handleDeployablesList(args: string[]): Promise<void> {
 
   const deployables = await discoverDeployables()
   const filtered = values["environment-kind"]
-    ? deployables.filter((deployable) => deployable.supports.environmentKinds.includes(values["environment-kind"] as "named" | "transient"))
+    ? deployables.filter((deployable) =>
+        deployable.supports.environmentKinds.includes(
+          values["environment-kind"] as "named" | "transient",
+        ),
+      )
     : deployables
 
   if (values.json) {
-    printJson(filtered.map((deployable) => ({
-      name: deployable.name,
-      root: deployable.root,
-      environmentKinds: deployable.supports.environmentKinds,
-      workspaces: deployable.workspaces,
-      watchedPaths: deployable.watchedPaths,
-      descriptorPath: deployable.descriptorPath,
-    })))
+    printJson(
+      filtered.map((deployable) => ({
+        name: deployable.name,
+        root: deployable.root,
+        environmentKinds: deployable.supports.environmentKinds,
+        workspaces: deployable.workspaces,
+        watchedPaths: deployable.watchedPaths,
+        descriptorPath: deployable.descriptorPath,
+      })),
+    )
     return
   }
 
@@ -317,17 +334,16 @@ async function handleEnvironmentLifecycle(args: string[]): Promise<void> {
     },
   })
 
-  if (
-    (values.phase !== "activation" && values.phase !== "verification")
-    || !values.deployable
-  ) {
+  if ((values.phase !== "activation" && values.phase !== "verification") || !values.deployable) {
     throw new Error(
       "Usage: ci env lifecycle --target <path> --phase <activation|verification> --deployable <name> [--dry-run]",
     )
   }
 
   const target = await readTarget(values.target)
-  const deployable = (await discoverDeployables()).find((candidate) => candidate.name === values.deployable)
+  const deployable = (await discoverDeployables()).find(
+    (candidate) => candidate.name === values.deployable,
+  )
   if (!deployable) {
     throw new Error(`Unknown deployable '${values.deployable}'`)
   }
@@ -426,23 +442,25 @@ async function main(): Promise<void> {
       return
     }
     case "__complete": {
-      await handleHiddenCompletion([action, ...rest].filter((value): value is string => value !== undefined))
+      await handleHiddenCompletion(
+        [action, ...rest].filter((value): value is string => value !== undefined),
+      )
       return
     }
   }
 
   throw new Error(
-    "Usage:\n"
-    + "  ci target create ...\n"
-    + "  ci target resolve ...\n"
-    + "  ci deployables list ...\n"
-    + "  ci deployables detect ...\n"
-    + "  ci secrets ensure ...\n"
-    + "  ci secrets check ...\n"
-    + "  ci environments list ...\n"
-    + "  ci env converge ...\n"
-    + "  ci env lifecycle ...\n"
-    + "  ci completion <bash|zsh|fish>"
+    "Usage:\n" +
+      "  ci target create ...\n" +
+      "  ci target resolve ...\n" +
+      "  ci deployables list ...\n" +
+      "  ci deployables detect ...\n" +
+      "  ci secrets ensure ...\n" +
+      "  ci secrets check ...\n" +
+      "  ci environments list ...\n" +
+      "  ci env converge ...\n" +
+      "  ci env lifecycle ...\n" +
+      "  ci completion <bash|zsh|fish>",
   )
 }
 

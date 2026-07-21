@@ -1,6 +1,6 @@
 # 🪶 Yaffle - Project Decisions
 
-> *Yaffle* — Old English for woodpecker. They tap to test before committing.
+> _Yaffle_ — Old English for woodpecker. They tap to test before committing.
 
 **Domain:** yaffle.dev
 
@@ -12,12 +12,14 @@
 **Layer on top:** Codegen for users who don't have Terraform yet (Grafana JSON → TF).
 
 **Build order:**
+
 1. TF runner (dogfood immediately)
 2. Codegen (adoption wedge)
 
 ---
 
 ## The Foundation: Terraform Runner
+
 At its core, Yaffle is:
 
 ```
@@ -154,6 +156,7 @@ codegen-specific settings should extend that file.
 ---
 
 ## Dogfooding: Yaffle Runs Yaffle
+
 From day 1, Yaffle's own infrastructure runs through Yaffle.
 
 ```
@@ -170,12 +173,14 @@ yaffle/
 ```
 
 **Our workflow:**
+
 1. Open PR with infra changes
 2. Yaffle (running locally initially) plans against preview workspace
 3. See plan in GitHub Check
 4. Merge → destroys the preview; this repository's configured `main` trigger separately applies production
 
 **Bootstrap sequence:**
+
 1. Run TF locally to create initial infra
 2. Deploy Yaffle API
 3. Point Yaffle at itself
@@ -187,12 +192,12 @@ yaffle/
 
 Environment ownership has four public classes:
 
-| Class | Owner and lifecycle |
-|-------|---------------------|
+| Class               | Owner and lifecycle                                                                                        |
+| ------------------- | ---------------------------------------------------------------------------------------------------------- |
 | `transient_managed` | Yaffle owns bounded execution, state, and cleanup. GitHub PR environments use only `pr-{number}` publicly. |
-| `named_managed` | Yaffle owns a long-lived declared environment. |
-| `named_external` | Customer CI or another orchestrator owns a long-lived environment and may publish outputs. |
-| `static_external` | Yaffle consumes an external dependency without owning its lifecycle. |
+| `named_managed`     | Yaffle owns a long-lived declared environment.                                                             |
+| `named_external`    | Customer CI or another orchestrator owns a long-lived environment and may publish outputs.                 |
+| `static_external`   | Yaffle consumes an external dependency without owning its lifecycle.                                       |
 
 The managed runtime `EnvironmentKind` (`named` or `transient`) is separate from
 ownership class. External ownership does not imply a Yaffle-managed runtime.
@@ -220,6 +225,7 @@ S3 Bucket: yaffle-state-{org}
 ```
 
 **Lifecycle:**
+
 - PR opened → create `previews/pr-{n}/`
 - PR updated → apply to same state
 - PR closed → `terraform destroy` + delete state
@@ -230,6 +236,7 @@ S3 Bucket: yaffle-state-{org}
 ## Preview Isolation
 
 Each preview gets:
+
 - Unique state file (no conflicts)
 - Unique resource naming (via variables)
 
@@ -245,6 +252,7 @@ resource "aws_s3_bucket" "data" {
 ```
 
 **Yaffle injects:**
+
 - Pull request: `environment = "pr-247"`
 - Named environment example: `environment = "production"`
 
@@ -335,7 +343,7 @@ async function runTerraform(opts: {
   variables: Record<string, string>
   secretArns: string[]  // Secrets to inject as TF vars
 }): Promise<TerraformResult> {
-  
+
   // Start ECS task
   const task = await ecs.runTask({
     cluster: 'yaffle-runners',
@@ -355,16 +363,16 @@ async function runTerraform(opts: {
       }],
     },
   })
-  
+
   // Wait for completion
   await waitForTask(task.taskArn)
-  
+
   // Fetch results
   const results = await s3.getObject({
     Bucket: opts.stateBucket,
     Key: `results/${task.taskArn}/outputs.json`,
   })
-  
+
   return JSON.parse(results.Body)
 }
 ```
@@ -374,6 +382,7 @@ async function runTerraform(opts: {
 ## GitHub Integration
 
 ### Webhook Events
+
 - `pull_request.opened` → plan + apply preview
 - `pull_request.synchronize` → plan + apply preview (update)
 - `pull_request.closed` → destroy preview
@@ -392,6 +401,7 @@ Checks:
 ```
 
 **Plan output in Check:**
+
 ```
 Terraform will perform the following actions:
 
@@ -446,16 +456,16 @@ approvers = ["github:team:acme/platform"]
 
 ## Tech Stack
 
-| Layer | Choice | Rationale |
-|-------|--------|-----------|
-| **Control Plane** | Hono + Bun | Lightweight |
-| **Frontend** | SvelteKit | Elegant |
-| **Auth** | BetterAuth | GitHub sign-in, DB sessions |
-| **Database** | Postgres (Planetscale) | Jobs, metadata, sessions |
-| **TF Execution** | ECS Fargate | Isolated, scalable |
-| **State Storage** | S3 | Standard TF backend |
-| **State Locking** | DynamoDB | Standard TF locking |
-| **Secrets** | AWS Secrets Manager | TF var injection |
+| Layer             | Choice                 | Rationale                   |
+| ----------------- | ---------------------- | --------------------------- |
+| **Control Plane** | Hono + Bun             | Lightweight                 |
+| **Frontend**      | SvelteKit              | Elegant                     |
+| **Auth**          | BetterAuth             | GitHub sign-in, DB sessions |
+| **Database**      | Postgres (Planetscale) | Jobs, metadata, sessions    |
+| **TF Execution**  | ECS Fargate            | Isolated, scalable          |
+| **State Storage** | S3                     | Standard TF backend         |
+| **State Locking** | DynamoDB               | Standard TF locking         |
+| **Secrets**       | AWS Secrets Manager    | TF var injection            |
 
 ---
 
@@ -501,11 +511,11 @@ security review; SSO and SCIM are not current product capabilities.
 
 ### Roles
 
-| Role | Can Do |
-|------|--------|
-| `viewer` | View previews, plans, logs |
-| `approver` | + Approve applies |
-| `admin` | + Manage members, org settings |
+| Role       | Can Do                         |
+| ---------- | ------------------------------ |
+| `viewer`   | View previews, plans, logs     |
+| `approver` | + Approve applies              |
+| `admin`    | + Manage members, org settings |
 
 ---
 
@@ -667,6 +677,7 @@ yaffle/
 ## Bootstrap Sequence
 
 ### Phase 0: Local Development
+
 ```bash
 # Run control plane locally
 pnpm run dev:control-plane
@@ -676,6 +687,7 @@ cd infra && terraform plan
 ```
 
 ### Phase 1: Manual Cloud Deploy
+
 ```bash
 # Create initial infra manually
 cd infra
@@ -687,6 +699,7 @@ terraform apply
 ```
 
 ### Phase 2: Dogfooding
+
 ```toml
 # yaffle.toml
 version = 1
@@ -722,6 +735,7 @@ variables.environment = "{{ environment }}"
 ## First Milestones
 
 ### Week 1: TF Runner (Local)
+
 - [ ] GitHub webhook handler
 - [ ] Detect TF file changes in PR
 - [ ] Run `terraform plan` locally
@@ -730,6 +744,7 @@ variables.environment = "{{ environment }}"
 - [ ] Handle PR close (destroy)
 
 ### Week 2: TF Runner (Cloud)
+
 - [ ] ECS cluster + task definition
 - [ ] S3 state bucket
 - [ ] DynamoDB lock table
@@ -738,18 +753,21 @@ variables.environment = "{{ environment }}"
 - [ ] Fetch results from S3
 
 ### Week 3: Dogfooding
+
 - [ ] Yaffle's infra in `infra/`
 - [ ] `yaffle.toml` for self
 - [ ] Install GitHub App on yaffle repo
 - [ ] First PR through the system
 
 ### Week 4: Polish + Codegen Start
+
 - [ ] Error handling, retries
 - [ ] Logs streaming
 - [ ] UI for viewing runs
 - [ ] Start Grafana codegen
 
 ---
+
 ## The Bet
 
 **Terraform is the lingua franca of infrastructure.** We're building the best way to preview TF changes.
@@ -760,4 +778,4 @@ variables.environment = "{{ environment }}"
 
 ---
 
-*Tap to check before you commit.* 🪶
+_Tap to check before you commit._ 🪶

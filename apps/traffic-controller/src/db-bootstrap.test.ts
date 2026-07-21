@@ -9,16 +9,17 @@ import {
 
 describe("traffic-controller db bootstrap helpers", () => {
   test("normalizes admin urls for CLI and runtime usage", () => {
-    expect(cleanDatabaseUrl(
-      "postgresql://admin:secret@example.com:5432/postgres?sslmode=verify-full&sslrootcert=/Users/alex/.postgresql/root.crt",
-    )).toBe(
-      "postgresql://admin:secret@example.com:5432/postgres?sslmode=require",
-    )
+    expect(
+      cleanDatabaseUrl(
+        "postgresql://admin:secret@example.com:5432/postgres?sslmode=verify-full&sslrootcert=/Users/alex/.postgresql/root.crt",
+      ),
+    ).toBe("postgresql://admin:secret@example.com:5432/postgres?sslmode=require")
   })
 
   test("builds runtime database URL from admin URL", () => {
     const runtimeUrl = buildRuntimeDatabaseUrl({
-      adminDatabaseUrl: "postgresql://admin.main:secret@example.com:5432/postgres?sslmode=verify-full&sslrootcert=/tmp/root.crt",
+      adminDatabaseUrl:
+        "postgresql://admin.main:secret@example.com:5432/postgres?sslmode=verify-full&sslrootcert=/tmp/root.crt",
       runtimeRoleLoginName: "yaffle_tc_runtime.main",
       runtimeRolePassword: "super-secret-password",
     })
@@ -29,12 +30,14 @@ describe("traffic-controller db bootstrap helpers", () => {
   })
 
   test("builds branch-qualified runtime role args for psql", () => {
-    expect(buildPsqlArgs({
-      sqlFilePath: "/tmp/runtime-role.sql",
-      adminDatabaseUrl: "postgresql://admin.main@example.com/postgres",
-      runtimeRoleName: "yaffle_tc_runtime",
-      runtimeRolePassword: "pw",
-    })).toEqual([
+    expect(
+      buildPsqlArgs({
+        sqlFilePath: "/tmp/runtime-role.sql",
+        adminDatabaseUrl: "postgresql://admin.main@example.com/postgres",
+        runtimeRoleName: "yaffle_tc_runtime",
+        runtimeRolePassword: "pw",
+      }),
+    ).toEqual([
       "postgresql://admin.main@example.com/postgres",
       "-v",
       "runtime_role=yaffle_tc_runtime",
@@ -46,12 +49,14 @@ describe("traffic-controller db bootstrap helpers", () => {
   })
 
   test("builds psql args with versioned sql file and runtime vars", () => {
-    expect(buildPsqlArgs({
-      sqlFilePath: "/tmp/runtime-role.sql",
-      adminDatabaseUrl: "postgresql://admin@example.com/postgres",
-      runtimeRoleName: "yaffle_tc_runtime",
-      runtimeRolePassword: "pw",
-    })).toEqual([
+    expect(
+      buildPsqlArgs({
+        sqlFilePath: "/tmp/runtime-role.sql",
+        adminDatabaseUrl: "postgresql://admin@example.com/postgres",
+        runtimeRoleName: "yaffle_tc_runtime",
+        runtimeRolePassword: "pw",
+      }),
+    ).toEqual([
       "postgresql://admin@example.com/postgres",
       "-v",
       "runtime_role=yaffle_tc_runtime",
@@ -63,10 +68,12 @@ describe("traffic-controller db bootstrap helpers", () => {
   })
 
   test("builds aws secretsmanager put-secret-value args", () => {
-    expect(buildPutSecretValueArgs({
-      secretId: "yaffle/main/traffic-controller/database-url",
-      secretString: "postgresql://runtime@example.com/postgres",
-    })).toEqual([
+    expect(
+      buildPutSecretValueArgs({
+        secretId: "yaffle/main/traffic-controller/database-url",
+        secretString: "postgresql://runtime@example.com/postgres",
+      }),
+    ).toEqual([
       "secretsmanager",
       "put-secret-value",
       "--secret-id",

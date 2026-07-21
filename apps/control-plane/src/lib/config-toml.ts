@@ -447,7 +447,7 @@ export function parseYaffleToml(input: string): YaffleTomlConfig {
 /**
  * Normalize environment specifier to array or "*".
  */
-function normalizeEnvironments(envs: string | string[] | "*"): string[] | "*" {
+function normalizeEnvironments(envs: string | string[]): string[] | "*" {
   if (envs === "*") return "*"
   if (Array.isArray(envs)) {
     // Check if array contains "*"

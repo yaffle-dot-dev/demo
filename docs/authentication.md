@@ -192,11 +192,11 @@ CREATE TABLE org_memberships (
 
 ## Roles and Permissions
 
-| Role | Permissions |
-|------|-------------|
-| `viewer` | View previews, plans, logs |
-| `approver` | Viewer + approve production applies |
-| `admin` | Approver + manage members, org settings |
+| Role       | Permissions                             |
+| ---------- | --------------------------------------- |
+| `viewer`   | View previews, plans, logs              |
+| `approver` | Viewer + approve production applies     |
+| `admin`    | Approver + manage members, org settings |
 
 Role checking uses a hierarchy:
 
@@ -219,22 +219,22 @@ function hasMinRole(userRole: string, minRole: string): boolean {
 
 Organizations have a `membership_mode` controlling how users join:
 
-| Mode | Behavior |
-|------|----------|
-| `github_self_join` | Users can join if they're members of a linked GitHub org (default) |
-| `invite_only` | Users must be explicitly invited by an admin |
-| `sso_only` | Reserved for a future SSO/SCIM implementation; not currently supported |
+| Mode               | Behavior                                                               |
+| ------------------ | ---------------------------------------------------------------------- |
+| `github_self_join` | Users can join if they're members of a linked GitHub org (default)     |
+| `invite_only`      | Users must be explicitly invited by an admin                           |
+| `sso_only`         | Reserved for a future SSO/SCIM implementation; not currently supported |
 
 ### Membership Sources
 
 The `source` field on `org_memberships` records how access was granted:
 
-| Source | Meaning |
-|--------|---------|
-| `admin_bootstrap` | User installed GitHub App, became first admin |
-| `github_self_join` | User joined via GitHub org membership verification |
-| `invite` | User was invited by an admin |
-| `scim` | Reserved source value; SCIM provisioning is not currently supported |
+| Source             | Meaning                                                             |
+| ------------------ | ------------------------------------------------------------------- |
+| `admin_bootstrap`  | User installed GitHub App, became first admin                       |
+| `github_self_join` | User joined via GitHub org membership verification                  |
+| `invite`           | User was invited by an admin                                        |
+| `scim`             | Reserved source value; SCIM provisioning is not currently supported |
 
 ---
 
@@ -287,11 +287,12 @@ previewsRoute.get(
   async (c) => {
     const auth = getAuth(c) // { userId, orgId, role, ... }
     // ...
-  }
+  },
 )
 ```
 
 The middleware:
+
 1. Authenticates the user via session cookie
 2. Resolves the org from request (query param or path param)
 3. Looks up the user's membership and role
@@ -434,19 +435,19 @@ export const auth = betterAuth({
 
 ### BetterAuth (handled by BetterAuth)
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/auth/sign-in/social` | POST | Initiate OAuth flow |
-| `/api/auth/callback/:provider` | GET | OAuth callback |
-| `/api/auth/sign-out` | POST | Sign out, clear session |
-| `/api/auth/get-session` | GET | Get current session |
+| Endpoint                       | Method | Description             |
+| ------------------------------ | ------ | ----------------------- |
+| `/api/auth/sign-in/social`     | POST   | Initiate OAuth flow     |
+| `/api/auth/callback/:provider` | GET    | OAuth callback          |
+| `/api/auth/sign-out`           | POST   | Sign out, clear session |
+| `/api/auth/get-session`        | GET    | Get current session     |
 
 ### Yaffle Auth Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/users/me` | GET | Get current user info + GitHub ID |
-| `/api/orgs` | GET | List user's organizations |
+| Endpoint        | Method | Description                       |
+| --------------- | ------ | --------------------------------- |
+| `/api/users/me` | GET    | Get current user info + GitHub ID |
+| `/api/orgs`     | GET    | List user's organizations         |
 
 ---
 
@@ -478,6 +479,7 @@ This bypasses BetterAuth session validation for local development and testing.
 ### Cookie Configuration
 
 BetterAuth sets session cookies with:
+
 - `HttpOnly`: Not accessible via JavaScript
 - `Secure`: HTTPS only (in production)
 - `SameSite=Lax`: CSRF protection while allowing navigation

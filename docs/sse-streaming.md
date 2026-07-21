@@ -217,13 +217,13 @@ so we know before it becomes a problem.
 
 #### Required Instrumentation (Ship with v1)
 
-| Question | Metric | Alert Threshold |
-|----------|--------|-----------------|
-| How many snapshot queries/sec during active runs? | `db.queries.sse_snapshot.rate` | > 50/sec |
-| What's the p95 latency of snapshot queries? | `db.queries.sse_snapshot.duration_p95` | > 100ms |
-| How large are SSE payloads? | `sse.payload.bytes` histogram | p95 > 50KB |
-| How many concurrent SSE connections? | `sse.connections.active` gauge | > 100 |
-| Are we dropping events due to backpressure? | `sse.events.dropped` counter | > 0 |
+| Question                                          | Metric                                 | Alert Threshold |
+| ------------------------------------------------- | -------------------------------------- | --------------- |
+| How many snapshot queries/sec during active runs? | `db.queries.sse_snapshot.rate`         | > 50/sec        |
+| What's the p95 latency of snapshot queries?       | `db.queries.sse_snapshot.duration_p95` | > 100ms         |
+| How large are SSE payloads?                       | `sse.payload.bytes` histogram          | p95 > 50KB      |
+| How many concurrent SSE connections?              | `sse.connections.active` gauge         | > 100           |
+| Are we dropping events due to backpressure?       | `sse.events.dropped` counter           | > 0             |
 
 **Status:** Metrics are implemented in `repos.ts` (PR + env streams) with OTel
 counters for snapshot duration, payload bytes, messages sent/deduped, and
@@ -248,7 +248,12 @@ we flip the switch when metrics tell us to.
 
 ```typescript
 // Parameters are getter functions so $effect can track reactive changes
-const stream = usePreviewStream(() => org, () => repo, "pr", () => prNumber)
+const stream = usePreviewStream(
+  () => org,
+  () => repo,
+  "pr",
+  () => prNumber,
+)
 ```
 
 **Why getter functions:** Svelte 5 `$effect` tracks reactive reads at call time.
@@ -299,9 +304,7 @@ function usePreviewStream(
 For org dashboard page.
 
 ```typescript
-function usePreviewListStream(
-  getOrg: () => string,
-): {
+function usePreviewListStream(getOrg: () => string): {
   readonly previews: Preview[]
   readonly connectionState: "connecting" | "connected" | "disconnected"
 }
@@ -441,13 +444,13 @@ component) and calls `onSwitchToLatest` to unpin.
 
 ### SSE Route Handlers
 
-| Route | File | Trigger | Heartbeat |
-|-------|------|---------|-----------|
-| PR stream | `routes/repos.ts` | EventEmitter (run + preview updates) | 30s |
-| Env stream | `routes/repos.ts` | EventEmitter (run + preview updates) | 30s |
-| Preview list | `routes/previews.ts` | EventEmitter (preview updates) | 30s |
-| Environments list | `routes/environments.ts` | Polling (5s interval) | No |
-| Orgs list | `routes/orgs.ts` | Polling (2s interval) | No |
+| Route             | File                     | Trigger                              | Heartbeat |
+| ----------------- | ------------------------ | ------------------------------------ | --------- |
+| PR stream         | `routes/repos.ts`        | EventEmitter (run + preview updates) | 30s       |
+| Env stream        | `routes/repos.ts`        | EventEmitter (run + preview updates) | 30s       |
+| Preview list      | `routes/previews.ts`     | EventEmitter (preview updates)       | 30s       |
+| Environments list | `routes/environments.ts` | Polling (5s interval)                | No        |
+| Orgs list         | `routes/orgs.ts`         | Polling (2s interval)                | No        |
 
 All routes use the blocking `onAbort` pattern to prevent Hono from calling
 `stream.close()` prematurely:
@@ -499,7 +502,7 @@ async function sendSnapshot() {
 export default {
   port,
   fetch: app.fetch,
-  idleTimeout: 0,  // Disable Bun's 10s idle timeout for SSE
+  idleTimeout: 0, // Disable Bun's 10s idle timeout for SSE
 }
 ```
 
@@ -510,7 +513,7 @@ export default {
 class YaffleEvents extends EventEmitter {
   constructor() {
     super()
-    this.setMaxListeners(100)  // Allow many concurrent SSE connections
+    this.setMaxListeners(100) // Allow many concurrent SSE connections
   }
 }
 ```

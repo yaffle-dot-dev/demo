@@ -44,10 +44,7 @@ interface RetryOptions {
   onRetry?: (attempt: number, err: unknown) => void
 }
 
-async function retryWithBackoff<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions,
-): Promise<T> {
+async function retryWithBackoff<T>(fn: () => Promise<T>, options: RetryOptions): Promise<T> {
   let lastError: unknown
   let delayMs = options.initialDelayMs
 
@@ -167,7 +164,9 @@ export function buildOrgBrokerPolicy(params: {
   customerRoleArns: string[]
 }): string {
   const { orgSlug, kmsKeyArn, customerRoleArns } = params
-  const normalizedRoleArns = [...new Set(customerRoleArns.map((value) => value.trim()).filter(Boolean))].sort()
+  const normalizedRoleArns = [
+    ...new Set(customerRoleArns.map((value) => value.trim()).filter(Boolean)),
+  ].sort()
 
   return JSON.stringify({
     Version: "2012-10-17",
@@ -187,39 +186,32 @@ export function buildOrgBrokerPolicy(params: {
       {
         Sid: "OrgKmsUsage",
         Effect: "Allow",
-        Action: [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:GenerateDataKey",
-        ],
+        Action: ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"],
         Resource: kmsKeyArn,
       },
       ...(normalizedRoleArns.length === 0
         ? [
-          {
-            Sid: "DenyAllAssumeRole",
-            Effect: "Deny",
-            Action: [
-              "sts:AssumeRole",
-              "sts:TagSession",
-            ],
-            Resource: "*",
-          },
-        ]
+            {
+              Sid: "DenyAllAssumeRole",
+              Effect: "Deny",
+              Action: ["sts:AssumeRole", "sts:TagSession"],
+              Resource: "*",
+            },
+          ]
         : [
-          {
-            Sid: "AssumeCustomerRoles",
-            Effect: "Allow",
-            Action: "sts:AssumeRole",
-            Resource: normalizedRoleArns,
-          },
-          {
-            Sid: "TagCustomerRoleSessions",
-            Effect: "Allow",
-            Action: "sts:TagSession",
-            Resource: "*",
-          },
-        ]),
+            {
+              Sid: "AssumeCustomerRoles",
+              Effect: "Allow",
+              Action: "sts:AssumeRole",
+              Resource: normalizedRoleArns,
+            },
+            {
+              Sid: "TagCustomerRoleSessions",
+              Effect: "Allow",
+              Action: "sts:TagSession",
+              Resource: "*",
+            },
+          ]),
     ],
   })
 }
@@ -251,15 +243,17 @@ export async function syncOrgBrokerRoleAssumeTargets(
   const config = getConfig()
   const iam = getIamClient(config.region)
 
-  await iam.send(new PutRolePolicyCommand({
-    RoleName: orgBrokerRoleName(orgId),
-    PolicyName: ORG_BROKER_POLICY_NAME,
-    PolicyDocument: buildOrgBrokerPolicy({
-      orgSlug,
-      kmsKeyArn,
-      customerRoleArns,
+  await iam.send(
+    new PutRolePolicyCommand({
+      RoleName: orgBrokerRoleName(orgId),
+      PolicyName: ORG_BROKER_POLICY_NAME,
+      PolicyDocument: buildOrgBrokerPolicy({
+        orgSlug,
+        kmsKeyArn,
+        customerRoleArns,
+      }),
     }),
-  }))
+  )
 }
 
 // =============================================================================
@@ -280,10 +274,7 @@ async function createOrgKmsKey(
   const kms = getKmsClient(config.region)
 
   const keyAlias = `alias/yaffle-org-${orgId}`
-  const orgResourceTags = toKmsTags(buildOrgResourceTags(
-    { orgId },
-    { resourceClass: "kms-key" },
-  ))
+  const orgResourceTags = toKmsTags(buildOrgResourceTags({ orgId }, { resourceClass: "kms-key" }))
 
   // Check if key already exists (from a previous attempt)
   let keyArn: string | undefined
@@ -303,10 +294,12 @@ async function createOrgKmsKey(
 
   // Create the key if it doesn't exist
   if (!keyArn) {
-    const createResponse = await kms.send(new CreateKeyCommand({
-      Description: `Yaffle state encryption key for org ${orgId}`,
-      Tags: orgResourceTags,
-    }))
+    const createResponse = await kms.send(
+      new CreateKeyCommand({
+        Description: `Yaffle state encryption key for org ${orgId}`,
+        Tags: orgResourceTags,
+      }),
+    )
 
     keyArn = createResponse.KeyMetadata?.Arn
     if (!keyArn) {
@@ -314,16 +307,20 @@ async function createOrgKmsKey(
     }
 
     // Create alias for new key
-    await kms.send(new CreateAliasCommand({
-      AliasName: keyAlias,
-      TargetKeyId: keyArn,
-    }))
+    await kms.send(
+      new CreateAliasCommand({
+        AliasName: keyAlias,
+        TargetKeyId: keyArn,
+      }),
+    )
   }
 
-  await kms.send(new TagResourceCommand({
-    KeyId: keyArn,
-    Tags: orgResourceTags,
-  }))
+  await kms.send(
+    new TagResourceCommand({
+      KeyId: keyArn,
+      Tags: orgResourceTags,
+    }),
+  )
 
   // Set key policy - control plane can manage, org broker can use data key ops.
   const keyPolicy = JSON.stringify({
@@ -340,11 +337,7 @@ async function createOrgKmsKey(
         Sid: "YaffleOrgBrokerUsage",
         Effect: "Allow",
         Principal: { AWS: orgBrokerRoleArn },
-        Action: [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:GenerateDataKey",
-        ],
+        Action: ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"],
         Resource: "*",
       },
     ],
@@ -352,11 +345,14 @@ async function createOrgKmsKey(
 
   // Retry putting key policy - IAM role may not have propagated yet
   await retryWithBackoff(
-    () => kms.send(new PutKeyPolicyCommand({
-      KeyId: keyArn,
-      PolicyName: "default",
-      Policy: keyPolicy,
-    })),
+    () =>
+      kms.send(
+        new PutKeyPolicyCommand({
+          KeyId: keyArn,
+          PolicyName: "default",
+          Policy: keyPolicy,
+        }),
+      ),
     {
       maxAttempts: 10,
       initialDelayMs: 1000,
@@ -412,21 +408,19 @@ export async function syncOrgKmsKeyPolicy(
         Sid: "YaffleOrgBrokerUsage",
         Effect: "Allow",
         Principal: { AWS: orgBrokerRoleArn },
-        Action: [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:GenerateDataKey",
-        ],
+        Action: ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"],
         Resource: "*",
       },
     ],
   })
 
-  await kms.send(new PutKeyPolicyCommand({
-    KeyId: kmsKeyArn,
-    PolicyName: "default",
-    Policy: keyPolicy,
-  }))
+  await kms.send(
+    new PutKeyPolicyCommand({
+      KeyId: kmsKeyArn,
+      PolicyName: "default",
+      Policy: keyPolicy,
+    }),
+  )
 
   logger.info("Synced org KMS key policy", {
     orgId,
@@ -444,10 +438,7 @@ async function createOrgIamRole(orgId: string): Promise<string> {
   const iam = getIamClient(config.region)
 
   const roleName = orgBrokerRoleName(orgId)
-  const orgResourceTags = toIamTags(buildOrgResourceTags(
-    { orgId },
-    { resourceClass: "iam-role" },
-  ))
+  const orgResourceTags = toIamTags(buildOrgResourceTags({ orgId }, { resourceClass: "iam-role" }))
 
   // Trust policy - only control-plane base role can assume org broker role
   const trustPolicy = JSON.stringify({
@@ -473,12 +464,14 @@ async function createOrgIamRole(orgId: string): Promise<string> {
   // Create the role (or get existing if already created)
   let roleArn: string
   try {
-    const createResponse = await iam.send(new CreateRoleCommand({
-      RoleName: roleName,
-      AssumeRolePolicyDocument: trustPolicy,
-      Description: `Yaffle org broker role for org ${orgId}`,
-      Tags: orgResourceTags,
-    }))
+    const createResponse = await iam.send(
+      new CreateRoleCommand({
+        RoleName: roleName,
+        AssumeRolePolicyDocument: trustPolicy,
+        Description: `Yaffle org broker role for org ${orgId}`,
+        Tags: orgResourceTags,
+      }),
+    )
     roleArn = createResponse.Role?.Arn ?? ""
     if (!roleArn) {
       throw new Error("IAM CreateRole did not return role ARN")
@@ -508,15 +501,19 @@ async function createOrgIamRole(orgId: string): Promise<string> {
 
   // Reconcile trust policy even when role already existed, so drift (e.g. root principal)
   // is corrected during migration/backfill runs.
-  await iam.send(new UpdateAssumeRolePolicyCommand({
-    RoleName: roleName,
-    PolicyDocument: trustPolicy,
-  }))
+  await iam.send(
+    new UpdateAssumeRolePolicyCommand({
+      RoleName: roleName,
+      PolicyDocument: trustPolicy,
+    }),
+  )
 
-  await iam.send(new TagRoleCommand({
-    RoleName: roleName,
-    Tags: orgResourceTags,
-  }))
+  await iam.send(
+    new TagRoleCommand({
+      RoleName: roleName,
+      Tags: orgResourceTags,
+    }),
+  )
 
   logger.info("Created IAM role for org", {
     orgId,
@@ -603,9 +600,11 @@ export async function deprovisionOrgResources(
     const keyAlias = `alias/yaffle-org-${orgId}`
 
     try {
-      await kms.send(new DeleteAliasCommand({
-        AliasName: keyAlias,
-      }))
+      await kms.send(
+        new DeleteAliasCommand({
+          AliasName: keyAlias,
+        }),
+      )
     } catch (err) {
       logger.warn("Failed to delete KMS alias (may not exist)", {
         orgId,
@@ -615,10 +614,12 @@ export async function deprovisionOrgResources(
     }
 
     try {
-      await kms.send(new ScheduleKeyDeletionCommand({
-        KeyId: kmsKeyArn,
-        PendingWindowInDays: 7, // Minimum allowed
-      }))
+      await kms.send(
+        new ScheduleKeyDeletionCommand({
+          KeyId: kmsKeyArn,
+          PendingWindowInDays: 7, // Minimum allowed
+        }),
+      )
       logger.info("Scheduled KMS key deletion", { orgId, kmsKeyArn })
     } catch (err) {
       logger.warn("Failed to schedule KMS key deletion", {
@@ -635,10 +636,12 @@ export async function deprovisionOrgResources(
 
     // First delete inline policies
     try {
-      await iam.send(new DeleteRolePolicyCommand({
-        RoleName: roleName,
-        PolicyName: ORG_BROKER_POLICY_NAME,
-      }))
+      await iam.send(
+        new DeleteRolePolicyCommand({
+          RoleName: roleName,
+          PolicyName: ORG_BROKER_POLICY_NAME,
+        }),
+      )
     } catch (err) {
       logger.warn("Failed to delete IAM role policy (may not exist)", {
         orgId,
@@ -649,9 +652,11 @@ export async function deprovisionOrgResources(
 
     // Then delete the role
     try {
-      await iam.send(new DeleteRoleCommand({
-        RoleName: roleName,
-      }))
+      await iam.send(
+        new DeleteRoleCommand({
+          RoleName: roleName,
+        }),
+      )
       logger.info("Deleted IAM role", { orgId, roleName })
     } catch (err) {
       logger.warn("Failed to delete IAM role", {

@@ -24,10 +24,14 @@ export const providerDiscoveryResultSchema = z.object({
   exactEnvVars: z.array(z.string()).default([]),
   prefixEnvVars: z.array(z.string()).default([]),
   confidence: z.enum(["high", "medium", "low"]),
-  sources: z.array(z.object({
-    url: z.string().url(),
-    kind: z.string().min(1),
-  })).default([]),
+  sources: z
+    .array(
+      z.object({
+        url: z.string().url(),
+        kind: z.string().min(1),
+      }),
+    )
+    .default([]),
   reasoningSummary: z.string().optional(),
 })
 
@@ -36,15 +40,17 @@ function normalizeProviderType(value: string): string {
 }
 
 function normalizeEnvVarKeys(keys: string[]): string[] {
-  return [...new Set(keys
-    .map((key) => key.trim().toUpperCase())
-    .filter((key) => key.length > 0))].sort()
+  return [
+    ...new Set(keys.map((key) => key.trim().toUpperCase()).filter((key) => key.length > 0)),
+  ].sort()
 }
 
 function normalizePrefixKeys(prefixes: string[]): string[] {
-  return [...new Set(prefixes
-    .map((prefix) => prefix.trim().toUpperCase())
-    .filter((prefix) => prefix.length > 0))].sort()
+  return [
+    ...new Set(
+      prefixes.map((prefix) => prefix.trim().toUpperCase()).filter((prefix) => prefix.length > 0),
+    ),
+  ].sort()
 }
 
 interface QueueUnknownProviderDiscoveryDeps {
@@ -65,19 +71,24 @@ const defaultQueueUnknownProviderDiscoveryDeps: QueueUnknownProviderDiscoveryDep
   now: () => new Date(),
 }
 
-export async function queueUnknownProviderDiscovery(params: {
-  orgId: string
-  providers: ExtractedProviderRequirement[]
-  repo?: string
-  environment?: string
-  workspacePath?: string
-}, deps: QueueUnknownProviderDiscoveryDeps = defaultQueueUnknownProviderDiscoveryDeps): Promise<void> {
+export async function queueUnknownProviderDiscovery(
+  params: {
+    orgId: string
+    providers: ExtractedProviderRequirement[]
+    repo?: string
+    environment?: string
+    workspacePath?: string
+  },
+  deps: QueueUnknownProviderDiscoveryDeps = defaultQueueUnknownProviderDiscoveryDeps,
+): Promise<void> {
   if (process.env.YAFFLE_PROVIDER_DISCOVERY_ENABLED !== "true") {
     return
   }
 
   const activeSignatures = await deps.listActiveProviderCredentialSignatures()
-  const activeProviderSet = new Set(activeSignatures.map((signature) => signature.providerType.toLowerCase()))
+  const activeProviderSet = new Set(
+    activeSignatures.map((signature) => signature.providerType.toLowerCase()),
+  )
   const recentSince = new Date(deps.now().getTime() - PROVIDER_DISCOVERY_REQUEUE_COOLDOWN_MS)
 
   for (const requirement of params.providers) {

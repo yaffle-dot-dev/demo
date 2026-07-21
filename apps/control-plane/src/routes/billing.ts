@@ -2,7 +2,12 @@ import { Hono } from "hono"
 import { z } from "zod"
 
 import { requireAuth, AuthError, type AuthContext } from "../lib/auth.ts"
-import { findOrgBySlug, findOrgMembership, updateOrg, type Organization } from "../db/queries/organizations.ts"
+import {
+  findOrgBySlug,
+  findOrgMembership,
+  updateOrg,
+  type Organization,
+} from "../db/queries/organizations.ts"
 import { requireStripe } from "../lib/stripe.ts"
 import { getEnv } from "../lib/env.ts"
 import { logger } from "../lib/telemetry.ts"
@@ -15,13 +20,21 @@ export const billingRoute = new Hono()
 async function resolveOrgAdmin(
   headers: Headers,
   slug: string,
-): Promise<{ auth: AuthContext; org: Organization } | { error: true; status: number; code: string; message: string }> {
+): Promise<
+  | { auth: AuthContext; org: Organization }
+  | { error: true; status: number; code: string; message: string }
+> {
   let auth: AuthContext
   try {
     auth = await requireAuth(headers)
   } catch (err) {
     if (err instanceof AuthError) {
-      return { error: true, status: err.code === "AUTH_REQUIRED" ? 401 : 403, code: err.code, message: err.message }
+      return {
+        error: true,
+        status: err.code === "AUTH_REQUIRED" ? 401 : 403,
+        code: err.code,
+        message: err.message,
+      }
     }
     throw err
   }
@@ -115,7 +128,15 @@ billingRoute.post("/:slug/billing/portal", async (c) => {
   const { org } = result
 
   if (!org.stripeCustomerId) {
-    return c.json({ error: { code: "NO_BILLING_ACCOUNT", message: "No subscription found. Subscribe to a plan first." } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "NO_BILLING_ACCOUNT",
+          message: "No subscription found. Subscribe to a plan first.",
+        },
+      },
+      400,
+    )
   }
 
   const stripe = requireStripe()

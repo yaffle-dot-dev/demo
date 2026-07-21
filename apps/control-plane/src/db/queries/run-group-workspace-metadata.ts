@@ -7,7 +7,10 @@ import { runGroupWorkspaceMetadata } from "../schema.ts"
 export type RunGroupWorkspaceMetadata = typeof runGroupWorkspaceMetadata.$inferSelect
 export type RunGroupWorkspaceMetadataInsert = typeof runGroupWorkspaceMetadata.$inferInsert
 
-export function buildRunGroupWorkspaceMetadataKey(runGroupId: string, workspacePath: string): string {
+export function buildRunGroupWorkspaceMetadataKey(
+  runGroupId: string,
+  workspacePath: string,
+): string {
   return `${runGroupId}:${workspacePath}`
 }
 
@@ -25,10 +28,7 @@ export async function upsertRunGroupWorkspaceMetadata(
           .insert(runGroupWorkspaceMetadata)
           .values(row)
           .onConflictDoUpdate({
-            target: [
-              runGroupWorkspaceMetadata.runGroupId,
-              runGroupWorkspaceMetadata.workspacePath,
-            ],
+            target: [runGroupWorkspaceMetadata.runGroupId, runGroupWorkspaceMetadata.workspacePath],
             set: {
               providerRequirements: row.providerRequirements,
               extractionStatus: row.extractionStatus,
@@ -80,7 +80,10 @@ export async function findRunGroupWorkspaceMetadataForRunGroups(
       .where(inArray(runGroupWorkspaceMetadata.runGroupId, runGroupIds))
 
     return new Map(
-      rows.map((row) => [buildRunGroupWorkspaceMetadataKey(row.runGroupId, row.workspacePath), row]),
+      rows.map((row) => [
+        buildRunGroupWorkspaceMetadataKey(row.runGroupId, row.workspacePath),
+        row,
+      ]),
     )
   })
 }

@@ -45,10 +45,9 @@ export async function storeConnectionSecret(
   },
 ): Promise<StoredConnectionSecret> {
   const path = `/yaffle/org/${orgSlug}/connections/${connectionId}/secret`
-  const tags = toSsmTags(buildOrgResourceTags(
-    { orgId, orgSlug },
-    { resourceClass: "connection-secret" },
-  ))
+  const tags = toSsmTags(
+    buildOrgResourceTags({ orgId, orgSlug }, { resourceClass: "connection-secret" }),
+  )
 
   if (isTestEnv()) {
     testSecretStore.set(path, JSON.stringify(value))
@@ -61,19 +60,23 @@ export async function storeConnectionSecret(
 
   const ssm = createSsmClient(opts?.credentials)
 
-  await ssm.send(new PutParameterCommand({
-    Name: path,
-    Type: "SecureString",
-    Value: JSON.stringify(value),
-    KeyId: kmsKeyArn,
-    Overwrite: true,
-  }))
+  await ssm.send(
+    new PutParameterCommand({
+      Name: path,
+      Type: "SecureString",
+      Value: JSON.stringify(value),
+      KeyId: kmsKeyArn,
+      Overwrite: true,
+    }),
+  )
 
-  await ssm.send(new AddTagsToResourceCommand({
-    ResourceType: "Parameter",
-    ResourceId: path,
-    Tags: tags,
-  }))
+  await ssm.send(
+    new AddTagsToResourceCommand({
+      ResourceType: "Parameter",
+      ResourceId: path,
+      Tags: tags,
+    }),
+  )
 
   const result = await ssm.send(new GetParameterCommand({ Name: path, WithDecryption: false }))
   const arn = result.Parameter?.ARN
@@ -101,10 +104,12 @@ export async function getConnectionSecret(
 
   const ssm = createSsmClient(opts?.credentials)
 
-  const result = await ssm.send(new GetParameterCommand({
-    Name: path,
-    WithDecryption: true,
-  }))
+  const result = await ssm.send(
+    new GetParameterCommand({
+      Name: path,
+      WithDecryption: true,
+    }),
+  )
 
   const value = result.Parameter?.Value
   if (!value) {

@@ -34,7 +34,8 @@ export default defineDeployable({
       workspace: "apps/infra",
       environment: target.environment.name,
     })
-    const marketingUrl = typeof outputs.marketing_url === "string" ? outputs.marketing_url.trim() : ""
+    const marketingUrl =
+      typeof outputs.marketing_url === "string" ? outputs.marketing_url.trim() : ""
 
     if (!marketingUrl) {
       throw new Error("apps/infra must export marketing_url for marketing verification")

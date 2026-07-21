@@ -24,10 +24,7 @@ function timingSafeEqual(a: string, b: string): boolean {
   return result === 0
 }
 
-async function computeSignature(
-  payload: string,
-  secret: string,
-): Promise<string> {
+async function computeSignature(payload: string, secret: string): Promise<string> {
   const encoder = new TextEncoder()
   const key = await crypto.subtle.importKey(
     "raw",

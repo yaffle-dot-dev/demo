@@ -1,9 +1,4 @@
-import {
-  GetObjectCommand,
-  PutObjectCommand,
-  S3Client,
-  NoSuchKey,
-} from "@aws-sdk/client-s3"
+import { GetObjectCommand, PutObjectCommand, S3Client, NoSuchKey } from "@aws-sdk/client-s3"
 
 import { getAwsClientConfig } from "./aws-client-config.ts"
 import { buildOrgResourceTags, toS3ObjectTagging } from "./aws-tags.ts"
@@ -153,10 +148,7 @@ export async function cacheModule(
       Key: s3Key,
       Body: archive,
       ContentType: "application/gzip",
-      Tagging: toS3ObjectTagging(buildOrgResourceTags(
-        { orgId },
-        { resourceClass: "module" },
-      )),
+      Tagging: toS3ObjectTagging(buildOrgResourceTags({ orgId }, { resourceClass: "module" })),
       // Cache for 1 year - modules are immutable once generated
       CacheControl: "max-age=31536000, immutable",
     }),

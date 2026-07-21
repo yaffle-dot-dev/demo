@@ -56,7 +56,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
     )
 
     expect(sessionRes.status).toBe(201)
-    const sessionBody = await sessionRes.json() as {
+    const sessionBody = (await sessionRes.json()) as {
       data: {
         token: string
         principalId: string
@@ -144,7 +144,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
     )
 
     expect(executionTokenRes.status).toBe(201)
-    const executionTokenBody = await executionTokenRes.json() as {
+    const executionTokenBody = (await executionTokenRes.json()) as {
       data: { token: string }
     }
 
@@ -163,10 +163,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
     expect(await versionsRes.json()).toEqual({
       modules: [
         {
-          versions: [
-            { version: "1.0.2" },
-            { version: "1.0.1" },
-          ],
+          versions: [{ version: "1.0.2" }, { version: "1.0.1" }],
         },
       ],
     })
@@ -203,7 +200,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
         headers: featureHeaders(),
       }),
     )
-    const sessionBody = await sessionRes.json() as { data: { token: string } }
+    const sessionBody = (await sessionRes.json()) as { data: { token: string } }
 
     const publishHeaders = {
       ...featureHeaders(),
@@ -238,7 +235,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
         }),
       }),
     )
-    const executionTokenBody = await executionTokenRes.json() as {
+    const executionTokenBody = (await executionTokenRes.json()) as {
       data: { token: string }
     }
 
@@ -263,7 +260,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
         headers: featureHeaders(),
       }),
     )
-    const sessionBody = await sessionRes.json() as { data: { token: string } }
+    const sessionBody = (await sessionRes.json()) as { data: { token: string } }
 
     const headers = {
       ...featureHeaders(),
@@ -285,7 +282,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
       }),
     )
     expect(workspaceInitRes.status).toBe(201)
-    const workspaceInitBody = await workspaceInitRes.json() as {
+    const workspaceInitBody = (await workspaceInitRes.json()) as {
       data: { expiresAt: string }
     }
 
@@ -303,7 +300,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
       }),
     )
     expect(shellSessionRes.status).toBe(201)
-    const shellSessionBody = await shellSessionRes.json() as {
+    const shellSessionBody = (await shellSessionRes.json()) as {
       data: { expiresAt: string; token: string; repoBindingId: string }
     }
 
@@ -322,7 +319,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
         headers: featureHeaders(),
       }),
     )
-    const sessionBody = await sessionRes.json() as {
+    const sessionBody = (await sessionRes.json()) as {
       data: { token: string; principalId: string; sessionId: string }
     }
 
@@ -359,7 +356,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
         }),
       }),
     )
-    const executionTokenBody = await executionTokenRes.json() as {
+    const executionTokenBody = (await executionTokenRes.json()) as {
       data: { token: string; repoBindingId: string }
     }
 
@@ -417,7 +414,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
         },
       }),
     )
-    const sessionBody = await sessionRes.json() as { data: { token: string } }
+    const sessionBody = (await sessionRes.json()) as { data: { token: string } }
 
     const headers = {
       ...featureHeaders(),
@@ -471,7 +468,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
   })
 })
 
-function featureHeaders(): HeadersInit {
+function featureHeaders(): Record<string, string> {
   return {
     "feature-token": TEST_FEATURE_TOKEN,
   }
@@ -486,8 +483,8 @@ function extractFileFromTar(tar: Buffer, filename: string): string {
       break
     }
 
-    const name = header.subarray(0, 100).toString("utf-8").replace(/\u0000.*$/, "")
-    const sizeOctal = header.subarray(124, 136).toString("utf-8").replace(/\u0000.*$/, "").trim()
+    const name = header.subarray(0, 100).toString("utf-8").split("\0", 1)[0]
+    const sizeOctal = header.subarray(124, 136).toString("utf-8").split("\0", 1)[0].trim()
     const size = Number.parseInt(sizeOctal || "0", 8)
     offset += 512
 

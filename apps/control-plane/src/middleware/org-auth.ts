@@ -1,10 +1,5 @@
 import type { Context, Next } from "hono"
-import {
-  requireAuth,
-  AuthError,
-  type ApiKeyPermissions,
-  type AuthContext,
-} from "../lib/auth.ts"
+import { requireAuth, AuthError, type ApiKeyPermissions, type AuthContext } from "../lib/auth.ts"
 import { getMembershipRole } from "../db/queries/users.ts"
 import { findOrgBySlug } from "../db/queries/organizations.ts"
 import { getEnv } from "../lib/env.ts"
@@ -94,10 +89,7 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
     // Get org identifier
     const orgSlug = orgSource === "query" ? c.req.query(orgKey) : c.req.param(orgKey)
     if (!orgSlug) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: `${orgKey} is required` } },
-        400,
-      )
+      return c.json({ error: { code: "VALIDATION_ERROR", message: `${orgKey} is required` } }, 400)
     }
 
     // Resolve org
@@ -110,7 +102,10 @@ export function requireOrgAccess(options: OrgAuthOptions = {}) {
     }
 
     if (auth.apiKeyMetadata?.orgId && auth.apiKeyMetadata.orgId !== org.id) {
-      return c.json({ error: { code: "FORBIDDEN", message: "api key is scoped to another organization" } }, 403)
+      return c.json(
+        { error: { code: "FORBIDDEN", message: "api key is scoped to another organization" } },
+        403,
+      )
     }
 
     // Check membership and role
@@ -179,10 +174,7 @@ export function requireResourceAccess(options: ResourceAuthOptions) {
     // Resolve org ID from resource
     const orgId = await getOrgId(c)
     if (!orgId) {
-      return c.json(
-        { error: { code: "NOT_FOUND", message: "resource not found" } },
-        404,
-      )
+      return c.json({ error: { code: "NOT_FOUND", message: "resource not found" } }, 404)
     }
 
     // Get API key from query if allowed (legacy SSE support only)
@@ -204,7 +196,10 @@ export function requireResourceAccess(options: ResourceAuthOptions) {
     }
 
     if (auth.apiKeyMetadata?.orgId && auth.apiKeyMetadata.orgId !== orgId) {
-      return c.json({ error: { code: "FORBIDDEN", message: "api key is scoped to another organization" } }, 403)
+      return c.json(
+        { error: { code: "FORBIDDEN", message: "api key is scoped to another organization" } },
+        403,
+      )
     }
 
     // Check membership and role

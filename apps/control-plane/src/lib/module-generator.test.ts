@@ -201,17 +201,10 @@ function extractFileFromTar(tar: Buffer, filename: string): string {
     }
 
     // Extract filename (first 100 bytes, null-terminated)
-      const name = header
-        .subarray(0, 100)
-        .toString("utf-8")
-        .replace(/\u0000+$/, "")
+    const name = header.subarray(0, 100).toString("utf-8").split("\0", 1)[0]
 
     // Extract size (bytes 124-135, octal string)
-      const sizeStr = header
-        .subarray(124, 136)
-        .toString("utf-8")
-        .replace(/\u0000+$/, "")
-        .trim()
+    const sizeStr = header.subarray(124, 136).toString("utf-8").split("\0", 1)[0].trim()
     const size = parseInt(sizeStr, 8)
 
     offset += 512 // Move past header

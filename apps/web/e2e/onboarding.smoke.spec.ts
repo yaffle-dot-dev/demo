@@ -59,7 +59,9 @@ async function installBrowserSmokeFixtures(page: Page): Promise<void> {
 }
 
 test.describe("onboarding browser smoke", () => {
-  test("signed-in user with no orgs can create an org and land on repository linking", async ({ page }) => {
+  test("signed-in user with no orgs can create an org and land on repository linking", async ({
+    page,
+  }) => {
     await installBrowserSmokeFixtures(page)
 
     const createdOrg = {
@@ -86,13 +88,17 @@ test.describe("onboarding browser smoke", () => {
           slug: "smoke-browser-org",
         })
         orgCreated = true
-        return fulfillJson(route, {
-          data: {
-            id: createdOrg.id,
-            name: createdOrg.name,
-            slug: createdOrg.slug,
+        return fulfillJson(
+          route,
+          {
+            data: {
+              id: createdOrg.id,
+              name: createdOrg.name,
+              slug: createdOrg.slug,
+            },
           },
-        }, 201)
+          201,
+        )
       }
 
       if (url.pathname === "/api/me" && method === "GET") {
@@ -127,12 +133,16 @@ test.describe("onboarding browser smoke", () => {
         return fulfillJson(route, { data: [] })
       }
 
-      return fulfillJson(route, {
-        error: {
-          code: "UNMOCKED_BROWSER_REQUEST",
-          message: `${method} ${url.pathname} was not mocked in onboarding.smoke.spec.ts`,
+      return fulfillJson(
+        route,
+        {
+          error: {
+            code: "UNMOCKED_BROWSER_REQUEST",
+            message: `${method} ${url.pathname} was not mocked in onboarding.smoke.spec.ts`,
+          },
         },
-      }, 500)
+        500,
+      )
     })
 
     await page.goto("/app/")
@@ -151,8 +161,11 @@ test.describe("onboarding browser smoke", () => {
     await page.waitForURL(/\/app\/smoke-browser-org\/settings\/repositories$/)
     await expect(page.getByRole("heading", { name: "Repositories" })).toBeVisible()
     await expect(page.getByText("No repositories linked yet.")).toBeVisible()
-    await expect(page.getByText("Link GitHub repositories to start receiving webhook events and running infrastructure previews.")).toBeVisible()
+    await expect(
+      page.getByText(
+        "Link GitHub repositories to start receiving webhook events and running infrastructure previews.",
+      ),
+    ).toBeVisible()
     await expect(page.getByRole("button", { name: /smoke-browser-org/i })).toBeVisible()
   })
-
 })

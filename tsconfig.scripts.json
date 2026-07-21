@@ -3,13 +3,6 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": [
-    "scripts/**/*.ts",
-    "apps/**/*.yaffle.deployable.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "packages/cli/**"
-  ]
+  "include": ["scripts/**/*.ts", "apps/**/*.yaffle.deployable.ts"],
+  "exclude": ["node_modules", "dist", "packages/cli/**"]
 }

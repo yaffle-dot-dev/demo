@@ -4,9 +4,7 @@ import { assumeRole } from "./aws-auth"
 import { exec } from "./exec"
 import { fetchOutputs } from "./outputs"
 
-export type DeployTarget =
-  | { type: "pr"; prNumber: number }
-  | { type: "env"; name: string }
+export type DeployTarget = { type: "pr"; prNumber: number } | { type: "env"; name: string }
 
 export interface DeployConfig {
   target: DeployTarget
@@ -235,39 +233,49 @@ export async function syncStaticSiteToS3(options: SyncStaticSiteToS3Options): Pr
     return
   }
 
-  const creds = await assumeRole(options.deployRoleArn, options.sessionName, options.deployerSession)
+  const creds = await assumeRole(
+    options.deployRoleArn,
+    options.sessionName,
+    options.deployerSession,
+  )
 
-  await exec([
-    "aws",
-    "s3",
-    "sync",
-    options.sourceDir,
-    destination,
-    "--delete",
-    "--cache-control",
-    "public, max-age=31536000, immutable",
-    "--exclude",
-    "*",
-    "--include",
-    "_astro/*",
-  ], {
-    env: creds,
-  })
+  await exec(
+    [
+      "aws",
+      "s3",
+      "sync",
+      options.sourceDir,
+      destination,
+      "--delete",
+      "--cache-control",
+      "public, max-age=31536000, immutable",
+      "--exclude",
+      "*",
+      "--include",
+      "_astro/*",
+    ],
+    {
+      env: creds,
+    },
+  )
 
-  await exec([
-    "aws",
-    "s3",
-    "sync",
-    options.sourceDir,
-    destination,
-    "--delete",
-    "--cache-control",
-    "public, max-age=0, must-revalidate",
-    "--exclude",
-    "_astro/*",
-  ], {
-    env: creds,
-  })
+  await exec(
+    [
+      "aws",
+      "s3",
+      "sync",
+      options.sourceDir,
+      destination,
+      "--delete",
+      "--cache-control",
+      "public, max-age=0, must-revalidate",
+      "--exclude",
+      "_astro/*",
+    ],
+    {
+      env: creds,
+    },
+  )
 }
 
 export async function invalidateStaticSiteCache(
@@ -288,15 +296,18 @@ export async function invalidateStaticSiteCache(
     options.deployerSession,
   )
 
-  await exec([
-    "aws",
-    "cloudfront",
-    "create-invalidation",
-    "--distribution-id",
-    options.distributionId,
-    "--paths",
-    invalidationPath,
-  ], {
-    env: creds,
-  })
+  await exec(
+    [
+      "aws",
+      "cloudfront",
+      "create-invalidation",
+      "--distribution-id",
+      options.distributionId,
+      "--paths",
+      invalidationPath,
+    ],
+    {
+      env: creds,
+    },
+  )
 }

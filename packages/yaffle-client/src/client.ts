@@ -43,6 +43,12 @@ const defaultLogger: Logger = {
   error: (msg) => console.error(msg),
 }
 
+function formatError(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string") return error
+  return JSON.stringify(error) ?? "Unknown error"
+}
+
 export class YaffleClient {
   private apiUrl: string
   private auth: AuthProvider
@@ -57,19 +63,19 @@ export class YaffleClient {
   /**
    * Make an authenticated API request
    */
-  private async request<T>(
-    path: string,
-    options: RequestInit = {}
-  ): Promise<T> {
+  private async request<T>(path: string, options: RequestInit = {}): Promise<T> {
     const credentials = await this.auth.getCredentials()
+    const headers = new Headers(options.headers)
+    if (!headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${credentials.accessToken}`)
+    }
+    if (!headers.has("Accept")) {
+      headers.set("Accept", "application/json")
+    }
 
     const response = await fetch(`${this.apiUrl}${path}`, {
       ...options,
-      headers: {
-        Authorization: `Bearer ${credentials.accessToken}`,
-        Accept: "application/json",
-        ...options.headers,
-      },
+      headers,
     })
 
     if (!response.ok) {
@@ -80,19 +86,19 @@ export class YaffleClient {
     return response.json()
   }
 
-  private async requestText(
-    path: string,
-    options: RequestInit = {},
-  ): Promise<string> {
+  private async requestText(path: string, options: RequestInit = {}): Promise<string> {
     const credentials = await this.auth.getCredentials()
+    const headers = new Headers(options.headers)
+    if (!headers.has("Authorization")) {
+      headers.set("Authorization", `Bearer ${credentials.accessToken}`)
+    }
+    if (!headers.has("Accept")) {
+      headers.set("Accept", "text/plain, application/json")
+    }
 
     const response = await fetch(`${this.apiUrl}${path}`, {
       ...options,
-      headers: {
-        Authorization: `Bearer ${credentials.accessToken}`,
-        Accept: "text/plain, application/json",
-        ...options.headers,
-      },
+      headers,
     })
 
     if (!response.ok) {
@@ -110,7 +116,7 @@ export class YaffleClient {
     org: string,
     repo: string,
     target: Target,
-    workspace: string
+    workspace: string,
   ): Promise<Preview | null> {
     const params = new URLSearchParams({
       org,
@@ -124,9 +130,7 @@ export class YaffleClient {
       params.set("environment", target.name)
     }
 
-    const data = await this.request<ApiResponse<Preview[]>>(
-      `/api/previews?${params}`
-    )
+    const data = await this.request<ApiResponse<Preview[]>>(`/api/previews?${params}`)
 
     return data.data?.[0] || null
   }
@@ -138,7 +142,7 @@ export class YaffleClient {
     org: string,
     repo: string,
     target: Target,
-    workspace: string
+    workspace: string,
   ): Promise<Record<string, TerraformOutput> | null> {
     const details = await this.getWorkspaceDetails(org, repo, target, workspace)
     return details.outputs
@@ -155,21 +159,22 @@ export class YaffleClient {
     outputs: Record<string, TerraformOutput> | null
   }> {
     try {
-      const path = target.type === "pr"
-        ? `/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${target.prNumber}`
-        : `/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(target.name)}`
+      const path =
+        target.type === "pr"
+          ? `/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/pr/${target.prNumber}`
+          : `/api/orgs/${encodeURIComponent(org)}/repos/${encodeURIComponent(repo)}/env/${encodeURIComponent(target.name)}`
 
-      const data = await this.request<ApiResponse<{
-        workspaces: Array<{
-          preview: WorkspacePreview
-          runs: Run[]
-          outputs: Record<string, TerraformOutput> | null
+      const data = await this.request<
+        ApiResponse<{
+          workspaces: Array<{
+            preview: WorkspacePreview
+            runs: Run[]
+            outputs: Record<string, TerraformOutput> | null
+          }>
         }>
-      }>>(path)
+      >(path)
 
-      const ws = data.data?.workspaces?.find(
-        (w) => w.preview.workspacePath === workspace
-      )
+      const ws = data.data?.workspaces?.find((w) => w.preview.workspacePath === workspace)
 
       if (!ws) {
         throw new Error(`Workspace ${workspace} not found in target response`)
@@ -193,11 +198,13 @@ export class YaffleClient {
       return null
     }
 
-    return [...runs].sort((a, b) => {
-      const left = new Date(a.createdAt).getTime()
-      const right = new Date(b.createdAt).getTime()
-      return right - left
-    })[0] ?? null
+    return (
+      [...runs].sort((a, b) => {
+        const left = new Date(a.createdAt).getTime()
+        const right = new Date(b.createdAt).getTime()
+        return right - left
+      })[0] ?? null
+    )
   }
 
   private buildFailedWorkspaceError(options: {
@@ -211,23 +218,18 @@ export class YaffleClient {
       : "no runs recorded"
     const errorMessage = options.latestRun?.errorMessage?.trim()
 
-    const detail = errorMessage
-      ? ` Latest run error: ${errorMessage}`
-      : ""
+    const detail = errorMessage ? ` Latest run error: ${errorMessage}` : ""
 
     return new Error(
-      `Cannot fetch outputs for ${options.targetLabel} workspace=${options.workspace}: `
-      + `workspace status is ${options.previewStatus} and latest run is ${runSummary}.${detail}`,
+      `Cannot fetch outputs for ${options.targetLabel} workspace=${options.workspace}: ` +
+        `workspace status is ${options.previewStatus} and latest run is ${runSummary}.${detail}`,
     )
   }
 
   /**
    * Wait for a preview to reach a terminal state using SSE
    */
-  async waitForPreview(
-    previewId: string,
-    timeoutSeconds: number = 300
-  ): Promise<StreamUpdate> {
+  async waitForPreview(previewId: string, timeoutSeconds: number = 300): Promise<StreamUpdate> {
     const credentials = await this.auth.getCredentials()
 
     return new Promise((resolve, reject) => {
@@ -278,7 +280,7 @@ export class YaffleClient {
             reject(new Error("Preview was destroyed"))
           }
         } catch (err) {
-          this.log.warn(`Failed to parse SSE event: ${err}`)
+          this.log.warn(`Failed to parse SSE event: ${formatError(err)}`)
         }
       })
 
@@ -319,8 +321,7 @@ export class YaffleClient {
   }> {
     const { org, repo, target, workspace, waitFor, waitTimeout = 300 } = options
 
-    const targetLabel =
-      target.type === "pr" ? `PR #${target.prNumber}` : `env: ${target.name}`
+    const targetLabel = target.type === "pr" ? `PR #${target.prNumber}` : `env: ${target.name}`
 
     this.log.info(`Fetching outputs for ${org}/${repo} ${targetLabel} workspace=${workspace}`)
 
@@ -352,9 +353,9 @@ export class YaffleClient {
         const details = await this.getWorkspaceDetails(org, repo, target, workspace)
         latestRun = this.getLatestRun(details.runs)
         if (
-          details.outputs !== null
-          && details.preview.status !== "failed"
-          && details.preview.status !== "destroyed"
+          details.outputs !== null &&
+          details.preview.status !== "failed" &&
+          details.preview.status !== "destroyed"
         ) {
           status = details.preview.status
           outputs = details.outputs
@@ -418,7 +419,7 @@ export class YaffleClient {
 
   async waitForPreviewOutputs(
     previewId: string,
-    timeoutSeconds: number = 300
+    timeoutSeconds: number = 300,
   ): Promise<StreamUpdate> {
     const credentials = await this.auth.getCredentials()
 
@@ -469,7 +470,7 @@ export class YaffleClient {
             reject(new Error("Preview was destroyed"))
           }
         } catch (err) {
-          this.log.warn(`Failed to parse SSE event: ${err}`)
+          this.log.warn(`Failed to parse SSE event: ${formatError(err)}`)
         }
       })
 
@@ -497,7 +498,7 @@ export class YaffleClient {
    */
   async listPreviews(org: string, repo: string): Promise<Preview[]> {
     const data = await this.request<ApiResponse<Preview[]>>(
-      `/api/previews?org=${encodeURIComponent(org)}&repo=${encodeURIComponent(repo)}`
+      `/api/previews?org=${encodeURIComponent(org)}&repo=${encodeURIComponent(repo)}`,
     )
     return data.data || []
   }
@@ -601,11 +602,12 @@ export class YaffleClient {
     return data.data || []
   }
 
-  async rerunPreview(previewId: string): Promise<{ rerunQueued: boolean; runGroupId: string; jobId: string }> {
-    const data = await this.request<ApiResponse<{ rerunQueued: boolean; runGroupId: string; jobId: string }>>(
-      `/api/previews/${encodeURIComponent(previewId)}/rerun`,
-      { method: "POST" },
-    )
+  async rerunPreview(
+    previewId: string,
+  ): Promise<{ rerunQueued: boolean; runGroupId: string; jobId: string }> {
+    const data = await this.request<
+      ApiResponse<{ rerunQueued: boolean; runGroupId: string; jobId: string }>
+    >(`/api/previews/${encodeURIComponent(previewId)}/rerun`, { method: "POST" })
 
     return data.data
   }

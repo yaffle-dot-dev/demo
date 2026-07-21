@@ -17,12 +17,13 @@ export interface HookdeckDesiredConnection {
 }
 
 function sanitizeNamePart(value: string): string {
-  return value.replace(/[^a-zA-Z0-9]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase()
+  return value
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase()
 }
 
-function buildScopeHeadersFilter(scope: {
-  event: string
-}): Record<string, unknown> {
+function buildScopeHeadersFilter(scope: { event: string }): Record<string, unknown> {
   return {
     "x-github-event": scope.event,
   }
@@ -69,48 +70,66 @@ export function buildHookdeckProductionConnectionName(baseName: string, event?: 
   return event ? `${baseName}-${sanitizeNamePart(event)}` : `${baseName}-default`
 }
 
-export function buildHookdeckPreviewConnectionRules(lease: Pick<LiveWebhookLeaseWithDeployment, "event" | "installationId" | "repositoryId" | "action" | "pullRequestNumber" | "ref">): Hookdeck.Rule[] {
-  return [{
-    type: "filter",
-    headers: buildScopeHeadersFilter({ event: lease.event }),
-    body: buildScopeBodyFilter({
-      installationId: lease.installationId,
-      repositoryId: lease.repositoryId,
-      action: lease.action,
-      pullRequestNumber: lease.pullRequestNumber,
-      ref: lease.ref,
-    }),
-  }]
+export function buildHookdeckPreviewConnectionRules(
+  lease: Pick<
+    LiveWebhookLeaseWithDeployment,
+    "event" | "installationId" | "repositoryId" | "action" | "pullRequestNumber" | "ref"
+  >,
+): Hookdeck.Rule[] {
+  return [
+    {
+      type: "filter",
+      headers: buildScopeHeadersFilter({ event: lease.event }),
+      body: buildScopeBodyFilter({
+        installationId: lease.installationId,
+        repositoryId: lease.repositoryId,
+        action: lease.action,
+        pullRequestNumber: lease.pullRequestNumber,
+        ref: lease.ref,
+      }),
+    },
+  ]
 }
 
 export function buildHookdeckProductionCatchAllRules(): Hookdeck.Rule[] {
-  return [{
-    type: "filter",
-    headers: {
-      "x-github-event": {
-        $nin: [...HOOKDECK_LIVE_LEASE_EVENT_ALLOWLIST],
+  return [
+    {
+      type: "filter",
+      headers: {
+        "x-github-event": {
+          $nin: [...HOOKDECK_LIVE_LEASE_EVENT_ALLOWLIST],
+        },
       },
     },
-  }]
+  ]
 }
 
 export function buildHookdeckProductionManagedEventRules(
   event: string,
-  leases: Array<Pick<LiveWebhookLeaseWithDeployment, "installationId" | "repositoryId" | "action" | "pullRequestNumber" | "ref">>,
+  leases: Array<
+    Pick<
+      LiveWebhookLeaseWithDeployment,
+      "installationId" | "repositoryId" | "action" | "pullRequestNumber" | "ref"
+    >
+  >,
 ): Hookdeck.Rule[] {
-  const bodyFilter = leases.length === 0
-    ? undefined
-    : {
-      $not: leases.length === 1
-        ? buildScopeBodyFilter(leases[0])
-        : { $or: leases.map((lease) => buildScopeBodyFilter(lease)) },
-    }
+  const bodyFilter =
+    leases.length === 0
+      ? undefined
+      : {
+          $not:
+            leases.length === 1
+              ? buildScopeBodyFilter(leases[0])
+              : { $or: leases.map((lease) => buildScopeBodyFilter(lease)) },
+        }
 
-  return [{
-    type: "filter",
-    headers: buildScopeHeadersFilter({ event }),
-    ...(bodyFilter ? { body: bodyFilter } : {}),
-  }]
+  return [
+    {
+      type: "filter",
+      headers: buildScopeHeadersFilter({ event }),
+      ...(bodyFilter ? { body: bodyFilter } : {}),
+    },
+  ]
 }
 
 export function buildHookdeckProductionConnections(params: {
@@ -127,13 +146,15 @@ export function buildHookdeckProductionConnections(params: {
     leasesByEvent.set(lease.event, leases)
   }
 
-  const connections: HookdeckDesiredConnection[] = [{
-    name: buildHookdeckProductionConnectionName(params.baseConnectionName),
-    description: "Production catch-all delivery for unmanaged GitHub events",
-    sourceId: params.sourceId,
-    destinationId: params.destinationId,
-    rules: buildHookdeckProductionCatchAllRules(),
-  }]
+  const connections: HookdeckDesiredConnection[] = [
+    {
+      name: buildHookdeckProductionConnectionName(params.baseConnectionName),
+      description: "Production catch-all delivery for unmanaged GitHub events",
+      sourceId: params.sourceId,
+      destinationId: params.destinationId,
+      rules: buildHookdeckProductionCatchAllRules(),
+    },
+  ]
 
   for (const event of HOOKDECK_LIVE_LEASE_EVENT_ALLOWLIST) {
     connections.push({

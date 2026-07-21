@@ -10,10 +10,10 @@ function cleanDbUrl(raw: string): string {
 }
 
 const dbUrl = cleanDbUrl(
-  process.env.TRAFFIC_CONTROL_DATABASE_URL
-    ?? process.env.TRAFFIC_CONTROL_ADMIN_DATABASE_URL
-    ?? process.env.DATABASE_URL
-    ?? "postgresql://yaffle@localhost:5432/yaffle_dev",
+  process.env.TRAFFIC_CONTROL_DATABASE_URL ??
+    process.env.TRAFFIC_CONTROL_ADMIN_DATABASE_URL ??
+    process.env.DATABASE_URL ??
+    "postgresql://yaffle@localhost:5432/yaffle_dev",
 )
 
 export default defineConfig({

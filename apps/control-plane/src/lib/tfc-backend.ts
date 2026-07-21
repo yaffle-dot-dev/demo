@@ -70,10 +70,7 @@ terraform {
  * @param credentialsPath - Optional path to credentials file (sets TF_CLI_CONFIG_FILE)
  * @returns Environment variables object to merge with process.env
  */
-export function buildTfcEnvVars(
-  token: string,
-  credentialsPath?: string,
-): Record<string, string> {
+export function buildTfcEnvVars(token: string, credentialsPath?: string): Record<string, string> {
   const hostname = getTfcApiHost()
   const credentialHosts = buildTfcCredentialHosts(hostname)
 
@@ -109,10 +106,7 @@ export function buildTfcEnvVars(
  * @param token - The run JWT token
  * @returns Path to the credentials file
  */
-export async function writeEphemeralCredentials(
-  workDir: string,
-  token: string,
-): Promise<string> {
+export async function writeEphemeralCredentials(workDir: string, token: string): Promise<string> {
   const hostname = getTfcApiHost()
   const credentialHosts = buildTfcCredentialHosts(hostname)
 
@@ -122,9 +116,7 @@ export async function writeEphemeralCredentials(
 
   const credentialsPath = join(configDir, "credentials.tfrc.json")
   const credentials: TerraformCredentials = {
-    credentials: Object.fromEntries(
-      credentialHosts.map((host) => [host, { token }]),
-    ),
+    credentials: Object.fromEntries(credentialHosts.map((host) => [host, { token }])),
   }
 
   await writeFile(credentialsPath, JSON.stringify(credentials, null, 2))

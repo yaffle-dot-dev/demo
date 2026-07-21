@@ -7,12 +7,21 @@ import { requireAuth, AuthError } from "../lib/auth.ts"
 import { db } from "../lib/db.ts"
 import { getEnv } from "../lib/env.ts"
 import { listUserOrgs, ensureMembership } from "../db/queries/users.ts"
-import { findOrgBySlug, findOrgMembership, createOrg, updateOrg } from "../db/queries/organizations.ts"
+import {
+  findOrgBySlug,
+  findOrgMembership,
+  createOrg,
+  updateOrg,
+} from "../db/queries/organizations.ts"
 import { createJob } from "../db/queries/jobs.ts"
 import { getStripe } from "../lib/stripe.ts"
 import { listConnectionsForOrg } from "../db/queries/connections.ts"
 import { createConnection } from "../db/queries/connections.ts"
-import { deleteConnection, findConnectionById, updateConnection } from "../db/queries/connections.ts"
+import {
+  deleteConnection,
+  findConnectionById,
+  updateConnection,
+} from "../db/queries/connections.ts"
 import { storeConnectionSecret } from "../lib/connection-secrets.ts"
 import { getConnectionSecret } from "../lib/connection-secrets.ts"
 import { deleteConnectionSecret } from "../lib/connection-secrets.ts"
@@ -51,10 +60,14 @@ const createConnectionSchema = z.discriminatedUnion("credentialProviderType", [
     credentialProviderType: z.literal("envvar"),
     environmentScope: z.array(z.string()).default([]),
     workspaceScope: z.array(z.string()).default([]),
-    envVars: z.array(z.object({
-      key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Invalid environment variable name"),
-      value: z.string().min(1),
-    })).min(1),
+    envVars: z
+      .array(
+        z.object({
+          key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Invalid environment variable name"),
+          value: z.string().min(1),
+        }),
+      )
+      .min(1),
   }),
   z.object({
     name: z.string().min(1),
@@ -88,7 +101,9 @@ async function refreshConnectionReadinessForOrg(orgId: string): Promise<void> {
   })
 }
 
-async function resolveConnectionProviderType(payload: z.infer<typeof createConnectionSchema>): Promise<string> {
+async function resolveConnectionProviderType(
+  payload: z.infer<typeof createConnectionSchema>,
+): Promise<string> {
   if (payload.credentialProviderType === "envvar") {
     const requested = payload.providerType.toLowerCase()
     if (requested !== "generic") {
@@ -143,7 +158,13 @@ async function validateCloudflareApiToken(
     body = null
   }
 
-  if (response.ok && typeof body === "object" && body !== null && "success" in body && (body as { success: unknown }).success === true) {
+  if (
+    response.ok &&
+    typeof body === "object" &&
+    body !== null &&
+    "success" in body &&
+    (body as { success: unknown }).success === true
+  ) {
     return null
   }
 
@@ -181,7 +202,9 @@ async function getOrgBrokerCredentials(org: {
   return assumeOrgBrokerRole(org.id, org.iamRoleArn)
 }
 
-function listIamRoleTargets(connections: Array<{ credentialProviderType: string | null; config: unknown }>): string[] {
+function listIamRoleTargets(
+  connections: Array<{ credentialProviderType: string | null; config: unknown }>,
+): string[] {
   const targets = new Set<string>()
 
   for (const connection of connections) {
@@ -189,9 +212,10 @@ function listIamRoleTargets(connections: Array<{ credentialProviderType: string 
       continue
     }
 
-    const config = typeof connection.config === "object" && connection.config !== null
-      ? connection.config as Record<string, unknown>
-      : {}
+    const config =
+      typeof connection.config === "object" && connection.config !== null
+        ? (connection.config as Record<string, unknown>)
+        : {}
 
     const roleArn = typeof config.roleArn === "string" ? config.roleArn : null
     if (roleArn) {
@@ -206,9 +230,8 @@ function getIamRoleTarget(config: unknown): {
   roleArn: string | null
   externalId: string | null
 } {
-  const parsed = typeof config === "object" && config !== null
-    ? config as Record<string, unknown>
-    : {}
+  const parsed =
+    typeof config === "object" && config !== null ? (config as Record<string, unknown>) : {}
 
   return {
     roleArn: typeof parsed.roleArn === "string" ? parsed.roleArn : null,
@@ -216,7 +239,10 @@ function getIamRoleTarget(config: unknown): {
   }
 }
 
-function buildProviderInferenceMetadata(payload: z.infer<typeof createConnectionSchema>, resolvedProviderType: string): {
+function buildProviderInferenceMetadata(
+  payload: z.infer<typeof createConnectionSchema>,
+  resolvedProviderType: string,
+): {
   inferred: boolean
   source: "envvar_keys"
   requestedProviderType: string
@@ -243,7 +269,12 @@ function buildProviderInferenceMetadata(payload: z.infer<typeof createConnection
 
 const createOrgSchema = z.object({
   name: z.string().min(1).max(100),
-  slug: z.string().min(1).max(100).regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens").optional(),
+  slug: z
+    .string()
+    .min(1)
+    .max(100)
+    .regex(/^[a-z0-9-]+$/, "Slug must be lowercase alphanumeric with hyphens")
+    .optional(),
 })
 
 const deleteOrgSchema = z.object({
@@ -285,23 +316,44 @@ orgsRoute.post("/", async (c) => {
   })
 
   if (!privateBetaAccess.hasAccess) {
-    return c.json({
-      error: {
-        code: "PRIVATE_BETA_CLOSED",
-        message: "Yaffle is currently invite-only. Ask for a private beta invite before creating an organization.",
+    return c.json(
+      {
+        error: {
+          code: "PRIVATE_BETA_CLOSED",
+          message:
+            "Yaffle is currently invite-only. Ask for a private beta invite before creating an organization.",
+        },
       },
-    }, 403)
+      403,
+    )
   }
 
-  const slug = body.slug ?? body.name.toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
+  const slug =
+    body.slug ??
+    body.name
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-|-$/g, "")
   if (!slug) {
-    return c.json({ error: { code: "VALIDATION_ERROR", message: "Could not derive a valid slug from the org name" } }, 400)
+    return c.json(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Could not derive a valid slug from the org name",
+        },
+      },
+      400,
+    )
   }
 
   // Check for slug collision
   const existing = await findOrgBySlug(slug)
   if (existing) {
-    return c.json({ error: { code: "SLUG_TAKEN", message: `Organization slug "${slug}" is already in use` } }, 409)
+    return c.json(
+      { error: { code: "SLUG_TAKEN", message: `Organization slug "${slug}" is already in use` } },
+      409,
+    )
   }
 
   const org = await createOrg({
@@ -349,7 +401,10 @@ orgsRoute.post("/", async (c) => {
       await updateOrg(org.id, { stripeCustomerId: customer.id })
     } catch (err) {
       // Log but don't fail org creation — billing can be linked later
-      console.error(`failed to create Stripe customer for org ${slug}:`, err instanceof Error ? err.message : err)
+      console.error(
+        `failed to create Stripe customer for org ${slug}:`,
+        err instanceof Error ? err.message : err,
+      )
     }
   }
 
@@ -383,7 +438,10 @@ orgsRoute.delete("/:slug", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership || membership.role !== "admin") {
-    return c.json({ error: { code: "FORBIDDEN", message: "Only org admins can delete organizations" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Only org admins can delete organizations" } },
+      403,
+    )
   }
 
   let body: z.infer<typeof deleteOrgSchema>
@@ -397,26 +455,32 @@ orgsRoute.delete("/:slug", async (c) => {
   }
 
   if (body.confirmSlug !== slug) {
-    return c.json({
-      error: {
-        code: "CONFIRMATION_MISMATCH",
-        message: "Confirmation slug must exactly match the organization slug",
+    return c.json(
+      {
+        error: {
+          code: "CONFIRMATION_MISMATCH",
+          message: "Confirmation slug must exactly match the organization slug",
+        },
       },
-    }, 400)
+      400,
+    )
   }
 
   const orgConnections = await listConnectionsForOrg(org.id)
-  const needsBrokerCredentials = orgConnections.some((connection) => (
-    connection.secretStore === "ssm" && !!connection.secretPath
-  ))
+  const needsBrokerCredentials = orgConnections.some(
+    (connection) => connection.secretStore === "ssm" && !!connection.secretPath,
+  )
 
   if (needsBrokerCredentials && !org.iamRoleArn) {
-    return c.json({
-      error: {
-        code: "ORG_BROKER_ROLE_NOT_CONFIGURED",
-        message: "Organization broker role is not configured",
+    return c.json(
+      {
+        error: {
+          code: "ORG_BROKER_ROLE_NOT_CONFIGURED",
+          message: "Organization broker role is not configured",
+        },
       },
-    }, 409)
+      409,
+    )
   }
 
   let brokerCredentials: AwsSessionCredentials | undefined
@@ -602,7 +666,10 @@ orgsRoute.get("/:slug/status/stream", async (c) => {
   // Check membership
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Not a member of this organization" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Not a member of this organization" } },
+      403,
+    )
   }
 
   return streamSSE(c, async (stream) => {
@@ -677,13 +744,21 @@ orgsRoute.get("/:slug/connections", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Not a member of this organization" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Not a member of this organization" } },
+      403,
+    )
   }
 
   const listStart = performance.now()
-  const items = await withSpan("connections.list_inventory", async () => listConnectionsForOrg(org.id))
+  const items = await withSpan("connections.list_inventory", async () =>
+    listConnectionsForOrg(org.id),
+  )
   const listDuration = performance.now() - listStart
-  c.header("Server-Timing", appendServerTiming(c.res.headers.get("Server-Timing"), "connections_db", listDuration))
+  c.header(
+    "Server-Timing",
+    appendServerTiming(c.res.headers.get("Server-Timing"), "connections_db", listDuration),
+  )
 
   return c.json({
     data: items.map((connection) => ({
@@ -725,16 +800,17 @@ orgsRoute.get("/:slug/connection-requirements", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Not a member of this organization" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Not a member of this organization" } },
+      403,
+    )
   }
 
   const totalStart = performance.now()
   const dataLoadStart = performance.now()
-  const [connections, deployments] = await withSpan("connections.requirements.load_data", async () =>
-    Promise.all([
-      listConnectionsForOrg(org.id),
-      listLatestDeploymentsForOrg(org.id),
-    ])
+  const [connections, deployments] = await withSpan(
+    "connections.requirements.load_data",
+    async () => Promise.all([listConnectionsForOrg(org.id), listLatestDeploymentsForOrg(org.id)]),
   )
   const dataLoadDuration = performance.now() - dataLoadStart
 
@@ -776,7 +852,10 @@ orgsRoute.get("/:slug/aws-bootstrap-principal", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Not a member of this organization" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Not a member of this organization" } },
+      403,
+    )
   }
 
   if (!org.iamRoleArn) {
@@ -819,7 +898,10 @@ orgsRoute.get("/:slug/provider-credential-signatures", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Not a member of this organization" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Not a member of this organization" } },
+      403,
+    )
   }
 
   const signatures = await listActiveProviderCredentialSignatures()
@@ -857,7 +939,10 @@ orgsRoute.get("/:slug/connections/:connectionId", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership || membership.role !== "admin") {
-    return c.json({ error: { code: "FORBIDDEN", message: "Only org admins can view connection details" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Only org admins can view connection details" } },
+      403,
+    )
   }
 
   const connection = await findConnectionById(connectionId)
@@ -865,9 +950,10 @@ orgsRoute.get("/:slug/connections/:connectionId", async (c) => {
     return c.json({ error: { code: "NOT_FOUND", message: "Connection not found" } }, 404)
   }
 
-  const config = typeof connection.config === "object" && connection.config !== null
-    ? connection.config as Record<string, unknown>
-    : {}
+  const config =
+    typeof connection.config === "object" && connection.config !== null
+      ? (connection.config as Record<string, unknown>)
+      : {}
 
   let secret: unknown = null
   if (connection.credentialProviderType === "envvar" && connection.secretPath) {
@@ -921,7 +1007,10 @@ orgsRoute.delete("/:slug/connections/:connectionId", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership || membership.role !== "admin") {
-    return c.json({ error: { code: "FORBIDDEN", message: "Only org admins can delete connections" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Only org admins can delete connections" } },
+      403,
+    )
   }
 
   const connection = await findConnectionById(connectionId)
@@ -960,7 +1049,9 @@ orgsRoute.delete("/:slug/connections/:connectionId", async (c) => {
     }
 
     const orgConnections = await listConnectionsForOrg(org.id)
-    const nextTargets = listIamRoleTargets(orgConnections.filter((item) => item.id !== connection.id))
+    const nextTargets = listIamRoleTargets(
+      orgConnections.filter((item) => item.id !== connection.id),
+    )
 
     if (!org.kmsKeyArn) {
       return c.json(
@@ -1009,18 +1100,30 @@ orgsRoute.post("/:slug/connections", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Not a member of this organization" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Not a member of this organization" } },
+      403,
+    )
   }
 
   if (membership.role !== "admin") {
-    return c.json({ error: { code: "FORBIDDEN", message: "Only org admins can create connections" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Only org admins can create connections" } },
+      403,
+    )
   }
 
   const body = await c.req.json()
   const parsed = createConnectionSchema.safeParse(body)
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid connection payload", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid connection payload",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -1040,7 +1143,7 @@ orgsRoute.post("/:slug/connections", async (c) => {
 
   const existingConnections = await listConnectionsForOrg(org.id)
   const conflictingConnection = existingConnections.find((connection) =>
-    connectionScopesOverlap(connection, desiredScope)
+    connectionScopesOverlap(connection, desiredScope),
   )
 
   if (conflictingConnection) {
@@ -1072,7 +1175,10 @@ orgsRoute.post("/:slug/connections", async (c) => {
   let type: string
 
   if (payload.credentialProviderType === "envvar") {
-    const cloudflareTokenError = await validateCloudflareApiToken(resolvedProviderType, payload.envVars)
+    const cloudflareTokenError = await validateCloudflareApiToken(
+      resolvedProviderType,
+      payload.envVars,
+    )
     if (cloudflareTokenError) {
       return c.json(
         {
@@ -1098,11 +1204,18 @@ orgsRoute.post("/:slug/connections", async (c) => {
     }
 
     const brokerCredentials = await getOrgBrokerCredentials(org)
-    const stored = await storeConnectionSecret(org.id, slug, connectionId, org.kmsKeyArn, {
-      envVars: payload.envVars,
-    }, {
-      credentials: brokerCredentials,
-    })
+    const stored = await storeConnectionSecret(
+      org.id,
+      slug,
+      connectionId,
+      org.kmsKeyArn,
+      {
+        envVars: payload.envVars,
+      },
+      {
+        credentials: brokerCredentials,
+      },
+    )
 
     secretArn = stored.arn
     type = "envvar"
@@ -1158,9 +1271,10 @@ orgsRoute.post("/:slug/connections", async (c) => {
     type,
     config,
     secretStore: payload.credentialProviderType === "envvar" ? "ssm" : null,
-    secretPath: payload.credentialProviderType === "envvar"
-      ? `/yaffle/org/${slug}/connections/${connectionId}/secret`
-      : null,
+    secretPath:
+      payload.credentialProviderType === "envvar"
+        ? `/yaffle/org/${slug}/connections/${connectionId}/secret`
+        : null,
     secretArn,
     lastValidatedAt: new Date(),
     lastValidationError: null,
@@ -1168,23 +1282,26 @@ orgsRoute.post("/:slug/connections", async (c) => {
 
   await refreshConnectionReadinessForOrg(org.id)
 
-  return c.json({
-    data: {
-      id: connection.id,
-      name: connection.name,
-      providerType: connection.providerType,
-      credentialProviderType: connection.credentialProviderType,
-      type: connection.type,
-      config: connection.config,
-      secretStore: connection.secretStore,
-      secretPath: connection.secretPath,
-      secretArn: connection.secretArn,
-      lastValidatedAt: connection.lastValidatedAt,
-      lastValidationError: connection.lastValidationError,
-      createdAt: connection.createdAt,
-      updatedAt: connection.updatedAt,
+  return c.json(
+    {
+      data: {
+        id: connection.id,
+        name: connection.name,
+        providerType: connection.providerType,
+        credentialProviderType: connection.credentialProviderType,
+        type: connection.type,
+        config: connection.config,
+        secretStore: connection.secretStore,
+        secretPath: connection.secretPath,
+        secretArn: connection.secretArn,
+        lastValidatedAt: connection.lastValidatedAt,
+        lastValidationError: connection.lastValidationError,
+        createdAt: connection.createdAt,
+        updatedAt: connection.updatedAt,
+      },
     },
-  }, 201)
+    201,
+  )
 })
 
 orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
@@ -1209,7 +1326,10 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
 
   const membership = await findOrgMembership(org.id, auth.userId)
   if (!membership || membership.role !== "admin") {
-    return c.json({ error: { code: "FORBIDDEN", message: "Only org admins can update connections" } }, 403)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Only org admins can update connections" } },
+      403,
+    )
   }
 
   const existing = await findConnectionById(connectionId)
@@ -1221,7 +1341,13 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
   const parsed = createConnectionSchema.safeParse(body)
   if (!parsed.success) {
     return c.json(
-      { error: { code: "BAD_REQUEST", message: "Invalid connection payload", details: parsed.error.issues } },
+      {
+        error: {
+          code: "BAD_REQUEST",
+          message: "Invalid connection payload",
+          details: parsed.error.issues,
+        },
+      },
       400,
     )
   }
@@ -1235,7 +1361,8 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
       {
         error: {
           code: "CONNECTION_PROVIDER_TYPE_IMMUTABLE",
-          message: "Credential provider type cannot be changed in place. Create a new connection instead.",
+          message:
+            "Credential provider type cannot be changed in place. Create a new connection instead.",
         },
       },
       409,
@@ -1250,8 +1377,9 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
   }
 
   const existingConnections = await listConnectionsForOrg(org.id)
-  const conflictingConnection = existingConnections.find((connection) =>
-    connection.id !== existing.id && connectionScopesOverlap(connection, desiredScope)
+  const conflictingConnection = existingConnections.find(
+    (connection) =>
+      connection.id !== existing.id && connectionScopesOverlap(connection, desiredScope),
   )
 
   if (conflictingConnection) {
@@ -1273,7 +1401,10 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
   let config: Record<string, unknown>
 
   if (payload.credentialProviderType === "envvar") {
-    const cloudflareTokenError = await validateCloudflareApiToken(resolvedProviderType, payload.envVars)
+    const cloudflareTokenError = await validateCloudflareApiToken(
+      resolvedProviderType,
+      payload.envVars,
+    )
     if (cloudflareTokenError) {
       return c.json(
         {
@@ -1311,11 +1442,18 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
     }
 
     const brokerCredentials = await getOrgBrokerCredentials(org)
-    const stored = await storeConnectionSecret(org.id, slug, existing.id, org.kmsKeyArn, {
-      envVars: payload.envVars,
-    }, {
-      credentials: brokerCredentials,
-    })
+    const stored = await storeConnectionSecret(
+      org.id,
+      slug,
+      existing.id,
+      org.kmsKeyArn,
+      {
+        envVars: payload.envVars,
+      },
+      {
+        credentials: brokerCredentials,
+      },
+    )
 
     secretArn = stored.arn
     secretStore = stored.store
@@ -1337,14 +1475,15 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
     const nextExternalId = payload.externalId ?? null
 
     if (
-      existingTarget.roleArn !== null
-      && (payload.roleArn !== existingTarget.roleArn || nextExternalId !== existingTarget.externalId)
+      existingTarget.roleArn !== null &&
+      (payload.roleArn !== existingTarget.roleArn || nextExternalId !== existingTarget.externalId)
     ) {
       return c.json(
         {
           error: {
             code: "CONNECTION_ASSUME_ROLE_TARGET_IMMUTABLE",
-            message: "AWS role ARN and external ID cannot be changed in place. Create a new AWS connection, then narrow or delete the old one.",
+            message:
+              "AWS role ARN and external ID cannot be changed in place. Create a new AWS connection, then narrow or delete the old one.",
           },
         },
         409,
@@ -1387,7 +1526,9 @@ orgsRoute.patch("/:slug/connections/:connectionId", async (c) => {
       return {
         ...item,
         config: {
-          ...(typeof item.config === "object" && item.config !== null ? item.config as Record<string, unknown> : {}),
+          ...(typeof item.config === "object" && item.config !== null
+            ? (item.config as Record<string, unknown>)
+            : {}),
           roleArn: payload.roleArn,
         },
       }

@@ -70,11 +70,13 @@ function renderControlPlaneTaskDefinition(
         return container
       }
 
-      const secrets = Array.isArray(container.secrets) ? container.secrets as Array<Record<string, any>> : []
+      const secrets = Array.isArray(container.secrets)
+        ? (container.secrets as Array<Record<string, any>>)
+        : []
       const rewrittenSecrets = secrets.map((secret) => {
         if (
-          secret.name === "YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN"
-          && overrides.providerDiscoveryAgentTokenSecretArn
+          secret.name === "YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN" &&
+          overrides.providerDiscoveryAgentTokenSecretArn
         ) {
           return {
             ...secret,
@@ -83,8 +85,8 @@ function renderControlPlaneTaskDefinition(
         }
 
         if (
-          secret.name === "YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET"
-          && overrides.providerDiscoveryCallbackSecretArn
+          secret.name === "YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET" &&
+          overrides.providerDiscoveryCallbackSecretArn
         ) {
           return {
             ...secret,
@@ -106,8 +108,10 @@ function renderControlPlaneTaskDefinition(
 async function resolveControlPlaneSecretOverrides(
   environment: string,
 ): Promise<ControlPlaneSecretOverrides> {
-  const overrideAgentTokenSecretArn = process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN_SECRET_ARN?.trim()
-  const overrideCallbackSecretArn = process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET_ARN?.trim()
+  const overrideAgentTokenSecretArn =
+    process.env.YAFFLE_PROVIDER_DISCOVERY_AGENT_TOKEN_SECRET_ARN?.trim()
+  const overrideCallbackSecretArn =
+    process.env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_SECRET_ARN?.trim()
 
   if (overrideAgentTokenSecretArn || overrideCallbackSecretArn) {
     return {
@@ -121,12 +125,14 @@ async function resolveControlPlaneSecretOverrides(
     environment,
   })
 
-  const providerDiscoveryAgentTokenSecretArn = typeof controlPlaneOutputs.provider_discovery_agent_token_secret_arn === "string"
-    ? controlPlaneOutputs.provider_discovery_agent_token_secret_arn.trim()
-    : undefined
-  const providerDiscoveryCallbackSecretArn = typeof controlPlaneOutputs.provider_discovery_callback_secret_arn === "string"
-    ? controlPlaneOutputs.provider_discovery_callback_secret_arn.trim()
-    : undefined
+  const providerDiscoveryAgentTokenSecretArn =
+    typeof controlPlaneOutputs.provider_discovery_agent_token_secret_arn === "string"
+      ? controlPlaneOutputs.provider_discovery_agent_token_secret_arn.trim()
+      : undefined
+  const providerDiscoveryCallbackSecretArn =
+    typeof controlPlaneOutputs.provider_discovery_callback_secret_arn === "string"
+      ? controlPlaneOutputs.provider_discovery_callback_secret_arn.trim()
+      : undefined
 
   if (providerDiscoveryAgentTokenSecretArn && providerDiscoveryCallbackSecretArn) {
     return {
@@ -141,28 +147,34 @@ async function resolveControlPlaneSecretOverrides(
   })
 
   return {
-    providerDiscoveryAgentTokenSecretArn: providerDiscoveryAgentTokenSecretArn
-      ?? (typeof providerDiscoveryOutputs.agent_token_secret_arn === "string"
+    providerDiscoveryAgentTokenSecretArn:
+      providerDiscoveryAgentTokenSecretArn ??
+      (typeof providerDiscoveryOutputs.agent_token_secret_arn === "string"
         ? providerDiscoveryOutputs.agent_token_secret_arn.trim()
         : undefined),
-    providerDiscoveryCallbackSecretArn: providerDiscoveryCallbackSecretArn
-      ?? (typeof providerDiscoveryOutputs.callback_secret_secret_arn === "string"
+    providerDiscoveryCallbackSecretArn:
+      providerDiscoveryCallbackSecretArn ??
+      (typeof providerDiscoveryOutputs.callback_secret_secret_arn === "string"
         ? providerDiscoveryOutputs.callback_secret_secret_arn.trim()
         : undefined),
   }
 }
 
-export async function resolveControlPlaneDeploymentTarget(): Promise<{ cluster: string; service: string; appDeployerRoleArn: string }> {
+export async function resolveControlPlaneDeploymentTarget(): Promise<{
+  cluster: string
+  service: string
+  appDeployerRoleArn: string
+}> {
   const environment = process.env.YAFFLE_ENVIRONMENT_NAME?.trim() || "main"
-  const overrideCluster = process.env.YAFFLE_CP_CLUSTER?.trim()
-    || process.env.YAFFLE_ECS_CLUSTER?.trim()
+  const overrideCluster =
+    process.env.YAFFLE_CP_CLUSTER?.trim() || process.env.YAFFLE_ECS_CLUSTER?.trim()
   const overrideService = process.env.YAFFLE_CP_SERVICE?.trim()
   const overrideAppDeployerRoleArn = process.env.YAFFLE_APP_DEPLOYER_ROLE_ARN?.trim()
 
   if (overrideCluster && overrideService) {
     if (!overrideAppDeployerRoleArn) {
       throw new Error(
-        "Set YAFFLE_APP_DEPLOYER_ROLE_ARN when overriding YAFFLE_CP_CLUSTER/YAFFLE_CP_SERVICE."
+        "Set YAFFLE_APP_DEPLOYER_ROLE_ARN when overriding YAFFLE_CP_CLUSTER/YAFFLE_CP_SERVICE.",
       )
     }
 
@@ -178,21 +190,22 @@ export async function resolveControlPlaneDeploymentTarget(): Promise<{ cluster: 
     environment,
   })
 
-  const cluster = typeof outputs.ecs_cluster_name === "string"
-    ? outputs.ecs_cluster_name.trim()
-    : overrideCluster ?? ""
-  const service = typeof outputs.control_plane_service_name === "string"
-    ? outputs.control_plane_service_name.trim()
-    : overrideService ?? ""
-  const appDeployerRoleArn = typeof outputs.app_deployer_role_arn === "string"
-    ? outputs.app_deployer_role_arn.trim()
-    : ""
+  const cluster =
+    typeof outputs.ecs_cluster_name === "string"
+      ? outputs.ecs_cluster_name.trim()
+      : (overrideCluster ?? "")
+  const service =
+    typeof outputs.control_plane_service_name === "string"
+      ? outputs.control_plane_service_name.trim()
+      : (overrideService ?? "")
+  const appDeployerRoleArn =
+    typeof outputs.app_deployer_role_arn === "string" ? outputs.app_deployer_role_arn.trim() : ""
 
   if (!cluster || !service || !appDeployerRoleArn) {
     throw new Error(
-      "Could not determine control-plane cluster/service. "
-      + "Set YAFFLE_CP_CLUSTER (or YAFFLE_ECS_CLUSTER) and YAFFLE_CP_SERVICE, "
-      + "or ensure apps/control-plane/infra exports ecs_cluster_name, control_plane_service_name, and app_deployer_role_arn through Yaffle outputs.",
+      "Could not determine control-plane cluster/service. " +
+        "Set YAFFLE_CP_CLUSTER (or YAFFLE_ECS_CLUSTER) and YAFFLE_CP_SERVICE, " +
+        "or ensure apps/control-plane/infra exports ecs_cluster_name, control_plane_service_name, and app_deployer_role_arn through Yaffle outputs.",
     )
   }
 

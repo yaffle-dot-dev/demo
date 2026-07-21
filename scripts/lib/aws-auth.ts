@@ -10,13 +10,14 @@ export interface AwsSessionEnv extends Record<string, string> {
 }
 
 function printCommandError(err: unknown): void {
-  const message = err instanceof Error
-    ? err.message.trim()
-    : (!err || typeof err !== "object" || !("stderr" in err)
-      ? ""
-      : typeof err.stderr === "string"
-        ? err.stderr.trim()
-        : String(err.stderr).trim())
+  const message =
+    err instanceof Error
+      ? err.message.trim()
+      : !err || typeof err !== "object" || !("stderr" in err)
+        ? ""
+        : typeof err.stderr === "string"
+          ? err.stderr.trim()
+          : String(err.stderr).trim()
 
   if (message) {
     console.error(message)
@@ -32,23 +33,26 @@ export async function assumeRole(
 
   let output: string
   try {
-    output = await exec([
-      "aws",
-      "sts",
-      "assume-role",
-      "--role-arn",
-      roleArn,
-      "--role-session-name",
-      sessionName,
-      "--duration-seconds",
-      "3600",
-      "--region",
-      AWS_REGION,
-    ], {
-      env: sourceEnv,
-      quiet: true,
-      captureStderr: true,
-    })
+    output = await exec(
+      [
+        "aws",
+        "sts",
+        "assume-role",
+        "--role-arn",
+        roleArn,
+        "--role-session-name",
+        sessionName,
+        "--duration-seconds",
+        "3600",
+        "--region",
+        AWS_REGION,
+      ],
+      {
+        env: sourceEnv,
+        quiet: true,
+        captureStderr: true,
+      },
+    )
   } catch (err) {
     console.error("[error] aws sts assume-role failed:")
     printCommandError(err)

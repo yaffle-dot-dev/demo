@@ -5,9 +5,7 @@ import { extractProviderCredentialsWithLlm } from "./provider-llm"
 import { discoverProviderCredentials } from "./provider-research"
 import { ProviderDiscoveryAgent, type Env } from "./provider-discovery-agent"
 import { timingSafeEqual } from "./signing"
-import {
-  discoveryDispatchRequestSchema,
-} from "./types"
+import { discoveryDispatchRequestSchema } from "./types"
 
 function extractBearerToken(request: Request): string | null {
   const auth = request.headers.get("authorization")
@@ -26,10 +24,7 @@ function unauthorized(): Response {
 }
 
 function badRequest(message: string, details?: unknown): Response {
-  return Response.json(
-    { error: { code: "BAD_REQUEST", message, details } },
-    { status: 400 },
-  )
+  return Response.json({ error: { code: "BAD_REQUEST", message, details } }, { status: 400 })
 }
 
 async function runDirectDiscovery(request: Request, env: Env): Promise<Response> {
@@ -40,27 +35,27 @@ async function runDirectDiscovery(request: Request, env: Env): Promise<Response>
     return badRequest("Request body must be valid JSON")
   }
 
-    const parsed = discoveryDispatchRequestSchema.safeParse(body)
-    if (!parsed.success) {
-      return badRequest("Invalid discovery request payload", parsed.error.issues)
-    }
+  const parsed = discoveryDispatchRequestSchema.safeParse(body)
+  if (!parsed.success) {
+    return badRequest("Invalid discovery request payload", parsed.error.issues)
+  }
 
-    console.log("provider_discovery.direct.received", {
-      requestId: parsed.data.requestId,
+  console.log("provider_discovery.direct.received", {
+    requestId: parsed.data.requestId,
+    providerType: parsed.data.providerType,
+    providerSource: parsed.data.providerSource,
+    repo: parsed.data.repo,
+    environment: parsed.data.environment,
+    workspacePath: parsed.data.workspacePath,
+  })
+
+  try {
+    const result = await discoverProviderCredentials({
       providerType: parsed.data.providerType,
       providerSource: parsed.data.providerSource,
-      repo: parsed.data.repo,
-      environment: parsed.data.environment,
-      workspacePath: parsed.data.workspacePath,
-    })
-
-    try {
-      const result = await discoverProviderCredentials({
-        providerType: parsed.data.providerType,
-        providerSource: parsed.data.providerSource,
-        timeoutMs: Number(env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS ?? "8000"),
-        maxDocs: Number(env.YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS ?? "24"),
-        githubToken: env.GITHUB_TOKEN,
+      timeoutMs: Number(env.YAFFLE_PROVIDER_DISCOVERY_CALLBACK_TIMEOUT_MS ?? "8000"),
+      maxDocs: Number(env.YAFFLE_PROVIDER_DISCOVERY_MAX_DOCS ?? "24"),
+      githubToken: env.GITHUB_TOKEN,
       extractor: (material) => extractProviderCredentialsWithLlm(env, material),
     })
 
@@ -77,11 +72,14 @@ async function runDirectDiscovery(request: Request, env: Env): Promise<Response>
   } catch (error) {
     console.error("provider_discovery.direct.failed", {
       providerType: parsed.data.providerType,
-      error: error instanceof Error ? {
-        name: error.name,
-        message: error.message,
-        stack: error.stack,
-      } : String(error),
+      error:
+        error instanceof Error
+          ? {
+              name: error.name,
+              message: error.message,
+              stack: error.stack,
+            }
+          : String(error),
     })
 
     return Response.json(
@@ -121,7 +119,10 @@ export default {
       return agentResponse
     }
 
-    if (request.method !== "POST" || (url.pathname !== "/discover" && url.pathname !== "/discover/direct")) {
+    if (
+      request.method !== "POST" ||
+      (url.pathname !== "/discover" && url.pathname !== "/discover/direct")
+    ) {
       return Response.json({ error: { code: "NOT_FOUND", message: "Not found" } }, { status: 404 })
     }
 
@@ -171,7 +172,9 @@ export default {
         env,
         parsed.data,
         async (namespace, name) =>
-          getAgentByName(namespace as never, name) as Promise<{ fetch(request: Request): Promise<Response> }>,
+          getAgentByName(namespace as never, name) as Promise<{
+            fetch(request: Request): Promise<Response>
+          }>,
       )
       console.log("provider_discovery.dispatch.accepted", {
         requestId: parsed.data.requestId,
@@ -182,11 +185,14 @@ export default {
       console.error("provider_discovery.dispatch.failed", {
         requestId: parsed.data.requestId,
         providerType: parsed.data.providerType,
-        error: error instanceof Error ? {
-          name: error.name,
-          message: error.message,
-          stack: error.stack,
-        } : String(error),
+        error:
+          error instanceof Error
+            ? {
+                name: error.name,
+                message: error.message,
+                stack: error.stack,
+              }
+            : String(error),
       })
 
       return Response.json(

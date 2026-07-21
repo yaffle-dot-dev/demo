@@ -158,12 +158,16 @@ class YaffleEvents {
     this.emitter.off("job:update", handler)
   }
 
-  onEnvironmentGroupProjectionUpdate(handler: (event: EnvironmentGroupProjectionUpdateEvent) => void): void {
+  onEnvironmentGroupProjectionUpdate(
+    handler: (event: EnvironmentGroupProjectionUpdateEvent) => void,
+  ): void {
     this.ensureListener()
     this.emitter.on("environment_group_projection:update", handler)
   }
 
-  offEnvironmentGroupProjectionUpdate(handler: (event: EnvironmentGroupProjectionUpdateEvent) => void): void {
+  offEnvironmentGroupProjectionUpdate(
+    handler: (event: EnvironmentGroupProjectionUpdateEvent) => void,
+  ): void {
     this.emitter.off("environment_group_projection:update", handler)
   }
 
@@ -190,11 +194,15 @@ class YaffleEvents {
     const listenUrl = getDatabaseListenUrl()
 
     if (!process.env.DATABASE_LISTEN_URL) {
-      const log = process.env.NODE_ENV === "production" ? logger.warn : logger.info
-      log("events.listener.using_database_url", {
+      const context = {
         channel: PG_CHANNEL,
         note: "Set DATABASE_LISTEN_URL to a direct Postgres connection when using PgBouncer transaction pooling.",
-      })
+      }
+      if (process.env.NODE_ENV === "production") {
+        logger.warn("events.listener.using_database_url", context)
+      } else {
+        logger.info("events.listener.using_database_url", context)
+      }
     }
 
     this.listenerSql = postgres(listenUrl, {
@@ -218,10 +226,7 @@ class YaffleEvents {
     )
   }
 
-  private async broadcast<T extends EventName>(
-    type: T,
-    payload: EventMap[T],
-  ): Promise<void> {
+  private async broadcast<T extends EventName>(type: T, payload: EventMap[T]): Promise<void> {
     const envelope: BroadcastEnvelope<T> = {
       senderId: this.instanceId,
       type,
@@ -264,9 +269,10 @@ class YaffleEvents {
         this.emitter.emit(parsed.type, parsed.payload)
         return
       default:
+        const unknownType = (parsed as { type?: unknown }).type
         logger.warn("events.broadcast.unknown_type", {
           channel: PG_CHANNEL,
-          type: String((parsed as { type?: unknown }).type ?? "unknown"),
+          type: typeof unknownType === "string" ? unknownType : "unknown",
         })
     }
   }

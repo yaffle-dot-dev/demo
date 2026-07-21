@@ -67,15 +67,19 @@ describe("traffic-controller contract", () => {
   })
 
   test("builds discriminated unions for api and reconcile commands", () => {
-    expect(trafficControllerApiCommandSchema.parse({
-      command: "get_operation",
-      operationId: "op-123",
-    }).command).toBe("get_operation")
+    expect(
+      trafficControllerApiCommandSchema.parse({
+        command: "get_operation",
+        operationId: "op-123",
+      }).command,
+    ).toBe("get_operation")
 
-    expect(trafficControllerReconcileCommandSchema.parse({
-      command: "sweep_drift",
-      requestId: "sweep-1",
-    }).command).toBe("sweep_drift")
+    expect(
+      trafficControllerReconcileCommandSchema.parse({
+        command: "sweep_drift",
+        requestId: "sweep-1",
+      }).command,
+    ).toBe("sweep_drift")
   })
 
   test("marks only succeeded, failed, and rejected as final", () => {

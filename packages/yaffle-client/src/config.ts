@@ -65,10 +65,7 @@ export async function loadCredentials(): Promise<StoredCredentials> {
 /**
  * Save credentials for a host
  */
-export async function saveCredentials(
-  host: string,
-  credentials: Credentials
-): Promise<void> {
+export async function saveCredentials(host: string, credentials: Credentials): Promise<void> {
   await ensureConfigDir()
   const all = await loadCredentials()
   all[host] = credentials

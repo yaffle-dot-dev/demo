@@ -1,9 +1,6 @@
 import { describe, expect, test } from "@yaffle/test"
 
-import {
-  moduleNameToWorkspacePath,
-  workspacePathToModuleName,
-} from "./module-dependency-scanner"
+import { moduleNameToWorkspacePath, workspacePathToModuleName } from "./module-dependency-scanner"
 
 describe("module dependency scanner helpers", () => {
   test("converts module names back to workspace paths", () => {

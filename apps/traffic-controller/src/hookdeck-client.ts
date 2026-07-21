@@ -65,7 +65,9 @@ export async function getHookdeckRoutingConfig(): Promise<HookdeckRoutingConfig>
 class SdkHookdeckRoutingClient implements HookdeckRoutingClient {
   constructor(private readonly client: HookdeckClient) {}
 
-  async upsertDestination(request: Hookdeck.DestinationUpsertRequest): Promise<Hookdeck.Destination> {
+  async upsertDestination(
+    request: Hookdeck.DestinationUpsertRequest,
+  ): Promise<Hookdeck.Destination> {
     return this.client.destination.upsert(request)
   }
 

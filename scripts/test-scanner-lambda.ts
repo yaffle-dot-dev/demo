@@ -19,8 +19,8 @@ async function main() {
     environment: "main",
   })
 
-  const functionName = process.env.YAFFLE_SCANNER_FUNCTION
-    ?? outputs.scanner_lambda_function_name as string
+  const functionName =
+    process.env.YAFFLE_SCANNER_FUNCTION ?? (outputs.scanner_lambda_function_name as string)
 
   // Parse --ping-url from args
   let pingUrl: string | undefined
@@ -68,7 +68,10 @@ async function main() {
   console.log()
 
   if (response.checks) {
-    for (const [name, check] of Object.entries(response.checks) as [string, { ok: boolean; detail?: string }][]) {
+    for (const [name, check] of Object.entries(response.checks) as [
+      string,
+      { ok: boolean; detail?: string },
+    ][]) {
       const icon = check.ok ? "\x1b[32m✓\x1b[0m" : "\x1b[31m✗\x1b[0m"
       console.log(`  ${icon} ${name}: ${check.detail ?? (check.ok ? "ok" : "failed")}`)
     }

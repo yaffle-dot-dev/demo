@@ -85,9 +85,7 @@ const STATE_ROOT = join(homedir(), ".yaffle", "state")
 export function resolveStateDir(owner: string, repo: string, stateKey: string): string {
   // stateKey is like "preview-pr-42/infra/terraform.tfstate"
   // We want the directory containing the state file
-  const dir = stateKey.includes("/")
-    ? stateKey.substring(0, stateKey.lastIndexOf("/"))
-    : ""
+  const dir = stateKey.includes("/") ? stateKey.substring(0, stateKey.lastIndexOf("/")) : ""
   return join(STATE_ROOT, owner, repo, dir)
 }
 
@@ -163,7 +161,7 @@ export async function removeLocalState(
   } catch (err) {
     logger.warn(`failed to remove state dir ${stateDir}`, {
       "state.dir": stateDir,
-      "error": err instanceof Error ? err.message : String(err),
+      error: err instanceof Error ? err.message : String(err),
     })
   }
 }
@@ -180,12 +178,14 @@ export async function removeLocalState(
  * NOTE: We use "yaffle_injected_variables.tf" not "*_override.tf" because
  * Terraform override files can only modify existing declarations, not add new ones.
  */
-export async function configureVariablesOverride(
-  tfWorkDir: string,
-): Promise<void> {
+export async function configureVariablesOverride(tfWorkDir: string): Promise<void> {
   const variablesToInject = [
     { name: "environment", type: "string", description: "Environment name (injected by Yaffle)" },
-    { name: "environment_kind", type: "string", description: "Environment kind: 'named' or 'transient' (injected by Yaffle)" },
+    {
+      name: "environment_kind",
+      type: "string",
+      description: "Environment kind: 'named' or 'transient' (injected by Yaffle)",
+    },
   ]
 
   // Check which variables are already declared by scanning .tf files

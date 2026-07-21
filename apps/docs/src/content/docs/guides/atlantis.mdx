@@ -9,15 +9,15 @@ Atlantis pioneered Terraform PR automation. But after 1-2 years, most teams outg
 
 ## Why teams leave Atlantis
 
-| Pain point | Atlantis | Yaffle |
-|------------|----------|--------|
-| **Operational overhead** | You run it: servers, updates, monitoring | Hosted Yaffle service |
-| **Single-threaded** | One run at a time, bottleneck on busy repos | Parallel runs across workspaces |
-| **No RBAC** | Anyone with repo access can `atlantis apply` | Granular approval policies |
-| **Drift detection** | Manual checks or external tooling | Use existing tooling; native detection is not a current feature |
-| **Plan-only previews** | Shows what would change, can't test it | Real infrastructure you can hit |
-| **State management** | You configure backends | Fully managed |
-| **Secrets** | Environment variables or external tools | AWS Secrets Manager integration |
+| Pain point               | Atlantis                                     | Yaffle                                                          |
+| ------------------------ | -------------------------------------------- | --------------------------------------------------------------- |
+| **Operational overhead** | You run it: servers, updates, monitoring     | Hosted Yaffle service                                           |
+| **Single-threaded**      | One run at a time, bottleneck on busy repos  | Parallel runs across workspaces                                 |
+| **No RBAC**              | Anyone with repo access can `atlantis apply` | Granular approval policies                                      |
+| **Drift detection**      | Manual checks or external tooling            | Use existing tooling; native detection is not a current feature |
+| **Plan-only previews**   | Shows what would change, can't test it       | Real infrastructure you can hit                                 |
+| **State management**     | You configure backends                       | Fully managed                                                   |
+| **Secrets**              | Environment variables or external tools      | AWS Secrets Manager integration                                 |
 
 ## What you'll gain
 
@@ -66,7 +66,7 @@ Yaffle runs [OpenTofu](https://opentofu.org), the open-source fork under MPL 2.0
 <Steps>
 1. ### Install Yaffle
 
-   [Install the GitHub App](https://yaffle.dev/app) on your repository. This doesn't affect Atlantis—both can run simultaneously.
+[Install the GitHub App](https://yaffle.dev/app) on your repository. This doesn't affect Atlantis—both can run simultaneously.
 
 2. ### Add `yaffle.toml`
 
@@ -106,13 +106,15 @@ Yaffle runs [OpenTofu](https://opentofu.org), the open-source fork under MPL 2.0
 5. ### Disable Atlantis
 
    Once confident, remove the Atlantis webhook or uninstall the Atlantis GitHub App.
-</Steps>
+
+   </Steps>
 
 ## Configuration mapping
 
 ### atlantis.yaml → yaffle.toml
 
 **Atlantis:**
+
 ```yaml
 version: 3
 projects:
@@ -128,6 +130,7 @@ projects:
 ```
 
 **Yaffle:**
+
 ```toml
 version = 1
 
@@ -142,12 +145,12 @@ environments = ["*"]
 
 ### Workflow commands
 
-| Atlantis command | Yaffle equivalent |
-|------------------|-------------------|
-| `atlantis plan` | Automatic on PR push |
-| `atlantis apply` | Authorized preview apply; optional named-environment apply when Yaffle owns it |
-| `atlantis plan -d infra/network` | Plans all affected workspaces automatically |
-| `atlantis unlock` | Not needed—Yaffle manages locking |
+| Atlantis command                 | Yaffle equivalent                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------ |
+| `atlantis plan`                  | Automatic on PR push                                                           |
+| `atlantis apply`                 | Authorized preview apply; optional named-environment apply when Yaffle owns it |
+| `atlantis plan -d infra/network` | Plans all affected workspaces automatically                                    |
+| `atlantis unlock`                | Not needed—Yaffle manages locking                                              |
 
 ### Environment variables
 
@@ -180,7 +183,7 @@ projects:
   - name: infra
     dir: infra
     autoplan:
-      enabled: false  # Manual only during migration
+      enabled: false # Manual only during migration
 ```
 
 Remove Atlantis only for environments whose ownership you transfer to Yaffle. Atlantis
@@ -204,6 +207,4 @@ No. Yaffle runs standard OpenTofu, which is compatible with Terraform configurat
 
 Yaffle provides full run logs in the dashboard and GitHub checks. If a preview fails, it doesn't affect production. If you need to rollback, revert your PR and Yaffle applies the previous state.
 
-<Aside type="tip">
-**Still have questions?** Reach out at hello@yaffle.dev.
-</Aside>
+<Aside type="tip">**Still have questions?** Reach out at hello@yaffle.dev.</Aside>

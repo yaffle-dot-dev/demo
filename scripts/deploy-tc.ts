@@ -66,7 +66,9 @@ Options:
   }
 }
 
-async function resolveTrafficControllerDeploymentTarget(environment: string): Promise<TrafficControllerDeploymentTarget> {
+async function resolveTrafficControllerDeploymentTarget(
+  environment: string,
+): Promise<TrafficControllerDeploymentTarget> {
   const overrideApiFunctionName = process.env.YAFFLE_TC_API_FUNCTION?.trim()
   const overrideReconcileFunctionName = process.env.YAFFLE_TC_RECONCILE_FUNCTION?.trim()
   const overrideAppDeployerRoleArn = process.env.YAFFLE_APP_DEPLOYER_ROLE_ARN?.trim()
@@ -84,18 +86,25 @@ async function resolveTrafficControllerDeploymentTarget(environment: string): Pr
     environment,
   })
 
-  const apiFunctionName = overrideApiFunctionName
-    || (typeof outputs.api_lambda_function_name === "string" ? outputs.api_lambda_function_name.trim() : "")
-  const reconcileFunctionName = overrideReconcileFunctionName
-    || (typeof outputs.reconcile_lambda_function_name === "string" ? outputs.reconcile_lambda_function_name.trim() : "")
-  const appDeployerRoleArn = overrideAppDeployerRoleArn
-    || (typeof outputs.app_deployer_role_arn === "string" ? outputs.app_deployer_role_arn.trim() : "")
+  const apiFunctionName =
+    overrideApiFunctionName ||
+    (typeof outputs.api_lambda_function_name === "string"
+      ? outputs.api_lambda_function_name.trim()
+      : "")
+  const reconcileFunctionName =
+    overrideReconcileFunctionName ||
+    (typeof outputs.reconcile_lambda_function_name === "string"
+      ? outputs.reconcile_lambda_function_name.trim()
+      : "")
+  const appDeployerRoleArn =
+    overrideAppDeployerRoleArn ||
+    (typeof outputs.app_deployer_role_arn === "string" ? outputs.app_deployer_role_arn.trim() : "")
 
   if (!apiFunctionName || !reconcileFunctionName || !appDeployerRoleArn) {
     throw new Error(
-      "Could not determine traffic-controller deployment target. "
-      + "Set YAFFLE_TC_API_FUNCTION, YAFFLE_TC_RECONCILE_FUNCTION, and YAFFLE_APP_DEPLOYER_ROLE_ARN, "
-      + `or ensure ${TRAFFIC_CONTROLLER_INFRA_WORKSPACE} exports api_lambda_function_name, reconcile_lambda_function_name, and app_deployer_role_arn through Yaffle outputs.`,
+      "Could not determine traffic-controller deployment target. " +
+        "Set YAFFLE_TC_API_FUNCTION, YAFFLE_TC_RECONCILE_FUNCTION, and YAFFLE_APP_DEPLOYER_ROLE_ARN, " +
+        `or ensure ${TRAFFIC_CONTROLLER_INFRA_WORKSPACE} exports api_lambda_function_name, reconcile_lambda_function_name, and app_deployer_role_arn through Yaffle outputs.`,
     )
   }
 
@@ -112,10 +121,12 @@ async function updateLambdaCode(
   zipPath: string,
 ): Promise<void> {
   const zipBuffer = await readFile(zipPath)
-  await lambda.send(new UpdateFunctionCodeCommand({
-    FunctionName: functionName,
-    ZipFile: new Uint8Array(zipBuffer),
-  }))
+  await lambda.send(
+    new UpdateFunctionCodeCommand({
+      FunctionName: functionName,
+      ZipFile: new Uint8Array(zipBuffer),
+    }),
+  )
 }
 
 export async function deployTrafficController(
