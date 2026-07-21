@@ -51,6 +51,20 @@ describe("lifecycleRoute", () => {
       "Content-Type": "application/json",
     }
 
+    const clientHostedRunRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/runs", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          canonicalRepoNamespace: "test-org--fixture",
+          localRepoFingerprint: "repo-fingerprint-1",
+          environmentName: "main",
+          executionMode: "cloud",
+        }),
+      }),
+    )
+    expect(clientHostedRunRes.status).toBe(400)
+
     const runRes = await app.fetch(
       new Request("http://localhost/api/lifecycle/runs", {
         method: "POST",
@@ -92,6 +106,45 @@ describe("lifecycleRoute", () => {
     )
     expect(itemRes.status).toBe(201)
     const itemBody = (await itemRes.json()) as { data: { id: string; onCompletionUrl: string } }
+    const secondItemRes = await app.fetch(
+      new Request("http://localhost/api/lifecycle/items", {
+        method: "POST",
+        headers: authHeaders,
+        body: JSON.stringify({
+          runId: runBody.data.id,
+          workspacePath: "apps/web/infra",
+          key: "preview-health",
+          phase: "verification",
+          kind: "webhook",
+          failurePolicy: "failed",
+          scopes: ["acceptable"],
+          destinationUrl: "http://localhost:8787/hooks/preview-health",
+          destinationClass: "private_local",
+          dispatchMode: "local",
+          selectedOutputNames: [],
+          callbackTtlMinutes: 60,
+        }),
+      }),
+    )
+    expect(secondItemRes.status).toBe(201)
+    const secondItemBody = (await secondItemRes.json()) as { data: { id: string } }
+
+    const foreignSessionRes = await app.fetch(
+      new Request("http://localhost/api/sessions/anonymous", {
+        method: "POST",
+        headers: featureHeaders(),
+      }),
+    )
+    const foreignSessionBody = (await foreignSessionRes.json()) as { data: { token: string } }
+    const foreignReadRes = await app.fetch(
+      new Request(`http://localhost/api/lifecycle/items/${itemBody.data.id}`, {
+        headers: {
+          ...featureHeaders(),
+          Authorization: `Bearer ${foreignSessionBody.data.token}`,
+        },
+      }),
+    )
+    expect(foreignReadRes.status).toBe(404)
 
     const stateBeforeRes = await app.fetch(
       new Request(
@@ -118,11 +171,23 @@ describe("lifecycleRoute", () => {
           externalUrl: "https://ci.example.com/runs/123",
           metadata: {
             buildNumber: 123,
+            hostedPayload: { outputs: { stolen: true } },
           },
         }),
       }),
     )
     expect(runningCallbackRes.status).toBe(200)
+    const runningCallbackBody = (await runningCallbackRes.json()) as {
+      data: { nextOnCompletionUrl: string }
+    }
+    const replayedRunningCallbackRes = await app.fetch(
+      new Request(itemBody.data.onCompletionUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "running" }),
+      }),
+    )
+    expect(replayedRunningCallbackRes.status).toBe(404)
 
     const itemRunningRes = await app.fetch(
       new Request(`http://localhost/api/lifecycle/items/${itemBody.data.id}`, {
@@ -136,22 +201,27 @@ describe("lifecycleRoute", () => {
     expect(itemRunningBody.data.state).toBe("running")
     expect(itemRunningBody.data.metadata.provider).toBe("nix-ci")
     expect(itemRunningBody.data.metadata.dispatchId).toBe("dispatch-1")
-    expect(itemRunningBody.data.metadata.buildNumber).toBe(123)
+    expect(itemRunningBody.data.metadata.callback).toBeUndefined()
+    expect(itemRunningBody.data.metadata.hostedPayload).toBeUndefined()
     expect(itemRunningBody.data.metadata.externalUrl).toBe("https://ci.example.com/runs/123")
 
-    const callbackRes = await app.fetch(
-      new Request(itemBody.data.onCompletionUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          status: "succeeded",
-          summary: "preview is ready",
+    const terminalCallback = async (): Promise<Response> =>
+      await app.fetch(
+        new Request(runningCallbackBody.data.nextOnCompletionUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "succeeded",
+            summary: "preview is ready",
+          }),
         }),
-      }),
-    )
-    expect(callbackRes.status).toBe(200)
+      )
+    const callbackResponses = await Promise.all([terminalCallback(), terminalCallback()])
+    expect(callbackResponses.map((response) => response.status).sort((a, b) => a - b)).toEqual([
+      200, 404,
+    ])
 
     const itemAfterRes = await app.fetch(
       new Request(`http://localhost/api/lifecycle/items/${itemBody.data.id}`, {
@@ -166,11 +236,19 @@ describe("lifecycleRoute", () => {
     expect(itemAfterBody.data.summary).toBe("preview is ready")
     expect(itemAfterBody.data.metadata.provider).toBe("nix-ci")
     expect(itemAfterBody.data.metadata.dispatchId).toBe("dispatch-1")
-    expect(itemAfterBody.data.metadata.buildNumber).toBe(123)
+    expect(itemAfterBody.data.metadata.callback).toBeUndefined()
     expect(itemAfterBody.data.metadata.externalUrl).toBe("https://ci.example.com/runs/123")
 
+    const secondItemAfterRes = await app.fetch(
+      new Request(`http://localhost/api/lifecycle/items/${secondItemBody.data.id}`, {
+        headers: authHeaders,
+      }),
+    )
+    const secondItemAfterBody = (await secondItemAfterRes.json()) as { data: { state: string } }
+    expect(secondItemAfterBody.data.state).toBe("pending")
+
     const reusedCallbackRes = await app.fetch(
-      new Request(itemBody.data.onCompletionUrl, {
+      new Request(runningCallbackBody.data.nextOnCompletionUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

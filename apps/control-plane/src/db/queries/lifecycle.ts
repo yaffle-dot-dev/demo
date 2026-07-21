@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 
-import { and, desc, eq, inArray } from "drizzle-orm"
+import { and, desc, eq, gt, inArray, isNull } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { withDbSpan } from "../../lib/telemetry.ts"
@@ -9,7 +9,6 @@ import {
   lifecycleEvents,
   lifecycleItems,
   lifecycleRuns,
-  principalRepoBindings,
 } from "../schema.ts"
 
 export type LifecycleRun = typeof lifecycleRuns.$inferSelect
@@ -135,10 +134,7 @@ export async function issueLifecycleCompletionToken(values: {
   })
 }
 
-export async function consumeLifecycleCompletionToken(
-  token: string,
-  options: { consume?: boolean } = {},
-): Promise<
+export async function consumeLifecycleCompletionToken(token: string): Promise<
   | {
       token: typeof lifecycleCompletionTokens.$inferSelect
       item: LifecycleItem
@@ -148,24 +144,38 @@ export async function consumeLifecycleCompletionToken(
 > {
   return withDbSpan("update", "lifecycle_completion_tokens", async () => {
     return db.transaction(async (tx) => {
+      const tokenHash = hashLifecycleCompletionToken(token)
+      const claimed = await tx
+        .update(lifecycleCompletionTokens)
+        .set({ usedAt: new Date() })
+        .where(
+          and(
+            eq(lifecycleCompletionTokens.tokenHash, tokenHash),
+            isNull(lifecycleCompletionTokens.usedAt),
+            gt(lifecycleCompletionTokens.expiresAt, new Date()),
+          ),
+        )
+        .returning({ tokenHash: lifecycleCompletionTokens.tokenHash })
+      if (claimed.length !== 1) {
+        return undefined
+      }
+
       const rows = await tx
         .select({ token: lifecycleCompletionTokens, item: lifecycleItems, run: lifecycleRuns })
         .from(lifecycleCompletionTokens)
         .innerJoin(lifecycleItems, eq(lifecycleItems.id, lifecycleCompletionTokens.itemId))
         .innerJoin(lifecycleRuns, eq(lifecycleRuns.id, lifecycleItems.runId))
-        .where(eq(lifecycleCompletionTokens.tokenHash, hashLifecycleCompletionToken(token)))
+        .where(
+          and(
+            eq(lifecycleCompletionTokens.tokenHash, tokenHash),
+            gt(lifecycleCompletionTokens.expiresAt, new Date()),
+          ),
+        )
         .limit(1)
 
       const row = rows[0]
-      if (!row || row.token.usedAt || row.token.expiresAt.getTime() <= Date.now()) {
+      if (!row || !["pending", "running"].includes(row.item.state)) {
         return undefined
-      }
-
-      if (options.consume ?? true) {
-        await tx
-          .update(lifecycleCompletionTokens)
-          .set({ usedAt: new Date() })
-          .where(eq(lifecycleCompletionTokens.tokenHash, row.token.tokenHash))
       }
 
       return row
@@ -181,6 +191,27 @@ export async function findLifecycleItemById(itemId: string): Promise<LifecycleIt
       .where(eq(lifecycleItems.id, itemId))
       .limit(1)
     return rows[0]
+  })
+}
+
+export async function findLifecycleItemForPrincipal(
+  itemId: string,
+  principalId: string,
+): Promise<LifecycleItem | undefined> {
+  return withDbSpan("select", "lifecycle_items", async () => {
+    const rows = await db
+      .select({ item: lifecycleItems })
+      .from(lifecycleItems)
+      .innerJoin(lifecycleRuns, eq(lifecycleRuns.id, lifecycleItems.runId))
+      .where(
+        and(
+          eq(lifecycleItems.id, itemId),
+          eq(lifecycleRuns.principalId, principalId),
+          isNull(lifecycleRuns.runGroupId),
+        ),
+      )
+      .limit(1)
+    return rows[0]?.item
   })
 }
 
@@ -206,6 +237,7 @@ export async function findLatestLifecycleRun(values: {
         and(
           eq(lifecycleRuns.repoBindingId, values.repoBindingId),
           eq(lifecycleRuns.environmentName, values.environmentName),
+          isNull(lifecycleRuns.runGroupId),
         ),
       )
       .orderBy(desc(lifecycleRuns.createdAt))
@@ -223,34 +255,6 @@ export async function getLatestLifecycleState(values: {
     if (!run) {
       return undefined
     }
-    const items = await listLifecycleItemsForRun(run.id)
-    return { run, items }
-  })
-}
-
-export async function getLatestLifecycleStateForRepoEnvironment(values: {
-  canonicalRepoNamespace: string
-  environmentName: string
-}): Promise<{ run: LifecycleRun; items: LifecycleItem[] } | undefined> {
-  return withDbSpan("select", "lifecycle_runs", async () => {
-    const rows = await db
-      .select({ run: lifecycleRuns })
-      .from(lifecycleRuns)
-      .innerJoin(principalRepoBindings, eq(principalRepoBindings.id, lifecycleRuns.repoBindingId))
-      .where(
-        and(
-          eq(principalRepoBindings.canonicalRepoNamespace, values.canonicalRepoNamespace),
-          eq(lifecycleRuns.environmentName, values.environmentName),
-        ),
-      )
-      .orderBy(desc(lifecycleRuns.createdAt))
-      .limit(1)
-
-    const run = rows[0]?.run
-    if (!run) {
-      return undefined
-    }
-
     const items = await listLifecycleItemsForRun(run.id)
     return { run, items }
   })

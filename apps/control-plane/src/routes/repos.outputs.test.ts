@@ -8,7 +8,17 @@ import { createTestContext, type TestContext } from "../test-utils/auth.ts"
 import { db } from "../lib/db.ts"
 import { auth } from "../lib/better-auth.ts"
 import { apikey } from "../db/auth-schema.ts"
-import { previews, runGroups, tfRuns } from "../db/schema.ts"
+import { createPrincipal, ensurePrincipalRepoBinding } from "../db/queries/principals.ts"
+import {
+  lifecycleEvents,
+  lifecycleItems,
+  lifecycleRuns,
+  previews,
+  principalRepoBindings,
+  principals,
+  runGroups,
+  tfRuns,
+} from "../db/schema.ts"
 import { reposRoute } from "./repos.ts"
 
 const app = new Hono()
@@ -19,6 +29,10 @@ let foreign: TestContext
 let scopedApiKeyHeaders: Headers
 let wrongRepoApiKeyHeaders: Headers
 let unscopedApiKeyHeaders: Headers
+let lifecyclePrincipalId: string
+let lifecycleBindingId: string
+let lifecycleRunId: string
+let lifecycleItemId: string
 const apiKeyIds: string[] = []
 
 beforeAll(async () => {
@@ -89,6 +103,52 @@ beforeAll(async () => {
       },
     })
     .returning()
+  const lifecyclePrincipal = await createPrincipal({ type: "anonymous_session" })
+  lifecyclePrincipalId = lifecyclePrincipal.id
+  const lifecycleBinding = await ensurePrincipalRepoBinding({
+    principalId: lifecyclePrincipal.id,
+    canonicalRepoNamespace: "output-producer--app",
+    localRepoFingerprint: "hosted-output-lifecycle",
+  })
+  lifecycleBindingId = lifecycleBinding.id
+  await db
+    .update(runGroups)
+    .set({ repoBindingId: lifecycleBinding.id })
+    .where(eq(runGroups.id, runGroup.id))
+  const [lifecycleRun] = await db
+    .insert(lifecycleRuns)
+    .values({
+      principalId: lifecyclePrincipal.id,
+      runGroupId: runGroup.id,
+      repoBindingId: lifecycleBinding.id,
+      environmentName: "main",
+      executionMode: "cloud",
+      status: "running",
+    })
+    .returning()
+  lifecycleRunId = lifecycleRun.id
+  const [lifecycleItem] = await db
+    .insert(lifecycleItems)
+    .values({
+      runId: lifecycleRun.id,
+      workspacePath: "infra",
+      key: "deploy",
+      phase: "activation",
+      kind: "webhook",
+      state: "running",
+      failurePolicy: "failed",
+      scopes: ["usable"],
+      destinationUrl: "https://hooks.example.test/deploy",
+      destinationClass: "public",
+      dispatchMode: "cloud",
+      metadata: {
+        hostedPayload: {
+          outputs: { endpoint: { value: "must-not-leak-hosted-payload", sensitive: false } },
+        },
+      },
+    })
+    .returning()
+  lifecycleItemId = lifecycleItem.id
   const [deployment] = await db
     .insert(previews)
     .values({
@@ -120,9 +180,14 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await db.delete(lifecycleEvents).where(eq(lifecycleEvents.itemId, lifecycleItemId))
+  await db.delete(lifecycleItems).where(eq(lifecycleItems.id, lifecycleItemId))
+  await db.delete(lifecycleRuns).where(eq(lifecycleRuns.id, lifecycleRunId))
   await db.delete(tfRuns)
   await db.delete(previews)
   await db.delete(runGroups)
+  await db.delete(principalRepoBindings).where(eq(principalRepoBindings.id, lifecycleBindingId))
+  await db.delete(principals).where(eq(principals.id, lifecyclePrincipalId))
   for (const id of apiKeyIds) {
     await db.delete(apikey).where(eq(apikey.id, id))
   }
@@ -144,6 +209,7 @@ describe("environment output authorization", () => {
     })
     expect(workspace.runs[0].outputs.password.value).toBeNull()
     expect(JSON.stringify(body)).not.toContain("do-not-expose")
+    expect(JSON.stringify(body)).not.toContain("must-not-leak-hosted-payload")
   })
 
   test("returns only explicitly selected outputs to automation", async () => {

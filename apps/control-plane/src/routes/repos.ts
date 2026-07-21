@@ -9,7 +9,6 @@ import {
   type LifecycleItem,
   type LifecycleRun,
   getLifecycleStateForRunGroup,
-  getLatestLifecycleStateForRepoEnvironment,
   listLifecycleEventsForItems,
 } from "../db/queries/lifecycle.ts"
 import { findRepoByName } from "../db/queries/repositories.ts"
@@ -770,9 +769,6 @@ async function buildEnvironmentSnapshotData(params: {
   outputAudience?: "viewer" | "automation"
 }): Promise<EnvironmentSnapshotData | null> {
   const repoRecord = await findRepoByName(params.orgId, params.repo)
-  const canonicalRepoNamespace = repoRecord?.fullName
-    ? canonicalRepoNamespaceFromRepoFullName(repoRecord.fullName)
-    : null
   const environmentPolicy = repoRecord?.fullName
     ? await findEnvironmentPolicy({
         orgId: params.orgId,
@@ -780,18 +776,6 @@ async function buildEnvironmentSnapshotData(params: {
         environmentName: params.environmentName,
       })
     : undefined
-  const lifecycleState = canonicalRepoNamespace
-    ? await getLatestLifecycleStateForRepoEnvironment({
-        canonicalRepoNamespace,
-        environmentName: params.environmentName,
-      })
-    : undefined
-  const lifecycleEvents = lifecycleState
-    ? await listLifecycleEventsForItems(lifecycleState.items.map((item) => item.id))
-    : []
-  const environmentLifecycle = lifecycleState
-    ? serializeEnvironmentLifecycle(lifecycleState.run, lifecycleState.items, lifecycleEvents)
-    : null
   const [allDeployments, allRunGroups] = await Promise.all([
     findDeploymentsByEnvironment(params.orgId, params.repo, params.environmentName),
     listRunGroupsForEnvironment(params.orgId, params.repo, params.environmentName),
@@ -799,6 +783,15 @@ async function buildEnvironmentSnapshotData(params: {
 
   const deployments = filterDeploymentsByHeadSha(allDeployments, params.headSha)
   const runGroupsData = filterRunGroupsByHeadSha(allRunGroups, params.headSha)
+  const lifecycleState = runGroupsData[0]
+    ? await getLifecycleStateForRunGroup(runGroupsData[0].id)
+    : undefined
+  const lifecycleEvents = lifecycleState
+    ? await listLifecycleEventsForItems(lifecycleState.items.map((item) => item.id))
+    : []
+  const environmentLifecycle = lifecycleState
+    ? serializeEnvironmentLifecycle(lifecycleState.run, lifecycleState.items, lifecycleEvents)
+    : null
   const runGroupsById = new Map(allRunGroups.map((runGroup) => [runGroup.id, runGroup]))
   const serializedRunGroups = await serializeRunGroupsWithLifecycle(runGroupsData)
 
@@ -1052,21 +1045,42 @@ function serializeLifecycleItem(
     scopes: item.scopes,
     summary: item.summary ?? null,
     reason: item.reason ?? null,
-    metadata: item.metadata as Record<string, unknown>,
+    metadata: publicLifecycleMetadata(item.metadata),
     destinationUrl: item.destinationUrl,
     startedAt: item.startedAt?.toISOString() ?? null,
     finishedAt: item.finishedAt?.toISOString() ?? null,
     events: events.map((event) => ({
       id: event.id,
       eventType: event.eventType,
-      payload: event.payload as Record<string, unknown>,
+      payload: publicLifecycleEventPayload(event),
       createdAt: event.createdAt.toISOString(),
     })),
   }
 }
 
-function canonicalRepoNamespaceFromRepoFullName(repoFullName: string): string {
-  return repoFullName.replace("/", "--")
+function publicLifecycleMetadata(metadata: unknown): Record<string, unknown> {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
+    return {}
+  }
+  const { hostedDispatch, hostedPayload, callbackTtlMinutes, ...publicMetadata } =
+    metadata as Record<string, unknown>
+  void hostedDispatch
+  void hostedPayload
+  void callbackTtlMinutes
+  return publicMetadata
+}
+
+function publicLifecycleEventPayload(event: LifecycleEvent): Record<string, unknown> {
+  if (!event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) {
+    return {}
+  }
+  const payload = event.payload as Record<string, unknown>
+  if (event.eventType !== "callback") {
+    return payload
+  }
+  const { metadata, ...publicPayload } = payload
+  void metadata
+  return publicPayload
 }
 
 /**

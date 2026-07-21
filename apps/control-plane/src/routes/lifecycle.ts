@@ -1,7 +1,4 @@
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto"
-import { lookup } from "node:dns/promises"
-import { request as httpsRequest } from "node:https"
-import { isIP } from "node:net"
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 
 import { Hono, type MiddlewareHandler } from "hono"
 import { z } from "zod"
@@ -16,6 +13,7 @@ import {
   createLifecycleItem,
   createLifecycleRun,
   findLifecycleItemById,
+  findLifecycleItemForPrincipal,
   findLifecycleRunById,
   getLatestLifecycleState,
   issueLifecycleCompletionToken,
@@ -41,6 +39,10 @@ import {
 } from "../lib/hosted-lifecycle.ts"
 import { assumeOrgBrokerRole } from "../lib/org-broker-auth.ts"
 import { buildPublicUrl } from "../lib/public-origin.ts"
+import {
+  postPublicLifecycleWebhook,
+  resolvePublicLifecycleDestination,
+} from "../lib/lifecycle-http-dispatch.ts"
 import { getConnectionScopeConfig, scopeListAllows } from "../lib/connection-scope.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
 import {
@@ -84,10 +86,12 @@ const createRunSchema = z.object({
   canonicalRepoNamespace: z.string().min(1),
   localRepoFingerprint: z.string().min(1),
   environmentName: z.string().min(1),
-  executionMode: z.enum(["local", "cloud"]),
+  executionMode: z.literal("local"),
 })
 
-const admissionSchema = createRunSchema
+const admissionSchema = createRunSchema.extend({
+  executionMode: z.enum(["local", "cloud"]),
+})
 
 const createItemSchema = z.object({
   runId: z.string().uuid(),
@@ -99,7 +103,7 @@ const createItemSchema = z.object({
   scopes: z.array(z.string().min(1)).min(1),
   destinationUrl: z.string().url(),
   destinationClass: z.enum(["public", "private_local"]),
-  dispatchMode: z.enum(["local", "cloud"]),
+  dispatchMode: z.literal("local"),
   summary: z.string().optional(),
   metadata: z.record(z.unknown()).optional(),
   selectedOutputNames: z.array(z.string().min(1)),
@@ -131,7 +135,7 @@ const githubRepositoryDispatchSchema = z.object({
     owner: z.string().min(1).optional(),
     repo: z.string().min(1).optional(),
     eventType: z.string().min(1),
-    apiUrl: z.string().url().optional(),
+    apiUrl: z.never().optional(),
   }),
 })
 
@@ -174,7 +178,6 @@ const callbackBodySchema = z.object({
   summary: z.string().optional(),
   reason: z.string().optional(),
   externalUrl: httpUrlSchema.optional(),
-  metadata: z.record(z.unknown()).optional(),
 })
 
 export const lifecycleRoute = new Hono<{ Variables: PrincipalVariables }>()
@@ -220,12 +223,10 @@ function recordFromJson(value: unknown): Record<string, unknown> {
 
 function mergeCallbackMetadata(
   existingMetadata: unknown,
-  callbackMetadata: Record<string, unknown> | undefined,
   externalUrl: string | undefined,
 ): Record<string, unknown> {
   return {
     ...recordFromJson(existingMetadata),
-    ...callbackMetadata,
     ...(externalUrl ? { externalUrl } : {}),
   }
 }
@@ -238,6 +239,9 @@ lifecycleRoute.use("/items", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/state", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/runs", principalAuth())
 lifecycleRoute.use("/items", principalAuth())
+lifecycleRoute.use("/items/*", enforceFeatureToken)
+lifecycleRoute.use("/items/*", enforceRouteRateLimit(lifecycleCreateRateLimit))
+lifecycleRoute.use("/items/*", principalAuth())
 lifecycleRoute.use("/state", principalAuth())
 lifecycleRoute.use("/admission", enforceFeatureToken)
 lifecycleRoute.use("/admission", enforceRouteRateLimit(lifecycleCreateRateLimit))
@@ -342,7 +346,12 @@ lifecycleRoute.post("/items", async (c) => {
 
   const body = parsed.data
   const run = await findLifecycleRunById(body.runId)
-  if (!run || run.principalId !== principal.principalId) {
+  if (
+    !run ||
+    run.principalId !== principal.principalId ||
+    run.executionMode !== "local" ||
+    run.runGroupId !== null
+  ) {
     return c.json({ error: { code: "NOT_FOUND", message: "lifecycle run not found" } }, 404)
   }
 
@@ -468,7 +477,12 @@ lifecycleRoute.post("/dispatch", async (c) => {
 
   const body = parsed.data
   const run = await findLifecycleRunById(body.runId)
-  if (!run || run.principalId !== principal.principalId) {
+  if (
+    !run ||
+    run.principalId !== principal.principalId ||
+    run.executionMode !== "local" ||
+    run.runGroupId !== null
+  ) {
     return c.json({ error: { code: "NOT_FOUND", message: "lifecycle run not found" } }, 404)
   }
 
@@ -610,7 +624,8 @@ lifecycleRoute.post("/dispatch", async (c) => {
 })
 
 lifecycleRoute.get("/items/:itemId", async (c) => {
-  const item = await findLifecycleItemById(c.req.param("itemId"))
+  const principal = c.get("principalAuth")
+  const item = await findLifecycleItemForPrincipal(c.req.param("itemId"), principal.principalId)
   if (!item) {
     return c.json({ error: { code: "NOT_FOUND", message: "lifecycle item not found" } }, 404)
   }
@@ -676,9 +691,7 @@ lifecycleRoute.post("/completions/:token", async (c) => {
   }
 
   const body = parsed.data
-  const consumed = await consumeLifecycleCompletionToken(c.req.param("token"), {
-    consume: body.status !== "running",
-  })
+  const consumed = await consumeLifecycleCompletionToken(c.req.param("token"))
   if (!consumed) {
     return c.json(
       {
@@ -691,7 +704,7 @@ lifecycleRoute.post("/completions/:token", async (c) => {
     )
   }
 
-  const metadata = mergeCallbackMetadata(consumed.item.metadata, body.metadata, body.externalUrl)
+  const metadata = mergeCallbackMetadata(consumed.item.metadata, body.externalUrl)
 
   const itemUpdate: Parameters<typeof updateLifecycleItem>[1] = {
     state: body.status,
@@ -715,9 +728,19 @@ lifecycleRoute.post("/completions/:token", async (c) => {
       summary: body.summary,
       reason: body.reason,
       externalUrl: body.externalUrl,
-      metadata: body.metadata ?? {},
     },
   })
+
+  let nextOnCompletionUrl: string | null = null
+  if (body.status === "running") {
+    const nextToken = randomBytes(32).toString("base64url")
+    await issueLifecycleCompletionToken({
+      token: nextToken,
+      itemId: consumed.item.id,
+      expiresAt: consumed.token.expiresAt,
+    })
+    nextOnCompletionUrl = buildPublicUrl(c.req.url, `/api/lifecycle/completions/${nextToken}`)
+  }
 
   if (item && ["succeeded", "degraded", "failed"].includes(item.state)) {
     await dispatchHostedLifecycleVerificationIfReady({
@@ -759,7 +782,13 @@ lifecycleRoute.post("/completions/:token", async (c) => {
     }
   }
 
-  return c.json({ data: { id: consumed.item.id, state: item?.state ?? body.status } })
+  return c.json({
+    data: {
+      id: consumed.item.id,
+      state: item?.state ?? body.status,
+      nextOnCompletionUrl,
+    },
+  })
 })
 
 async function readJsonBody(request: Request): Promise<unknown> {
@@ -924,15 +953,21 @@ async function isManagedLifecycleDispatchAuthorized(
     return false
   }
 
-  const repoFullName =
-    dispatch.kind === "github_repository_dispatch"
-      ? (() => {
-          const target = resolveGitHubDispatchTarget(dispatch, canonicalRepoNamespace)
-          return `${target.owner}/${target.repo}`
-        })()
-      : repo_full_name_from_namespace(canonicalRepoNamespace)
-  const repo = repoFullName ? await findRepoByFullName(repoFullName) : undefined
-  const membership = repo?.orgId ? await findOrgMembership(repo.orgId, principal.userId) : undefined
+  const sourceRepoFullName = repo_full_name_from_namespace(canonicalRepoNamespace)
+  const sourceRepo = sourceRepoFullName ? await findRepoByFullName(sourceRepoFullName) : undefined
+  if (!sourceRepo?.orgId) {
+    return false
+  }
+
+  if (dispatch.kind === "github_repository_dispatch") {
+    const target = resolveGitHubDispatchTarget(dispatch, canonicalRepoNamespace)
+    const targetRepo = await findRepoByFullName(`${target.owner}/${target.repo}`)
+    if (!targetRepo || targetRepo.orgId !== sourceRepo.orgId) {
+      return false
+    }
+  }
+
+  const membership = await findOrgMembership(sourceRepo.orgId, principal.userId)
   return membership?.role === "admin"
 }
 
@@ -983,7 +1018,7 @@ async function dispatchGenericLifecycleHook(
   canonicalRepoNamespace: string,
 ): Promise<void> {
   const request = body.dispatch.request
-  const destinationAddress = await resolvePublicLifecycleDestination(request.url)
+  const destination = await resolvePublicLifecycleDestination(request.url)
   const payloadBytes = Buffer.from(JSON.stringify(body.payload))
   const headers = new Headers({
     "content-type": "application/json",
@@ -996,98 +1031,19 @@ async function dispatchGenericLifecycleHook(
       body.workspacePath,
       request.auth.connection,
     )
-    applyLifecycleConnectionAuth(headers, request.auth.scheme, secret, payloadBytes)
+    applyLifecycleConnectionAuth(headers, request.auth.scheme, secret, payloadBytes, body.itemId)
   }
 
-  const status = await postLifecycleWebhook(
-    request.url,
-    request.method,
+  const status = await postPublicLifecycleWebhook({
+    url: request.url,
     headers,
-    payloadBytes,
-    destinationAddress,
-  )
+    body: payloadBytes,
+    destination,
+  })
 
   if (status < 200 || status >= 300) {
     throw new Error(`Lifecycle webhook returned ${status}`)
   }
-}
-
-async function resolvePublicLifecycleDestination(rawUrl: string): Promise<string> {
-  const url = new URL(rawUrl)
-  if (url.protocol !== "https:" || url.username || url.password) {
-    throw new Error("Lifecycle webhooks must use an unauthenticated public HTTPS URL")
-  }
-
-  const addresses = isIP(url.hostname)
-    ? [{ address: url.hostname }]
-    : await lookup(url.hostname, { all: true, verbatim: true })
-  if (addresses.length === 0 || addresses.some(({ address }) => !isPublicIpAddress(address))) {
-    throw new Error("Lifecycle webhook destinations must resolve only to public IP addresses")
-  }
-  return addresses[0].address
-}
-
-async function postLifecycleWebhook(
-  rawUrl: string,
-  method: "POST",
-  headers: Headers,
-  body: Buffer,
-  address: string,
-): Promise<number> {
-  const url = new URL(rawUrl)
-  const family = isIP(address) as 4 | 6
-  return new Promise((resolve, reject) => {
-    const request = httpsRequest(
-      url,
-      {
-        method,
-        headers: Object.fromEntries(headers.entries()),
-        servername: url.hostname,
-        lookup: (_hostname, _options, callback) => callback(null, address, family),
-      },
-      (response) => {
-        response.resume()
-        resolve(response.statusCode ?? 502)
-      },
-    )
-    request.setTimeout(30_000, () => request.destroy(new Error("Lifecycle webhook timed out")))
-    request.on("error", reject)
-    request.end(body)
-  })
-}
-
-function isPublicIpAddress(address: string): boolean {
-  if (address.includes(":")) {
-    const normalized = address.toLowerCase()
-    if (normalized.startsWith("::ffff:")) {
-      return isPublicIpAddress(normalized.slice(7))
-    }
-    return !(
-      normalized === "::" ||
-      normalized === "::1" ||
-      normalized.startsWith("fc") ||
-      normalized.startsWith("fd") ||
-      /^fe[89ab]/.test(normalized) ||
-      /^fe[c-f]/.test(normalized)
-    )
-  }
-
-  const octets = address.split(".").map(Number)
-  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet))) {
-    return false
-  }
-  const [first, second] = octets
-  return !(
-    first === 0 ||
-    first === 10 ||
-    first === 127 ||
-    (first === 100 && second >= 64 && second <= 127) ||
-    (first === 169 && second === 254) ||
-    (first === 172 && second >= 16 && second <= 31) ||
-    (first === 192 && second === 168) ||
-    (first === 198 && (second === 18 || second === 19)) ||
-    first >= 224
-  )
 }
 
 function lifecycleItemSelectedOutputNames(item: LifecycleItem): string[] | null {
@@ -1174,13 +1130,27 @@ function applyLifecycleConnectionAuth(
   scheme: "bearer" | "hmac_sha256",
   secret: string,
   body: Buffer,
+  itemId: string,
 ): void {
   if (scheme === "bearer") {
     headers.set("authorization", `Bearer ${secret}`)
     return
   }
 
-  const signature = createHmac("sha256", secret).update(body).digest("hex")
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  const deliveryId = randomUUID()
+  const signature = createHmac("sha256", secret)
+    .update(timestamp)
+    .update(".")
+    .update(deliveryId)
+    .update(".")
+    .update(itemId)
+    .update(".")
+    .update(body)
+    .digest("hex")
+  headers.set("X-Yaffle-Delivery", deliveryId)
+  headers.set("X-Yaffle-Item", itemId)
+  headers.set("X-Yaffle-Timestamp", timestamp)
   headers.set("X-Yaffle-Signature", `sha256=${signature}`)
 }
 
@@ -1192,8 +1162,7 @@ function lifecycleDispatchDestination(
     return body.dispatch.request.url
   }
   const target = resolveGitHubDispatchTarget(body.dispatch, canonicalRepoNamespace)
-  const apiUrl = body.dispatch.github.apiUrl?.replace(/\/$/, "") ?? "https://api.github.com"
-  return `${apiUrl}/repos/${target.owner}/${target.repo}/dispatches`
+  return `https://api.github.com/repos/${target.owner}/${target.repo}/dispatches`
 }
 
 function resolveGitHubDispatchTarget(
@@ -1293,16 +1262,35 @@ function serializeLifecycleItem(
     scopes: item.scopes,
     summary: item.summary ?? null,
     reason: item.reason ?? null,
-    metadata: item.metadata as Record<string, unknown>,
+    metadata: publicLifecycleMetadata(item.metadata),
     startedAt: item.startedAt?.toISOString() ?? null,
     finishedAt: item.finishedAt?.toISOString() ?? null,
     events: events.map((event) => ({
       id: event.id,
       eventType: event.eventType,
-      payload: event.payload as Record<string, unknown>,
+      payload: publicLifecycleEventPayload(event),
       createdAt: event.createdAt.toISOString(),
     })),
   }
+}
+
+function publicLifecycleMetadata(metadata: unknown): Record<string, unknown> {
+  const value = recordFromJson(metadata)
+  const { hostedDispatch, hostedPayload, callbackTtlMinutes, ...publicMetadata } = value
+  void hostedDispatch
+  void hostedPayload
+  void callbackTtlMinutes
+  return publicMetadata
+}
+
+function publicLifecycleEventPayload(event: LifecycleEvent): Record<string, unknown> {
+  const payload = recordFromJson(event.payload)
+  if (event.eventType !== "callback") {
+    return payload
+  }
+  const { metadata, ...publicPayload } = payload
+  void metadata
+  return publicPayload
 }
 
 function principalTierRank(tier: PrincipalTier): number {

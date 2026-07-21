@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto"
+import { createHmac, randomBytes, randomUUID } from "node:crypto"
 
 import { type LifecycleHook, matchEnvironmentPattern } from "./config-toml.ts"
 import { getEnv } from "./env.ts"
@@ -7,6 +7,7 @@ import {
   createLifecycleEvent,
   createLifecycleItem,
   createLifecycleRun,
+  claimLifecycleItemForDispatch,
   findLifecycleItemById,
   findLifecycleRunById,
   findLifecycleRunByRunGroupId,
@@ -28,7 +29,6 @@ import { findConnectionsByName } from "../db/queries/connections.ts"
 import { getConnectionScopeConfig, scopeListAllows } from "./connection-scope.ts"
 import { assumeOrgBrokerRole } from "./org-broker-auth.ts"
 import { getConnectionSecret } from "./connection-secrets.ts"
-import { createHmac } from "node:crypto"
 import { findOrgById } from "../db/queries/organizations.ts"
 import { cascadeFailure, notifyDownstreams } from "./deployment-side-effects.ts"
 import { deriveLifecycleConditions, deriveWorkspaceLifecycleState } from "./lifecycle-conditions.ts"
@@ -38,24 +38,32 @@ import {
   isExecutionContextAssociationValid,
 } from "./execution-snapshot.ts"
 import { selectTerraformOutputs } from "./output-selection.ts"
+import { postPublicLifecycleWebhook } from "./lifecycle-http-dispatch.ts"
 
 export interface HostedLifecycleExecutionResult {
   runId: string | null
 }
 
-export async function executeHostedLifecycleForDeployment(values: {
-  runGroupId: string | null
-  deployment: {
-    id: string
-    orgId: string
-    repo: string
-    environmentKind: "named" | "transient"
-    environmentName: string
-    workspacePath: string
-    installationId?: number | null
-  }
-  outputs: Record<string, unknown>
-}): Promise<HostedLifecycleExecutionResult> {
+export interface HostedLifecycleDependencies {
+  postWebhook?: typeof postPublicLifecycleWebhook
+}
+
+export async function executeHostedLifecycleForDeployment(
+  values: {
+    runGroupId: string | null
+    deployment: {
+      id: string
+      orgId: string
+      repo: string
+      environmentKind: "named" | "transient"
+      environmentName: string
+      workspacePath: string
+      installationId?: number | null
+    }
+    outputs: Record<string, unknown>
+  },
+  dependencies: HostedLifecycleDependencies = {},
+): Promise<HostedLifecycleExecutionResult> {
   if (!values.runGroupId) {
     throw new ExecutionContextAssociationError(
       `Deployment ${values.deployment.id} is missing its execution run group`,
@@ -113,6 +121,12 @@ export async function executeHostedLifecycleForDeployment(values: {
   }
 
   const canonicalRepoNamespace = binding.canonicalRepoNamespace
+  const sourceRepo = await findRepoByFullName(canonicalRepoNamespace.replace("--", "/"))
+  if (!sourceRepo || sourceRepo.orgId !== runGroup.orgId) {
+    throw new ExecutionContextAssociationError(
+      `Run group ${runGroup.id} repository binding is not owned by organization ${runGroup.orgId}`,
+    )
+  }
   const environmentName = executionSnapshot.environment.name
   const source = executionSnapshot.source
   const selectedOutputs =
@@ -192,7 +206,7 @@ export async function executeHostedLifecycleForDeployment(values: {
   }
 
   for (const pending of pendingDispatches) {
-    await dispatchHostedLifecycleItem(pending.itemId)
+    await dispatchHostedLifecycleItem(pending.itemId, dependencies)
   }
 
   return { runId: lifecycleRun.id }
@@ -332,7 +346,6 @@ async function createHostedLifecycleItem(values: {
         ? "Waiting for hosted activation dispatch"
         : "Waiting for hosted verification dispatch",
     metadata: {
-      hostedDispatch: serializeHostedDispatch(values.hook, values.installationId),
       hostedPayload: buildHostedLifecyclePayload({
         canonicalRepoNamespace: values.canonicalRepoNamespace,
         environmentName: values.environmentName,
@@ -362,7 +375,10 @@ async function createHostedLifecycleItem(values: {
   return item
 }
 
-async function dispatchHostedLifecycleItem(itemId: string): Promise<void> {
+async function dispatchHostedLifecycleItem(
+  itemId: string,
+  dependencies: HostedLifecycleDependencies = {},
+): Promise<void> {
   const item = await findLifecycleItemById(itemId)
   if (!item || item.state !== "pending") {
     return
@@ -371,14 +387,55 @@ async function dispatchHostedLifecycleItem(itemId: string): Promise<void> {
   if (!run) {
     throw new Error(`lifecycle run not found for item ${item.id}`)
   }
+  if (run.status !== "running" || !run.runGroupId) {
+    return
+  }
+
+  const runGroup = await findRunGroupById(run.runGroupId)
+  const binding = await findPrincipalRepoBindingById(run.repoBindingId)
+  if (
+    !runGroup?.executionSnapshot ||
+    !binding ||
+    runGroup.repoBindingId !== binding.id ||
+    runGroup.orgId === null
+  ) {
+    throw new ExecutionContextAssociationError(
+      `Hosted lifecycle item ${item.id} is missing its immutable execution context`,
+    )
+  }
+  const sourceRepo = await findRepoByFullName(binding.canonicalRepoNamespace.replace("--", "/"))
+  if (!sourceRepo || sourceRepo.orgId !== runGroup.orgId) {
+    throw new ExecutionContextAssociationError(
+      `Hosted lifecycle item ${item.id} repository binding is not owned by organization ${runGroup.orgId}`,
+    )
+  }
+  const workspace = findExecutionSnapshotWorkspace(runGroup.executionSnapshot, item.workspacePath)
+  const hooks = workspace?.lifecycle[item.phase as "activation" | "verification"] ?? []
+  const hook = hooks.find((candidate) => candidate.key === item.key)
+  if (!workspace || !hook) {
+    throw new ExecutionContextAssociationError(
+      `Hosted lifecycle item ${item.id} is not present in its immutable execution snapshot`,
+    )
+  }
+  const spec = serializeHostedDispatch(hook, runGroup.executionSnapshot.source.installationId)
+  const destination = hostedLifecycleDestination(hook, binding.canonicalRepoNamespace)
+  if (destination.url !== item.destinationUrl || destination.class !== item.destinationClass) {
+    throw new ExecutionContextAssociationError(
+      `Hosted lifecycle item ${item.id} destination does not match its immutable execution snapshot`,
+    )
+  }
 
   const metadata = item.metadata as {
-    hostedDispatch?: HostedDispatchSpec
     hostedPayload?: Record<string, unknown>
     callbackTtlMinutes?: number
   }
-  if (!metadata.hostedDispatch || !metadata.hostedPayload) {
+  if (!metadata.hostedPayload) {
     throw new Error(`hosted lifecycle item ${item.id} is missing dispatch metadata`)
+  }
+  assertHostedPayloadMatchesItem(metadata.hostedPayload, item, run, binding.canonicalRepoNamespace)
+
+  if (!(await claimLifecycleItemForDispatch(item.id))) {
+    return
   }
 
   const callbackToken = randomBytes(32).toString("base64url")
@@ -397,9 +454,12 @@ async function dispatchHostedLifecycleItem(itemId: string): Promise<void> {
   }
 
   try {
-    await dispatchHostedLifecycle(metadata.hostedDispatch, dispatchPayload)
+    await dispatchHostedLifecycle(spec, dispatchPayload, {
+      itemId: item.id,
+      orgId: runGroup.orgId,
+      postWebhook: dependencies.postWebhook ?? postPublicLifecycleWebhook,
+    })
     await updateLifecycleItem(item.id, {
-      state: "running",
       summary:
         item.phase === "activation"
           ? "Dispatching hosted activation hook"
@@ -410,7 +470,7 @@ async function dispatchHostedLifecycleItem(itemId: string): Promise<void> {
       itemId: item.id,
       eventType: "dispatched",
       payload: {
-        kind: metadata.hostedDispatch.kind,
+        kind: spec.kind,
         workspacePath: item.workspacePath,
         phase: item.phase,
       },
@@ -428,7 +488,7 @@ async function dispatchHostedLifecycleItem(itemId: string): Promise<void> {
       itemId: item.id,
       eventType: "dispatch_failed",
       payload: {
-        kind: metadata.hostedDispatch.kind,
+        kind: spec.kind,
         workspacePath: item.workspacePath,
         phase: item.phase,
         reason: message,
@@ -483,7 +543,6 @@ type HostedDispatchSpec =
         owner?: string
         repo?: string
         eventType: string
-        apiUrl?: string
         installationId?: number
       }
     }
@@ -499,11 +558,16 @@ function serializeHostedDispatch(
         owner: hook.github?.owner,
         repo: hook.github?.repo,
         eventType: hook.github?.event_type ?? hook.key,
-        apiUrl: hook.github?.api_url,
         installationId:
           hook.github?.owner || hook.github?.repo ? undefined : producerInstallationId,
       },
     }
+  }
+
+  if (hook.request?.auth?.secret_ref) {
+    throw new Error(
+      `Hosted lifecycle hook '${hook.key}' must use an organization-scoped connection for authentication`,
+    )
   }
 
   const auth = hook.request?.auth?.connection
@@ -526,31 +590,40 @@ function serializeHostedDispatch(
 function hostedLifecycleDestination(
   hook: LifecycleHook,
   canonicalRepoNamespace: string,
-): { url: string; class: "public" | "private_local" } {
+): { url: string; class: "public" } {
   if (hook.kind === "github_repository_dispatch") {
     const [ownerFromNamespace, repoFromNamespace] = canonicalRepoNamespace.split("--")
     const owner = hook.github?.owner ?? ownerFromNamespace
     const repo = hook.github?.repo ?? repoFromNamespace
-    const apiBase = hook.github?.api_url ?? "https://api.github.com"
     return {
-      url: `${apiBase.replace(/\/$/, "")}/repos/${owner}/${repo}/dispatches`,
+      url: `https://api.github.com/repos/${owner}/${repo}/dispatches`,
       class: "public",
     }
   }
 
   return {
     url: hook.request?.url ?? "",
-    class: classifyDestinationUrl(hook.request?.url ?? ""),
+    class: "public",
   }
 }
 
 async function dispatchHostedLifecycle(
   spec: HostedDispatchSpec,
   payload: Record<string, unknown>,
+  context: {
+    itemId: string
+    orgId: string
+    postWebhook: typeof postPublicLifecycleWebhook
+  },
 ): Promise<void> {
   if (spec.kind === "github_repository_dispatch") {
     const target = resolveGitHubDispatchTarget(spec.github, payload.repo_namespace)
     const repo = await findRepoByFullName(`${target.owner}/${target.repo}`)
+    if (!repo || repo.orgId !== context.orgId) {
+      throw new Error(
+        `Repository ${target.owner}/${target.repo} is not owned by the lifecycle organization`,
+      )
+    }
     const installationId = spec.github.installationId ?? repo?.installationId
     if (!installationId) {
       throw new Error(
@@ -580,7 +653,7 @@ async function dispatchHostedLifecycle(
       throw new Error("Lifecycle payload is missing its execution scope")
     }
     const secret = await resolveLifecycleConnectionSecret(
-      repoNamespace,
+      context.orgId,
       environment,
       workspacePath,
       spec.request.auth.connection,
@@ -590,27 +663,23 @@ async function dispatchHostedLifecycle(
       spec.request.auth.scheme,
       secret,
       Buffer.from(JSON.stringify(payload)),
+      context.itemId,
     )
   }
 
-  const response = await fetch(spec.request.url, {
-    method: spec.request.method,
+  const body = Buffer.from(JSON.stringify(payload))
+  const status = await context.postWebhook({
+    url: spec.request.url,
     headers,
-    body: JSON.stringify(payload),
+    body,
   })
-  if (!response.ok) {
-    throw new Error(`Lifecycle webhook returned ${response.status}`)
+  if (status < 200 || status >= 300) {
+    throw new Error(`Lifecycle webhook returned ${status}`)
   }
 }
 
 function stripGitBranch(ref: string): string | null {
   return ref.startsWith("refs/heads/") ? ref.replace(/^refs\/heads\//, "") : null
-}
-
-function classifyDestinationUrl(url: string): "public" | "private_local" {
-  return url.includes("127.0.0.1") || url.includes("localhost") || url.includes(".local")
-    ? "private_local"
-    : "public"
 }
 
 function resolveGitHubDispatchTarget(
@@ -624,6 +693,9 @@ function resolveGitHubDispatchTarget(
   if (explicitOwner && explicitRepo) {
     return { owner: explicitOwner, repo: explicitRepo }
   }
+  if (explicitOwner || explicitRepo) {
+    throw new Error("GitHub repository_dispatch hooks must set both owner and repo together")
+  }
   const [owner, repo] = canonicalRepoNamespace.split("--")
   if (!owner || !repo) {
     throw new Error(`Could not resolve repository from namespace '${canonicalRepoNamespace}'`)
@@ -632,18 +704,12 @@ function resolveGitHubDispatchTarget(
 }
 
 async function resolveLifecycleConnectionSecret(
-  canonicalRepoNamespace: string,
+  orgId: string,
   environmentName: string,
   workspacePath: string,
   connectionName: string,
 ): Promise<string> {
-  const repoFullName = canonicalRepoNamespace.replace("--", "/")
-  const repo = await findRepoByFullName(repoFullName)
-  if (!repo?.orgId) {
-    throw new Error(`Repository '${repoFullName}' is not linked to a Yaffle organization`)
-  }
-
-  const matches = (await findConnectionsByName(repo.orgId, connectionName)).filter((connection) => {
+  const matches = (await findConnectionsByName(orgId, connectionName)).filter((connection) => {
     const scope = getConnectionScopeConfig(connection)
     return (
       scopeListAllows(scope.environmentScope, environmentName) &&
@@ -692,12 +758,45 @@ function applyLifecycleConnectionAuth(
   scheme: "bearer" | "hmac_sha256",
   secret: string,
   body: Buffer,
+  itemId: string,
 ): void {
   if (scheme === "bearer") {
     headers.set("authorization", `Bearer ${secret}`)
     return
   }
 
-  const signature = createHmac("sha256", secret).update(body).digest("hex")
+  const timestamp = Math.floor(Date.now() / 1000).toString()
+  const deliveryId = randomUUID()
+  const signature = createHmac("sha256", secret)
+    .update(timestamp)
+    .update(".")
+    .update(deliveryId)
+    .update(".")
+    .update(itemId)
+    .update(".")
+    .update(body)
+    .digest("hex")
+  headers.set("X-Yaffle-Delivery", deliveryId)
+  headers.set("X-Yaffle-Item", itemId)
+  headers.set("X-Yaffle-Timestamp", timestamp)
   headers.set("X-Yaffle-Signature", `sha256=${signature}`)
+}
+
+function assertHostedPayloadMatchesItem(
+  payload: Record<string, unknown>,
+  item: Awaited<ReturnType<typeof findLifecycleItemById>> & {},
+  run: Awaited<ReturnType<typeof findLifecycleRunById>> & {},
+  canonicalRepoNamespace: string,
+): void {
+  if (
+    payload.repo_namespace !== canonicalRepoNamespace ||
+    payload.environment !== run.environmentName ||
+    payload.workspace_path !== item.workspacePath ||
+    payload.item_key !== item.key ||
+    payload.phase !== item.phase
+  ) {
+    throw new ExecutionContextAssociationError(
+      `Hosted lifecycle item ${item.id} payload does not match its immutable execution context`,
+    )
+  }
 }

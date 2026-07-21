@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 
-import { afterAll, afterEach, beforeAll, expect, test } from "@yaffle/test"
+import { afterAll, beforeAll, expect, test } from "@yaffle/test"
 import { eq } from "drizzle-orm"
 
 import { createOrg } from "../db/queries/organizations.ts"
@@ -17,13 +17,13 @@ import {
   previews,
   principalRepoBindings,
   principals,
+  repositories,
   runGroups,
 } from "../db/schema.ts"
 import { db } from "./db.ts"
 import { ExecutionContextAssociationError } from "./execution-snapshot.ts"
 import { executeHostedLifecycleForDeployment } from "./hosted-lifecycle.ts"
 
-const originalFetch = globalThis.fetch
 let testOrgId: string | null = null
 
 beforeAll(async () => {
@@ -37,10 +37,6 @@ beforeAll(async () => {
   await db.delete(principals)
 })
 
-afterEach(() => {
-  globalThis.fetch = originalFetch
-})
-
 afterAll(async () => {
   await db.delete(lifecycleCompletionTokens)
   await db.delete(lifecycleEvents)
@@ -52,22 +48,19 @@ afterAll(async () => {
   await db.delete(principals)
   if (testOrgId) {
     await db.delete(jobs).where(eq(jobs.orgId, testOrgId))
+    await db.delete(repositories).where(eq(repositories.orgId, testOrgId))
     await db.delete(organizations).where(eq(organizations.id, testOrgId))
   }
 })
 
 test("dispatches lifecycle hooks from the immutable snapshot", async () => {
   const requests: Array<{ url: string; body: Record<string, unknown> }> = []
-  globalThis.fetch = async (input, init): Promise<Response> => {
-    const url =
-      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
-    const body =
-      typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {}
+  const postWebhook = async (values: { url: string; body: Buffer }): Promise<number> => {
     requests.push({
-      url,
-      body,
+      url: values.url,
+      body: JSON.parse(values.body.toString()) as Record<string, unknown>,
     })
-    return new Response(null, { status: 204 })
+    return 204
   }
 
   const org = await createOrg({
@@ -75,6 +68,15 @@ test("dispatches lifecycle hooks from the immutable snapshot", async () => {
     slug: `lifecycle-snapshot-${randomUUID()}`,
   })
   testOrgId = org.id
+  await db.insert(repositories).values({
+    orgId: org.id,
+    githubId: 2,
+    installationId: 1,
+    name: "fixture",
+    fullName: "test-owner/fixture",
+    defaultBranch: "main",
+    isActive: true,
+  })
   const principal = await createPrincipal({ type: "anonymous_session" })
   const binding = await ensurePrincipalRepoBinding({
     principalId: principal.id,
@@ -159,22 +161,25 @@ test("dispatches lifecycle hooks from the immutable snapshot", async () => {
     mode: "saas",
   })
 
-  await executeHostedLifecycleForDeployment({
-    runGroupId: runGroup.id,
-    deployment,
-    outputs: {
-      endpoint: {
-        value: "https://service.example.test",
-        type: "string",
-        sensitive: false,
-      },
-      database_password: {
-        value: "do-not-dispatch",
-        type: "string",
-        sensitive: true,
+  await executeHostedLifecycleForDeployment(
+    {
+      runGroupId: runGroup.id,
+      deployment,
+      outputs: {
+        endpoint: {
+          value: "https://service.example.test",
+          type: "string",
+          sensitive: false,
+        },
+        database_password: {
+          value: "do-not-dispatch",
+          type: "string",
+          sensitive: true,
+        },
       },
     },
-  })
+    { postWebhook },
+  )
 
   expect(requests).toHaveLength(1)
   expect(requests[0]).toMatchObject({
@@ -199,12 +204,33 @@ test("dispatches lifecycle hooks from the immutable snapshot", async () => {
     slug: `foreign-lifecycle-snapshot-${randomUUID()}`,
   })
   await expect(
-    executeHostedLifecycleForDeployment({
-      runGroupId: runGroup.id,
-      deployment: { ...deployment, orgId: foreignOrg.id },
-      outputs: {},
-    }),
+    executeHostedLifecycleForDeployment(
+      {
+        runGroupId: runGroup.id,
+        deployment: { ...deployment, orgId: foreignOrg.id },
+        outputs: {},
+      },
+      { postWebhook },
+    ),
   ).rejects.toBeInstanceOf(ExecutionContextAssociationError)
   expect(requests).toHaveLength(1)
+  await db
+    .update(repositories)
+    .set({ orgId: foreignOrg.id })
+    .where(eq(repositories.fullName, "test-owner/fixture"))
+  await expect(
+    executeHostedLifecycleForDeployment(
+      {
+        runGroupId: runGroup.id,
+        deployment,
+        outputs: {},
+      },
+      { postWebhook },
+    ),
+  ).rejects.toBeInstanceOf(ExecutionContextAssociationError)
+  await db
+    .update(repositories)
+    .set({ orgId: org.id })
+    .where(eq(repositories.fullName, "test-owner/fixture"))
   await db.delete(organizations).where(eq(organizations.id, foreignOrg.id))
 })

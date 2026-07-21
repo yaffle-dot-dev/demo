@@ -652,6 +652,8 @@ function validateSemantics(config: YaffleTomlConfig): void {
             errors.push(
               `Workspace "${ws.path}" ${phase} hook "${hook.key}" only supports POST requests`,
             )
+          } else if (new URL(hook.request.url).protocol !== "https:") {
+            errors.push(`Workspace "${ws.path}" ${phase} hook "${hook.key}" must use an HTTPS URL`)
           }
 
           if (hook.kind === "generic_hmac") {
@@ -684,6 +686,17 @@ function validateSemantics(config: YaffleTomlConfig): void {
             errors.push(
               `Workspace "${ws.path}" ${phase} hook "${hook.key}" requires github settings`,
             )
+          } else {
+            if (Boolean(hook.github.owner) !== Boolean(hook.github.repo)) {
+              errors.push(
+                `Workspace "${ws.path}" ${phase} hook "${hook.key}" must set both GitHub owner and repo together`,
+              )
+            }
+            if (hook.github.api_url) {
+              errors.push(
+                `Workspace "${ws.path}" ${phase} hook "${hook.key}" does not support a custom GitHub API URL`,
+              )
+            }
           }
           if (hook.request) {
             errors.push(

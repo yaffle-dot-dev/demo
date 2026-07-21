@@ -740,7 +740,10 @@ export function createCloudConvergeRoute(
                   .map((event) => ({
                     id: event.id,
                     eventType: event.eventType,
-                    payload: event.payload,
+                    payload:
+                      event.eventType === "callback"
+                        ? omitLifecycleCallbackMetadata(event.payload)
+                        : event.payload,
                     createdAt: event.createdAt.toISOString(),
                   })),
               })),
@@ -752,6 +755,15 @@ export function createCloudConvergeRoute(
   })
 
   return route
+}
+
+function omitLifecycleCallbackMetadata(payload: unknown): Record<string, unknown> {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return {}
+  }
+  const { metadata, ...publicPayload } = payload as Record<string, unknown>
+  void metadata
+  return publicPayload
 }
 const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
   const expectedToken = process.env[LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR]?.trim()

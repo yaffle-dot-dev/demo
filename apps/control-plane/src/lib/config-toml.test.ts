@@ -1272,6 +1272,77 @@ environments = ["*"]
   })
 })
 
+describe("hosted lifecycle destination validation", () => {
+  function lifecycleConfig(hook: string): string {
+    return `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "infra"
+environments = ["main"]
+
+${hook}
+`
+  }
+
+  test("rejects non-HTTPS generic hooks", () => {
+    expect(() =>
+      parseYaffleToml(
+        lifecycleConfig(`
+[[workspaces.activation]]
+key = "deploy"
+environments = ["main"]
+kind = "generic"
+scopes = ["usable"]
+
+[workspaces.activation.request]
+url = "http://127.0.0.1/deploy"
+method = "POST"
+`),
+      ),
+    ).toThrow("must use an HTTPS URL")
+  })
+
+  test("rejects partial GitHub repository targets", () => {
+    expect(() =>
+      parseYaffleToml(
+        lifecycleConfig(`
+[[workspaces.activation]]
+key = "deploy"
+environments = ["main"]
+kind = "github_repository_dispatch"
+scopes = ["usable"]
+
+[workspaces.activation.github]
+owner = "another-owner"
+event_type = "deploy"
+`),
+      ),
+    ).toThrow("must set both GitHub owner and repo together")
+  })
+
+  test("rejects repository-authored GitHub API origins", () => {
+    expect(() =>
+      parseYaffleToml(
+        lifecycleConfig(`
+[[workspaces.activation]]
+key = "deploy"
+environments = ["main"]
+kind = "github_repository_dispatch"
+scopes = ["usable"]
+
+[workspaces.activation.github]
+event_type = "deploy"
+api_url = "https://github.example.test/api/v3"
+`),
+      ),
+    ).toThrow("does not support a custom GitHub API URL")
+  })
+})
+
 describe("resolveApprovers", () => {
   const config = parseYaffleToml(`
 version = 1
