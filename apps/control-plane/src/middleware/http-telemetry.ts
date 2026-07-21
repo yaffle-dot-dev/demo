@@ -6,6 +6,14 @@ import {
   SpanStatusCode,
 } from "../lib/telemetry.ts"
 
+const STATE_UPLOAD_CAPABILITY_PATH = /(\/state-versions\/[^/]+\/upload(?:-json)?\/)[^/?#]+/
+
+export function redactHttpUrl(rawUrl: string): { url: string; path: string } {
+  const parsed = new URL(rawUrl)
+  parsed.pathname = parsed.pathname.replace(STATE_UPLOAD_CAPABILITY_PATH, "$1:capability")
+  return { url: parsed.toString(), path: parsed.pathname }
+}
+
 /**
  * HTTP telemetry middleware that:
  * 1. Creates a root span for each request
@@ -15,18 +23,19 @@ import {
 export async function httpTelemetry(c: Context, next: Next): Promise<void | Response> {
   const start = Date.now()
   const method = c.req.method
-  const url = new URL(c.req.url)
-  const path = url.pathname
+  const requestUrl = new URL(c.req.url)
+  const redacted = redactHttpUrl(c.req.url)
+  const path = redacted.path
 
   return tracer.startActiveSpan(
     `${method} ${path}`,
     {
       attributes: {
         "http.method": method,
-        "http.url": c.req.url,
+        "http.url": redacted.url,
         "http.target": path,
-        "http.host": url.host,
-        "http.scheme": url.protocol.replace(":", ""),
+        "http.host": requestUrl.host,
+        "http.scheme": requestUrl.protocol.replace(":", ""),
       },
     },
     async (span) => {
@@ -85,11 +94,13 @@ export async function httpTelemetry(c: Context, next: Next): Promise<void | Resp
  * Replaces UUIDs and numeric IDs with placeholders.
  */
 function normalizeRoute(path: string): string {
-  return path
-    // Replace UUIDs
-    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ":id")
-    // Replace numeric IDs
-    .replace(/\/\d+/g, "/:id")
-    // Normalize trailing slashes
-    .replace(/\/+$/, "") || "/"
+  return (
+    path
+      // Replace UUIDs
+      .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, ":id")
+      // Replace numeric IDs
+      .replace(/\/\d+/g, "/:id")
+      // Normalize trailing slashes
+      .replace(/\/+$/, "") || "/"
+  )
 }

@@ -10,6 +10,8 @@ import {
 const originalJobTokenSecret = process.env.YAFFLE_JOB_TOKEN_SECRET
 const originalRunTokenSecret = process.env.YAFFLE_RUN_TOKEN_SECRET
 
+process.env.YAFFLE_PUBLIC_API_URL ??= "http://localhost:3000"
+
 afterEach(() => {
   if (originalJobTokenSecret === undefined) {
     delete process.env.YAFFLE_JOB_TOKEN_SECRET
@@ -28,12 +30,7 @@ describe("job token leases", () => {
   test("preserves spawn lease token in generated job tokens", async () => {
     process.env.YAFFLE_JOB_TOKEN_SECRET = "test-secret"
 
-    const token = await generateJobToken(
-      "job-123",
-      "deployment-123",
-      "org-123",
-      "lease-123",
-    )
+    const token = await generateJobToken("job-123", "deployment-123", "org-123", "lease-123")
 
     const payload = await verifyJobToken(token)
 
@@ -47,17 +44,25 @@ describe("job token leases", () => {
   test("allows job tokens without a spawn lease token", async () => {
     process.env.YAFFLE_JOB_TOKEN_SECRET = "test-secret"
 
-    const token = await generateJobToken(
-      "job-456",
-      "deployment-456",
-      "org-456",
-      undefined,
-    )
+    const token = await generateJobToken("job-456", "deployment-456", "org-456", undefined)
 
     const payload = await verifyJobToken(token)
 
     expect(payload).not.toBeNull()
     expect(payload?.spawn_lease_token).toBeUndefined()
+  })
+
+  test("rejects an expired job capability", async () => {
+    process.env.YAFFLE_JOB_TOKEN_SECRET = "test-secret"
+    const token = await generateJobToken(
+      "job-expired",
+      "deployment-expired",
+      "org-expired",
+      undefined,
+      -1,
+    )
+
+    expect(await verifyJobToken(token)).toBeNull()
   })
 })
 

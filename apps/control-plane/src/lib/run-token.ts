@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto"
+
 import { SignJWT, jwtVerify, type JWTPayload } from "jose"
 
 import { TFC_SCOPES } from "../db/queries/api-tokens.ts"
@@ -27,9 +29,24 @@ export function getMergeImpactRunTokenScopes(): string[] {
  */
 export interface RunTokenPayload extends JWTPayload {
   sub: string // "run:{run_id}"
+  run_id: string
+  job_id: string
+  deployment_id: string
+  run_group_id: string
   workspace_id: string
   org_id: string
   scopes: string[]
+}
+
+export interface RunTokenCapability {
+  runId: string
+  jobId: string
+  deploymentId: string
+  runGroupId: string
+  workspaceId: string
+  orgId: string
+  scopes?: string[]
+  ttlHours?: number
 }
 
 /**
@@ -42,8 +59,11 @@ function getJwtSecret(): Uint8Array {
   if (!secret) {
     throw new Error("No JWT secret configured (YAFFLE_RUN_TOKEN_SECRET or BETTER_AUTH_SECRET)")
   }
-  return new TextEncoder().encode(secret)
+  return createHmac("sha256", secret).update("yaffle-run-capability-v1").digest()
 }
+
+const TOKEN_ISSUER = "yaffle-control-plane"
+const TOKEN_AUDIENCE = "yaffle-tfc-runner"
 
 /**
  * Generate a run token (JWT) for automated Terraform runs.
@@ -54,27 +74,34 @@ function getJwtSecret(): Uint8Array {
  * @param scopes - Permission scopes (default: workspace:read, state:read, state:write, state:download, workspace:lock)
  * @param ttlHours - Token TTL in hours (default: 4)
  */
-export async function generateRunToken(
-  runId: string,
-  workspaceId: string,
-  orgId: string,
-  scopes: string[] = DEFAULT_RUN_TOKEN_SCOPES,
-  ttlHours: number = 4,
-): Promise<string> {
+export async function generateRunToken(capability: RunTokenCapability): Promise<string> {
   const secret = getJwtSecret()
+  const scopes = capability.scopes ?? DEFAULT_RUN_TOKEN_SCOPES
 
   const token = await new SignJWT({
-    workspace_id: workspaceId,
-    org_id: orgId,
+    run_id: capability.runId,
+    job_id: capability.jobId,
+    deployment_id: capability.deploymentId,
+    run_group_id: capability.runGroupId,
+    workspace_id: capability.workspaceId,
+    org_id: capability.orgId,
     scopes,
   })
     .setProtectedHeader({ alg: "HS256" })
-    .setSubject(`run:${runId}`)
+    .setSubject(`run:${capability.runId}`)
+    .setIssuer(TOKEN_ISSUER)
+    .setAudience(TOKEN_AUDIENCE)
     .setIssuedAt()
-    .setExpirationTime(`${ttlHours}h`)
+    .setExpirationTime(`${capability.ttlHours ?? 4}h`)
     .sign(secret)
 
-  log.debug("Run token generated", { runId, workspaceId, orgId })
+  log.debug("Run token generated", {
+    runId: capability.runId,
+    jobId: capability.jobId,
+    deploymentId: capability.deploymentId,
+    workspaceId: capability.workspaceId,
+    orgId: capability.orgId,
+  })
   return token
 }
 
@@ -84,18 +111,33 @@ export async function generateRunToken(
 export async function verifyRunToken(token: string): Promise<RunTokenPayload | null> {
   try {
     const secret = getJwtSecret()
-    const { payload } = await jwtVerify(token, secret)
+    const { payload } = await jwtVerify(token, secret, {
+      algorithms: ["HS256"],
+      issuer: TOKEN_ISSUER,
+      audience: TOKEN_AUDIENCE,
+    })
+    const subjectMatchesRun =
+      typeof payload.run_id === "string" && payload.sub === `run:${payload.run_id}`
 
     // Validate required fields
     if (
-      !payload.sub?.startsWith("run:") ||
+      typeof payload.run_id !== "string" ||
+      !subjectMatchesRun ||
+      typeof payload.job_id !== "string" ||
+      typeof payload.deployment_id !== "string" ||
+      typeof payload.run_group_id !== "string" ||
       typeof payload.workspace_id !== "string" ||
       typeof payload.org_id !== "string" ||
-      !Array.isArray(payload.scopes)
+      !Array.isArray(payload.scopes) ||
+      !payload.scopes.every((scope) => typeof scope === "string")
     ) {
       log.debug("Run token validation failed: missing required fields", {
         hasSub: !!payload.sub,
-        subStartsWithRun: payload.sub?.startsWith("run:"),
+        subjectMatchesRun,
+        hasRunId: typeof payload.run_id === "string",
+        hasJobId: typeof payload.job_id === "string",
+        hasDeploymentId: typeof payload.deployment_id === "string",
+        hasRunGroupId: typeof payload.run_group_id === "string",
         hasWorkspaceId: typeof payload.workspace_id === "string",
         hasOrgId: typeof payload.org_id === "string",
         hasScopes: Array.isArray(payload.scopes),

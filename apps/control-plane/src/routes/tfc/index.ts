@@ -35,7 +35,7 @@ tfcRoute.use("/api/v2/*", async (c, next) => {
   // Force Content-Type to JSON:API spec - go-tfe expects this
   // BUT skip for state upload endpoints which emulate S3 blob storage
   // The upload endpoints return empty body and shouldn't claim to be JSON
-  if (!c.req.path.endsWith("/upload") && !c.req.path.endsWith("/upload-json")) {
+  if (!/\/upload(?:-json)?\/[^/]+$/.test(c.req.path)) {
     c.header("Content-Type", "application/vnd.api+json")
   }
 })
@@ -49,15 +49,15 @@ tfcRoute.get("/api/v2/ping", (c) => {
   return c.json({ data: { type: "pings", id: "1" } })
 })
 
-// TFC API v2 - Workspaces
-// Workspace routes handle both /organizations/:org/workspaces and /workspaces/:id patterns
-tfcRoute.route("/api/v2", workspacesRoute)
-
 // TFC API v2 - State Upload (unauthenticated)
-// Must be registered BEFORE authenticated state-versions route.
+// Must be registered before every authenticated router mounted at the same prefix.
 // The upload URL acts like a presigned URL - no Bearer token required.
 // Security is provided by the unpredictable UUID and one-time-use semantics.
 tfcRoute.route("/api/v2", stateUploadRoute)
+
+// TFC API v2 - Workspaces
+// Workspace routes handle both /organizations/:org/workspaces and /workspaces/:id patterns
+tfcRoute.route("/api/v2", workspacesRoute)
 
 // TFC API v2 - State Versions (authenticated)
 // State version routes handle workspace state management

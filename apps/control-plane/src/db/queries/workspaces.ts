@@ -1,4 +1,4 @@
-import { and, desc, eq, gt, inArray, type SQL } from "drizzle-orm"
+import { and, desc, eq, gt, inArray, sql, type SQL } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { organizations, workspaces } from "../schema.ts"
@@ -167,7 +167,16 @@ export async function lockWorkspace(
   workspaceId: string,
   lockedBy: string,
   reason?: string,
-  options?: { allowDestroying?: boolean },
+  options?: {
+    allowDestroying?: boolean
+    runnerCapability?: {
+      runId: string
+      jobId: string
+      deploymentId: string
+      runGroupId: string
+      orgId: string
+    }
+  },
 ): Promise<Workspace | undefined> {
   return withDbSpan("update", "workspaces", async () => {
     const workspace = await findWorkspaceById(workspaceId)
@@ -198,10 +207,48 @@ export async function lockWorkspace(
         locked: true,
         lockedBy,
         lockedAt: new Date(),
+        lockGeneration: sql`${workspaces.lockGeneration} + 1`,
         lockReason: reason,
         lockId,
       })
-      .where(and(eq(workspaces.id, workspaceId), eq(workspaces.locked, false), allowedStatus))
+      .where(
+        and(
+          eq(workspaces.id, workspaceId),
+          eq(workspaces.locked, false),
+          allowedStatus,
+          options?.runnerCapability
+            ? sql`EXISTS (
+                SELECT 1
+                FROM tf_runs
+                INNER JOIN iac_jobs ON iac_jobs.id = tf_runs.job_id
+                INNER JOIN workspace_deployments
+                  ON workspace_deployments.id = tf_runs.deployment_id
+                  AND workspace_deployments.run_group_id = tf_runs.run_group_id
+                WHERE tf_runs.id = ${options.runnerCapability.runId}
+                  AND tf_runs.job_id = ${options.runnerCapability.jobId}
+                  AND tf_runs.deployment_id = ${options.runnerCapability.deploymentId}
+                  AND tf_runs.run_group_id = ${options.runnerCapability.runGroupId}
+                  AND tf_runs.status = 'running'
+                  AND iac_jobs.status = 'running'
+                  AND workspace_deployments.org_id = ${options.runnerCapability.orgId}
+                  AND ${workspaces.orgId} = ${options.runnerCapability.orgId}
+                  AND (
+                    (
+                      tf_runs.plan_purpose = 'merge_impact'
+                      AND tf_runs.target_workspace_id = ${workspaceId}
+                    ) OR (
+                      tf_runs.plan_purpose = 'environment'
+                      AND ${workspaces.repo} = workspace_deployments.repo
+                      AND ${workspaces.environmentKind} = workspace_deployments.environment_kind
+                      AND ${workspaces.environmentName} = workspace_deployments.environment_name
+                      AND ${workspaces.workspacePath} = workspace_deployments.workspace_path
+                      AND ${workspaces.ref} = workspace_deployments.ref
+                    )
+                  )
+              )`
+            : undefined,
+        ),
+      )
       .returning()
     return rows[0]
   })
@@ -213,6 +260,13 @@ export async function lockWorkspace(
 export async function unlockWorkspace(
   workspaceId: string,
   lockedBy: string,
+  runnerCapability?: {
+    runId: string
+    jobId: string
+    deploymentId: string
+    runGroupId: string
+    orgId: string
+  },
 ): Promise<Workspace | undefined> {
   return withDbSpan("update", "workspaces", async () => {
     const rows = await db
@@ -224,7 +278,43 @@ export async function unlockWorkspace(
         lockReason: null,
         lockId: null,
       })
-      .where(and(eq(workspaces.id, workspaceId), eq(workspaces.lockedBy, lockedBy)))
+      .where(
+        and(
+          eq(workspaces.id, workspaceId),
+          eq(workspaces.lockedBy, lockedBy),
+          runnerCapability
+            ? sql`EXISTS (
+                SELECT 1
+                FROM tf_runs
+                INNER JOIN iac_jobs ON iac_jobs.id = tf_runs.job_id
+                INNER JOIN workspace_deployments
+                  ON workspace_deployments.id = tf_runs.deployment_id
+                  AND workspace_deployments.run_group_id = tf_runs.run_group_id
+                WHERE tf_runs.id = ${runnerCapability.runId}
+                  AND tf_runs.job_id = ${runnerCapability.jobId}
+                  AND tf_runs.deployment_id = ${runnerCapability.deploymentId}
+                  AND tf_runs.run_group_id = ${runnerCapability.runGroupId}
+                  AND tf_runs.status = 'running'
+                  AND iac_jobs.status = 'running'
+                  AND workspace_deployments.org_id = ${runnerCapability.orgId}
+                  AND ${workspaces.orgId} = ${runnerCapability.orgId}
+                  AND (
+                    (
+                      tf_runs.plan_purpose = 'merge_impact'
+                      AND tf_runs.target_workspace_id = ${workspaceId}
+                    ) OR (
+                      tf_runs.plan_purpose = 'environment'
+                      AND ${workspaces.repo} = workspace_deployments.repo
+                      AND ${workspaces.environmentKind} = workspace_deployments.environment_kind
+                      AND ${workspaces.environmentName} = workspace_deployments.environment_name
+                      AND ${workspaces.workspacePath} = workspace_deployments.workspace_path
+                      AND ${workspaces.ref} = workspace_deployments.ref
+                    )
+                  )
+              )`
+            : undefined,
+        ),
+      )
       .returning()
     return rows[0]
   })
@@ -250,15 +340,47 @@ export async function forceUnlockWorkspace(workspaceId: string): Promise<Workspa
   })
 }
 
-/**
- * Update the current state version ID for a workspace.
- */
-export async function updateWorkspaceCurrentState(
-  workspaceId: string,
-  currentStateVersionId: string,
+export async function unlockWorkspaceForDeploymentRun(
+  deploymentId: string,
+  runId: string,
 ): Promise<void> {
   return withDbSpan("update", "workspaces", async () => {
-    await db.update(workspaces).set({ currentStateVersionId }).where(eq(workspaces.id, workspaceId))
+    await db
+      .update(workspaces)
+      .set({
+        locked: false,
+        lockedBy: null,
+        lockedAt: null,
+        lockReason: null,
+        lockId: null,
+      })
+      .where(
+        and(
+          eq(workspaces.lockedBy, `run:${runId}`),
+          sql`EXISTS (
+            SELECT 1
+            FROM tf_runs
+            INNER JOIN workspace_deployments
+              ON workspace_deployments.id = tf_runs.deployment_id
+            WHERE tf_runs.id = ${runId}
+              AND tf_runs.deployment_id = ${deploymentId}
+              AND (
+                (
+                  tf_runs.plan_purpose = 'merge_impact'
+                  AND tf_runs.target_workspace_id = ${workspaces.id}
+                ) OR (
+                  tf_runs.plan_purpose = 'environment'
+                  AND ${workspaces.orgId} = workspace_deployments.org_id
+                  AND ${workspaces.repo} = workspace_deployments.repo
+                  AND ${workspaces.environmentKind} = workspace_deployments.environment_kind
+                  AND ${workspaces.environmentName} = workspace_deployments.environment_name
+                  AND ${workspaces.workspacePath} = workspace_deployments.workspace_path
+                  AND ${workspaces.ref} = workspace_deployments.ref
+                )
+              )
+          )`,
+        ),
+      )
   })
 }
 

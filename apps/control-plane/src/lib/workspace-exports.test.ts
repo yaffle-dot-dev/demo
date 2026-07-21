@@ -23,6 +23,7 @@ function makeWorkspace(overrides: Partial<TfcWorkspace> = {}): TfcWorkspace {
     locked: false,
     lockedBy: null,
     lockedAt: null,
+    lockGeneration: 0,
     lockReason: null,
     lockId: null,
     currentStateVersionId: null,
@@ -45,7 +46,9 @@ function makeConsumer(overrides: Partial<ModuleConsumerWorkspace> = {}): ModuleC
   }
 }
 
-function makeCrossOrgConsumer(overrides: Partial<ModuleConsumerWorkspace> = {}): ModuleConsumerWorkspace {
+function makeCrossOrgConsumer(
+  overrides: Partial<ModuleConsumerWorkspace> = {},
+): ModuleConsumerWorkspace {
   return makeConsumer({
     orgId: "org-consumer",
     orgSlug: "consumer-org",
@@ -299,15 +302,13 @@ describe("output filtering", () => {
   }
 
   test("filters outputs to the authorized subset", () => {
-    expect(filterOutputsForAccess(outputs, ["cluster_endpoint", "cluster_ca"]))
-      .toEqual({
-        cluster_endpoint: outputs.cluster_endpoint,
-        cluster_ca: outputs.cluster_ca,
-      })
+    expect(filterOutputsForAccess(outputs, ["cluster_endpoint", "cluster_ca"])).toEqual({
+      cluster_endpoint: outputs.cluster_endpoint,
+      cluster_ca: outputs.cluster_ca,
+    })
   })
 
   test("detects sensitive outputs in the authorized public subset", () => {
-    expect(findSensitiveExportedOutputs(outputs, ["cluster_endpoint", "token"]))
-      .toEqual(["token"])
+    expect(findSensitiveExportedOutputs(outputs, ["cluster_endpoint", "token"])).toEqual(["token"])
   })
 })

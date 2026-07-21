@@ -15,7 +15,12 @@ import {
 import { findStateVersionById } from "../db/queries/state-versions.ts"
 import { findWorkspaceById, findWorkspaceByLockId } from "../db/queries/workspaces.ts"
 import { verifyExecutionToken } from "../lib/principal-tokens.ts"
-import { verifyRunToken } from "../lib/run-token.ts"
+import {
+  getMergeImpactRunTokenScopes,
+  getRunTokenScopes,
+  verifyRunToken,
+} from "../lib/run-token.ts"
+import { resolveActiveRunCapability } from "../lib/runner-capability.ts"
 
 // Re-export for convenience
 export { generateRunToken, type RunTokenPayload } from "../lib/run-token.ts"
@@ -27,6 +32,9 @@ export interface TfcAuthContext {
   type: "user" | "run" | "execution"
   userId?: string // Present for user tokens
   runId?: string // Present for run tokens
+  jobId?: string // Present for run tokens
+  deploymentId?: string // Present for run tokens
+  runGroupId?: string // Present for run tokens
   workspaceId?: string // Present for run tokens (scoped access)
   orgId?: string // Present for run tokens and org-scoped user tokens
   scopes: string[] // e.g., ["state:read", "state:write", "workspace:lock"]
@@ -61,8 +69,7 @@ const ROLE_HIERARCHY: Record<TfcRole, number> = {
   admin: 2,
 }
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 function jsonApiError(status: number, title: string, detail?: string): Response {
   return Response.json(
@@ -105,50 +112,28 @@ export function tfcAuth(): MiddlewareHandler {
     const token = extractBearerToken(c)
 
     if (!token) {
-      return c.json(
-        { errors: [{ status: "401", title: "Authentication required" }] },
-        401,
-      )
+      return c.json({ errors: [{ status: "401", title: "Authentication required" }] }, 401)
     }
-
-    // Try JWT verification first (run tokens are JWTs)
-    log.debug("TFC auth: attempting token verification", {
-      tokenPrefix: token.slice(0, 20) + "...",
-      tokenLength: token.length,
-      looksLikeJwt: token.split(".").length === 3,
-    })
 
     const executionPayload = await verifyExecutionToken(token)
     if (executionPayload) {
       const binding = await findPrincipalRepoBindingById(executionPayload.repo_binding_id)
       if (!binding || binding.principalId !== executionPayload.principal_id) {
-        return c.json(
-          { errors: [{ status: "401", title: "Invalid token" }] },
-          401,
-        )
+        return c.json({ errors: [{ status: "401", title: "Invalid token" }] }, 401)
       }
 
       if (executionPayload.session_id) {
         const record = await findAnonymousSessionById(executionPayload.session_id)
         if (!record || record.principal.id !== executionPayload.principal_id) {
-          return c.json(
-            { errors: [{ status: "401", title: "Invalid token" }] },
-            401,
-          )
+          return c.json({ errors: [{ status: "401", title: "Invalid token" }] }, 401)
         }
 
         if (record.principal.status !== "active" || record.session.status !== "active") {
-          return c.json(
-            { errors: [{ status: "401", title: "Invalid token" }] },
-            401,
-          )
+          return c.json({ errors: [{ status: "401", title: "Invalid token" }] }, 401)
         }
 
         if (record.session.expiresAt && record.session.expiresAt.getTime() <= Date.now()) {
-          return c.json(
-            { errors: [{ status: "401", title: "Invalid token" }] },
-            401,
-          )
+          return c.json({ errors: [{ status: "401", title: "Invalid token" }] }, 401)
         }
 
         await touchPrincipalActivity({
@@ -159,10 +144,7 @@ export function tfcAuth(): MiddlewareHandler {
       } else {
         const principal = await findPrincipalById(executionPayload.principal_id)
         if (!principal || principal.status !== "active") {
-          return c.json(
-            { errors: [{ status: "401", title: "Invalid token" }] },
-            401,
-          )
+          return c.json({ errors: [{ status: "401", title: "Invalid token" }] }, 401)
         }
 
         await touchPrincipalActivity({
@@ -194,20 +176,50 @@ export function tfcAuth(): MiddlewareHandler {
 
     const runPayload = await verifyRunToken(token)
     if (runPayload) {
-      const runId = runPayload.sub.replace("run:", "")
-
-      // TODO: Optionally verify run is still active in database
-      // For now, we trust the JWT signature and expiry
+      const capability = await resolveActiveRunCapability(runPayload)
+      if (!capability) {
+        log.warn("TFC auth: inactive or mismatched run capability", {
+          runId: runPayload.run_id,
+          jobId: runPayload.job_id,
+          deploymentId: runPayload.deployment_id,
+          workspaceId: runPayload.workspace_id,
+          orgId: runPayload.org_id,
+          reason: "capability_inactive_or_mismatched",
+        })
+        return c.json({ errors: [{ status: "401", title: "Invalid token" }] }, 401)
+      }
+      const allowedScopes = new Set(
+        capability.planPurpose === "merge_impact"
+          ? getMergeImpactRunTokenScopes()
+          : getRunTokenScopes(capability.runType),
+      )
+      if (runPayload.scopes.some((scope) => !allowedScopes.has(scope))) {
+        log.warn("TFC auth: run capability requested disallowed scopes", {
+          runId: capability.runId,
+          jobId: capability.jobId,
+          reason: "scope_exceeds_run_capability",
+        })
+        return c.json({ errors: [{ status: "401", title: "Invalid token" }] }, 401)
+      }
 
       c.set("tfcAuth", {
         type: "run",
-        runId,
-        workspaceId: runPayload.workspace_id,
-        orgId: runPayload.org_id,
+        runId: capability.runId,
+        jobId: capability.jobId,
+        deploymentId: capability.deploymentId,
+        runGroupId: capability.runGroupId,
+        workspaceId: capability.workspaceId,
+        orgId: capability.orgId,
         scopes: runPayload.scopes,
       } as TfcAuthContext)
 
-      log.debug("Run token authenticated", { runId, workspaceId: runPayload.workspace_id })
+      log.debug("Run token authenticated", {
+        runId: capability.runId,
+        jobId: capability.jobId,
+        deploymentId: capability.deploymentId,
+        workspaceId: capability.workspaceId,
+        orgId: capability.orgId,
+      })
       return next()
     }
 
@@ -218,13 +230,9 @@ export function tfcAuth(): MiddlewareHandler {
 
     if (!apiToken) {
       log.warn("TFC auth: token verification failed", {
-        tokenPrefix: token.slice(0, 20) + "...",
-        tokenHash: tokenHash.slice(0, 16) + "...",
+        reason: "token_not_found",
       })
-      return c.json(
-        { errors: [{ status: "401", title: "Invalid token" }] },
-        401,
-      )
+      return c.json({ errors: [{ status: "401", title: "Invalid token" }] }, 401)
     }
 
     // Update last used timestamp (fire and forget)
@@ -272,10 +280,7 @@ export function requireScopes(...requiredScopes: string[]): MiddlewareHandler {
     const auth = c.get("tfcAuth") as TfcAuthContext | undefined
 
     if (!auth) {
-      return c.json(
-        { errors: [{ status: "401", title: "Authentication required" }] },
-        401,
-      )
+      return c.json({ errors: [{ status: "401", title: "Authentication required" }] }, 401)
     }
 
     // Check if all required scopes are present

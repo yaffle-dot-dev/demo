@@ -16,12 +16,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  HeadObjectCommand,
-} from "@aws-sdk/client-s3"
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand } from "@aws-sdk/client-s3"
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner"
 
 import { getAwsClientConfig } from "./aws-client-config.ts"
@@ -134,11 +129,9 @@ export class WorkspaceCache {
       workDir,
     })
 
-    const tarResult = spawnSync(
-      "tar",
-      ["-czf", tarballPath, "-C", workDir, "."],
-      { stdio: ["ignore", "pipe", "pipe"] },
-    )
+    const tarResult = spawnSync("tar", ["-czf", tarballPath, "-C", workDir, "."], {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
 
     if ((tarResult.status ?? 1) !== 0) {
       const stderr = tarResult.stderr.toString()
@@ -163,10 +156,9 @@ export class WorkspaceCache {
         Key: key,
         Body: tarballData,
         ContentType: "application/gzip",
-        Tagging: toS3ObjectTagging(buildOrgResourceTags(
-          { orgId, orgSlug },
-          { resourceClass: "workspace-cache" },
-        )),
+        Tagging: toS3ObjectTagging(
+          buildOrgResourceTags({ orgId, orgSlug }, { resourceClass: "workspace-cache" }),
+        ),
       }),
     )
 
@@ -190,17 +182,22 @@ export class WorkspaceCache {
     runId: string,
     expiresIn: number = 15 * 60,
   ): Promise<{ uploadUrl: string; s3Key: string }> {
-    const s3Key = `plan-files/${runId}/tfplan`
+    const s3Key = `plan-files/${runId}/${randomUUID()}/tfplan`
     const uploadUrl = await getSignedUrl(
       this.s3,
       new PutObjectCommand({
         Bucket: this.bucket,
         Key: s3Key,
         ContentType: "application/octet-stream",
+        IfNoneMatch: "*",
       }),
       { expiresIn },
     )
     return { uploadUrl, s3Key }
+  }
+
+  async assertPlanFileExists(s3Key: string): Promise<void> {
+    await this.s3.send(new HeadObjectCommand({ Bucket: this.bucket, Key: s3Key }))
   }
 
   /**
@@ -254,10 +251,12 @@ export class WorkspaceCache {
     const outputDir = await mkdtemp(join(tmpdir(), "yaffle-ws-cache-"))
     const tarballPath = join(tmpdir(), `yaffle-ws-cache-${Date.now()}-${randomUUID()}.tar.gz`)
 
-    const object = await this.s3.send(new GetObjectCommand({
-      Bucket: this.bucket,
-      Key: s3Key,
-    }))
+    const object = await this.s3.send(
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: s3Key,
+      }),
+    )
 
     const bytes = await object.Body?.transformToByteArray()
     if (!bytes) {
@@ -266,12 +265,7 @@ export class WorkspaceCache {
 
     await writeFile(tarballPath, bytes)
 
-    const extract = spawnSync("tar", [
-      "-xzf",
-      tarballPath,
-      "-C",
-      outputDir,
-    ], {
+    const extract = spawnSync("tar", ["-xzf", tarballPath, "-C", outputDir], {
       stdio: ["ignore", "pipe", "pipe"],
     })
 

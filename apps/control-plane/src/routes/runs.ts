@@ -7,7 +7,6 @@ import { findRunById, getRunLogSnapshot, updateRunStatus } from "../db/queries/t
 import { getSpansForRun } from "../db/queries/resource-spans.ts"
 import { findDeploymentById } from "../db/queries/workspace-deployments.ts"
 import { cancelRunningJobForDeploymentAndType } from "../db/queries/iac-jobs.ts"
-import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
 
 import { events, type RunUpdateEvent } from "../lib/events.ts"
 import { processRegistry } from "../lib/process-registry.ts"
@@ -39,7 +38,9 @@ const runOutputQuerySchema = z.object({
 export const runsRoute = new Hono()
 
 // Helper to get run's orgId for resource-based auth
-async function getRunOrgId(c: { req: { param: (key: string) => string | undefined } }): Promise<string | null> {
+async function getRunOrgId(c: {
+  req: { param: (key: string) => string | undefined }
+}): Promise<string | null> {
   const id = c.req.param("id")
   if (!id) return null
   const run = await findRunById(id)
@@ -54,174 +55,166 @@ async function getRunOrgId(c: { req: { param: (key: string) => string | undefine
  * Cancel a running terraform operation.
  * Sends SIGINT to the terraform process for graceful shutdown.
  */
-runsRoute.post(
-  "/:id/cancel",
-  requireResourceAccess({ getOrgId: getRunOrgId }),
-  async (c) => {
-    const parseResult = uuidParam.safeParse(c.req.param("id"))
-    if (!parseResult.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
-        400,
-      )
-    }
-    const id = parseResult.data
+runsRoute.post("/:id/cancel", requireResourceAccess({ getOrgId: getRunOrgId }), async (c) => {
+  const parseResult = uuidParam.safeParse(c.req.param("id"))
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
+  const id = parseResult.data
 
-    const run = await findRunById(id)
-    if (!run) {
-      return c.json(
-        { error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } },
-        404,
-      )
-    }
+  const run = await findRunById(id)
+  if (!run) {
+    return c.json({ error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } }, 404)
+  }
 
-    // Only running runs can be cancelled
-    if (run.status !== "running") {
-      return c.json(
-        { error: { code: "INVALID_STATUS", message: `run is not running (status: ${run.status})` } },
-        409,
-      )
-    }
-
-    const auth = getAuth(c)
-    logger.info("Cancelling run", {
-      runId: id,
-      deploymentId: run.deploymentId,
-      runType: run.runType,
-      userId: auth.userId,
-    })
-
-    // Try to cancel the process
-    const cancelled = processRegistry.cancel(id)
-
-    if (cancelled) {
-      // Update run status to cancelled
-      await updateRunStatus(id, run.deploymentId, "cancelled", {
-        completedAt: new Date(),
-        errorMessage: `Cancelled by ${auth.name || auth.userId}`,
-      })
-
-      logger.info("Run cancelled successfully", { runId: id })
-      return c.json({ data: { cancelled: true } })
-    }
-
-    const remoteJob = await cancelRunningJobForDeploymentAndType(run.deploymentId, run.runType as RunType)
-    if (remoteJob) {
-      await updateRunStatus(id, run.deploymentId, "cancelled", {
-        completedAt: new Date(),
-        errorMessage: `Cancelled by ${auth.name || auth.userId}`,
-      })
-      await updateDeploymentStatus(run.deploymentId, "pending")
-
-      logger.info("Run cancelled remotely", {
-        runId: id,
-        jobId: remoteJob.id,
-        deploymentId: run.deploymentId,
-      })
-      return c.json({ data: { cancelled: true } })
-    }
-
-    logger.warn("Run process not found in registry", { runId: id })
+  // Only running runs can be cancelled
+  if (run.status !== "running") {
     return c.json(
-      {
-        error: {
-          code: "PROCESS_NOT_FOUND",
-          message: "Run process not found. It may have already completed or be running on a different instance.",
-        },
-      },
-      404,
+      { error: { code: "INVALID_STATUS", message: `run is not running (status: ${run.status})` } },
+      409,
     )
-  },
-)
+  }
+
+  const auth = getAuth(c)
+  logger.info("Cancelling run", {
+    runId: id,
+    deploymentId: run.deploymentId,
+    runType: run.runType,
+    userId: auth.userId,
+  })
+
+  // Try to cancel the process
+  const cancelled = processRegistry.cancel(id)
+
+  if (cancelled) {
+    // Update run status to cancelled
+    const statusUpdated = await updateRunStatus(
+      id,
+      run.deploymentId,
+      "cancelled",
+      {
+        completedAt: new Date(),
+        errorMessage: `Cancelled by ${auth.name || auth.userId}`,
+      },
+      "running",
+    )
+    if (!statusUpdated) {
+      return c.json({ error: { code: "INVALID_STATUS", message: "run is no longer running" } }, 409)
+    }
+
+    logger.info("Run cancelled successfully", { runId: id })
+    return c.json({ data: { cancelled: true } })
+  }
+
+  const remoteJob =
+    run.jobId && run.runGroupId
+      ? await cancelRunningJobForDeploymentAndType({
+          jobId: run.jobId,
+          runId: run.id,
+          deploymentId: run.deploymentId,
+          runGroupId: run.runGroupId,
+          jobType: run.runType as RunType,
+          errorMessage: `Cancelled by ${auth.name || auth.userId}`,
+        })
+      : undefined
+  if (remoteJob) {
+    logger.info("Run cancelled remotely", {
+      runId: id,
+      jobId: remoteJob.id,
+      deploymentId: run.deploymentId,
+    })
+    return c.json({ data: { cancelled: true } })
+  }
+
+  logger.warn("Run process not found in registry", { runId: id })
+  return c.json(
+    {
+      error: {
+        code: "PROCESS_NOT_FOUND",
+        message:
+          "Run process not found. It may have already completed or be running on a different instance.",
+      },
+    },
+    404,
+  )
+})
 
 /**
  * GET /api/runs/:id
  *
  * Get a run by ID.
  */
-runsRoute.get(
-  "/:id",
-  requireResourceAccess({ getOrgId: getRunOrgId }),
-  async (c) => {
-    const parseResult = uuidParam.safeParse(c.req.param("id"))
-    if (!parseResult.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
-        400,
-      )
-    }
-    const id = parseResult.data
+runsRoute.get("/:id", requireResourceAccess({ getOrgId: getRunOrgId }), async (c) => {
+  const parseResult = uuidParam.safeParse(c.req.param("id"))
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
+  const id = parseResult.data
 
-    const run = await findRunById(id)
-    if (!run) {
-      return c.json(
-        { error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } },
-        404,
-      )
-    }
+  const run = await findRunById(id)
+  if (!run) {
+    return c.json({ error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } }, 404)
+  }
 
-    return c.json({
-      data: {
-        id: run.id,
-        deploymentId: run.deploymentId,
-        runType: run.runType,
-        status: run.status,
-        planSummary: run.planSummary,
-        errorMessage: run.errorMessage,
-        createdAt: run.createdAt.toISOString(),
-        startedAt: run.startedAt?.toISOString() ?? null,
-        completedAt: run.completedAt?.toISOString() ?? null,
-      },
-    })
-  },
-)
+  return c.json({
+    data: {
+      id: run.id,
+      deploymentId: run.deploymentId,
+      runType: run.runType,
+      status: run.status,
+      planSummary: run.planSummary,
+      errorMessage: run.errorMessage,
+      createdAt: run.createdAt.toISOString(),
+      startedAt: run.startedAt?.toISOString() ?? null,
+      completedAt: run.completedAt?.toISOString() ?? null,
+    },
+  })
+})
 
 /**
  * GET /api/runs/:id/output
  *
  * Get the full stored log output for a run as plain text.
  */
-runsRoute.get(
-  "/:id/output",
-  requireResourceAccess({ getOrgId: getRunOrgId }),
-  async (c) => {
-    const parseResult = uuidParam.safeParse(c.req.param("id"))
-    if (!parseResult.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
-        400,
-      )
-    }
+runsRoute.get("/:id/output", requireResourceAccess({ getOrgId: getRunOrgId }), async (c) => {
+  const parseResult = uuidParam.safeParse(c.req.param("id"))
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
 
-    const queryParseResult = runOutputQuerySchema.safeParse(c.req.query())
-    if (!queryParseResult.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: queryParseResult.error.issues[0]?.message ?? "invalid query" } },
-        400,
-      )
-    }
+  const queryParseResult = runOutputQuerySchema.safeParse(c.req.query())
+  if (!queryParseResult.success) {
+    return c.json(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: queryParseResult.error.issues[0]?.message ?? "invalid query",
+        },
+      },
+      400,
+    )
+  }
 
-    const run = await findRunById(parseResult.data)
-    if (!run) {
-      return c.json(
-        { error: { code: "RUN_NOT_FOUND", message: `run ${parseResult.data} not found` } },
-        404,
-      )
-    }
+  const run = await findRunById(parseResult.data)
+  if (!run) {
+    return c.json(
+      { error: { code: "RUN_NOT_FOUND", message: `run ${parseResult.data} not found` } },
+      404,
+    )
+  }
 
-    const correlation = parseRunViewCorrelation(queryParseResult.data)
+  const correlation = parseRunViewCorrelation(queryParseResult.data)
 
-    logger.debug("Run output fetched", {
-      runId: run.id,
-      deploymentId: run.deploymentId,
-      runType: run.runType,
-      runViewSessionId: correlation.runViewSessionId ?? undefined,
-      pageViewId: correlation.pageViewId ?? undefined,
-    })
+  logger.debug("Run output fetched", {
+    runId: run.id,
+    deploymentId: run.deploymentId,
+    runType: run.runType,
+    runViewSessionId: correlation.runViewSessionId ?? undefined,
+    pageViewId: correlation.pageViewId ?? undefined,
+  })
 
-    return c.text(run.logOutput ?? "")
-  },
-)
+  return c.text(run.logOutput ?? "")
+})
 
 /**
  * GET /api/runs/:id/logs
@@ -237,235 +230,260 @@ runsRoute.get(
  *   - error: An error occurred { message }
  *   - done: Streaming complete
  */
-runsRoute.get(
-  "/:id/logs",
-  requireResourceAccess({ getOrgId: getRunOrgId }),
-  async (c) => {
-    const parseResult = uuidParam.safeParse(c.req.param("id"))
-    if (!parseResult.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
-        400,
-      )
+runsRoute.get("/:id/logs", requireResourceAccess({ getOrgId: getRunOrgId }), async (c) => {
+  const parseResult = uuidParam.safeParse(c.req.param("id"))
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
+  const id = parseResult.data
+
+  const queryParseResult = logStreamQuerySchema.safeParse(c.req.query())
+  if (!queryParseResult.success) {
+    return c.json(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: queryParseResult.error.issues[0]?.message ?? "invalid query",
+        },
+      },
+      400,
+    )
+  }
+
+  let lastSentOffset = queryParseResult.data.offset ?? 0
+  const correlation = parseRunViewCorrelation(queryParseResult.data)
+
+  const run = await findRunById(id)
+  if (!run) {
+    return c.json({ error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } }, 404)
+  }
+
+  return streamSSE(c, async (stream) => {
+    const streamContext = createStreamContext("run_log", correlation)
+    const metricAttrs = {
+      runType: run.runType,
     }
-    const id = parseResult.data
 
-    const queryParseResult = logStreamQuerySchema.safeParse(c.req.query())
-    if (!queryParseResult.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: queryParseResult.error.issues[0]?.message ?? "invalid query" } },
-        400,
-      )
+    let latestTrigger = {
+      sourceEventType: "initial",
+      sourceEventAt: new Date().toISOString(),
     }
 
-    let lastSentOffset = queryParseResult.data.offset ?? 0
-    const correlation = parseRunViewCorrelation(queryParseResult.data)
+    let inFlight = false
+    let pendingRefresh = false
+    let finished = false
 
-    const run = await findRunById(id)
-    if (!run) {
-      return c.json(
-        { error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } },
-        404,
-      )
-    }
+    let resolveStream: (() => void) | null = null
 
-    return streamSSE(c, async (stream) => {
-      const streamContext = createStreamContext("run_log", correlation)
-      const metricAttrs = {
-        runType: run.runType,
+    getRunLogConnectionsActiveCounter().add(1, metricAttrs)
+    logger.debug("Run log stream opened", {
+      runId: id,
+      deploymentId: run.deploymentId,
+      runType: run.runType,
+      streamId: streamContext.streamId,
+      runViewSessionId: streamContext.runViewSessionId ?? undefined,
+      pageViewId: streamContext.pageViewId ?? undefined,
+      offset: lastSentOffset,
+    })
+
+    const finish = async (
+      reason: "done" | "aborted" | "error" | "not_found",
+      sendDone: boolean,
+    ): Promise<void> => {
+      if (finished) {
+        return
       }
 
-      let latestTrigger = {
-        sourceEventType: "initial",
-        sourceEventAt: new Date().toISOString(),
-      }
+      finished = true
+      clearInterval(heartbeat)
+      events.offRunUpdate(handleRunUpdate)
+      getRunLogConnectionsActiveCounter().add(-1, metricAttrs)
+      getRunLogStreamEndsCounter().add(1, { ...metricAttrs, reason })
 
-      let inFlight = false
-      let pendingRefresh = false
-      let finished = false
-
-      let resolveStream: (() => void) | null = null
-
-      getRunLogConnectionsActiveCounter().add(1, metricAttrs)
-      logger.debug("Run log stream opened", {
+      logger.debug("Run log stream closed", {
         runId: id,
         deploymentId: run.deploymentId,
         runType: run.runType,
         streamId: streamContext.streamId,
         runViewSessionId: streamContext.runViewSessionId ?? undefined,
         pageViewId: streamContext.pageViewId ?? undefined,
+        reason,
         offset: lastSentOffset,
+        sendDone,
       })
 
-      const finish = async (reason: "done" | "aborted" | "error" | "not_found", sendDone: boolean): Promise<void> => {
-        if (finished) {
-          return
-        }
-
-        finished = true
-        clearInterval(heartbeat)
-        events.offRunUpdate(handleRunUpdate)
-        getRunLogConnectionsActiveCounter().add(-1, metricAttrs)
-        getRunLogStreamEndsCounter().add(1, { ...metricAttrs, reason })
-
-        logger.debug("Run log stream closed", {
-          runId: id,
-          deploymentId: run.deploymentId,
-          runType: run.runType,
-          streamId: streamContext.streamId,
-          runViewSessionId: streamContext.runViewSessionId ?? undefined,
-          pageViewId: streamContext.pageViewId ?? undefined,
-          reason,
-          offset: lastSentOffset,
-          sendDone,
+      if (sendDone) {
+        const payload = JSON.stringify({
+          meta: buildStreamPayloadMeta({
+            context: streamContext,
+            sourceEventType: reason,
+            sourceEventAt: new Date().toISOString(),
+          }),
         })
+        await stream.writeSSE({ event: "done", data: payload }).catch(() => {})
+        getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "done" })
+        getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "done" })
+      }
 
-        if (sendDone) {
+      resolveStream?.()
+    }
+
+    const requestDelta = async (trigger: {
+      sourceEventType: string
+      sourceEventAt: string
+    }): Promise<void> => {
+      latestTrigger = trigger
+      await sendDelta()
+    }
+
+    const sendDelta = async (): Promise<void> => {
+      if (finished) {
+        return
+      }
+
+      if (inFlight) {
+        pendingRefresh = true
+        return
+      }
+
+      inFlight = true
+      pendingRefresh = false
+
+      try {
+        const trigger = latestTrigger
+        const snapshot = await getRunLogSnapshot(id)
+        if (!snapshot) {
           const payload = JSON.stringify({
+            message: "Run not found",
             meta: buildStreamPayloadMeta({
               context: streamContext,
-              sourceEventType: reason,
-              sourceEventAt: new Date().toISOString(),
+              sourceEventType: trigger.sourceEventType,
+              sourceEventAt: trigger.sourceEventAt,
             }),
           })
-          await stream.writeSSE({ event: "done", data: payload }).catch(() => {})
-          getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "done" })
-          getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "done" })
-        }
-
-        resolveStream?.()
-      }
-
-      const requestDelta = async (trigger: {
-        sourceEventType: string
-        sourceEventAt: string
-      }): Promise<void> => {
-        latestTrigger = trigger
-        await sendDelta()
-      }
-
-      const sendDelta = async (): Promise<void> => {
-        if (finished) {
-          return
-        }
-
-        if (inFlight) {
-          pendingRefresh = true
-          return
-        }
-
-        inFlight = true
-        pendingRefresh = false
-
-        try {
-          const trigger = latestTrigger
-          const snapshot = await getRunLogSnapshot(id)
-          if (!snapshot) {
-            const payload = JSON.stringify({
-              message: "Run not found",
-              meta: buildStreamPayloadMeta({
-                context: streamContext,
-                sourceEventType: trigger.sourceEventType,
-                sourceEventAt: trigger.sourceEventAt,
-              }),
-            })
-            await stream.writeSSE({
+          await stream
+            .writeSSE({
               event: "error",
               data: payload,
-            }).catch(() => {})
-            getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "error" })
-            getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "error" })
-            await finish("not_found", true)
-            return
-          }
-
-          const output = snapshot.logOutput ?? ""
-
-          if (output.length < lastSentOffset) {
-            lastSentOffset = output.length
-            const payload = JSON.stringify({
-              output,
-              meta: buildStreamPayloadMeta({
-                context: streamContext,
-                sourceEventType: trigger.sourceEventType,
-                sourceEventAt: trigger.sourceEventAt,
-              }),
             })
-            await stream.writeSSE({
-              event: "reset",
-              data: payload,
-            })
-            getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "reset" })
-            getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "reset" })
-          } else if (output.length > lastSentOffset) {
-            const message = output.slice(lastSentOffset)
-            lastSentOffset = output.length
-            const payload = JSON.stringify({
-              timestamp: Date.now(),
-              message,
-              meta: buildStreamPayloadMeta({
-                context: streamContext,
-                sourceEventType: trigger.sourceEventType,
-                sourceEventAt: trigger.sourceEventAt,
-              }),
-            })
-            await stream.writeSSE({
-              event: "log",
-              data: payload,
-            })
-            getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "log" })
-            getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "log" })
-
-            const sourceEventMs = Date.parse(trigger.sourceEventAt)
-            if (Number.isFinite(sourceEventMs)) {
-              getRunLogEventToSendLatencyHistogram().record(Date.now() - sourceEventMs, {
-                ...metricAttrs,
-                sourceEventType: trigger.sourceEventType,
-              })
-            }
-          }
-
-          if (snapshot.status !== "running") {
-            await finish("done", true)
-          }
-        } catch (err) {
-          logger.error("Log streaming error", {
-            runId: id,
-            error: err instanceof Error ? err.message : String(err),
+            .catch(() => {})
+          getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "error" })
+          getRunLogPayloadBytesHistogram().record(payload.length, {
+            ...metricAttrs,
+            event: "error",
           })
+          await finish("not_found", true)
+          return
+        }
+
+        const output = snapshot.logOutput ?? ""
+
+        if (output.length < lastSentOffset) {
+          lastSentOffset = output.length
           const payload = JSON.stringify({
-            message: "Log streaming error",
+            output,
             meta: buildStreamPayloadMeta({
               context: streamContext,
-              sourceEventType: "stream_error",
-              sourceEventAt: new Date().toISOString(),
+              sourceEventType: trigger.sourceEventType,
+              sourceEventAt: trigger.sourceEventAt,
             }),
           })
           await stream.writeSSE({
-            event: "error",
+            event: "reset",
             data: payload,
-          }).catch(() => {})
-          getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "error" })
-          getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "error" })
-          await finish("error", true)
-        } finally {
-          inFlight = false
-          if (pendingRefresh && !finished) {
-            await sendDelta()
+          })
+          getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "reset" })
+          getRunLogPayloadBytesHistogram().record(payload.length, {
+            ...metricAttrs,
+            event: "reset",
+          })
+        } else if (output.length > lastSentOffset) {
+          const message = output.slice(lastSentOffset)
+          lastSentOffset = output.length
+          const payload = JSON.stringify({
+            timestamp: Date.now(),
+            message,
+            meta: buildStreamPayloadMeta({
+              context: streamContext,
+              sourceEventType: trigger.sourceEventType,
+              sourceEventAt: trigger.sourceEventAt,
+            }),
+          })
+          await stream.writeSSE({
+            event: "log",
+            data: payload,
+          })
+          getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "log" })
+          getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "log" })
+
+          const sourceEventMs = Date.parse(trigger.sourceEventAt)
+          if (Number.isFinite(sourceEventMs)) {
+            getRunLogEventToSendLatencyHistogram().record(Date.now() - sourceEventMs, {
+              ...metricAttrs,
+              sourceEventType: trigger.sourceEventType,
+            })
           }
         }
-      }
 
-      const handleRunUpdate = (event: RunUpdateEvent): void => {
-        if (event.runId === id) {
-          void requestDelta({
-            sourceEventType: "run_update",
-            sourceEventAt: event.emittedAt,
+        if (snapshot.status !== "running") {
+          await finish("done", true)
+        }
+      } catch (err) {
+        logger.error("Log streaming error", {
+          runId: id,
+          error: err instanceof Error ? err.message : String(err),
+        })
+        const payload = JSON.stringify({
+          message: "Log streaming error",
+          meta: buildStreamPayloadMeta({
+            context: streamContext,
+            sourceEventType: "stream_error",
+            sourceEventAt: new Date().toISOString(),
+          }),
+        })
+        await stream
+          .writeSSE({
+            event: "error",
+            data: payload,
           })
+          .catch(() => {})
+        getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "error" })
+        getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "error" })
+        await finish("error", true)
+      } finally {
+        inFlight = false
+        if (pendingRefresh && !finished) {
+          await sendDelta()
         }
       }
+    }
 
-      const initialHeartbeat = JSON.stringify({
+    const handleRunUpdate = (event: RunUpdateEvent): void => {
+      if (event.runId === id) {
+        void requestDelta({
+          sourceEventType: "run_update",
+          sourceEventAt: event.emittedAt,
+        })
+      }
+    }
+
+    const initialHeartbeat = JSON.stringify({
+      ts: Date.now(),
+      meta: buildStreamPayloadMeta({
+        context: streamContext,
+        sourceEventType: "heartbeat",
+        sourceEventAt: new Date().toISOString(),
+      }),
+    })
+    await stream.writeSSE({ event: "heartbeat", data: initialHeartbeat }).catch(() => {})
+    getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "heartbeat" })
+    getRunLogPayloadBytesHistogram().record(initialHeartbeat.length, {
+      ...metricAttrs,
+      event: "heartbeat",
+    })
+
+    const heartbeat = setInterval(() => {
+      const payload = JSON.stringify({
         ts: Date.now(),
         meta: buildStreamPayloadMeta({
           context: streamContext,
@@ -473,81 +491,59 @@ runsRoute.get(
           sourceEventAt: new Date().toISOString(),
         }),
       })
-      await stream.writeSSE({ event: "heartbeat", data: initialHeartbeat }).catch(() => {})
+      stream.writeSSE({ event: "heartbeat", data: payload }).catch(() => {})
       getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "heartbeat" })
-      getRunLogPayloadBytesHistogram().record(initialHeartbeat.length, { ...metricAttrs, event: "heartbeat" })
+      getRunLogPayloadBytesHistogram().record(payload.length, {
+        ...metricAttrs,
+        event: "heartbeat",
+      })
+    }, 10_000)
 
-      const heartbeat = setInterval(() => {
-        const payload = JSON.stringify({
-          ts: Date.now(),
-          meta: buildStreamPayloadMeta({
-            context: streamContext,
-            sourceEventType: "heartbeat",
-            sourceEventAt: new Date().toISOString(),
-          }),
-        })
-        stream.writeSSE({ event: "heartbeat", data: payload })
-          .catch(() => {})
-        getRunLogMessagesSentCounter().add(1, { ...metricAttrs, event: "heartbeat" })
-        getRunLogPayloadBytesHistogram().record(payload.length, { ...metricAttrs, event: "heartbeat" })
-      }, 10_000)
+    events.onRunUpdate(handleRunUpdate)
 
-      events.onRunUpdate(handleRunUpdate)
+    await new Promise<void>((resolve) => {
+      resolveStream = resolve
+      stream.onAbort(() => {
+        void finish("aborted", false)
+      })
 
-      await new Promise<void>((resolve) => {
-        resolveStream = resolve
-        stream.onAbort(() => {
-          void finish("aborted", false)
-        })
-
-        void requestDelta({
-          sourceEventType: "initial",
-          sourceEventAt: new Date().toISOString(),
-        })
+      void requestDelta({
+        sourceEventType: "initial",
+        sourceEventAt: new Date().toISOString(),
       })
     })
-  },
-)
+  })
+})
 
 /**
  * GET /api/runs/:id/spans
  *
  * Get resource spans for a run (for Gantt chart timeline).
  */
-runsRoute.get(
-  "/:id/spans",
-  requireResourceAccess({ getOrgId: getRunOrgId }),
-  async (c) => {
-    const parseResult = uuidParam.safeParse(c.req.param("id"))
-    if (!parseResult.success) {
-      return c.json(
-        { error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } },
-        400,
-      )
-    }
-    const id = parseResult.data
+runsRoute.get("/:id/spans", requireResourceAccess({ getOrgId: getRunOrgId }), async (c) => {
+  const parseResult = uuidParam.safeParse(c.req.param("id"))
+  if (!parseResult.success) {
+    return c.json({ error: { code: "VALIDATION_ERROR", message: "id must be a valid UUID" } }, 400)
+  }
+  const id = parseResult.data
 
-    const run = await findRunById(id)
-    if (!run) {
-      return c.json(
-        { error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } },
-        404,
-      )
-    }
+  const run = await findRunById(id)
+  if (!run) {
+    return c.json({ error: { code: "RUN_NOT_FOUND", message: `run ${id} not found` } }, 404)
+  }
 
-    const spans = await getSpansForRun(id)
+  const spans = await getSpansForRun(id)
 
-    return c.json({
-      data: spans.map((s) => ({
-        id: s.id,
-        resourceAddress: s.resourceAddress,
-        resourceType: s.resourceType,
-        action: s.action,
-        status: s.status,
-        startedAt: s.startedAt.toISOString(),
-        completedAt: s.completedAt?.toISOString() ?? null,
-        durationMs: s.durationMs,
-      })),
-    })
-  },
-)
+  return c.json({
+    data: spans.map((s) => ({
+      id: s.id,
+      resourceAddress: s.resourceAddress,
+      resourceType: s.resourceType,
+      action: s.action,
+      status: s.status,
+      startedAt: s.startedAt.toISOString(),
+      completedAt: s.completedAt?.toISOString() ?? null,
+      durationMs: s.durationMs,
+    })),
+  })
+})

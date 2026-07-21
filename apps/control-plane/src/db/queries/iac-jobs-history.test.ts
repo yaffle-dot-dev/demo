@@ -3,16 +3,18 @@ import { eq } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { cleanupTestData, createTestUser } from "../../test-utils/auth.ts"
-import { approvals, iacJobHistory, iacJobs, previews } from "../schema.ts"
+import { approvals, iacJobHistory, iacJobs, previews, tfRuns } from "../schema.ts"
 import { createApproval, listApprovals } from "./approvals.ts"
 import { createOrg } from "./organizations.ts"
 import { createRunGroup } from "./run-groups.ts"
 import { ExecutionContextAssociationError } from "../../lib/execution-snapshot.ts"
 import {
   cancelJobsForDeployment,
+  cancelRunningJobForDeploymentAndType,
   claimJobForRunner,
   completeJobFromRunner,
   createIacJob,
+  failStaleJob,
   findIacJobById,
   findLatestJobForDeployment,
   findPendingJobsForDeployment,
@@ -59,19 +61,152 @@ async function createTestDeployment() {
   return rows[0]
 }
 
+function runnerCapability(job: { id: string; deploymentId: string; runGroupId: string | null }): {
+  jobId: string
+  deploymentId: string
+  runGroupId: string
+} {
+  if (!job.runGroupId) {
+    throw new Error("Test job is missing its run group")
+  }
+  return {
+    jobId: job.id,
+    deploymentId: job.deploymentId,
+    runGroupId: job.runGroupId,
+  }
+}
+
 afterEach(async () => {
   await cleanupTestData()
 })
 
 describe("iac job active/history split", () => {
+  test("runner mutations require the exact job deployment and run group", async () => {
+    const deployment = await createTestDeployment()
+    const job = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
+    const wrongCapability = {
+      jobId: job.id,
+      deploymentId: crypto.randomUUID(),
+      runGroupId: crypto.randomUUID(),
+    }
+
+    expect((await claimJobForRunner(wrongCapability, "foreign-worker")).claimed).toBe(false)
+
+    const capability = runnerCapability(job)
+    expect((await claimJobForRunner(capability, "owner-worker")).claimed).toBe(true)
+    expect((await completeJobFromRunner(wrongCapability, {})).success).toBe(false)
+
+    const [persistedJob] = await db
+      .select({ status: iacJobs.status, workerId: iacJobs.workerId })
+      .from(iacJobs)
+      .where(eq(iacJobs.id, job.id))
+    expect(persistedJob).toEqual({ status: "running", workerId: "owner-worker" })
+  })
+
+  test("run cancellation targets the exact job capability", async () => {
+    const deployment = await createTestDeployment()
+    const firstJob = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
+    const secondJob = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
+    const firstCapability = runnerCapability(firstJob)
+    const secondCapability = runnerCapability(secondJob)
+    await claimJobForRunner(firstCapability, "worker-a")
+    await claimJobForRunner(secondCapability, "worker-b")
+    const firstRunId = crypto.randomUUID()
+    const secondRunId = crypto.randomUUID()
+    await db.insert(tfRuns).values([
+      {
+        id: firstRunId,
+        jobId: firstJob.id,
+        deploymentId: deployment.id,
+        runGroupId: firstCapability.runGroupId,
+        runType: "plan",
+        status: "running",
+      },
+      {
+        id: secondRunId,
+        jobId: secondJob.id,
+        deploymentId: deployment.id,
+        runGroupId: secondCapability.runGroupId,
+        runType: "plan",
+        status: "running",
+      },
+    ])
+
+    const cancelled = await cancelRunningJobForDeploymentAndType({
+      ...firstCapability,
+      runId: firstRunId,
+      jobType: "plan",
+      errorMessage: "Cancelled by test",
+    })
+
+    expect(cancelled?.id).toBe(firstJob.id)
+    expect(await db.select().from(iacJobs).where(eq(iacJobs.id, firstJob.id))).toHaveLength(0)
+    const [secondPersisted] = await db
+      .select({ status: iacJobs.status, workerId: iacJobs.workerId })
+      .from(iacJobs)
+      .where(eq(iacJobs.id, secondJob.id))
+    expect(secondPersisted).toEqual({ status: "running", workerId: "worker-b" })
+    const [secondRun] = await db
+      .select({ status: tfRuns.status })
+      .from(tfRuns)
+      .where(eq(tfRuns.id, secondRunId))
+    expect(secondRun.status).toBe("running")
+  })
+
+  test("stale cleanup fails only the run bound to the stale job", async () => {
+    const deployment = await createTestDeployment()
+    const staleJob = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
+    const siblingJob = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
+    const staleCapability = runnerCapability(staleJob)
+    const siblingCapability = runnerCapability(siblingJob)
+    await claimJobForRunner(staleCapability, "stale-worker")
+    await claimJobForRunner(siblingCapability, "active-worker")
+    const staleRunId = crypto.randomUUID()
+    const siblingRunId = crypto.randomUUID()
+    await db.insert(tfRuns).values([
+      {
+        id: staleRunId,
+        jobId: staleJob.id,
+        deploymentId: deployment.id,
+        runGroupId: staleCapability.runGroupId,
+        runType: "plan",
+        status: "running",
+      },
+      {
+        id: siblingRunId,
+        jobId: siblingJob.id,
+        deploymentId: deployment.id,
+        runGroupId: siblingCapability.runGroupId,
+        runType: "plan",
+        status: "running",
+      },
+    ])
+    await db
+      .update(iacJobs)
+      .set({ lastHeartbeat: new Date(Date.now() - 10 * 60 * 1000) })
+      .where(eq(iacJobs.id, staleJob.id))
+
+    expect((await failStaleJob(staleJob.id)).failed).toBe(true)
+
+    const runs = await db
+      .select({ id: tfRuns.id, status: tfRuns.status })
+      .from(tfRuns)
+      .where(eq(tfRuns.deploymentId, deployment.id))
+    expect(runs).toContainEqual({ id: staleRunId, status: "failed" })
+    expect(runs).toContainEqual({ id: siblingRunId, status: "running" })
+  })
+
   test("completeJobFromRunner archives terminal jobs and keeps lookups working", async () => {
     const deployment = await createTestDeployment()
     const job = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
 
-    const claimResult = await claimJobForRunner(job.id, "worker-a")
+    const capability = runnerCapability(job)
+    const claimResult = await claimJobForRunner(capability, "worker-a")
     expect(claimResult.claimed).toBe(true)
 
-    const completionResult = await completeJobFromRunner(job.id, { planSummary: "+1, ~0, -0" })
+    const completionResult = await completeJobFromRunner(capability, {
+      planSummary: "+1, ~0, -0",
+    })
     expect(completionResult.success).toBe(true)
     expect(completionResult.job?.status).toBe("completed")
 
@@ -99,14 +234,20 @@ describe("iac job active/history split", () => {
     const queuedJob = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
     const runningJob = await createIacJob({ deploymentId: deployment.id, jobType: "apply" })
 
-    const claimResult = await claimJobForRunner(runningJob.id, "worker-a")
+    const claimResult = await claimJobForRunner(runnerCapability(runningJob), "worker-a")
     expect(claimResult.claimed).toBe(true)
 
     const cancelledCount = await cancelJobsForDeployment(deployment.id)
     expect(cancelledCount).toBe(2)
 
-    const activeRows = await db.select().from(iacJobs).where(eq(iacJobs.deploymentId, deployment.id))
-    const historyRows = await db.select().from(iacJobHistory).where(eq(iacJobHistory.deploymentId, deployment.id))
+    const activeRows = await db
+      .select()
+      .from(iacJobs)
+      .where(eq(iacJobs.deploymentId, deployment.id))
+    const historyRows = await db
+      .select()
+      .from(iacJobHistory)
+      .where(eq(iacJobHistory.deploymentId, deployment.id))
 
     expect(activeRows).toHaveLength(0)
     expect(historyRows).toHaveLength(2)
@@ -121,9 +262,10 @@ describe("iac job active/history split", () => {
     const deployment = await createTestDeployment()
     const archivedJob = await createIacJob({ deploymentId: deployment.id, jobType: "plan" })
 
-    const firstClaim = await claimJobForRunner(archivedJob.id, "worker-a")
+    const capability = runnerCapability(archivedJob)
+    const firstClaim = await claimJobForRunner(capability, "worker-a")
     expect(firstClaim.claimed).toBe(true)
-    expect((await completeJobFromRunner(archivedJob.id, { planSummary: "+1" })).success).toBe(true)
+    expect((await completeJobFromRunner(capability, { planSummary: "+1" })).success).toBe(true)
 
     const queuedJob = await createIacJob({ deploymentId: deployment.id, jobType: "apply" })
 
@@ -150,11 +292,13 @@ describe("iac job active/history split", () => {
       status: "pending",
     })
 
-    await expect(createIacJob({
-      deploymentId: deployment.id,
-      runGroupId: foreignRunGroup.id,
-      jobType: "plan",
-    })).rejects.toBeInstanceOf(ExecutionContextAssociationError)
+    await expect(
+      createIacJob({
+        deploymentId: deployment.id,
+        runGroupId: foreignRunGroup.id,
+        jobType: "plan",
+      }),
+    ).rejects.toBeInstanceOf(ExecutionContextAssociationError)
 
     expect(await db.select().from(iacJobs)).toHaveLength(0)
   })
@@ -213,10 +357,12 @@ describe("iac job active/history split", () => {
       })
       .returning()
 
-    await expect(createIacJob({
-      deploymentId: deployment.id,
-      jobType: "plan",
-    })).rejects.toBeInstanceOf(ExecutionContextAssociationError)
+    await expect(
+      createIacJob({
+        deploymentId: deployment.id,
+        jobType: "plan",
+      }),
+    ).rejects.toBeInstanceOf(ExecutionContextAssociationError)
   })
 
   test("rejects a same-org run group whose snapshot names another repository", async () => {
@@ -255,21 +401,25 @@ describe("iac job active/history split", () => {
           name: deployment.environmentName,
           sourcePullRequestNumber: null,
         },
-        workspaces: [{
-          path: deployment.workspacePath,
-          variables: {},
-          approval: { required: false, approvers: [] },
-          lifecycle: { activation: [], verification: [] },
-          automaticPreviewIsolation: false,
-        }],
+        workspaces: [
+          {
+            path: deployment.workspacePath,
+            variables: {},
+            approval: { required: false, approvers: [] },
+            lifecycle: { activation: [], verification: [] },
+            automaticPreviewIsolation: false,
+          },
+        ],
       },
     })
 
-    await expect(createIacJob({
-      deploymentId: deployment.id,
-      runGroupId: runGroup.id,
-      jobType: "plan",
-    })).rejects.toBeInstanceOf(ExecutionContextAssociationError)
+    await expect(
+      createIacJob({
+        deploymentId: deployment.id,
+        runGroupId: runGroup.id,
+        jobType: "plan",
+      }),
+    ).rejects.toBeInstanceOf(ExecutionContextAssociationError)
 
     const [malformedJob] = await db
       .insert(iacJobs)
@@ -324,21 +474,25 @@ describe("iac job active/history split", () => {
           name: deployment.environmentName,
           sourcePullRequestNumber: null,
         },
-        workspaces: [{
-          path: deployment.workspacePath,
-          variables: {},
-          approval: { required: true, approvers: [] },
-          lifecycle: { activation: [], verification: [] },
-          automaticPreviewIsolation: false,
-        }],
+        workspaces: [
+          {
+            path: deployment.workspacePath,
+            variables: {},
+            approval: { required: true, approvers: [] },
+            lifecycle: { activation: [], verification: [] },
+            automaticPreviewIsolation: false,
+          },
+        ],
       },
     })
 
-    await expect(createApproval({
-      deploymentId: deployment.id,
-      runGroupId: foreignRunGroup.id,
-      userId: user.id,
-    })).rejects.toBeInstanceOf(ExecutionContextAssociationError)
+    await expect(
+      createApproval({
+        deploymentId: deployment.id,
+        runGroupId: foreignRunGroup.id,
+        userId: user.id,
+      }),
+    ).rejects.toBeInstanceOf(ExecutionContextAssociationError)
 
     expect(await db.select().from(approvals)).toHaveLength(0)
 

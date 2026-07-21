@@ -11,6 +11,7 @@ export interface RunnerConfig {
   apiUrl: string
   jobToken: string
   jobId: string
+  runId?: string
 }
 
 export interface JobDetails {
@@ -99,9 +100,11 @@ export interface JobCompletionResult {
 
 export class RunnerApiClient {
   private readonly config: RunnerConfig
+  private runId: string | undefined
 
   constructor(config: RunnerConfig) {
     this.config = config
+    this.runId = config.runId
   }
 
   private get headers(): Record<string, string> {
@@ -136,6 +139,9 @@ export class RunnerApiClient {
     }
 
     const result = await response.json()
+    if (typeof result.data.runId === "string") {
+      this.runId = result.data.runId
+    }
     return result.data
   }
 
@@ -144,11 +150,15 @@ export class RunnerApiClient {
    * Returns false if job is no longer in running state.
    */
   async heartbeat(): Promise<HeartbeatResponse> {
+    if (!this.runId) {
+      throw new Error("Cannot send heartbeat before binding the claimed run")
+    }
     const response = await fetch(`${this.config.apiUrl}/api/runner/heartbeat`, {
       method: "POST",
       headers: this.headers,
       body: JSON.stringify({
         jobId: this.config.jobId,
+        runId: this.runId,
       }),
     })
 
@@ -287,6 +297,7 @@ export class RunnerApiClient {
       method: "PUT",
       headers: {
         "Content-Type": "application/octet-stream",
+        "If-None-Match": "*",
       },
       body: planData,
     })

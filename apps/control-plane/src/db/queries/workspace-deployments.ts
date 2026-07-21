@@ -1,4 +1,16 @@
-import { and, asc, arrayContains, desc, eq, gt, inArray, lt, notInArray, sql, type SQL } from "drizzle-orm"
+import {
+  and,
+  asc,
+  arrayContains,
+  desc,
+  eq,
+  gt,
+  inArray,
+  lt,
+  notInArray,
+  sql,
+  type SQL,
+} from "drizzle-orm"
 
 import type { PreviewStatus } from "@yaffle/shared"
 
@@ -26,9 +38,7 @@ export interface ListDeploymentsOptions {
 /**
  * Find a deployment by its UUID.
  */
-export async function findDeploymentById(
-  id: string,
-): Promise<WorkspaceDeployment | undefined> {
+export async function findDeploymentById(id: string): Promise<WorkspaceDeployment | undefined> {
   return withDbSpan("select", "workspace_deployments", async () => {
     const rows = await db
       .select()
@@ -38,8 +48,6 @@ export async function findDeploymentById(
     return rows[0]
   })
 }
-
-
 
 /**
  * List deployments with optional filtering and cursor-based pagination.
@@ -96,13 +104,11 @@ export async function listDeployments(
 export async function listLatestDeploymentsForOrg(orgId: string): Promise<WorkspaceDeployment[]> {
   return withDbSpan("select", "workspace_deployments", async () => {
     return db
-      .selectDistinctOn(
-        [
-          workspaceDeployments.repo,
-          workspaceDeployments.environmentName,
-          workspaceDeployments.workspacePath,
-        ],
-      )
+      .selectDistinctOn([
+        workspaceDeployments.repo,
+        workspaceDeployments.environmentName,
+        workspaceDeployments.workspacePath,
+      ])
       .from(workspaceDeployments)
       .where(eq(workspaceDeployments.orgId, orgId))
       .orderBy(
@@ -113,8 +119,6 @@ export async function listLatestDeploymentsForOrg(orgId: string): Promise<Worksp
       )
   })
 }
-
-
 
 /**
  * Find a deployment by org + repo + environment name + workspace path.
@@ -153,7 +157,9 @@ export async function findDeployment(
  * - Timing fields (startedAt, completedAt)
  * - Approval state (approvedAt, approvedBy)
  */
-export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<WorkspaceDeployment> {
+export async function upsertDeployment(
+  values: NewWorkspaceDeployment,
+): Promise<WorkspaceDeployment> {
   return withDbSpan("upsert", "workspace_deployments", async () => {
     const rows = await db
       .insert(workspaceDeployments)
@@ -205,20 +211,24 @@ export async function upsertDeployment(values: NewWorkspaceDeployment): Promise<
   })
 }
 
-
-
 /**
  * Update a deployment's status.
  */
 export async function updateDeploymentStatus(
   deploymentId: string,
   status: PreviewStatus,
-): Promise<void> {
+  expectedRunGroupId?: string,
+): Promise<boolean> {
   return withDbSpan("update", "workspace_deployments", async () => {
     const updated = await db
       .update(workspaceDeployments)
       .set({ status, statusChangedAt: new Date() })
-      .where(eq(workspaceDeployments.id, deploymentId))
+      .where(
+        and(
+          eq(workspaceDeployments.id, deploymentId),
+          expectedRunGroupId ? eq(workspaceDeployments.runGroupId, expectedRunGroupId) : undefined,
+        ),
+      )
       .returning({
         orgId: workspaceDeployments.orgId,
         repo: workspaceDeployments.repo,
@@ -228,7 +238,13 @@ export async function updateDeploymentStatus(
       })
     if (updated.length > 0) {
       const { orgId, repo, environmentKind, environmentName, runGroupId } = updated[0]
-      events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+      events.emitDeploymentUpdate(
+        deploymentId,
+        orgId,
+        repo,
+        environmentKind as EnvironmentKind,
+        environmentName,
+      )
       await enqueueEnvironmentGroupProjectionRebuild({
         orgId,
         repo,
@@ -241,10 +257,28 @@ export async function updateDeploymentStatus(
         await syncRunGroupCheckFromDeployments(runGroupId)
       }
     }
+    return updated.length === 1
   })
 }
 
-
+export async function deploymentBelongsToRunGroup(
+  deploymentId: string,
+  runGroupId: string,
+): Promise<boolean> {
+  return withDbSpan("select", "workspace_deployments", async () => {
+    const rows = await db
+      .select({ id: workspaceDeployments.id })
+      .from(workspaceDeployments)
+      .where(
+        and(
+          eq(workspaceDeployments.id, deploymentId),
+          eq(workspaceDeployments.runGroupId, runGroupId),
+        ),
+      )
+      .limit(1)
+    return rows.length === 1
+  })
+}
 
 /**
  * Find all plan_limited deployments for an org, oldest first.
@@ -254,7 +288,9 @@ export async function findPlanLimitedDeployments(orgId: string): Promise<Workspa
     return db
       .select()
       .from(workspaceDeployments)
-      .where(and(eq(workspaceDeployments.orgId, orgId), eq(workspaceDeployments.status, "plan_limited")))
+      .where(
+        and(eq(workspaceDeployments.orgId, orgId), eq(workspaceDeployments.status, "plan_limited")),
+      )
       .orderBy(asc(workspaceDeployments.createdAt))
   })
 }
@@ -262,10 +298,7 @@ export async function findPlanLimitedDeployments(orgId: string): Promise<Workspa
 /**
  * Update a deployment's head SHA (on synchronize events).
  */
-export async function updateDeploymentHead(
-  deploymentId: string,
-  headSha: string,
-): Promise<void> {
+export async function updateDeploymentHead(deploymentId: string, headSha: string): Promise<void> {
   return withDbSpan("update", "workspace_deployments", async () => {
     const updated = await db
       .update(workspaceDeployments)
@@ -279,7 +312,13 @@ export async function updateDeploymentHead(
       })
     if (updated.length > 0) {
       const { orgId, repo, environmentKind, environmentName } = updated[0]
-      events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+      events.emitDeploymentUpdate(
+        deploymentId,
+        orgId,
+        repo,
+        environmentKind as EnvironmentKind,
+        environmentName,
+      )
       await enqueueEnvironmentGroupProjectionRebuild({
         orgId,
         repo,
@@ -289,8 +328,6 @@ export async function updateDeploymentHead(
     }
   })
 }
-
-
 
 /**
  * Find all deployments for an environment (all workspaces).
@@ -447,14 +484,14 @@ export interface UpstreamCompleteResult {
 
 /**
  * Add a completed upstream to a deployment and atomically determine if we should queue a job.
- * 
+ *
  * This function prevents race conditions where multiple upstreams complete simultaneously
  * and both try to queue a plan job for the same downstream deployment.
- * 
+ *
  * The atomic guarantee comes from using a CAS (compare-and-swap) pattern:
  * 1. Add the completed upstream ID to the array
  * 2. Check if all upstreams are now complete
- * 3. If ready, atomically transition status from "pending" to "planning" 
+ * 3. If ready, atomically transition status from "pending" to "planning"
  *    (only one caller can win this transition)
  * 4. The winner is responsible for creating the job
  */
@@ -533,15 +570,15 @@ export async function addCompletedUpstreamAtomic(
 
 /**
  * Atomically claim the right to queue a destroy job for an upstream deployment.
- * 
+ *
  * This is used when a downstream completes its destroy - we need to check if
  * all downstreams of the upstream are now destroyed, and if so, queue the
  * upstream's destroy job.
- * 
+ *
  * The race condition is: multiple downstreams complete destroy simultaneously,
  * both check that all downstreams are destroyed, both try to queue. This function
  * uses a CAS pattern to ensure only one wins.
- * 
+ *
  * @returns true if this call won the race and should create the destroy job
  */
 export async function claimDestroyJobForUpstream(
@@ -554,10 +591,7 @@ export async function claimDestroyJobForUpstream(
       .update(workspaceDeployments)
       .set({ status: "destroying", statusChangedAt: new Date() })
       .where(
-        and(
-          eq(workspaceDeployments.id, upstreamId),
-          eq(workspaceDeployments.status, "pending"),
-        ),
+        and(eq(workspaceDeployments.id, upstreamId), eq(workspaceDeployments.status, "pending")),
       )
       .returning()
 
@@ -632,6 +666,7 @@ export async function findDeploymentByRunGroupAndWorkspacePath(
 export async function markDeploymentSkipped(
   deploymentId: string,
   _reason: string, // Kept for logging/debugging purposes
+  expectedRunGroupId?: string,
 ): Promise<void> {
   return withDbSpan("update", "workspace_deployments", async () => {
     const now = new Date()
@@ -642,7 +677,12 @@ export async function markDeploymentSkipped(
         statusChangedAt: now,
         completedAt: now,
       })
-      .where(eq(workspaceDeployments.id, deploymentId))
+      .where(
+        and(
+          eq(workspaceDeployments.id, deploymentId),
+          expectedRunGroupId ? eq(workspaceDeployments.runGroupId, expectedRunGroupId) : undefined,
+        ),
+      )
       .returning({
         orgId: workspaceDeployments.orgId,
         repo: workspaceDeployments.repo,
@@ -652,7 +692,13 @@ export async function markDeploymentSkipped(
 
     if (updated.length > 0) {
       const { orgId, repo, environmentKind, environmentName } = updated[0]
-      events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+      events.emitDeploymentUpdate(
+        deploymentId,
+        orgId,
+        repo,
+        environmentKind as EnvironmentKind,
+        environmentName,
+      )
     }
   })
 }
@@ -661,6 +707,7 @@ export async function transitionDeploymentStatus(
   deploymentId: string,
   fromStatuses: PreviewStatus[],
   toStatus: PreviewStatus,
+  expectedRunGroupId?: string,
 ): Promise<WorkspaceDeployment | undefined> {
   if (fromStatuses.length === 0) {
     return undefined
@@ -677,6 +724,7 @@ export async function transitionDeploymentStatus(
         and(
           eq(workspaceDeployments.id, deploymentId),
           inArray(workspaceDeployments.status, fromStatuses),
+          expectedRunGroupId ? eq(workspaceDeployments.runGroupId, expectedRunGroupId) : undefined,
         ),
       )
       .returning()
@@ -711,22 +759,20 @@ export async function transitionDeploymentStatus(
 
 /**
  * Reset skipped/failed downstream deployments so they can be re-scheduled.
- * 
+ *
  * When an upstream fails, its downstreams are marked as "failed" (skipped).
  * If the upstream is re-run and succeeds, we need to reset those downstreams
  * to "pending" with empty completedUpstreams so they can be properly scheduled
  * when the upstream's apply completes.
- * 
+ *
  * This function recursively resets all transitive downstreams that were skipped.
- * 
+ *
  * @returns The number of deployments that were reset
  */
-export async function resetSkippedDownstreams(
-  upstreamId: string,
-): Promise<number> {
+export async function resetSkippedDownstreams(upstreamId: string): Promise<number> {
   return withDbSpan("update", "workspace_deployments", async () => {
     const downstreams = await findDownstreamDeployments(upstreamId)
-    
+
     if (downstreams.length === 0) {
       return 0
     }
@@ -767,7 +813,13 @@ export async function resetSkippedDownstreams(
       if (updated.length > 0) {
         resetCount++
         const { orgId, repo, environmentKind, environmentName } = updated[0]
-        events.emitDeploymentUpdate(downstream.id, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+        events.emitDeploymentUpdate(
+          downstream.id,
+          orgId,
+          repo,
+          environmentKind as EnvironmentKind,
+          environmentName,
+        )
       }
 
       // Find transitive downstreams
@@ -807,7 +859,13 @@ export async function recordDeploymentApproval(
 
     if (updated.length > 0) {
       const { orgId, repo, environmentKind, environmentName } = updated[0]
-      events.emitDeploymentUpdate(deploymentId, orgId, repo, environmentKind as EnvironmentKind, environmentName)
+      events.emitDeploymentUpdate(
+        deploymentId,
+        orgId,
+        repo,
+        environmentKind as EnvironmentKind,
+        environmentName,
+      )
     }
   })
 }

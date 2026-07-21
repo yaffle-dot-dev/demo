@@ -36,9 +36,9 @@ async function main(): Promise<void> {
 
   const registration = await apiClient.register(workerId, MAX_SLOTS, {
     hostname: process.env.HOSTNAME ?? "unknown",
-      pid: process.pid,
-      mode: MAX_SLOTS === 1 ? "warm-single-slot" : "warm-multi-slot",
-    })
+    pid: process.pid,
+    mode: MAX_SLOTS === 1 ? "warm-single-slot" : "warm-multi-slot",
+  })
 
   log("Warm runner registered", {
     workerId,
@@ -46,9 +46,9 @@ async function main(): Promise<void> {
     orgId: registration.orgId,
     pollIntervalMs: registration.pollIntervalMs,
     heartbeatIntervalMs: registration.heartbeatIntervalMs,
-      idleShutdownMs: registration.idleShutdownMs,
-      maxSlots: registration.maxSlots,
-    })
+    idleShutdownMs: registration.idleShutdownMs,
+    maxSlots: registration.maxSlots,
+  })
 
   let activeSlots = 0
   let lastWorkAt = Date.now()
@@ -126,6 +126,7 @@ async function main(): Promise<void> {
         apiUrl: API_URL,
         jobToken,
         jobId: claimedJob.id,
+        runId,
       })
 
       const jobPromise = (async () => {

@@ -26,9 +26,9 @@ import {
   claimJobForRunner,
   findQueuedJobsForWarmRunner,
   heartbeatJob,
-  completeJobFromRunner,
   failJobFromRunner,
   getJobWithContext,
+  settleJobAndRunFromRunner,
 } from "../db/queries/iac-jobs.ts"
 import {
   getWarmRunnerSession,
@@ -36,21 +36,22 @@ import {
   markWarmRunnerClaimedJob,
   registerWarmRunner,
 } from "../db/queries/warm-runners.ts"
-import { updateDeploymentStatus } from "../db/queries/workspace-deployments.ts"
+import {
+  deploymentBelongsToRunGroup,
+  updateDeploymentStatus,
+} from "../db/queries/workspace-deployments.ts"
 import { findOrgById } from "../db/queries/organizations.ts"
 import { findLatestScanJobByRunGroup, type ScanJobResult } from "../db/queries/scan-jobs.ts"
 import {
   createTfRun,
-  appendRunLog,
+  appendRunLogFromRunner,
   getRunLogState,
-  replaceRunLog,
-  updateRunStatus,
   findRunById,
   findLatestSuccessfulRun,
 } from "../db/queries/tf-runs.ts"
 import {
-  insertResourceSpan,
-  completeResourceSpan,
+  insertResourceSpanFromRunner,
+  completeResourceSpanFromRunner,
   closeOrphanedSpans,
 } from "../db/queries/resource-spans.ts"
 import {
@@ -118,23 +119,65 @@ function jobTokenMatchesContext(
   token: JobTokenPayload,
   jobContext: NonNullable<JobContext>,
 ): boolean {
-  return (
+  const matches =
     token.job_id === jobContext.id &&
     token.deployment_id === jobContext.deployment.id &&
     token.org_id === jobContext.deployment.orgId
-  )
+  if (!matches) {
+    logger.warn("runner.capability.denied", {
+      "job.id": jobContext.id,
+      "deployment.id": jobContext.deployment.id,
+      "org.id": jobContext.deployment.orgId,
+      reason: "job_context_mismatch",
+    })
+  }
+  return matches
+}
+
+function logRunnerCapabilityDenial(
+  token: JobTokenPayload,
+  reason: string,
+  requestedJobId?: string,
+): void {
+  logger.warn("runner.capability.denied", {
+    "job.id": requestedJobId ?? token.job_id,
+    "deployment.id": token.deployment_id,
+    "org.id": token.org_id,
+    reason,
+  })
 }
 
 async function runMatchesJob(runId: string, jobContext: NonNullable<JobContext>): Promise<boolean> {
+  if (jobContext.status !== "running") {
+    logger.warn("runner.capability.denied", {
+      "job.id": jobContext.id,
+      "run.id": runId,
+      "deployment.id": jobContext.deployment.id,
+      "org.id": jobContext.deployment.orgId,
+      reason: "job_not_running",
+    })
+    return false
+  }
   const run = await findRunById(runId)
-  return Boolean(
+  const matches = Boolean(
     run &&
+    run.jobId === jobContext.id &&
     run.deploymentId === jobContext.deployment.id &&
     run.runGroupId === jobContext.runGroup?.id &&
     run.runType === jobContext.jobType &&
     run.planPurpose === jobContext.planPurpose &&
     run.status === "running",
   )
+  if (!matches) {
+    logger.warn("runner.capability.denied", {
+      "job.id": jobContext.id,
+      "run.id": runId,
+      "deployment.id": jobContext.deployment.id,
+      "org.id": jobContext.deployment.orgId,
+      reason: "run_context_mismatch_or_inactive",
+    })
+  }
+  return matches
 }
 
 type RunnerVariables = {
@@ -348,7 +391,29 @@ async function createClaimResponse(
 
   const { deployment } = jobContext
 
+  const statusMap: Record<string, "planning" | "applying" | "destroying"> = {
+    plan: "planning",
+    apply: "applying",
+    destroy: "destroying",
+  }
+  const deploymentStatus = job.planPurpose === "environment" ? statusMap[job.jobType] : undefined
+  if (
+    deploymentStatus &&
+    !(await updateDeploymentStatus(deployment.id, deploymentStatus, jobContext.runGroup!.id))
+  ) {
+    await failJobFromRunner(
+      {
+        jobId: job.id,
+        deploymentId: deployment.id,
+        runGroupId: jobContext.runGroup!.id,
+      },
+      "Deployment was rebound before runner claim completed",
+    )
+    throw new Error("Deployment was rebound before runner claim completed")
+  }
+
   const tfRun = await createTfRun({
+    jobId: job.id,
     deploymentId: deployment.id,
     runGroupId: jobContext.runGroup?.id ?? undefined,
     runType: job.jobType,
@@ -361,16 +426,6 @@ async function createClaimResponse(
   events.emitRunUpdate(tfRun.id, deployment.id)
   if (jobContext.runGroup?.id) {
     void syncPrCommentForRunGroup(jobContext.runGroup.id)
-  }
-
-  const statusMap: Record<string, "planning" | "applying" | "destroying"> = {
-    plan: "planning",
-    apply: "applying",
-    destroy: "destroying",
-  }
-  const deploymentStatus = job.planPurpose === "environment" ? statusMap[job.jobType] : undefined
-  if (deploymentStatus) {
-    await updateDeploymentStatus(deployment.id, deploymentStatus)
   }
 
   events.emitDeploymentUpdate(
@@ -426,6 +481,7 @@ runnerJobRoute.use("*", async (c, next) => {
 
   const payload = await verifyJobToken(token)
   if (!payload) {
+    logger.warn("runner.capability.denied", { reason: "invalid_or_expired_job_token" })
     return c.json({ error: { code: "UNAUTHORIZED", message: "Invalid or expired job token" } }, 401)
   }
 
@@ -633,7 +689,14 @@ warmRunnerRoute.post("/claim-next", async (c) => {
       continue
     }
 
-    const result = await claimJobForRunner(candidate.id, parsed.data.workerId)
+    const result = await claimJobForRunner(
+      {
+        jobId: candidate.id,
+        deploymentId: jobContext.deployment.id,
+        runGroupId: jobContext.runGroup!.id,
+      },
+      parsed.data.workerId,
+    )
     if (!result.claimed || !result.job) {
       continue
     }
@@ -708,6 +771,7 @@ runnerJobRoute.post("/claim", async (c) => {
 
   // Verify job token matches the job being claimed
   if (auth.jobToken.job_id !== jobId) {
+    logRunnerCapabilityDenial(auth.jobToken, "job_id_mismatch", jobId)
     logger.warn("runner.claim.token_mismatch", {
       "job.id.token": auth.jobToken.job_id,
       "job.id.requested": jobId,
@@ -730,7 +794,15 @@ runnerJobRoute.post("/claim", async (c) => {
   }
 
   // Attempt atomic claim
-  const result = await claimJobForRunner(jobId, workerId, auth.jobToken.spawn_lease_token)
+  const result = await claimJobForRunner(
+    {
+      jobId,
+      deploymentId: jobContext.deployment.id,
+      runGroupId: jobContext.runGroup!.id,
+    },
+    workerId,
+    auth.jobToken.spawn_lease_token,
+  )
 
   if (!result.claimed) {
     // Job was already claimed or doesn't exist
@@ -792,6 +864,7 @@ runnerJobRoute.post("/logs", async (c) => {
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
+    logRunnerCapabilityDenial(auth.jobToken, "job_id_mismatch", jobId)
     return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
   const jobContext = await getJobWithContext(jobId)
@@ -826,7 +899,22 @@ runnerJobRoute.post("/logs", async (c) => {
   }
 
   // Append to run logs
-  await appendRunLog(runId, auth.jobToken.deployment_id, formattedChunk)
+  const appended = await appendRunLogFromRunner(
+    {
+      runId,
+      jobId,
+      deploymentId: jobContext.deployment.id,
+      runGroupId: jobContext.runGroup!.id,
+    },
+    formattedChunk,
+  )
+  if (!appended) {
+    logRunnerCapabilityDenial(auth.jobToken, "db_capability_predicate_failed", jobId)
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job capability is no longer active" } },
+      403,
+    )
+  }
 
   if (firstOutputState?.startedAt) {
     const firstOutputMs = Date.now() - firstOutputState.startedAt.getTime()
@@ -897,6 +985,7 @@ runnerJobRoute.post("/spans", async (c) => {
   const { jobId, runId, events: spanEvents } = parsed.data
 
   if (auth.jobToken.job_id !== jobId) {
+    logRunnerCapabilityDenial(auth.jobToken, "job_id_mismatch", jobId)
     return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
   const jobContext = await getJobWithContext(jobId)
@@ -912,10 +1001,16 @@ runnerJobRoute.post("/spans", async (c) => {
     )
   }
 
+  const capability = {
+    runId,
+    jobId,
+    deploymentId: jobContext.deployment.id,
+    runGroupId: jobContext.runGroup!.id,
+  }
+
   for (const event of spanEvents) {
     if (event.event === "started") {
-      await insertResourceSpan({
-        runId,
+      const inserted = await insertResourceSpanFromRunner(capability, {
         resourceAddress: event.resourceAddress,
         resourceType: event.resourceType,
         action: event.action,
@@ -923,16 +1018,35 @@ runnerJobRoute.post("/spans", async (c) => {
         startedAt: new Date(event.timestamp),
         source: "log_parse",
       })
+      if (!inserted) {
+        logRunnerCapabilityDenial(auth.jobToken, "db_capability_predicate_failed", jobId)
+        return c.json(
+          { error: { code: "FORBIDDEN", message: "Job capability is no longer active" } },
+          403,
+        )
+      }
 
       // Mirror to Axiom via OTel — start a span (will be ended on complete/error)
       emitResourceOtelSpan(runId, event)
     } else if (event.event === "complete" || event.event === "error") {
-      await completeResourceSpan(runId, event.resourceAddress, event.action, {
-        status: event.event === "complete" ? "complete" : "error",
-        completedAt: new Date(event.timestamp),
-        durationMs: event.elapsedMs,
-        attributes: event.message ? { message: event.message } : undefined,
-      })
+      const completed = await completeResourceSpanFromRunner(
+        capability,
+        event.resourceAddress,
+        event.action,
+        {
+          status: event.event === "complete" ? "complete" : "error",
+          completedAt: new Date(event.timestamp),
+          durationMs: event.elapsedMs,
+          attributes: event.message ? { message: event.message } : undefined,
+        },
+      )
+      if (!completed) {
+        logRunnerCapabilityDenial(auth.jobToken, "db_capability_predicate_failed", jobId)
+        return c.json(
+          { error: { code: "FORBIDDEN", message: "Job capability is no longer active" } },
+          403,
+        )
+      }
 
       // Mirror completed span to Axiom
       emitResourceOtelSpan(runId, event)
@@ -979,6 +1093,7 @@ function emitResourceOtelSpan(runId: string, event: z.infer<typeof spanEventSche
 
 const heartbeatBodySchema = z.object({
   jobId: z.string().uuid(),
+  runId: z.string().uuid(),
 })
 
 /**
@@ -1005,14 +1120,27 @@ runnerJobRoute.post("/heartbeat", async (c) => {
     )
   }
 
-  const { jobId } = parsed.data
+  const { jobId, runId } = parsed.data
 
-  // Verify job token matches
-  if (auth.jobToken.job_id !== jobId) {
-    return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
+  const jobContext = await getJobWithContext(jobId)
+  if (
+    !jobContext ||
+    !jobTokenMatchesContext(auth.jobToken, jobContext) ||
+    !hasHostedExecutionContext(jobContext) ||
+    !(await runMatchesJob(runId, jobContext))
+  ) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job token does not match job context" } },
+      403,
+    )
   }
 
-  const result = await heartbeatJob(jobId)
+  const result = await heartbeatJob({
+    jobId,
+    runId,
+    deploymentId: jobContext.deployment.id,
+    runGroupId: jobContext.runGroup!.id,
+  })
 
   if (!result.success) {
     // Job is no longer in running state (completed, failed, or reclaimed)
@@ -1069,6 +1197,7 @@ runnerJobRoute.post("/complete", async (c) => {
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
+    logRunnerCapabilityDenial(auth.jobToken, "job_id_mismatch", jobId)
     return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
 
@@ -1080,6 +1209,12 @@ runnerJobRoute.post("/complete", async (c) => {
   if (!jobTokenMatchesContext(auth.jobToken, jobContext)) {
     return c.json(
       { error: { code: "FORBIDDEN", message: "Job token does not match job context" } },
+      403,
+    )
+  }
+  if (jobContext.status !== "queued" && jobContext.status !== "running") {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job capability is no longer active" } },
       403,
     )
   }
@@ -1100,49 +1235,109 @@ runnerJobRoute.post("/complete", async (c) => {
   const executionRunGroupId = jobContext.runGroup?.id ?? null
   const jobType = jobContext.jobType
   const isMergeImpact = jobContext.planPurpose === "merge_impact"
+  const capability = {
+    jobId,
+    runId,
+    deploymentId: deployment.id,
+    runGroupId: jobContext.runGroup!.id,
+  }
 
   if (status === "completed") {
-    const completeResult = await completeJobFromRunner(jobId, result ?? {})
-    success = completeResult.success
-
-    if (success) {
-      const now = new Date()
-      if (typeof logOutput === "string") {
-        await replaceRunLog(runId, deployment.id, logOutput)
+    const now = new Date()
+    const planSummary = typeof result?.planSummary === "string" ? result.planSummary : undefined
+    const reportedPlanFileS3Key =
+      !isMergeImpact && typeof result?.planFileS3Key === "string" ? result.planFileS3Key : undefined
+    if (
+      reportedPlanFileS3Key &&
+      (!reportedPlanFileS3Key.startsWith(`plan-files/${runId}/`) ||
+        !reportedPlanFileS3Key.endsWith("/tfplan"))
+    ) {
+      return c.json(
+        { error: { code: "FORBIDDEN", message: "Plan artifact does not belong to run" } },
+        403,
+      )
+    }
+    const reportedHasChanges = typeof result?.hasChanges === "boolean" ? result.hasChanges : null
+    const derivedHasChanges = deriveHasChangesFromSummary(planSummary)
+    if (
+      reportedHasChanges !== null &&
+      derivedHasChanges !== null &&
+      reportedHasChanges !== derivedHasChanges
+    ) {
+      return c.json(
+        { error: { code: "PLAN_RESULT_CONFLICT", message: "Plan change signals conflict" } },
+        409,
+      )
+    }
+    if (
+      !isMergeImpact &&
+      jobType === "plan" &&
+      reportedHasChanges === null &&
+      derivedHasChanges === null
+    ) {
+      return c.json(
+        { error: { code: "PLAN_RESULT_UNKNOWN", message: "Plan change signal is required" } },
+        409,
+      )
+    }
+    const hasChanges = reportedHasChanges === true || derivedHasChanges === true
+    if (!isMergeImpact && jobType === "plan" && hasChanges) {
+      if (!reportedPlanFileS3Key) {
+        return c.json(
+          { error: { code: "PLAN_ARTIFACT_REQUIRED", message: "Changed plan requires artifact" } },
+          409,
+        )
       }
-      const planSummary = typeof result?.planSummary === "string" ? result.planSummary : undefined
-      const planFileS3Key =
-        !isMergeImpact && typeof result?.planFileS3Key === "string"
-          ? result.planFileS3Key
-          : undefined
-      await updateRunStatus(runId, deployment.id, "success", {
+      try {
+        await createWorkspaceCache().assertPlanFileExists(reportedPlanFileS3Key)
+      } catch (error) {
+        logger.warn("runner.complete.plan_artifact_unavailable", {
+          "job.id": jobId,
+          "run.id": runId,
+          reason: "artifact_not_found",
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return c.json(
+          { error: { code: "PLAN_ARTIFACT_UNAVAILABLE", message: "Plan artifact unavailable" } },
+          409,
+        )
+      }
+    }
+    const settlement = await settleJobAndRunFromRunner({
+      capability,
+      jobStatus: "completed",
+      jobResult: result ?? {},
+      runStatus: "success",
+      runUpdates: {
         completedAt: now,
+        logOutput,
         planSummary,
         planJson: result?.planJson,
-        planFileS3Key,
+        planFileS3Key: reportedPlanFileS3Key,
         outputs: result?.outputs,
-      })
+      },
+    })
+    success = settlement.success
 
+    if (success) {
       // Close any orphaned spans (refresh/read ops that don't emit completion lines)
       await closeOrphanedSpans(runId, now)
 
-      if (!isMergeImpact && jobType === "plan") {
-        const reportedHasChanges =
-          typeof result?.hasChanges === "boolean" ? result.hasChanges : null
-        const derivedHasChanges = deriveHasChangesFromSummary(planSummary)
-        const hasChanges = reportedHasChanges ?? derivedHasChanges ?? false
-
-        if (reportedHasChanges == null && derivedHasChanges == null) {
-          logger.warn("runner.complete.plan_changes_unknown", {
-            "job.id": jobId,
-            "run.id": runId,
-            planSummary: planSummary ?? "missing",
-            reason: "missing_deterministic_change_signal",
-          })
-        }
-
+      const deploymentIsCurrent = await deploymentBelongsToRunGroup(
+        deployment.id,
+        capability.runGroupId,
+      )
+      if (!deploymentIsCurrent) {
+        logger.warn("runner.complete.side_effects_skipped", {
+          "job.id": jobId,
+          "run.id": runId,
+          deploymentId: deployment.id,
+          runGroupId: capability.runGroupId,
+          reason: "deployment_rebound",
+        })
+      } else if (!isMergeImpact && jobType === "plan") {
         if (hasChanges) {
-          await updateDeploymentStatus(deployment.id, "awaiting_apply")
+          await updateDeploymentStatus(deployment.id, "awaiting_apply", capability.runGroupId)
         } else {
           try {
             const skippedApply = await createTfRun({
@@ -1161,6 +1356,7 @@ runnerJobRoute.post("/complete", async (c) => {
 
             await publishHostedOutputModuleForRunGroupBinding({
               runGroupId: executionRunGroupId,
+              deploymentId: deployment.id,
               environmentName: deployment.environmentName,
               workspacePath: deployment.workspacePath,
               outputs: latestOutputs,
@@ -1193,14 +1389,18 @@ runnerJobRoute.post("/complete", async (c) => {
               workspacePath: deployment.workspacePath,
               error: error instanceof Error ? error.message : String(error),
             })
-            await updateDeploymentStatus(deployment.id, "system_error")
-            await cascadeFailure(deployment.id)
+            if (
+              await updateDeploymentStatus(deployment.id, "system_error", capability.runGroupId)
+            ) {
+              await cascadeFailure(deployment.id, capability.runGroupId)
+            }
           }
         }
       } else if (jobType === "apply") {
         try {
           await publishHostedOutputModuleForRunGroupBinding({
             runGroupId: executionRunGroupId,
+            deploymentId: deployment.id,
             environmentName: deployment.environmentName,
             workspacePath: deployment.workspacePath,
             outputs:
@@ -1239,12 +1439,14 @@ runnerJobRoute.post("/complete", async (c) => {
             workspacePath: deployment.workspacePath,
             error: error instanceof Error ? error.message : String(error),
           })
-          await updateDeploymentStatus(deployment.id, "system_error")
-          await cascadeFailure(deployment.id)
+          if (await updateDeploymentStatus(deployment.id, "system_error", capability.runGroupId)) {
+            await cascadeFailure(deployment.id, capability.runGroupId)
+          }
         }
       } else if (jobType === "destroy") {
-        await updateDeploymentStatus(deployment.id, "destroyed")
-        await notifyDestroyComplete(deployment.id)
+        if (await updateDeploymentStatus(deployment.id, "destroyed", capability.runGroupId)) {
+          await notifyDestroyComplete(deployment.id)
+        }
       }
 
       if (!isMergeImpact) {
@@ -1252,24 +1454,28 @@ runnerJobRoute.post("/complete", async (c) => {
       }
     }
   } else {
-    const failResult = await failJobFromRunner(jobId, errorMessage ?? "Unknown error")
-    success = failResult.success
+    const failedAt = new Date()
+    const failureMessage = errorMessage ?? "Unknown error"
+    const settlement = await settleJobAndRunFromRunner({
+      capability,
+      jobStatus: "failed",
+      jobErrorMessage: failureMessage,
+      runStatus: "failed",
+      runUpdates: {
+        completedAt: failedAt,
+        logOutput,
+        errorMessage: failureMessage,
+      },
+    })
+    success = settlement.success
 
     if (success) {
-      const failedAt = new Date()
-      if (typeof logOutput === "string") {
-        await replaceRunLog(runId, deployment.id, logOutput)
-      }
-      await updateRunStatus(runId, deployment.id, "failed", {
-        completedAt: failedAt,
-        errorMessage: errorMessage ?? "Unknown error",
-      })
-
       // Close any orphaned spans
       await closeOrphanedSpans(runId, failedAt)
       if (!isMergeImpact) {
-        await updateDeploymentStatus(deployment.id, "failed")
-        await cascadeFailure(deployment.id)
+        if (await updateDeploymentStatus(deployment.id, "failed", capability.runGroupId)) {
+          await cascadeFailure(deployment.id, capability.runGroupId)
+        }
         await releaseWorkspaceLockForDeployment(deployment, runId)
       }
     }
@@ -1323,6 +1529,7 @@ runnerJobRoute.get("/job/:jobId", async (c) => {
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
+    logRunnerCapabilityDenial(auth.jobToken, "job_id_mismatch", jobId)
     return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
 
@@ -1333,6 +1540,12 @@ runnerJobRoute.get("/job/:jobId", async (c) => {
   if (!jobTokenMatchesContext(auth.jobToken, jobContext)) {
     return c.json(
       { error: { code: "FORBIDDEN", message: "Job token does not match job context" } },
+      403,
+    )
+  }
+  if (jobContext.status !== "queued" && jobContext.status !== "running") {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job capability is no longer active" } },
       403,
     )
   }
@@ -1441,6 +1654,7 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
 
   // Verify job token matches
   if (auth.jobToken.job_id !== jobId) {
+    logRunnerCapabilityDenial(auth.jobToken, "job_id_mismatch", jobId)
     return c.json({ error: { code: "FORBIDDEN", message: "Job token does not match job ID" } }, 403)
   }
 
@@ -1454,17 +1668,23 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       403,
     )
   }
+  if (jobContext.status !== "running") {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job capability is no longer active" } },
+      403,
+    )
+  }
 
   const { deployment, runGroup, ...job } = jobContext
 
-  if (job.jobType === "destroy" && !requestedRunId) {
+  if (!requestedRunId) {
     return c.json(
-      { error: { code: "RUN_ID_REQUIRED", message: "Destroy context requires a run ID" } },
+      { error: { code: "RUN_ID_REQUIRED", message: "Execution context requires a run ID" } },
       400,
     )
   }
 
-  if (requestedRunId && !(await runMatchesJob(requestedRunId, jobContext))) {
+  if (!(await runMatchesJob(requestedRunId, jobContext))) {
     return c.json(
       { error: { code: "FORBIDDEN", message: "Run does not belong to job token" } },
       403,
@@ -1676,12 +1896,15 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       workspaceName: tfcWorkspace.name,
       credentialHosts: getRunnerCredentialHosts(),
     }
-    tfcToken = await generateRunToken(
-      requestedRunId ?? deployment.id,
-      tfcWorkspace.id,
-      org.id,
-      isMergeImpact ? getMergeImpactRunTokenScopes() : getRunTokenScopes(job.jobType),
-    )
+    tfcToken = await generateRunToken({
+      runId: requestedRunId,
+      jobId,
+      deploymentId: deployment.id,
+      runGroupId: runGroup.id,
+      workspaceId: tfcWorkspace.id,
+      orgId: org.id,
+      scopes: isMergeImpact ? getMergeImpactRunTokenScopes() : getRunTokenScopes(job.jobType),
+    })
   }
 
   // For apply jobs, look up the saved plan file from the latest successful plan
@@ -1689,22 +1912,42 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
   if (job.jobType === "apply") {
     try {
       const latestPlan = await findLatestSuccessfulRun(deployment.id, "plan", runGroup.id)
-      if (latestPlan?.planFileS3Key) {
-        const cache = createWorkspaceCache()
-        planFileUrl = await cache.getDownloadUrl(latestPlan.planFileS3Key)
-        logger.info("runner.context.plan_file_url", {
-          jobId,
-          planRunId: latestPlan.id,
-          s3Key: latestPlan.planFileS3Key,
-        })
+      if (!latestPlan?.planFileS3Key) {
+        return c.json(
+          { error: { code: "PLAN_ARTIFACT_UNAVAILABLE", message: "Saved plan is unavailable" } },
+          409,
+        )
       }
+      const cache = createWorkspaceCache()
+      await cache.assertPlanFileExists(latestPlan.planFileS3Key)
+      planFileUrl = await cache.getDownloadUrl(latestPlan.planFileS3Key)
+      logger.info("runner.context.plan_file_url", {
+        jobId,
+        planRunId: latestPlan.id,
+        s3Key: latestPlan.planFileS3Key,
+      })
     } catch (err) {
       logger.warn("runner.context.plan_file_url_failed", {
         jobId,
         error: err instanceof Error ? err.message : String(err),
       })
-      // Non-fatal: apply will fall back to re-planning
+      return c.json(
+        { error: { code: "PLAN_ARTIFACT_UNAVAILABLE", message: "Saved plan is unavailable" } },
+        409,
+      )
     }
+  }
+
+  const finalJobContext = await getJobWithContext(jobId)
+  if (
+    !finalJobContext ||
+    !jobTokenMatchesContext(auth.jobToken, finalJobContext) ||
+    !(await runMatchesJob(requestedRunId, finalJobContext))
+  ) {
+    return c.json(
+      { error: { code: "FORBIDDEN", message: "Job capability is no longer active" } },
+      403,
+    )
   }
 
   return c.json({

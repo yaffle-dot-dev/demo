@@ -1,3 +1,5 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
+
 import { Hono } from "hono"
 import { z } from "zod"
 
@@ -8,12 +10,13 @@ import {
   getLatestStateVersion,
   listStateVersions,
   createStateVersion,
+  completeJsonStateUpload,
   finalizeStateVersion,
   discardStateVersion,
   buildS3Key,
   type StateVersion,
 } from "../../db/queries/state-versions.ts"
-import { findWorkspaceById, updateWorkspaceCurrentState } from "../../db/queries/workspaces.ts"
+import { findWorkspaceById } from "../../db/queries/workspaces.ts"
 import { TFC_SCOPES } from "../../db/queries/api-tokens.ts"
 import {
   tfcAuth,
@@ -23,6 +26,7 @@ import {
   type TfcAuthContext,
 } from "../../middleware/tfc-auth.ts"
 import {
+  deleteStateObject,
   uploadState,
   getStateDownloadUrl,
   downloadState,
@@ -33,6 +37,7 @@ import {
   readRequestBodyBytes,
   RequestBodyTooLargeError,
 } from "../../lib/request-protection.ts"
+import { resolveActiveRunCapability } from "../../lib/runner-capability.ts"
 
 // Hono context variables for TFC auth
 type TfcVariables = {
@@ -86,6 +91,17 @@ function getPendingUploadExpiryResponse(): Response {
   )
 }
 
+function stateUploadTokenMatches(sv: StateVersion, token: string): boolean {
+  if (!sv.uploadTokenHash) {
+    return false
+  }
+  const presentedHash = createHash("sha256").update(token).digest()
+  const expectedHash = Buffer.from(sv.uploadTokenHash, "hex")
+  return (
+    expectedHash.length === presentedHash.length && timingSafeEqual(expectedHash, presentedHash)
+  )
+}
+
 async function ensurePendingUploadIsUsable(sv: StateVersion): Promise<Response | null> {
   if (sv.status !== "pending") {
     return Response.json(
@@ -111,6 +127,28 @@ async function ensurePendingUploadIsUsable(sv: StateVersion): Promise<Response |
       ageMs,
     })
     return getPendingUploadExpiryResponse()
+  }
+
+  if (sv.runId && sv.jobId) {
+    const workspace = await findWorkspaceById(sv.workspaceId)
+    const capability = workspace
+      ? await resolveActiveRunCapability({
+          runId: sv.runId,
+          jobId: sv.jobId,
+          workspaceId: sv.workspaceId,
+          orgId: workspace.orgId,
+        })
+      : null
+    if (!capability) {
+      await discardStateVersion(sv.id)
+      log.warn("State upload failed: runner capability is inactive", {
+        stateVersionId: sv.id,
+        runId: sv.runId,
+        jobId: sv.jobId,
+        reason: "capability_inactive_or_mismatched",
+      })
+      return getPendingUploadExpiryResponse()
+    }
   }
 
   return null
@@ -171,7 +209,11 @@ function getTfcRequestBaseUrl(c: {
 function toJsonApiStateVersion(
   sv: StateVersion,
   baseUrl: string,
-  options: { includeUploadUrl?: boolean; includeDownloadUrl?: boolean } = {},
+  options: {
+    includeUploadUrl?: boolean
+    includeDownloadUrl?: boolean
+    uploadToken?: string
+  } = {},
 ): JsonApiStateVersion {
   if (options.includeUploadUrl || options.includeDownloadUrl) {
     log.info("State version response URL base selected", {
@@ -202,12 +244,12 @@ function toJsonApiStateVersion(
     },
   }
 
-  if (options.includeUploadUrl && sv.status === "pending") {
+  if (options.includeUploadUrl && options.uploadToken && sv.status === "pending") {
     result.attributes["hosted-state-upload-url"] =
-      `${baseUrl}/tfc/api/v2/state-versions/${sv.id}/upload`
+      `${baseUrl}/tfc/api/v2/state-versions/${sv.id}/upload/${options.uploadToken}`
     // JSON state upload URL - go-tfe uploads JSON state in parallel with raw state
     result.attributes["hosted-json-state-upload-url"] =
-      `${baseUrl}/tfc/api/v2/state-versions/${sv.id}/upload-json`
+      `${baseUrl}/tfc/api/v2/state-versions/${sv.id}/upload-json/${options.uploadToken}`
   }
 
   if (options.includeDownloadUrl && sv.status === "finalized") {
@@ -297,8 +339,10 @@ stateVersionsRoute.post(
     // If a pending version exists with same serial (failed upload), discard it and retry
     const latest = await getLatestStateVersion(wsId)
     if (latest && attrs.serial <= latest.serial) {
-      // If the existing version is pending (incomplete upload), discard it and allow retry
-      if (latest.status === "pending" && attrs.serial === latest.serial) {
+      const pendingExpired =
+        latest.status === "pending" &&
+        Date.now() - latest.createdAt.getTime() > PENDING_STATE_UPLOAD_TTL_MS
+      if (pendingExpired && attrs.serial === latest.serial) {
         log.info("Discarding stale pending state version for retry", {
           stateVersionId: latest.id,
           workspaceId: wsId,
@@ -312,7 +356,10 @@ stateVersionsRoute.post(
               {
                 status: "409",
                 title: "Serial number conflict",
-                detail: `Serial ${attrs.serial} must be greater than current serial ${latest.serial}`,
+                detail:
+                  latest.status === "pending" && attrs.serial === latest.serial
+                    ? `Serial ${attrs.serial} already has an upload in progress`
+                    : `Serial ${attrs.serial} must be greater than current serial ${latest.serial}`,
               },
             ],
           },
@@ -322,22 +369,64 @@ stateVersionsRoute.post(
     }
 
     // Build S3 key with org prefix for isolation
-    const s3Key = buildS3Key(ws.orgId, wsId, attrs.serial)
+    const stateVersionId = crypto.randomUUID()
+    const s3Key = buildS3Key(ws.orgId, wsId, attrs.serial, stateVersionId)
 
     // Create state version record
-    const sv = await createStateVersion({
-      workspaceId: wsId,
-      serial: attrs.serial,
-      lineage: attrs.lineage,
-      md5: attrs.md5,
-      size: 0, // Will be updated on upload
-      s3Key,
-      status: "pending",
-      createdBy: expectedLocker,
-    })
+    const uploadToken = randomBytes(32).toString("base64url")
+    const uploadTokenHash = createHash("sha256").update(uploadToken).digest("hex")
+    let sv: StateVersion
+    try {
+      sv = await createStateVersion(
+        {
+          id: stateVersionId,
+          workspaceId: wsId,
+          serial: attrs.serial,
+          lineage: attrs.lineage,
+          md5: attrs.md5,
+          size: 0, // Will be updated on upload
+          s3Key,
+          status: "pending",
+          runId: auth.type === "run" ? auth.runId : undefined,
+          jobId: auth.type === "run" ? auth.jobId : undefined,
+          uploadTokenHash,
+          lockGeneration: ws.lockGeneration,
+          createdBy: expectedLocker,
+        },
+        auth.type === "run" &&
+          auth.runId &&
+          auth.jobId &&
+          auth.deploymentId &&
+          auth.runGroupId &&
+          auth.orgId
+          ? {
+              runId: auth.runId,
+              jobId: auth.jobId,
+              deploymentId: auth.deploymentId,
+              runGroupId: auth.runGroupId,
+              workspaceId: wsId,
+              orgId: auth.orgId,
+            }
+          : undefined,
+      )
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "23505"
+      ) {
+        return c.json(
+          { errors: [{ status: "409", title: "State upload already in progress" }] },
+          409,
+        )
+      }
+      throw error
+    }
 
     const response = toJsonApiStateVersion(sv, getTfcRequestBaseUrl(c), {
       includeUploadUrl: true,
+      uploadToken,
     })
 
     log.info("State version created (pending upload)", {
@@ -707,13 +796,14 @@ stateVersionsRoute.get(
  * This matches TFC behavior where the upload URL is a presigned URL
  * that doesn't require Bearer token authentication.
  */
-stateUploadRoute.put("/state-versions/:state_version_id/upload", async (c) => {
+stateUploadRoute.put("/state-versions/:state_version_id/upload/:upload_token", async (c) => {
   const rateLimitResponse = enforceRateLimit(c, STATE_UPLOAD_RATE_LIMIT)
   if (rateLimitResponse) {
     return rateLimitResponse
   }
 
   const svId = c.req.param("state_version_id")
+  const uploadToken = c.req.param("upload_token")
 
   log.info("State upload request received (unauthenticated)", {
     stateVersionId: svId,
@@ -724,6 +814,13 @@ stateUploadRoute.put("/state-versions/:state_version_id/upload", async (c) => {
   const sv = await findStateVersionById(svId)
   if (!sv) {
     log.warn("State upload failed: state version not found", { stateVersionId: svId })
+    return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
+  }
+  if (!stateUploadTokenMatches(sv, uploadToken)) {
+    log.warn("State upload failed: invalid upload capability", {
+      stateVersionId: svId,
+      reason: "upload_capability_mismatch",
+    })
     return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
   }
 
@@ -795,14 +892,30 @@ stateUploadRoute.put("/state-versions/:state_version_id/upload", async (c) => {
     }
 
     // Finalize the state version
-    const finalized = await finalizeStateVersion(svId, terraformVersion, outputs)
-    if (!finalized) {
-      log.error("State upload failed: could not finalize", { stateVersionId: svId })
-      return c.json({ errors: [{ status: "500", title: "Failed to finalize state version" }] }, 500)
+    const latestStateVersion = await findStateVersionById(svId)
+    if (!latestStateVersion) {
+      await deleteStateObject(sv.s3Key)
+      return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
+    }
+    const capabilityResponse = await ensurePendingUploadIsUsable(latestStateVersion)
+    if (capabilityResponse) {
+      await deleteStateObject(sv.s3Key)
+      return capabilityResponse
     }
 
-    // Update workspace's current state version
-    await updateWorkspaceCurrentState(sv.workspaceId, svId)
+    const finalized = await finalizeStateVersion(
+      svId,
+      sv.workspaceId,
+      sv.createdBy ?? "",
+      terraformVersion,
+      outputs,
+      sv.runId && sv.jobId ? { runId: sv.runId, jobId: sv.jobId } : undefined,
+    )
+    if (!finalized) {
+      await deleteStateObject(sv.s3Key)
+      log.error("State upload failed: could not finalize", { stateVersionId: svId })
+      return c.json({ errors: [{ status: "409", title: "State capability changed" }] }, 409)
+    }
 
     log.info("State version uploaded and finalized", {
       stateVersionId: svId,
@@ -827,17 +940,18 @@ stateUploadRoute.put("/state-versions/:state_version_id/upload", async (c) => {
         stateVersionId: svId,
         error: err.message,
       })
+      const status = err.code === "STATE_ALREADY_UPLOADED" ? 409 : 422
       return c.json(
         {
           errors: [
             {
-              status: "422",
+              status: String(status),
               title: "Upload failed",
               detail: err.message,
             },
           ],
         },
-        422,
+        status,
       )
     }
     throw err
@@ -855,13 +969,14 @@ stateUploadRoute.put("/state-versions/:state_version_id/upload", async (c) => {
  * For now, we just accept and discard this data since we don't use it,
  * but we must accept it or go-tfe's Upload function will fail.
  */
-stateUploadRoute.put("/state-versions/:state_version_id/upload-json", async (c) => {
+stateUploadRoute.put("/state-versions/:state_version_id/upload-json/:upload_token", async (c) => {
   const rateLimitResponse = enforceRateLimit(c, STATE_UPLOAD_RATE_LIMIT)
   if (rateLimitResponse) {
     return rateLimitResponse
   }
 
   const svId = c.req.param("state_version_id")
+  const uploadToken = c.req.param("upload_token")
 
   log.info("JSON state upload request received (unauthenticated)", {
     stateVersionId: svId,
@@ -874,10 +989,36 @@ stateUploadRoute.put("/state-versions/:state_version_id/upload-json", async (c) 
     log.warn("JSON state upload failed: state version not found", { stateVersionId: svId })
     return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
   }
+  if (!stateUploadTokenMatches(sv, uploadToken)) {
+    log.warn("JSON state upload failed: invalid upload capability", {
+      stateVersionId: svId,
+      reason: "upload_capability_mismatch",
+    })
+    return c.json({ errors: [{ status: "404", title: "State version not found" }] }, 404)
+  }
 
-  const pendingResponse = await ensurePendingUploadIsUsable(sv)
-  if (pendingResponse) {
-    return pendingResponse
+  if (sv.status === "pending") {
+    const pendingResponse = await ensurePendingUploadIsUsable(sv)
+    if (pendingResponse) {
+      return pendingResponse
+    }
+  } else if (sv.status === "finalized") {
+    if (sv.runId && sv.jobId) {
+      const workspace = await findWorkspaceById(sv.workspaceId)
+      const capability = workspace
+        ? await resolveActiveRunCapability({
+            runId: sv.runId,
+            jobId: sv.jobId,
+            workspaceId: sv.workspaceId,
+            orgId: workspace.orgId,
+          })
+        : null
+      if (!capability) {
+        return getPendingUploadExpiryResponse()
+      }
+    }
+  } else {
+    return c.json({ errors: [{ status: "409", title: "State upload is closed" }] }, 409)
   }
 
   // Read and discard the body - we don't currently use the JSON state
@@ -892,6 +1033,16 @@ stateUploadRoute.put("/state-versions/:state_version_id/upload-json", async (c) 
     throw err
   }
   const size = body.byteLength
+  if (
+    !sv.uploadTokenHash ||
+    !(await completeJsonStateUpload(
+      sv,
+      sv.uploadTokenHash,
+      sv.runId && sv.jobId ? { runId: sv.runId, jobId: sv.jobId } : undefined,
+    ))
+  ) {
+    return c.json({ errors: [{ status: "409", title: "State upload is closed" }] }, 409)
+  }
 
   log.info("JSON state upload accepted (discarded)", {
     stateVersionId: svId,

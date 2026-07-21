@@ -309,12 +309,26 @@ workspacesRoute.get(
       return access
     }
 
-    // Parse query params for filtering
-    const searchParams = new URL(c.req.url).searchParams
-    const { items, nextCursor } = await listWorkspaces(org.id, {
-      limit: parseInt(searchParams.get("page[size]") || "20", 10),
-      cursor: searchParams.get("page[after]") || undefined,
-    })
+    let items: Workspace[]
+    let nextCursor: string | null
+    if (access.auth.type === "run") {
+      const workspace = access.auth.workspaceId
+        ? await findWorkspaceById(access.auth.workspaceId)
+        : undefined
+      if (!workspace || workspace.orgId !== org.id) {
+        return c.json({ errors: [{ status: "403", title: "Token not authorized" }] }, 403)
+      }
+      items = [workspace]
+      nextCursor = null
+    } else {
+      const searchParams = new URL(c.req.url).searchParams
+      const result = await listWorkspaces(org.id, {
+        limit: parseInt(searchParams.get("page[size]") || "20", 10),
+        cursor: searchParams.get("page[after]") || undefined,
+      })
+      items = result.items
+      nextCursor = result.nextCursor
+    }
 
     return c.json({
       data: items.map(toJsonApiWorkspace),
@@ -351,6 +365,10 @@ workspacesRoute.get(
     const ws = await findWorkspaceByName(org.id, wsName)
     if (!ws) {
       return c.json({ errors: [{ status: "404", title: "Workspace not found" }] }, 404)
+    }
+    const workspaceAccess = await getTfcWorkspaceAccess(c, ws.id)
+    if (workspaceAccess instanceof Response) {
+      return workspaceAccess
     }
 
     const response = { data: toJsonApiWorkspace(ws) }
@@ -555,6 +573,21 @@ workspacesRoute.post(
 
     const locked = await lockWorkspace(wsId, lockedBy, reason, {
       allowDestroying: isDestroyRun,
+      runnerCapability:
+        auth.type === "run" &&
+        auth.runId &&
+        auth.jobId &&
+        auth.deploymentId &&
+        auth.runGroupId &&
+        auth.orgId
+          ? {
+              runId: auth.runId,
+              jobId: auth.jobId,
+              deploymentId: auth.deploymentId,
+              runGroupId: auth.runGroupId,
+              orgId: auth.orgId,
+            }
+          : undefined,
     })
     if (!locked) {
       // Workspace is already locked
@@ -626,7 +659,24 @@ workspacesRoute.post(
     // Determine expected lock owner
     const lockedBy = auth.type === "run" ? `run:${auth.runId}` : `user:${auth.userId}`
 
-    const unlocked = await unlockWorkspace(wsId, lockedBy)
+    const unlocked = await unlockWorkspace(
+      wsId,
+      lockedBy,
+      auth.type === "run" &&
+        auth.runId &&
+        auth.jobId &&
+        auth.deploymentId &&
+        auth.runGroupId &&
+        auth.orgId
+        ? {
+            runId: auth.runId,
+            jobId: auth.jobId,
+            deploymentId: auth.deploymentId,
+            runGroupId: auth.runGroupId,
+            orgId: auth.orgId,
+          }
+        : undefined,
+    )
     if (!unlocked) {
       return c.json(
         {

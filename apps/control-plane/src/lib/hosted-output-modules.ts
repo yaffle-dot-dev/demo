@@ -2,15 +2,26 @@ import { createHash } from "node:crypto"
 
 import { findRunGroupById } from "../db/queries/run-groups.ts"
 import { findRepoByName } from "../db/queries/repositories.ts"
-import { findPrincipalRepoBindingById, publishHostedOutputModule } from "../db/queries/principals.ts"
+import {
+  findPrincipalRepoBindingById,
+  publishHostedOutputModule,
+} from "../db/queries/principals.ts"
+import { deploymentBelongsToRunGroup } from "../db/queries/workspace-deployments.ts"
 
 export async function publishHostedOutputModuleForRunGroupBinding(values: {
   runGroupId?: string | null
+  deploymentId?: string
   environmentName: string
   workspacePath: string
   outputs?: Record<string, unknown> | null
 }): Promise<string | null> {
   if (!values.runGroupId || !values.outputs) {
+    return null
+  }
+  if (
+    values.deploymentId &&
+    !(await deploymentBelongsToRunGroup(values.deploymentId, values.runGroupId))
+  ) {
     return null
   }
 
@@ -32,9 +43,7 @@ export async function publishHostedOutputModuleForRunGroupBinding(values: {
     throw new Error(`run group ${values.runGroupId} is missing its principal repo binding`)
   }
 
-  const stateFingerprint = createHash("sha256")
-    .update(JSON.stringify(values.outputs))
-    .digest("hex")
+  const stateFingerprint = createHash("sha256").update(JSON.stringify(values.outputs)).digest("hex")
 
   const published = await publishHostedOutputModule({
     principalId: binding?.principalId,

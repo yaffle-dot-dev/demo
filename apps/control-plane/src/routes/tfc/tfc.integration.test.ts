@@ -5,7 +5,13 @@ import { createHash } from "node:crypto"
 import { tfcRoute } from "./index.ts"
 import { wellKnownRoute } from "../well-known.ts"
 import { auth } from "../../lib/better-auth.ts"
-import { generateRunToken, getRunTokenScopes } from "../../lib/run-token.ts"
+import { getRunTokenScopes } from "../../lib/run-token.ts"
+import {
+  cleanupTestRunCapabilities,
+  createTestRunCapability,
+  generateTestRunToken,
+  getTestRunId,
+} from "../../test-utils/runner-capability.ts"
 import {
   createApiToken,
   getDefaultTfcScopesForRole,
@@ -21,8 +27,8 @@ import { findOrgBySlug, createOrg } from "../../db/queries/organizations.ts"
 import { ensureMembership } from "../../db/queries/users.ts"
 import { db } from "../../lib/db.ts"
 import { ensureTransientWorkspace } from "../../lib/workspace-service.ts"
-import { stateVersions, user } from "../../db/schema.ts"
-import { eq } from "drizzle-orm"
+import { stateVersions, tfRuns, user, workspaces } from "../../db/schema.ts"
+import { eq, sql } from "drizzle-orm"
 
 /**
  * Integration tests for the TFC-compatible state backend.
@@ -205,6 +211,7 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await cleanupTestRunCapabilities()
   // Clean up test workspace if it exists
   if (testWorkspaceId) {
     await deleteWorkspace(testWorkspaceId)
@@ -217,6 +224,7 @@ afterAll(async () => {
 })
 
 beforeEach(async () => {
+  await cleanupTestRunCapabilities()
   // Clean up any leftover test workspace from failed tests
   const workspacesToDelete = [
     [testOrgId, TEST_WORKSPACE_NAME],
@@ -504,6 +512,7 @@ describe("OAuth and Public URL Security", () => {
       expect(body.data.attributes["hosted-state-upload-url"]).not.toContain("evil.example.com")
 
       const uploadPath = new URL(body.data.attributes["hosted-state-upload-url"]).pathname
+      const jsonUploadPath = new URL(body.data.attributes["hosted-json-state-upload-url"]).pathname
       const uploadRes = await app.fetch(
         new Request(`http://localhost${uploadPath}`, {
           method: "PUT",
@@ -516,6 +525,14 @@ describe("OAuth and Public URL Security", () => {
       )
 
       expect(uploadRes.status).toBe(200)
+      const jsonUploadRes = await app.fetch(
+        new Request(`http://localhost${jsonUploadPath}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: statePayload,
+        }),
+      )
+      expect(jsonUploadRes.status).toBe(200)
 
       const currentStateRes = await app.fetch(
         new Request(
@@ -617,7 +634,7 @@ describe("Authentication", () => {
     testWorkspaceId = createBody.data.id
 
     // Generate a run token for this workspace
-    const runToken = await generateRunToken("test-run-123", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken("test-run-123", testWorkspaceId!, testOrgId)
 
     // Use the run token to access the workspace
     const res = await app.fetch(
@@ -625,6 +642,32 @@ describe("Authentication", () => {
     )
 
     expect(res.status).toBe(200)
+  })
+
+  test("rejects a run token after its exact run becomes terminal", async () => {
+    const workspace = await ensureTransientWorkspace({
+      orgId: testOrgId,
+      orgSlug: TEST_ORG_SLUG,
+      repo: TEST_REPO,
+      environment: "review-124",
+      workspacePath: "infra",
+      ref: "refs/heads/test",
+    })
+    testWorkspaceId = workspace.id
+    const capability = await createTestRunCapability("terminal-run-token", workspace.id, testOrgId)
+    const request = async (): Promise<Response> =>
+      await app.fetch(
+        authRequest("GET", `/tfc/api/v2/workspaces/${workspace.id}`, capability.token),
+      )
+
+    expect((await request()).status).toBe(200)
+
+    await db
+      .update(tfRuns)
+      .set({ status: "success", completedAt: new Date() })
+      .where(eq(tfRuns.id, capability.runId))
+
+    expect((await request()).status).toBe(401)
   })
 
   test("run tokens include state download scope by default", async () => {
@@ -687,7 +730,7 @@ describe("Authentication", () => {
       }),
     )
 
-    const runToken = await generateRunToken("test-run-download", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken("test-run-download", testWorkspaceId!, testOrgId)
     const res = await app.fetch(
       authRequest("GET", `/tfc/api/v2/state-versions/${stateVersionId}/download`, runToken),
     )
@@ -1056,7 +1099,7 @@ describe("Workspace Locking", () => {
     testWorkspaceId = createBody.data.id
 
     // Generate run token
-    const runToken = await generateRunToken("test-run-lock", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken("test-run-lock", testWorkspaceId!, testOrgId)
 
     // Lock with run token
     const res = await app.fetch(
@@ -1066,7 +1109,7 @@ describe("Workspace Locking", () => {
     expect(res.status).toBe(200)
     const body = await res.json()
     expect(body.data.attributes.locked).toBe(true)
-    expect(body.data.attributes["locked-by"]).toBe("run:test-run-lock")
+    expect(body.data.attributes["locked-by"]).toBe(`run:${getTestRunId("test-run-lock")}`)
   })
 
   test("rejects user locks while a workspace is being destroyed", async () => {
@@ -1102,7 +1145,7 @@ describe("Workspace Locking", () => {
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
     await updateWorkspaceStatus(testWorkspaceId!, "destroying")
-    const runToken = await generateRunToken("test-plan-lock", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken("test-plan-lock", testWorkspaceId!, testOrgId)
 
     const res = await app.fetch(
       authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
@@ -1124,7 +1167,7 @@ describe("Workspace Locking", () => {
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
     await updateWorkspaceStatus(testWorkspaceId!, "destroying")
-    const runToken = await generateRunToken(
+    const runToken = await generateTestRunToken(
       "test-destroy-lock",
       testWorkspaceId!,
       testOrgId,
@@ -1136,7 +1179,9 @@ describe("Workspace Locking", () => {
     )
 
     expect(res.status).toBe(200)
-    expect((await res.json()).data.attributes["locked-by"]).toBe("run:test-destroy-lock")
+    expect((await res.json()).data.attributes["locked-by"]).toBe(
+      `run:${getTestRunId("test-destroy-lock")}`,
+    )
   })
 
   test("rejects lock on already locked workspace", async () => {
@@ -1180,7 +1225,7 @@ describe("Workspace Locking", () => {
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
-    const runToken = await generateRunToken("lock-id-flow", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken("lock-id-flow", testWorkspaceId!, testOrgId)
     const lockRes = await app.fetch(
       authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
@@ -1268,13 +1313,13 @@ describe("Workspace Locking", () => {
     testWorkspaceId = createBody.data.id
 
     // Lock with run token
-    const runToken = await generateRunToken("run-owner", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken("run-owner", testWorkspaceId!, testOrgId)
     await app.fetch(
       authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
 
     // Try to unlock with different run token
-    const otherRunToken = await generateRunToken("other-run", testWorkspaceId!, testOrgId)
+    const otherRunToken = await generateTestRunToken("other-run", testWorkspaceId!, testOrgId)
     const res = await app.fetch(
       authRequest(
         "POST",
@@ -1302,7 +1347,7 @@ describe("Workspace Locking", () => {
     testWorkspaceId = createBody.data.id
 
     // Lock with run token
-    const runToken = await generateRunToken("stuck-run", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken("stuck-run", testWorkspaceId!, testOrgId)
     await app.fetch(
       authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
@@ -1374,7 +1419,11 @@ describe("Tenant Isolation", () => {
     const createBody = await createRes.json()
     testWorkspaceId = createBody.data.id
 
-    const runToken = await generateRunToken("tenant-isolation-lock", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken(
+      "tenant-isolation-lock",
+      testWorkspaceId!,
+      testOrgId,
+    )
     await app.fetch(
       authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/actions/lock`, runToken),
     )
@@ -1593,10 +1642,21 @@ describe("State Versions", () => {
 
     const stateVersionId = svBody.data.id
     const uploadUrl = svBody.data.attributes["hosted-state-upload-url"]
+    const jsonUploadUrl = svBody.data.attributes["hosted-json-state-upload-url"]
     // Extract path from full URL (https://host:port/path -> /path)
     const uploadPath = new URL(uploadUrl).pathname
+    const jsonUploadPath = new URL(jsonUploadUrl).pathname
 
     // Phase 2: Upload state content
+    const jsonUploadRes = await app.fetch(
+      new Request(`http://localhost${jsonUploadPath}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: testState,
+      }),
+    )
+    expect(jsonUploadRes.status).toBe(200)
+
     const uploadRes = await app.fetch(
       new Request(`http://localhost${uploadPath}`, {
         method: "PUT",
@@ -1655,6 +1715,41 @@ describe("State Versions", () => {
     expect(res.status).toBe(409)
     const body = await res.json()
     expect(body.errors[0].title).toBe("Workspace must be locked")
+  })
+
+  test("allows only one pending upload for a workspace serial", async () => {
+    const createWorkspaceResponse = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
+        data: {
+          type: "workspaces",
+          attributes: { name: TEST_WORKSPACE_NAME },
+        },
+      }),
+    )
+    const workspaceId = (await createWorkspaceResponse.json()).data.id
+    testWorkspaceId = workspaceId
+    await app.fetch(
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/actions/lock`, testUserToken),
+    )
+    const createStateRequest = (): Request =>
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspaceId}/state-versions`, testUserToken, {
+        data: {
+          type: "state-versions",
+          attributes: { serial: 1, md5: md5(testState) },
+        },
+      })
+
+    const responses = await Promise.all([
+      app.fetch(createStateRequest()),
+      app.fetch(createStateRequest()),
+    ])
+
+    expect(responses.map((response) => response.status).sort((a, b) => a - b)).toEqual([201, 409])
+    const pending = await db
+      .select({ id: stateVersions.id })
+      .from(stateVersions)
+      .where(eq(stateVersions.workspaceId, workspaceId))
+    expect(pending).toHaveLength(1)
   })
 
   test("rejects expired pending state upload URLs", async () => {
@@ -1721,6 +1816,93 @@ describe("State Versions", () => {
     expect(getSvRes.status).toBe(200)
     const current = await getSvRes.json()
     expect(current.data.attributes.status).toBe("discarded")
+  })
+
+  test("rejects a pending state upload after its runner capability becomes terminal", async () => {
+    const workspace = await ensureTransientWorkspace({
+      orgId: testOrgId,
+      orgSlug: TEST_ORG_SLUG,
+      repo: TEST_REPO,
+      environment: "review-state-capability",
+      workspacePath: "infra",
+      ref: "refs/heads/state-capability",
+    })
+    testWorkspaceId = workspace.id
+    await db
+      .update(workspaces)
+      .set({ locked: false, lockedBy: null, lockedAt: null, lockReason: null, lockId: null })
+      .where(eq(workspaces.id, workspace.id))
+    const capability = await createTestRunCapability(
+      "terminal-state-upload",
+      workspace.id,
+      testOrgId,
+    )
+
+    const lockResponse = await app.fetch(
+      authRequest("POST", `/tfc/api/v2/workspaces/${workspace.id}/actions/lock`, capability.token),
+    )
+    expect(lockResponse.status).toBe(200)
+
+    const createResponse = await app.fetch(
+      authRequest(
+        "POST",
+        `/tfc/api/v2/workspaces/${workspace.id}/state-versions`,
+        capability.token,
+        {
+          data: {
+            type: "state-versions",
+            attributes: { serial: 1, md5: md5(testState) },
+          },
+        },
+      ),
+    )
+    expect(createResponse.status).toBe(201)
+    const stateVersionBody = await createResponse.json()
+    const stateVersionId = stateVersionBody.data.id
+    const uploadPath = new URL(stateVersionBody.data.attributes["hosted-state-upload-url"]).pathname
+
+    const invalidUploadPath = uploadPath.replace(/[^/]+$/, "invalid-upload-capability")
+    const invalidUploadResponse = await app.fetch(
+      new Request(`http://localhost${invalidUploadPath}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: testState,
+      }),
+    )
+    expect(invalidUploadResponse.status).toBe(404)
+
+    await db
+      .update(workspaces)
+      .set({ lockGeneration: sql`${workspaces.lockGeneration} + 1` })
+      .where(eq(workspaces.id, workspace.id))
+    const staleLockUploadResponse = await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: testState,
+      }),
+    )
+    expect(staleLockUploadResponse.status).toBe(409)
+
+    await db
+      .update(tfRuns)
+      .set({ status: "success", completedAt: new Date() })
+      .where(eq(tfRuns.id, capability.runId))
+
+    const uploadResponse = await app.fetch(
+      new Request(`http://localhost${uploadPath}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: testState,
+      }),
+    )
+    expect(uploadResponse.status).toBe(410)
+
+    const [persistedStateVersion] = await db
+      .select({ status: stateVersions.status })
+      .from(stateVersions)
+      .where(eq(stateVersions.id, stateVersionId))
+    expect(persistedStateVersion.status).toBe("discarded")
   })
 
   test("rejects oversized state uploads", async () => {
@@ -1796,7 +1978,7 @@ describe("State Versions", () => {
     )
 
     // Try to upload state with different run token
-    const runToken = await generateRunToken("other-run", testWorkspaceId!, testOrgId)
+    const runToken = await generateTestRunToken("other-run", testWorkspaceId!, testOrgId)
     const res = await app.fetch(
       authRequest("POST", `/tfc/api/v2/workspaces/${testWorkspaceId}/state-versions`, runToken, {
         data: {
@@ -2319,7 +2501,7 @@ describe("Module Registry", () => {
     expect(body.modules[0].versions).toHaveLength(1)
     expect(body.modules[0].versions[0].version).toBe("1.0.1")
 
-    const runToken = await generateRunToken(
+    const runToken = await generateTestRunToken(
       "source-neutral-transient-resolution",
       transientWorkspaceId,
       testOrgId,
@@ -2628,7 +2810,7 @@ describe("Run Token Scopes", () => {
     testWorkspaceId = ws1Id
 
     // Generate run token for workspace 1
-    const runToken = await generateRunToken("run-ws1", ws1Id, testOrgId)
+    const runToken = await generateTestRunToken("run-ws1", ws1Id, testOrgId)
 
     // Can access workspace 1
     const res1 = await app.fetch(authRequest("GET", `/tfc/api/v2/workspaces/${ws1Id}`, runToken))
@@ -2639,6 +2821,22 @@ describe("Run Token Scopes", () => {
       authRequest("POST", `/tfc/api/v2/workspaces/${ws2Id}/actions/lock`, runToken),
     )
     expect(res2.status).toBe(403)
+
+    const byForeignName = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces/${TEST_WORKSPACE_NAME}-2`,
+        runToken,
+      ),
+    )
+    expect(byForeignName.status).toBe(403)
+
+    const listResponse = await app.fetch(
+      authRequest("GET", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, runToken),
+    )
+    expect(listResponse.status).toBe(200)
+    const listBody = await listResponse.json()
+    expect(listBody.data.map((workspace: { id: string }) => workspace.id)).toEqual([ws1Id])
 
     // Clean up workspace 2
     await deleteWorkspace(ws2Id)

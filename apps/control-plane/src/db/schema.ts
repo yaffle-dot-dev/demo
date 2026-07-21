@@ -10,6 +10,7 @@ import {
   text,
   timestamp,
   unique,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
@@ -429,6 +430,7 @@ export const tfRuns = pgTable(
     id: uuid("id")
       .primaryKey()
       .$defaultFn(() => uuidv7()),
+    jobId: uuid("job_id"),
     deploymentId: uuid("deployment_id")
       .references(() => workspaceDeployments.id)
       .notNull(),
@@ -451,6 +453,7 @@ export const tfRuns = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
+    uniqueIndex("tf_runs_job_id_unique").on(t.jobId),
     index("tf_runs_deployment_id_idx").on(t.deploymentId, t.createdAt.desc()),
     index("tf_runs_target_workspace_id_idx").on(t.targetWorkspaceId),
     check(
@@ -684,6 +687,7 @@ export const workspaces = pgTable(
     locked: boolean("locked").default(false).notNull(),
     lockedBy: text("locked_by"), // "user:{id}" or "run:{id}"
     lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lockGeneration: integer("lock_generation").default(0).notNull(),
     lockReason: text("lock_reason"),
     lockId: text("lock_id"), // "{org_slug}/{workspace_name}" for force-unlock
     currentStateVersionId: uuid("current_state_version_id"), // FK added below
@@ -709,27 +713,44 @@ export const workspaces = pgTable(
 // TFC State Backend: State Versions
 // =============================================================================
 
-export const stateVersions = pgTable("state_versions", {
-  id: uuid("id")
-    .primaryKey()
-    .$defaultFn(() => uuidv7()),
-  workspaceId: uuid("workspace_id")
-    .references(() => workspaces.id, { onDelete: "cascade" })
-    .notNull(),
-  serial: integer("serial").notNull(),
-  lineage: uuid("lineage"),
-  md5: text("md5").notNull(),
-  size: integer("size").notNull(),
-  s3Key: text("s3_key").notNull(),
-  status: text("status").default("pending").notNull(), // "pending" | "finalized" | "discarded"
-  terraformVersion: text("terraform_version"),
-  resources: jsonb("resources"),
-  outputs: jsonb("outputs"),
-  resourcesProcessed: boolean("resources_processed").default(false).notNull(),
-  runId: uuid("run_id").references(() => tfRuns.id),
-  createdBy: text("created_by"), // user_id or "run:{id}"
-  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
-})
+export const stateVersions = pgTable(
+  "state_versions",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    workspaceId: uuid("workspace_id")
+      .references(() => workspaces.id, { onDelete: "cascade" })
+      .notNull(),
+    serial: integer("serial").notNull(),
+    lineage: uuid("lineage"),
+    md5: text("md5").notNull(),
+    size: integer("size").notNull(),
+    s3Key: text("s3_key").notNull(),
+    status: text("status").default("pending").notNull(), // "pending" | "finalized" | "discarded"
+    terraformVersion: text("terraform_version"),
+    resources: jsonb("resources"),
+    outputs: jsonb("outputs"),
+    resourcesProcessed: boolean("resources_processed").default(false).notNull(),
+    runId: uuid("run_id").references(() => tfRuns.id),
+    jobId: uuid("job_id"),
+    uploadTokenHash: text("upload_token_hash"),
+    lockGeneration: integer("lock_generation").default(0).notNull(),
+    jsonUploadCompleted: boolean("json_upload_completed").default(false).notNull(),
+    createdBy: text("created_by"), // user_id or "run:{id}"
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    index("state_versions_run_job_idx").on(t.runId, t.jobId),
+    uniqueIndex("state_versions_workspace_serial_active_unique")
+      .on(t.workspaceId, t.serial)
+      .where(sql`${t.status} <> 'discarded'`),
+    check(
+      "state_versions_runner_capability_check",
+      sql`(${t.runId} IS NULL AND ${t.jobId} IS NULL) OR (${t.runId} IS NOT NULL AND ${t.jobId} IS NOT NULL)`,
+    ),
+  ],
+)
 
 // =============================================================================
 // TFC State Backend: API Tokens (for terraform login)

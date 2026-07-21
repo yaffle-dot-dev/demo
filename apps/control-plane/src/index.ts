@@ -2,9 +2,8 @@ import { initTelemetry, logger as log, shutdownTelemetry } from "./lib/telemetry
 
 import { serve } from "@hono/node-server"
 import { Hono } from "hono"
-import { logger } from "hono/logger"
 
-import { httpTelemetry } from "./middleware/http-telemetry.ts"
+import { httpTelemetry, redactHttpUrl } from "./middleware/http-telemetry.ts"
 import { webhooksRoute } from "./routes/webhooks.ts"
 import { previewsRoute } from "./routes/previews.ts"
 import { runsRoute } from "./routes/runs.ts"
@@ -33,16 +32,8 @@ import {
   startLocalFirstGcLoop,
   stopLocalFirstGcLoop,
 } from "./lib/local-first-gc.ts"
-import {
-  getSchedulerRuntimeInfo,
-  startScheduler,
-  stopScheduler,
-} from "./lib/scheduler.ts"
-import {
-  getJobWorkerRuntimeInfo,
-  startJobWorker,
-  stopJobWorker,
-} from "./lib/job-worker.ts"
+import { getSchedulerRuntimeInfo, startScheduler, stopScheduler } from "./lib/scheduler.ts"
+import { getJobWorkerRuntimeInfo, startJobWorker, stopJobWorker } from "./lib/job-worker.ts"
 import { previewMutex } from "./lib/webhook-handler.ts"
 import { ensureDefaultProviderCredentialSignatures } from "./db/queries/provider-credential-signatures.ts"
 import { getWarmRunnerHybridConfig } from "./lib/warm-runner.ts"
@@ -177,10 +168,10 @@ type ProcessRole = "all" | "api" | "scheduler" | "job-worker"
 function resolveProcessRole(value: string | undefined): ProcessRole {
   const normalized = value?.trim().toLowerCase()
   if (
-    normalized === "all"
-    || normalized === "api"
-    || normalized === "scheduler"
-    || normalized === "job-worker"
+    normalized === "all" ||
+    normalized === "api" ||
+    normalized === "scheduler" ||
+    normalized === "job-worker"
   ) {
     return normalized
   }
@@ -227,21 +218,27 @@ const app = new Hono()
 
 // Telemetry middleware - creates root span and records metrics for all requests
 app.use("*", httpTelemetry)
-app.use("*", logger())
+app.use("*", async (c, next) => {
+  await next()
+  const request = redactHttpUrl(c.req.url)
+  log.info("http.request", {
+    method: c.req.method,
+    path: request.path,
+    status: c.res.status,
+  })
+})
 
 // Global error handler — consistent { error: { code, message } } shape
 app.onError((err, c) => {
   log.error("unhandled error", { error: err.message, stack: err.stack })
   const status = "status" in err && typeof err.status === "number" ? err.status : 500
-  return c.json(
-    { error: { code: "INTERNAL_ERROR", message: err.message } },
-    status as 500,
-  )
+  return c.json({ error: { code: "INTERNAL_ERROR", message: err.message } }, status as 500)
 })
 
 // 404 handler
 app.notFound((c) => {
-  log.warn("404 Not Found", { method: c.req.method, path: c.req.path, url: c.req.url })
+  const request = redactHttpUrl(c.req.url)
+  log.warn("404 Not Found", { method: c.req.method, path: request.path, url: request.url })
   return c.json({ error: { code: "NOT_FOUND", message: "not found" } }, 404)
 })
 
@@ -253,7 +250,9 @@ app.on(["POST", "GET"], "/api/auth/*", async (c) => {
     log.info(`BetterAuth response: ${response.status}`)
     return response
   } catch (err) {
-    log.error("BetterAuth handler error", { error: err instanceof Error ? err.message : String(err) })
+    log.error("BetterAuth handler error", {
+      error: err instanceof Error ? err.message : String(err),
+    })
     throw err
   }
 })

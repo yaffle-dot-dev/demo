@@ -200,6 +200,16 @@ async function executeJobWork(
     }
   }
 
+  if (!job.runGroupId) {
+    return {
+      success: false,
+      command: job.jobType as "plan" | "apply" | "destroy",
+      output: "",
+      errorMessage: "Job is not bound to an execution run group",
+      durationMs: 0,
+    }
+  }
+
   // TFC backend setup
   let tfcWorkspaceId: string | undefined
   let tfcWorkspaceName: string | undefined
@@ -229,22 +239,28 @@ async function executeJobWork(
     tfcWorkspaceId = tfcWorkspace.id
     tfcWorkspaceName = tfcWorkspace.name
     tfcOrganization = org.slug
-    tfcToken = await generateRunToken(
-      deployment.id,
-      tfcWorkspace.id,
-      org.id,
-      getRunTokenScopes(job.jobType),
-    )
   }
 
-  // Create a tf_run record
   const tfRun = await createTfRun({
+    jobId: job.id,
     deploymentId: deployment.id,
-    runGroupId: job.runGroupId ?? undefined,
+    runGroupId: job.runGroupId,
     runType: job.jobType,
     status: "running",
   })
   events.emitRunUpdate(tfRun.id, deployment.id)
+
+  if (tfcWorkspaceId) {
+    tfcToken = await generateRunToken({
+      runId: tfRun.id,
+      jobId: job.id,
+      deploymentId: deployment.id,
+      runGroupId: job.runGroupId,
+      workspaceId: tfcWorkspaceId,
+      orgId: org.id,
+      scopes: getRunTokenScopes(job.jobType),
+    })
+  }
 
   // Update deployment status
   const statusMap: Record<string, string> = {
@@ -307,12 +323,21 @@ async function executeJobWork(
 
   // Update tf_run record
   if (result.success) {
-    await updateRunStatus(tfRun.id, deployment.id, "success", {
-      completedAt: new Date(),
-      planSummary: result.planSummary,
-      planJson: result.planJson,
-      outputs: result.outputs,
-    })
+    const settled = await updateRunStatus(
+      tfRun.id,
+      deployment.id,
+      "success",
+      {
+        completedAt: new Date(),
+        planSummary: result.planSummary,
+        planJson: result.planJson,
+        outputs: result.outputs,
+      },
+      "running",
+    )
+    if (!settled) {
+      return result
+    }
 
     // Update deployment status based on job type
     if (job.jobType === "plan") {
@@ -348,10 +373,19 @@ async function executeJobWork(
 
     await updatePrCommentFromDb(deployment)
   } else {
-    await updateRunStatus(tfRun.id, deployment.id, "failed", {
-      completedAt: new Date(),
-      errorMessage: result.errorMessage,
-    })
+    const settled = await updateRunStatus(
+      tfRun.id,
+      deployment.id,
+      "failed",
+      {
+        completedAt: new Date(),
+        errorMessage: result.errorMessage,
+      },
+      "running",
+    )
+    if (!settled) {
+      return result
+    }
     await updateDeploymentStatus(deployment.id, "failed")
 
     if (job.jobType === "destroy" && tfcWorkspaceId) {

@@ -1,4 +1,5 @@
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   PutObjectCommand,
   type PutObjectCommandInput,
@@ -18,6 +19,18 @@ import { logger } from "./telemetry.ts"
 export interface TfcS3Config {
   bucket: string
   region: string
+}
+
+export function isS3PreconditionFailure(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "$metadata" in error &&
+    typeof error.$metadata === "object" &&
+    error.$metadata !== null &&
+    "httpStatusCode" in error.$metadata &&
+    error.$metadata.httpStatusCode === 412
+  )
 }
 
 /**
@@ -109,6 +122,9 @@ export async function uploadState(
 
   // Use in-memory storage if S3 not configured (tests)
   if (!isS3Configured()) {
+    if (inMemoryStateStore.has(s3Key)) {
+      throw new StateUploadError("State object already uploaded", "STATE_ALREADY_UPLOADED")
+    }
     inMemoryStateStore.set(s3Key, content)
     logger.info("State uploaded to in-memory store", {
       "state.key": s3Key,
@@ -129,6 +145,7 @@ export async function uploadState(
     Body: content,
     ContentType: "application/json",
     ContentMD5: Buffer.from(actualMd5, "hex").toString("base64"),
+    IfNoneMatch: "*",
   }
 
   if (kmsKeyArn) {
@@ -137,13 +154,19 @@ export async function uploadState(
   }
 
   if (orgId) {
-    putParams.Tagging = toS3ObjectTagging(buildOrgResourceTags(
-      { orgId },
-      { resourceClass: "state" },
-    ))
+    putParams.Tagging = toS3ObjectTagging(
+      buildOrgResourceTags({ orgId }, { resourceClass: "state" }),
+    )
   }
 
-  await client.send(new PutObjectCommand(putParams))
+  try {
+    await client.send(new PutObjectCommand(putParams))
+  } catch (error) {
+    if (isS3PreconditionFailure(error)) {
+      throw new StateUploadError("State object already uploaded", "STATE_ALREADY_UPLOADED")
+    }
+    throw error
+  }
 
   logger.info("State uploaded to S3", {
     "state.bucket": config.bucket,
@@ -155,6 +178,16 @@ export async function uploadState(
   })
 
   return { size: content.length, md5: actualMd5 }
+}
+
+export async function deleteStateObject(s3Key: string): Promise<void> {
+  if (!isS3Configured()) {
+    inMemoryStateStore.delete(s3Key)
+    return
+  }
+  const config = getTfcS3Config()
+  const client = getS3Client(config.region)
+  await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: s3Key }))
 }
 
 /**

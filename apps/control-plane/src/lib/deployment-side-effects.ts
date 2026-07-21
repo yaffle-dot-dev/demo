@@ -54,8 +54,17 @@ export async function notifyDownstreams(
   }
 }
 
-export async function cascadeFailure(deploymentId: string): Promise<void> {
-  const downstreams = await findDownstreamDeployments(deploymentId)
+export async function cascadeFailure(
+  deploymentId: string,
+  expectedRunGroupId?: string,
+): Promise<void> {
+  const upstream = await findDeploymentById(deploymentId)
+  if (expectedRunGroupId && upstream?.runGroupId !== expectedRunGroupId) {
+    return
+  }
+  const downstreams = (await findDownstreamDeployments(deploymentId)).filter(
+    (deployment) => !expectedRunGroupId || deployment.runGroupId === expectedRunGroupId,
+  )
   if (downstreams.length === 0) {
     return
   }
@@ -65,7 +74,6 @@ export async function cascadeFailure(deploymentId: string): Promise<void> {
     downstreamCount: downstreams.length,
   })
 
-  const upstream = await findDeploymentById(deploymentId)
   const reason = `Skipped: upstream ${upstream?.workspacePath ?? deploymentId} failed`
 
   const visited = new Set<string>()
@@ -80,9 +88,11 @@ export async function cascadeFailure(deploymentId: string): Promise<void> {
       continue
     }
 
-    await markDeploymentSkipped(downstream.id, reason)
+    await markDeploymentSkipped(downstream.id, reason, expectedRunGroupId)
 
-    const transitiveDownstreams = await findDownstreamDeployments(downstream.id)
+    const transitiveDownstreams = (await findDownstreamDeployments(downstream.id)).filter(
+      (deployment) => !expectedRunGroupId || deployment.runGroupId === expectedRunGroupId,
+    )
     for (const transitive of transitiveDownstreams) {
       if (!visited.has(transitive.id)) {
         toProcess.push(transitive)
@@ -91,9 +101,7 @@ export async function cascadeFailure(deploymentId: string): Promise<void> {
   }
 }
 
-export async function notifyDestroyComplete(
-  deploymentId: string,
-): Promise<void> {
+export async function notifyDestroyComplete(deploymentId: string): Promise<void> {
   const deployment = await findDeploymentById(deploymentId)
   if (!deployment || !deployment.upstreamIds || deployment.upstreamIds.length === 0) {
     return

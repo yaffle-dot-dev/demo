@@ -13,6 +13,12 @@ import { enqueueEnvironmentGroupProjectionRebuild } from "../../jobs/environment
 
 export type TfRun = typeof tfRuns.$inferSelect
 export type NewTfRun = typeof tfRuns.$inferInsert
+export interface RunnerRunCapability {
+  runId: string
+  jobId: string
+  deploymentId: string
+  runGroupId: string
+}
 export type TfRunListItem = Pick<
   TfRun,
   | "id"
@@ -123,13 +129,20 @@ export async function updateRunStatus(
     startedAt?: Date
     completedAt?: Date
   },
-): Promise<void> {
+  expectedCurrentStatus?: RunStatus,
+): Promise<boolean> {
   return withDbSpan("update", "tf_runs", async () => {
     // Update the run
     const [updated] = await db
       .update(tfRuns)
       .set({ status, ...extra })
-      .where(and(eq(tfRuns.id, runId), eq(tfRuns.deploymentId, previewId)))
+      .where(
+        and(
+          eq(tfRuns.id, runId),
+          eq(tfRuns.deploymentId, previewId),
+          expectedCurrentStatus ? eq(tfRuns.status, expectedCurrentStatus) : undefined,
+        ),
+      )
       .returning({ runGroupId: tfRuns.runGroupId, deploymentId: tfRuns.deploymentId })
 
     events.emitRunUpdate(runId, previewId)
@@ -150,6 +163,7 @@ export async function updateRunStatus(
     if (updated?.runGroupId) {
       await recomputeRunGroupStatus(updated.runGroupId)
     }
+    return Boolean(updated)
   })
 }
 
@@ -229,6 +243,46 @@ export async function appendRunLog(runId: string, previewId: string, chunk: stri
       .set({ logOutput: sql`coalesce(${tfRuns.logOutput}, '') || ${chunk}` })
       .where(and(eq(tfRuns.id, runId), eq(tfRuns.deploymentId, previewId)))
     events.emitRunUpdate(runId, previewId)
+  })
+}
+
+export async function appendRunLogFromRunner(
+  capability: RunnerRunCapability,
+  chunk: string,
+): Promise<boolean> {
+  return withDbSpan("update", "tf_runs", async () => {
+    const rows = await db
+      .update(tfRuns)
+      .set({ logOutput: sql`coalesce(${tfRuns.logOutput}, '') || ${chunk}` })
+      .where(
+        and(
+          eq(tfRuns.id, capability.runId),
+          eq(tfRuns.jobId, capability.jobId),
+          eq(tfRuns.deploymentId, capability.deploymentId),
+          eq(tfRuns.runGroupId, capability.runGroupId),
+          eq(tfRuns.status, "running"),
+          sql`EXISTS (
+            SELECT 1
+            FROM iac_jobs
+            WHERE iac_jobs.id = ${capability.jobId}
+              AND iac_jobs.deployment_id = ${capability.deploymentId}
+              AND iac_jobs.run_group_id = ${capability.runGroupId}
+              AND iac_jobs.status = 'running'
+              AND EXISTS (
+                SELECT 1
+                FROM workspace_deployments
+                WHERE workspace_deployments.id = ${capability.deploymentId}
+                  AND workspace_deployments.run_group_id = ${capability.runGroupId}
+              )
+          )`,
+        ),
+      )
+      .returning({ id: tfRuns.id })
+    if (rows.length === 1) {
+      events.emitRunUpdate(capability.runId, capability.deploymentId)
+      return true
+    }
+    return false
   })
 }
 

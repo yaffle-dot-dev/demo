@@ -14,7 +14,10 @@ import { deleteWorkspace, findWorkspaceByName } from "../../db/queries/workspace
 import { ensureMembership } from "../../db/queries/users.ts"
 import { db } from "../../lib/db.ts"
 import { repositories, user } from "../../db/schema.ts"
-import { generateRunToken } from "../../lib/run-token.ts"
+import {
+  cleanupTestRunCapabilities,
+  generateTestRunToken,
+} from "../../test-utils/runner-capability.ts"
 
 const mockFetchFileContent = mock(async () => undefined as string | undefined)
 const mockCheckTeamMembership = mock(async () => false)
@@ -64,11 +67,7 @@ async function ensureTestUserRecord(id: string, name: string, email: string): Pr
   }
 }
 
-async function mintApiToken(
-  userId: string,
-  description: string,
-  orgId: string,
-): Promise<string> {
+async function mintApiToken(userId: string, description: string, orgId: string): Promise<string> {
   const { token, hash } = generateToken()
   await createApiToken({
     userId,
@@ -82,12 +81,7 @@ async function mintApiToken(
   return token
 }
 
-function authRequest(
-  method: string,
-  path: string,
-  token: string,
-  body?: unknown,
-): Request {
+function authRequest(method: string, path: string, token: string, body?: unknown): Request {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${token}`,
   }
@@ -146,23 +140,18 @@ async function createWorkspaceForOrg(params: {
   environmentName?: string
 }): Promise<string> {
   const res = await app.fetch(
-    authRequest(
-      "POST",
-      `/tfc/api/v2/organizations/${params.orgSlug}/workspaces`,
-      params.token,
-      {
-        data: {
-          type: "workspaces",
-          attributes: {
-            name: params.name,
-            repo: params.repo,
-            "environment-kind": params.environmentKind ?? "named",
-            "environment-name": params.environmentName ?? "main",
-            "workspace-path": params.workspacePath,
-          },
+    authRequest("POST", `/tfc/api/v2/organizations/${params.orgSlug}/workspaces`, params.token, {
+      data: {
+        type: "workspaces",
+        attributes: {
+          name: params.name,
+          repo: params.repo,
+          "environment-kind": params.environmentKind ?? "named",
+          "environment-name": params.environmentName ?? "main",
+          "workspace-path": params.workspacePath,
         },
       },
-    ),
+    }),
   )
 
   expect(res.status).toBe(201)
@@ -177,11 +166,7 @@ async function uploadState(params: {
   serial?: number
 }): Promise<void> {
   await app.fetch(
-    authRequest(
-      "POST",
-      `/tfc/api/v2/workspaces/${params.workspaceId}/actions/lock`,
-      params.token,
-    ),
+    authRequest("POST", `/tfc/api/v2/workspaces/${params.workspaceId}/actions/lock`, params.token),
   )
 
   const serial = params.serial ?? 1
@@ -222,8 +207,16 @@ async function uploadState(params: {
 }
 
 beforeAll(async () => {
-  await ensureTestUserRecord(PRODUCER_USER_ID, "Registry Producer User", "registry-producer@example.com")
-  await ensureTestUserRecord(CONSUMER_USER_ID, "Registry Consumer User", "registry-consumer@example.com")
+  await ensureTestUserRecord(
+    PRODUCER_USER_ID,
+    "Registry Producer User",
+    "registry-producer@example.com",
+  )
+  await ensureTestUserRecord(
+    CONSUMER_USER_ID,
+    "Registry Consumer User",
+    "registry-consumer@example.com",
+  )
 
   let producerOrg = await findOrgBySlug(PRODUCER_ORG_SLUG)
   if (!producerOrg) {
@@ -265,12 +258,14 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
+  await cleanupTestRunCapabilities()
   await deleteApiTokensByUserId(PRODUCER_USER_ID)
   await deleteApiTokensByUserId(CONSUMER_USER_ID)
   mock.restore()
 })
 
 beforeEach(async () => {
+  await cleanupTestRunCapabilities()
   mockFetchFileContent.mockImplementation(async () => undefined)
 
   for (const [orgId, workspaceName] of [
@@ -320,7 +315,8 @@ describe("Module Registry cross-org auth", () => {
   })
 
   test("allows allowlisted cross-org consumers to download a module", async () => {
-    mockFetchFileContent.mockImplementation(async () => `
+    mockFetchFileContent.mockImplementation(
+      async () => `
 version = 1
 
 [[environments]]
@@ -331,7 +327,8 @@ path = "platform/database"
 environments = ["main"]
 
 outputs.connection_string = { visibility = "public", consumers = ["${CONSUMER_ORG_SLUG}:other-github/foo-service:apps/api/infra"] }
-`)
+`,
+    )
 
     const producerWorkspaceId = await createWorkspaceForOrg({
       orgSlug: PRODUCER_ORG_SLUG,
@@ -354,7 +351,11 @@ outputs.connection_string = { visibility = "public", consumers = ["${CONSUMER_OR
       workspacePath: "apps/api/infra",
     })
 
-    const runToken = await generateRunToken("cross-org-allow", consumerWorkspaceId, consumerOrgId)
+    const runToken = await generateTestRunToken(
+      "cross-org-allow",
+      consumerWorkspaceId,
+      consumerOrgId,
+    )
 
     const downloadRes = await app.fetch(
       authRequest(
@@ -379,7 +380,8 @@ outputs.connection_string = { visibility = "public", consumers = ["${CONSUMER_OR
   })
 
   test("denies cross-org consumers that are not allowlisted", async () => {
-    mockFetchFileContent.mockImplementation(async () => `
+    mockFetchFileContent.mockImplementation(
+      async () => `
 version = 1
 
 [[environments]]
@@ -390,7 +392,8 @@ path = "platform/database"
 environments = ["main"]
 
 outputs.connection_string = { visibility = "public", consumers = ["another-org:other-github/foo-service:apps/api/infra"] }
-`)
+`,
+    )
 
     const producerWorkspaceId = await createWorkspaceForOrg({
       orgSlug: PRODUCER_ORG_SLUG,
@@ -413,7 +416,11 @@ outputs.connection_string = { visibility = "public", consumers = ["another-org:o
       workspacePath: "apps/api/infra",
     })
 
-    const runToken = await generateRunToken("cross-org-deny", consumerWorkspaceId, consumerOrgId)
+    const runToken = await generateTestRunToken(
+      "cross-org-deny",
+      consumerWorkspaceId,
+      consumerOrgId,
+    )
 
     const versionsRes = await app.fetch(
       authRequest(

@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto"
+
 import { SignJWT, jwtVerify, type JWTPayload } from "jose"
 
 import { getEnv } from "./env.ts"
@@ -28,14 +30,17 @@ export interface WarmRunnerTokenPayload extends JWTPayload {
  */
 function getJwtSecret(): Uint8Array {
   const env = getEnv()
-  const secret = process.env.YAFFLE_JOB_TOKEN_SECRET
-    ?? process.env.YAFFLE_RUN_TOKEN_SECRET
-    ?? env.betterAuthSecret
+  const secret =
+    process.env.YAFFLE_JOB_TOKEN_SECRET ??
+    process.env.YAFFLE_RUN_TOKEN_SECRET ??
+    env.betterAuthSecret
   if (!secret) {
     throw new Error("No JWT secret configured for job tokens")
   }
-  return new TextEncoder().encode(secret)
+  return createHmac("sha256", secret).update("yaffle-job-capability-v1").digest()
 }
+
+const TOKEN_ISSUER = "yaffle-control-plane"
 
 /**
  * Generate a job token (JWT) for runner authentication.
@@ -62,6 +67,8 @@ export async function generateJobToken(
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(`job:${jobId}`)
+    .setIssuer(TOKEN_ISSUER)
+    .setAudience("yaffle-job-runner")
     .setIssuedAt()
     .setExpirationTime(`${ttlHours}h`)
     .sign(secret)
@@ -85,6 +92,8 @@ export async function generateWarmRunnerToken(
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(`warm-runner:${orgId}`)
+    .setIssuer(TOKEN_ISSUER)
+    .setAudience("yaffle-warm-runner")
     .setIssuedAt()
     .setExpirationTime(`${ttlHours}h`)
     .sign(secret)
@@ -122,6 +131,8 @@ export async function generateScanJobToken(
   })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(`scan:${scanJobId}`)
+    .setIssuer(TOKEN_ISSUER)
+    .setAudience("yaffle-scan-runner")
     .setIssuedAt()
     .setExpirationTime(`${ttlHours}h`)
     .sign(secret)
@@ -136,11 +147,15 @@ export async function generateScanJobToken(
 export async function verifyScanJobToken(token: string): Promise<ScanJobTokenPayload | null> {
   try {
     const secret = getJwtSecret()
-    const { payload } = await jwtVerify(token, secret)
+    const { payload } = await jwtVerify(token, secret, {
+      algorithms: ["HS256"],
+      issuer: TOKEN_ISSUER,
+      audience: "yaffle-scan-runner",
+    })
 
     if (
-      !payload.sub?.startsWith("scan:") ||
       typeof payload.scan_job_id !== "string" ||
+      payload.sub !== `scan:${payload.scan_job_id}` ||
       typeof payload.org_id !== "string"
     ) {
       log.debug("Scan job token validation failed: missing required fields")
@@ -164,23 +179,30 @@ export async function verifyScanJobToken(token: string): Promise<ScanJobTokenPay
 export async function verifyJobToken(token: string): Promise<JobTokenPayload | null> {
   try {
     const secret = getJwtSecret()
-    const { payload } = await jwtVerify(token, secret)
+    const { payload } = await jwtVerify(token, secret, {
+      algorithms: ["HS256"],
+      issuer: TOKEN_ISSUER,
+      audience: "yaffle-job-runner",
+    })
+    const subjectMatchesJob =
+      typeof payload.job_id === "string" && payload.sub === `job:${payload.job_id}`
 
     // Validate required fields
     if (
-      !payload.sub?.startsWith("job:") ||
       typeof payload.job_id !== "string" ||
+      !subjectMatchesJob ||
       typeof payload.deployment_id !== "string" ||
       typeof payload.org_id !== "string" ||
       (payload.spawn_lease_token !== undefined && typeof payload.spawn_lease_token !== "string")
     ) {
       log.debug("Job token validation failed: missing required fields", {
         hasSub: !!payload.sub,
-        subStartsWithJob: payload.sub?.startsWith("job:"),
+        subjectMatchesJob,
         hasJobId: typeof payload.job_id === "string",
         hasDeploymentId: typeof payload.deployment_id === "string",
         hasOrgId: typeof payload.org_id === "string",
-        hasValidSpawnLeaseToken: payload.spawn_lease_token === undefined || typeof payload.spawn_lease_token === "string",
+        hasValidSpawnLeaseToken:
+          payload.spawn_lease_token === undefined || typeof payload.spawn_lease_token === "string",
       })
       return null
     }
@@ -198,16 +220,22 @@ export async function verifyJobToken(token: string): Promise<JobTokenPayload | n
 export async function verifyWarmRunnerToken(token: string): Promise<WarmRunnerTokenPayload | null> {
   try {
     const secret = getJwtSecret()
-    const { payload } = await jwtVerify(token, secret)
+    const { payload } = await jwtVerify(token, secret, {
+      algorithms: ["HS256"],
+      issuer: TOKEN_ISSUER,
+      audience: "yaffle-warm-runner",
+    })
+    const subjectMatchesWarmRunner =
+      typeof payload.org_id === "string" && payload.sub === `warm-runner:${payload.org_id}`
 
     if (
-      !payload.sub?.startsWith("warm-runner:") ||
       typeof payload.org_id !== "string" ||
+      !subjectMatchesWarmRunner ||
       payload.runner_mode !== "warm"
     ) {
       log.debug("Warm runner token validation failed: missing required fields", {
         hasSub: !!payload.sub,
-        subStartsWithWarmRunner: payload.sub?.startsWith("warm-runner:"),
+        subjectMatchesWarmRunner,
         hasOrgId: typeof payload.org_id === "string",
         hasWarmMode: payload.runner_mode === "warm",
       })

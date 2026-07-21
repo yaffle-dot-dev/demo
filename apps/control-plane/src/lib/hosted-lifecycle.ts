@@ -1,9 +1,6 @@
 import { randomBytes } from "node:crypto"
 
-import {
-  type LifecycleHook,
-  matchEnvironmentPattern,
-} from "./config-toml.ts"
+import { type LifecycleHook, matchEnvironmentPattern } from "./config-toml.ts"
 import { getEnv } from "./env.ts"
 import { buildHostedLifecyclePayload } from "./hosted-lifecycle-payload.ts"
 import {
@@ -23,6 +20,7 @@ import { findRepoByFullName } from "../db/queries/repositories.ts"
 import { findRunGroupById } from "../db/queries/run-groups.ts"
 import {
   findDeploymentById,
+  deploymentBelongsToRunGroup,
   transitionDeploymentStatus,
 } from "../db/queries/workspace-deployments.ts"
 import { getInstallationOctokit } from "./github.ts"
@@ -62,6 +60,11 @@ export async function executeHostedLifecycleForDeployment(values: {
       `Deployment ${values.deployment.id} is missing its execution run group`,
     )
   }
+  if (!(await deploymentBelongsToRunGroup(values.deployment.id, values.runGroupId))) {
+    throw new ExecutionContextAssociationError(
+      `Deployment ${values.deployment.id} is no longer bound to run group ${values.runGroupId}`,
+    )
+  }
 
   const runGroup = await findRunGroupById(values.runGroupId)
   if (!runGroup?.repoBindingId || !runGroup.executionSnapshot) {
@@ -79,13 +82,15 @@ export async function executeHostedLifecycleForDeployment(values: {
   if (!binding) {
     throw new Error(`run group ${runGroup.id} is missing its principal repo binding`)
   }
-  if (!isExecutionContextAssociationValid({
-    snapshot: runGroup.executionSnapshot,
-    runGroup,
-    resource: values.deployment,
-    canonicalRepoNamespace: binding.canonicalRepoNamespace,
-    requireRepoBinding: true,
-  })) {
+  if (
+    !isExecutionContextAssociationValid({
+      snapshot: runGroup.executionSnapshot,
+      runGroup,
+      resource: values.deployment,
+      canonicalRepoNamespace: binding.canonicalRepoNamespace,
+      requireRepoBinding: true,
+    })
+  ) {
     throw new ExecutionContextAssociationError(
       `Run group ${runGroup.id} does not own deployment ${values.deployment.id}`,
     )
@@ -110,8 +115,14 @@ export async function executeHostedLifecycleForDeployment(values: {
   const environmentName = executionSnapshot.environment.name
   const source = executionSnapshot.source
 
-  const activationHooks = lifecycleHooksForEnvironment(workspace.lifecycle.activation, environmentName)
-  const verificationHooks = lifecycleHooksForEnvironment(workspace.lifecycle.verification, environmentName)
+  const activationHooks = lifecycleHooksForEnvironment(
+    workspace.lifecycle.activation,
+    environmentName,
+  )
+  const verificationHooks = lifecycleHooksForEnvironment(
+    workspace.lifecycle.verification,
+    environmentName,
+  )
   if (activationHooks.length === 0 && verificationHooks.length === 0) {
     return { runId: null }
   }
@@ -165,7 +176,10 @@ export async function executeHostedLifecycleForDeployment(values: {
 
   if (pendingDispatches.length === 0 && verificationHooks.length > 0) {
     const items = await listLifecycleItemsForRun(lifecycleRun.id)
-    for (const item of items.filter((entry) => entry.workspacePath === values.deployment.workspacePath && entry.phase === "verification")) {
+    for (const item of items.filter(
+      (entry) =>
+        entry.workspacePath === values.deployment.workspacePath && entry.phase === "verification",
+    )) {
       pendingDispatches.push({ itemId: item.id })
     }
   }
@@ -184,12 +198,19 @@ export async function reconcileHostedDeploymentState(values: {
   runGroupId: string | null
 }): Promise<void> {
   const deployment = await findDeploymentById(values.deploymentId)
-  if (!deployment || deployment.status === "destroyed") {
+  if (
+    !deployment ||
+    deployment.status === "destroyed" ||
+    !values.runGroupId ||
+    deployment.runGroupId !== values.runGroupId
+  ) {
     return
   }
 
   const workspaceItems = values.lifecycleRunId
-    ? (await listLifecycleItemsForRun(values.lifecycleRunId)).filter((item) => item.workspacePath === values.workspacePath)
+    ? (await listLifecycleItemsForRun(values.lifecycleRunId)).filter(
+        (item) => item.workspacePath === values.workspacePath,
+      )
     : []
 
   const workspaceState = deriveWorkspaceLifecycleState(
@@ -213,18 +234,20 @@ export async function reconcileHostedDeploymentState(values: {
     await notifyDownstreams(deployment.id, "apply", values.runGroupId)
   }
 
-  const infraDagFailed = conditions.infra_ready.vector.degraded > 0
-    || conditions.infra_ready.vector.blocked > 0
-    || conditions.infra_ready.vector.failed > 0
+  const infraDagFailed =
+    conditions.infra_ready.vector.degraded > 0 ||
+    conditions.infra_ready.vector.blocked > 0 ||
+    conditions.infra_ready.vector.failed > 0
 
   if (workspaceState.deploymentStatus === "failed") {
     const updated = await transitionDeploymentStatus(
       deployment.id,
       ["planning", "applying", "activating", "ready"],
       "failed",
+      values.runGroupId,
     )
     if (updated && infraDagFailed) {
-      await cascadeFailure(deployment.id)
+      await cascadeFailure(deployment.id, values.runGroupId)
     }
     return
   }
@@ -234,6 +257,7 @@ export async function reconcileHostedDeploymentState(values: {
       deployment.id,
       ["planning", "applying"],
       "activating",
+      values.runGroupId,
     )
     return
   }
@@ -242,9 +266,10 @@ export async function reconcileHostedDeploymentState(values: {
     deployment.id,
     ["planning", "applying", "activating"],
     "ready",
+    values.runGroupId,
   )
   if (infraDagFailed) {
-    await cascadeFailure(deployment.id)
+    await cascadeFailure(deployment.id, values.runGroupId)
   }
 }
 
@@ -262,7 +287,9 @@ export async function dispatchHostedLifecycleVerificationIfReady(values: {
     return
   }
 
-  for (const item of workspaceItems.filter((entry) => entry.phase === "verification" && entry.state === "pending")) {
+  for (const item of workspaceItems.filter(
+    (entry) => entry.phase === "verification" && entry.state === "pending",
+  )) {
     await dispatchHostedLifecycleItem(item.id)
   }
 }
@@ -293,9 +320,10 @@ async function createHostedLifecycleItem(values: {
     destinationUrl: destination.url,
     destinationClass: destination.class,
     dispatchMode: "cloud",
-    summary: values.phase === "activation"
-      ? "Waiting for hosted activation dispatch"
-      : "Waiting for hosted verification dispatch",
+    summary:
+      values.phase === "activation"
+        ? "Waiting for hosted activation dispatch"
+        : "Waiting for hosted verification dispatch",
     metadata: {
       hostedDispatch: serializeHostedDispatch(values.hook, values.installationId),
       hostedPayload: buildHostedLifecyclePayload({
@@ -355,16 +383,20 @@ async function dispatchHostedLifecycleItem(itemId: string): Promise<void> {
 
   const dispatchPayload = {
     ...metadata.hostedPayload,
-    on_completion: new URL(`/api/lifecycle/completions/${callbackToken}`, getEnv().publicApiUrl).toString(),
+    on_completion: new URL(
+      `/api/lifecycle/completions/${callbackToken}`,
+      getEnv().publicApiUrl,
+    ).toString(),
   }
 
   try {
     await dispatchHostedLifecycle(metadata.hostedDispatch, dispatchPayload)
     await updateLifecycleItem(item.id, {
       state: "running",
-      summary: item.phase === "activation"
-        ? "Dispatching hosted activation hook"
-        : "Dispatching hosted verification hook",
+      summary:
+        item.phase === "activation"
+          ? "Dispatching hosted activation hook"
+          : "Dispatching hosted verification hook",
       startedAt: item.startedAt ?? new Date(),
     })
     await createLifecycleEvent({
@@ -420,13 +452,34 @@ async function reconcileLifecycleRunStatus(runId: string): Promise<void> {
   })
 }
 
-function lifecycleHooksForEnvironment(hooks: LifecycleHook[], environmentName: string): LifecycleHook[] {
-  return hooks.filter((hook) => hook.environments.some((pattern) => matchEnvironmentPattern(pattern, environmentName)))
+function lifecycleHooksForEnvironment(
+  hooks: LifecycleHook[],
+  environmentName: string,
+): LifecycleHook[] {
+  return hooks.filter((hook) =>
+    hook.environments.some((pattern) => matchEnvironmentPattern(pattern, environmentName)),
+  )
 }
 
 type HostedDispatchSpec =
-  | { kind: "generic"; request: { url: string; method: "POST"; auth?: { scheme: "bearer" | "hmac_sha256"; connection: string } } }
-  | { kind: "github_repository_dispatch"; github: { owner?: string; repo?: string; eventType: string; apiUrl?: string; installationId?: number } }
+  | {
+      kind: "generic"
+      request: {
+        url: string
+        method: "POST"
+        auth?: { scheme: "bearer" | "hmac_sha256"; connection: string }
+      }
+    }
+  | {
+      kind: "github_repository_dispatch"
+      github: {
+        owner?: string
+        repo?: string
+        eventType: string
+        apiUrl?: string
+        installationId?: number
+      }
+    }
 
 function serializeHostedDispatch(
   hook: LifecycleHook,
@@ -440,9 +493,8 @@ function serializeHostedDispatch(
         repo: hook.github?.repo,
         eventType: hook.github?.event_type ?? hook.key,
         apiUrl: hook.github?.api_url,
-        installationId: hook.github?.owner || hook.github?.repo
-          ? undefined
-          : producerInstallationId,
+        installationId:
+          hook.github?.owner || hook.github?.repo ? undefined : producerInstallationId,
       },
     }
   }
@@ -464,7 +516,10 @@ function serializeHostedDispatch(
   }
 }
 
-function hostedLifecycleDestination(hook: LifecycleHook, canonicalRepoNamespace: string): { url: string; class: "public" | "private_local" } {
+function hostedLifecycleDestination(
+  hook: LifecycleHook,
+  canonicalRepoNamespace: string,
+): { url: string; class: "public" | "private_local" } {
   if (hook.kind === "github_repository_dispatch") {
     const [ownerFromNamespace, repoFromNamespace] = canonicalRepoNamespace.split("--")
     const owner = hook.github?.owner ?? ownerFromNamespace
@@ -482,13 +537,18 @@ function hostedLifecycleDestination(hook: LifecycleHook, canonicalRepoNamespace:
   }
 }
 
-async function dispatchHostedLifecycle(spec: HostedDispatchSpec, payload: Record<string, unknown>): Promise<void> {
+async function dispatchHostedLifecycle(
+  spec: HostedDispatchSpec,
+  payload: Record<string, unknown>,
+): Promise<void> {
   if (spec.kind === "github_repository_dispatch") {
     const target = resolveGitHubDispatchTarget(spec.github, payload.repo_namespace)
     const repo = await findRepoByFullName(`${target.owner}/${target.repo}`)
     const installationId = spec.github.installationId ?? repo?.installationId
     if (!installationId) {
-      throw new Error(`GitHub App installation is not configured for ${target.owner}/${target.repo}`)
+      throw new Error(
+        `GitHub App installation is not configured for ${target.owner}/${target.repo}`,
+      )
     }
     const octokit = await getInstallationOctokit(installationId)
     await octokit.request("POST /repos/{owner}/{repo}/dispatches", {
@@ -506,9 +566,9 @@ async function dispatchHostedLifecycle(spec: HostedDispatchSpec, payload: Record
     const environment = payload.environment
     const workspacePath = payload.workspace_path
     if (
-      typeof repoNamespace !== "string"
-      || typeof environment !== "string"
-      || typeof workspacePath !== "string"
+      typeof repoNamespace !== "string" ||
+      typeof environment !== "string" ||
+      typeof workspacePath !== "string"
     ) {
       throw new Error("Lifecycle payload is missing its execution scope")
     }
@@ -518,7 +578,12 @@ async function dispatchHostedLifecycle(spec: HostedDispatchSpec, payload: Record
       workspacePath,
       spec.request.auth.connection,
     )
-    applyLifecycleConnectionAuth(headers, spec.request.auth.scheme, secret, Buffer.from(JSON.stringify(payload)))
+    applyLifecycleConnectionAuth(
+      headers,
+      spec.request.auth.scheme,
+      secret,
+      Buffer.from(JSON.stringify(payload)),
+    )
   }
 
   const response = await fetch(spec.request.url, {
@@ -545,7 +610,8 @@ function resolveGitHubDispatchTarget(
   github: { owner?: string; repo?: string },
   canonicalRepoNamespaceValue: unknown,
 ): { owner: string; repo: string } {
-  const canonicalRepoNamespace = typeof canonicalRepoNamespaceValue === "string" ? canonicalRepoNamespaceValue : ""
+  const canonicalRepoNamespace =
+    typeof canonicalRepoNamespaceValue === "string" ? canonicalRepoNamespaceValue : ""
   const explicitOwner = github.owner?.trim()
   const explicitRepo = github.repo?.trim()
   if (explicitOwner && explicitRepo) {
@@ -572,31 +638,44 @@ async function resolveLifecycleConnectionSecret(
 
   const matches = (await findConnectionsByName(repo.orgId, connectionName)).filter((connection) => {
     const scope = getConnectionScopeConfig(connection)
-    return scopeListAllows(scope.environmentScope, environmentName)
-      && scopeListAllows(scope.workspaceScope, workspacePath)
+    return (
+      scopeListAllows(scope.environmentScope, environmentName) &&
+      scopeListAllows(scope.workspaceScope, workspacePath)
+    )
   })
 
   if (matches.length !== 1) {
-    throw new Error(`Expected exactly one connection named '${connectionName}' for ${environmentName} / ${workspacePath}`)
+    throw new Error(
+      `Expected exactly one connection named '${connectionName}' for ${environmentName} / ${workspacePath}`,
+    )
   }
 
   const connection = matches[0]
   if (connection.credentialProviderType !== "envvar" || !connection.secretPath) {
-    throw new Error(`Connection '${connection.name}' must be an envvar-backed connection for lifecycle auth`)
+    throw new Error(
+      `Connection '${connection.name}' must be an envvar-backed connection for lifecycle auth`,
+    )
   }
   const org = await findOrgById(connection.orgId)
   if (!org?.iamRoleArn) {
-    throw new Error(`Organization for connection '${connection.name}' is missing broker role configuration`)
+    throw new Error(
+      `Organization for connection '${connection.name}' is missing broker role configuration`,
+    )
   }
   const brokerCredentials = await assumeOrgBrokerRole(connection.orgId, org.iamRoleArn)
-  const secret = await getConnectionSecret(connection.secretPath, { credentials: brokerCredentials }) as {
+  const secret = (await getConnectionSecret(connection.secretPath, {
+    credentials: brokerCredentials,
+  })) as {
     envVars?: Array<{ key?: string; value?: string }>
   }
-  const envVars = (secret.envVars ?? []).filter((entry): entry is { key: string; value: string } =>
-    typeof entry.key === "string" && typeof entry.value === "string" && entry.key.length > 0,
+  const envVars = (secret.envVars ?? []).filter(
+    (entry): entry is { key: string; value: string } =>
+      typeof entry.key === "string" && typeof entry.value === "string" && entry.key.length > 0,
   )
   if (envVars.length !== 1) {
-    throw new Error(`Connection '${connection.name}' must contain exactly one env var secret for lifecycle auth`)
+    throw new Error(
+      `Connection '${connection.name}' must contain exactly one env var secret for lifecycle auth`,
+    )
   }
   return envVars[0].value
 }

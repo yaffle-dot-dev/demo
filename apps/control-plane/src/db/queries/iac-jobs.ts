@@ -29,6 +29,7 @@ import {
 import { events } from "../../lib/events.ts"
 import { updateDeploymentStatus } from "./workspace-deployments.ts"
 import { updateRunStatus } from "./tf-runs.ts"
+import { unlockWorkspaceForDeploymentRun } from "./workspaces.ts"
 import { recomputeRunGroupStatus } from "./run-groups.ts"
 import { cascadeFailure } from "../../lib/deployment-side-effects.ts"
 import {
@@ -478,42 +479,113 @@ export async function findLatestJobsForDeployments(
   })
 }
 
-export async function cancelRunningJobForDeploymentAndType(
-  deploymentId: string,
-  jobType: IacJobType,
-): Promise<IacJob | undefined> {
-  return withDbSpan("update", "iac_jobs", async () => {
-    const job = await db.transaction(async (tx) => {
-      const rows = await tx
-        .update(iacJobs)
-        .set({
-          status: "cancelled",
-          completedAt: new Date(),
-        })
-        .where(
-          and(
-            eq(iacJobs.deploymentId, deploymentId),
-            eq(iacJobs.jobType, jobType),
-            eq(iacJobs.planPurpose, "environment"),
-            eq(iacJobs.status, "running"),
-          ),
-        )
-        .returning()
+class RunnerCancellationConflict extends Error {}
 
-      const updatedJob = rows[0]
-      if (!updatedJob) {
+export async function cancelRunningJobForDeploymentAndType(capability: {
+  jobId: string
+  runId: string
+  deploymentId: string
+  runGroupId: string
+  jobType: IacJobType
+  errorMessage: string
+}): Promise<IacJob | undefined> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    let job: IacJob | undefined
+    try {
+      job = await db.transaction(async (tx) => {
+        const completedAt = new Date()
+        const rows = await tx
+          .update(iacJobs)
+          .set({ status: "cancelled", completedAt })
+          .where(
+            and(
+              eq(iacJobs.id, capability.jobId),
+              eq(iacJobs.deploymentId, capability.deploymentId),
+              eq(iacJobs.runGroupId, capability.runGroupId),
+              eq(iacJobs.jobType, capability.jobType),
+              eq(iacJobs.planPurpose, "environment"),
+              eq(iacJobs.status, "running"),
+            ),
+          )
+          .returning()
+
+        const updatedJob = rows[0]
+        if (!updatedJob) {
+          return undefined
+        }
+        const runs = await tx
+          .update(tfRuns)
+          .set({ status: "cancelled", completedAt, errorMessage: capability.errorMessage })
+          .where(
+            and(
+              eq(tfRuns.id, capability.runId),
+              eq(tfRuns.jobId, capability.jobId),
+              eq(tfRuns.deploymentId, capability.deploymentId),
+              eq(tfRuns.runGroupId, capability.runGroupId),
+              eq(tfRuns.runType, capability.jobType),
+              eq(tfRuns.status, "running"),
+            ),
+          )
+          .returning({ id: tfRuns.id })
+        if (runs.length !== 1) {
+          throw new RunnerCancellationConflict()
+        }
+        const deployments = await tx
+          .update(workspaceDeployments)
+          .set({ status: "pending" })
+          .where(
+            and(
+              eq(workspaceDeployments.id, capability.deploymentId),
+              eq(workspaceDeployments.runGroupId, capability.runGroupId),
+            ),
+          )
+          .returning({ id: workspaceDeployments.id })
+        if (deployments.length !== 1) {
+          throw new RunnerCancellationConflict()
+        }
+        await tx
+          .update(workspaces)
+          .set({
+            locked: false,
+            lockedBy: null,
+            lockedAt: null,
+            lockReason: null,
+            lockId: null,
+          })
+          .where(
+            and(
+              eq(workspaces.lockedBy, `run:${capability.runId}`),
+              sql`EXISTS (
+                SELECT 1
+                FROM workspace_deployments
+                WHERE workspace_deployments.id = ${capability.deploymentId}
+                  AND workspaces.org_id = workspace_deployments.org_id
+                  AND workspaces.repo = workspace_deployments.repo
+                  AND workspaces.environment_kind = workspace_deployments.environment_kind
+                  AND workspaces.environment_name = workspace_deployments.environment_name
+                  AND workspaces.workspace_path = workspace_deployments.workspace_path
+                  AND workspaces.ref = workspace_deployments.ref
+              )`,
+            ),
+          )
+
+        await archiveIacJobs(tx, [updatedJob])
+        return updatedJob
+      })
+    } catch (error) {
+      if (error instanceof RunnerCancellationConflict) {
         return undefined
       }
-
-      await archiveIacJobs(tx, [updatedJob])
-      return updatedJob
-    })
+      throw error
+    }
 
     if (!job) {
       return undefined
     }
 
-    events.emitJobUpdate(job.id, deploymentId)
+    events.emitJobUpdate(job.id, capability.deploymentId)
+    events.emitRunUpdate(capability.runId, capability.deploymentId)
+    await recomputeRunGroupStatus(capability.runGroupId)
     getJobStateTransitionsCounter().add(1, {
       from_state: "running",
       to_state: "cancelled",
@@ -525,7 +597,7 @@ export async function cancelRunningJobForDeploymentAndType(
       "job.type": job.jobType,
       "job.status": "cancelled",
       "job.status.previous": "running",
-      "deployment.id": deploymentId,
+      "deployment.id": capability.deploymentId,
       "worker.id": job.workerId ?? "unknown",
     })
 
@@ -846,19 +918,10 @@ export async function failStaleJob(jobId: string): Promise<{ failed: boolean }> 
       const errorMessage =
         "Job timed out (worker stopped sending heartbeats). Use 'Run Again' to retry."
 
-      const runningRunConditions = [
-        eq(tfRuns.deploymentId, result.job.deploymentId),
-        eq(tfRuns.status, "running"),
-        eq(tfRuns.planPurpose, result.job.planPurpose),
-      ]
-      if (result.job.runGroupId) {
-        runningRunConditions.push(eq(tfRuns.runGroupId, result.job.runGroupId))
-      }
       const latestRunningRun = await db
         .select({ id: tfRuns.id })
         .from(tfRuns)
-        .where(and(...runningRunConditions))
-        .orderBy(desc(tfRuns.createdAt))
+        .where(and(eq(tfRuns.jobId, result.job.id), eq(tfRuns.status, "running")))
         .limit(1)
 
       if (latestRunningRun[0]) {
@@ -866,6 +929,7 @@ export async function failStaleJob(jobId: string): Promise<{ failed: boolean }> 
           completedAt: new Date(),
           errorMessage,
         })
+        await unlockWorkspaceForDeploymentRun(result.job.deploymentId, latestRunningRun[0].id)
       } else if (result.job.runGroupId) {
         // Defensive recompute when the corresponding tf_run cannot be found.
         // This avoids run groups getting stuck in "running" after stale job cleanup.
@@ -873,8 +937,16 @@ export async function failStaleJob(jobId: string): Promise<{ failed: boolean }> 
       }
 
       if (result.job.planPurpose === "environment") {
-        await updateDeploymentStatus(result.job.deploymentId, "system_error")
-        await cascadeFailure(result.job.deploymentId)
+        if (
+          result.job.runGroupId &&
+          (await updateDeploymentStatus(
+            result.job.deploymentId,
+            "system_error",
+            result.job.runGroupId,
+          ))
+        ) {
+          await cascadeFailure(result.job.deploymentId, result.job.runGroupId)
+        }
       }
     }
     return result
@@ -985,7 +1057,9 @@ export async function getJobWithContext(jobId: string): Promise<
     if (activeRows.length > 0) {
       const { job, deployment, runGroup, canonicalRepoNamespace } = activeRows[0]
       const validatedRunGroup =
-        runGroup && runGroupMatchesDeployment(runGroup, deployment, canonicalRepoNamespace)
+        runGroup &&
+        deployment.runGroupId === job.runGroupId &&
+        runGroupMatchesDeployment(runGroup, deployment, canonicalRepoNamespace)
           ? runGroup
           : null
       // Provide backward-compatible preview alias
@@ -1220,7 +1294,7 @@ export async function getQueuedJobsByRunGroup(): Promise<Map<string, IacJob[]>> 
  * @returns { claimed: true, job } if successful, { claimed: false } if already claimed
  */
 export async function claimJobForRunner(
-  jobId: string,
+  capability: { jobId: string; deploymentId: string; runGroupId: string },
   workerId: string,
   spawnLeaseToken?: string,
 ): Promise<{ claimed: boolean; job?: IacJob; queueWaitMs?: number }> {
@@ -1239,8 +1313,16 @@ export async function claimJobForRunner(
       })
       .where(
         and(
-          eq(iacJobs.id, jobId),
+          eq(iacJobs.id, capability.jobId),
+          eq(iacJobs.deploymentId, capability.deploymentId),
+          eq(iacJobs.runGroupId, capability.runGroupId),
           eq(iacJobs.status, "queued"), // Only claim if still queued
+          sql`EXISTS (
+            SELECT 1
+            FROM workspace_deployments
+            WHERE workspace_deployments.id = ${capability.deploymentId}
+              AND workspace_deployments.run_group_id = ${capability.runGroupId}
+          )`,
           spawnLeaseToken
             ? and(
                 eq(iacJobs.spawnLeaseToken, spawnLeaseToken),
@@ -1302,12 +1384,39 @@ export async function claimJobForRunner(
  *
  * @returns { success: true } if heartbeat updated, { success: false } if job not running
  */
-export async function heartbeatJob(jobId: string): Promise<{ success: boolean }> {
+export async function heartbeatJob(capability: {
+  jobId: string
+  runId: string
+  deploymentId: string
+  runGroupId: string
+}): Promise<{ success: boolean }> {
   return withDbSpan("update", "iac_jobs", async () => {
     const rows = await db
       .update(iacJobs)
       .set({ lastHeartbeat: new Date() })
-      .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "running")))
+      .where(
+        and(
+          eq(iacJobs.id, capability.jobId),
+          eq(iacJobs.deploymentId, capability.deploymentId),
+          eq(iacJobs.runGroupId, capability.runGroupId),
+          eq(iacJobs.status, "running"),
+          sql`EXISTS (
+            SELECT 1
+            FROM tf_runs
+            WHERE tf_runs.id = ${capability.runId}
+              AND tf_runs.job_id = ${capability.jobId}
+              AND tf_runs.deployment_id = ${capability.deploymentId}
+              AND tf_runs.run_group_id = ${capability.runGroupId}
+              AND tf_runs.status = 'running'
+          )`,
+          sql`EXISTS (
+            SELECT 1
+            FROM workspace_deployments
+            WHERE workspace_deployments.id = ${capability.deploymentId}
+              AND workspace_deployments.run_group_id = ${capability.runGroupId}
+          )`,
+        ),
+      )
       .returning({ id: iacJobs.id })
 
     if (rows.length > 0) {
@@ -1319,6 +1428,98 @@ export async function heartbeatJob(jobId: string): Promise<{ success: boolean }>
   })
 }
 
+class RunnerSettlementConflict extends Error {}
+
+export async function settleJobAndRunFromRunner(values: {
+  capability: { jobId: string; runId: string; deploymentId: string; runGroupId: string }
+  jobStatus: "completed" | "failed"
+  jobResult?: Record<string, unknown>
+  jobErrorMessage?: string
+  runStatus: "success" | "failed"
+  runUpdates: {
+    completedAt: Date
+    logOutput?: string
+    planSummary?: string
+    planJson?: unknown
+    planFileS3Key?: string
+    outputs?: unknown
+    errorMessage?: string
+  }
+}): Promise<{ success: boolean; job?: IacJob }> {
+  return withDbSpan("update", "iac_jobs", async () => {
+    try {
+      const job = await db.transaction(async (tx) => {
+        const deployments = await tx
+          .select({ id: workspaceDeployments.id })
+          .from(workspaceDeployments)
+          .where(
+            and(
+              eq(workspaceDeployments.id, values.capability.deploymentId),
+              eq(workspaceDeployments.runGroupId, values.capability.runGroupId),
+            ),
+          )
+          .for("share")
+          .limit(1)
+        if (deployments.length !== 1) {
+          throw new RunnerSettlementConflict()
+        }
+
+        const jobs = await tx
+          .update(iacJobs)
+          .set({
+            status: values.jobStatus,
+            completedAt: values.runUpdates.completedAt,
+            result: values.jobResult,
+            errorMessage: values.jobErrorMessage,
+          })
+          .where(
+            and(
+              eq(iacJobs.id, values.capability.jobId),
+              eq(iacJobs.deploymentId, values.capability.deploymentId),
+              eq(iacJobs.runGroupId, values.capability.runGroupId),
+              eq(iacJobs.status, "running"),
+            ),
+          )
+          .returning()
+        const updatedJob = jobs[0]
+        if (!updatedJob) {
+          throw new RunnerSettlementConflict()
+        }
+
+        const runs = await tx
+          .update(tfRuns)
+          .set({ status: values.runStatus, ...values.runUpdates })
+          .where(
+            and(
+              eq(tfRuns.id, values.capability.runId),
+              eq(tfRuns.jobId, values.capability.jobId),
+              eq(tfRuns.deploymentId, values.capability.deploymentId),
+              eq(tfRuns.runGroupId, values.capability.runGroupId),
+              eq(tfRuns.status, "running"),
+            ),
+          )
+          .returning({ id: tfRuns.id })
+        if (runs.length !== 1) {
+          throw new RunnerSettlementConflict()
+        }
+
+        await archiveIacJobs(tx, [updatedJob])
+        return updatedJob
+      })
+
+      events.emitJobUpdate(job.id, job.deploymentId)
+      events.emitRunUpdate(values.capability.runId, values.capability.deploymentId)
+      await recomputeRunGroupStatus(values.capability.runGroupId)
+      return { success: true, job }
+    } catch (error) {
+      if (error instanceof RunnerSettlementConflict) {
+        return { success: false }
+      }
+      throw error
+    }
+  })
+}
+
 /**
  * Complete a job from runner with result.
  * Only succeeds if job is still in "running" state.
@@ -1326,7 +1527,7 @@ export async function heartbeatJob(jobId: string): Promise<{ success: boolean }>
  * @returns { success: true } if completed, { success: false } if job not running
  */
 export async function completeJobFromRunner(
-  jobId: string,
+  capability: { jobId: string; deploymentId: string; runGroupId: string },
   result: Record<string, unknown>,
 ): Promise<{ success: boolean; job?: IacJob; runDurationMs?: number }> {
   return withDbSpan("update", "iac_jobs", async () => {
@@ -1338,7 +1539,14 @@ export async function completeJobFromRunner(
           completedAt: new Date(),
           result,
         })
-        .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "running")))
+        .where(
+          and(
+            eq(iacJobs.id, capability.jobId),
+            eq(iacJobs.deploymentId, capability.deploymentId),
+            eq(iacJobs.runGroupId, capability.runGroupId),
+            eq(iacJobs.status, "running"),
+          ),
+        )
         .returning()
 
       const updatedJob = rows[0]
@@ -1404,7 +1612,7 @@ export async function completeJobFromRunner(
  * @returns { success: true } if failed, { success: false } if job not running
  */
 export async function failJobFromRunner(
-  jobId: string,
+  capability: { jobId: string; deploymentId: string; runGroupId: string },
   errorMessage: string,
 ): Promise<{ success: boolean; job?: IacJob; runDurationMs?: number }> {
   return withDbSpan("update", "iac_jobs", async () => {
@@ -1416,7 +1624,14 @@ export async function failJobFromRunner(
           completedAt: new Date(),
           errorMessage,
         })
-        .where(and(eq(iacJobs.id, jobId), eq(iacJobs.status, "running")))
+        .where(
+          and(
+            eq(iacJobs.id, capability.jobId),
+            eq(iacJobs.deploymentId, capability.deploymentId),
+            eq(iacJobs.runGroupId, capability.runGroupId),
+            eq(iacJobs.status, "running"),
+          ),
+        )
         .returning()
 
       const updatedJob = rows[0]
