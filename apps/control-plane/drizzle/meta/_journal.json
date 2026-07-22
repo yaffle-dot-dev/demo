@@ -267,6 +267,13 @@
       "when": 1784728200000,
       "tag": "0037_normalize_state_output_sensitivity",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1784740000000,
+      "tag": "0038_managed_shared_output_snapshots",
+      "breakpoints": true
     }
   ]
 }

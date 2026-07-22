@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "@yaffle/test"
 import { Hono } from "hono"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { gunzipSync } from "node:zlib"
 
 import { tfcRoute } from "./index.ts"
 import { wellKnownRoute } from "../well-known.ts"
@@ -12,6 +13,10 @@ import {
   generateTestRunToken,
   getTestRunId,
 } from "../../test-utils/runner-capability.ts"
+import {
+  bindRunGroupSharedOutput,
+  publishSharedOutputSnapshot,
+} from "../../db/queries/shared-output-snapshots.ts"
 import {
   createApiToken,
   getDefaultTfcScopesForRole,
@@ -27,7 +32,7 @@ import { findOrgBySlug, createOrg } from "../../db/queries/organizations.ts"
 import { ensureMembership } from "../../db/queries/users.ts"
 import { db } from "../../lib/db.ts"
 import { ensureTransientWorkspace } from "../../lib/workspace-service.ts"
-import { stateVersions, tfRuns, user, workspaces } from "../../db/schema.ts"
+import { repositories, stateVersions, tfRuns, user, workspaces } from "../../db/schema.ts"
 import { eq, sql } from "drizzle-orm"
 
 /**
@@ -162,6 +167,22 @@ beforeAll(async () => {
     })
   }
   testOrgId = org.id
+  await db
+    .insert(repositories)
+    .values({
+      orgId: testOrgId,
+      githubId: 900001,
+      name: TEST_REPO,
+      fullName: `${TEST_ORG_SLUG}/${TEST_REPO}`,
+    })
+    .onConflictDoUpdate({
+      target: repositories.githubId,
+      set: {
+        orgId: testOrgId,
+        name: TEST_REPO,
+        fullName: `${TEST_ORG_SLUG}/${TEST_REPO}`,
+      },
+    })
 
   let otherOrg = await findOrgBySlug(TEST_OTHER_ORG_SLUG)
   if (!otherOrg) {
@@ -2552,6 +2573,113 @@ describe("Module Registry", () => {
     const body = await res.json()
     expect(body.modules[0].versions).toHaveLength(1)
     expect(body.modules[0].versions[0].version).toBe("1.0.1")
+  })
+
+  test("serves only the managed snapshot pinned to a transient run", async () => {
+    const suffix = randomUUID().slice(0, 8)
+    const producerPath = `platform/pinned-network-${suffix}`
+    const producerModuleName = producerPath.replaceAll("/", "--")
+    const consumerPath = `apps/api/${suffix}`
+    const producerWorkspaceId = await createModuleWorkspace({
+      name: `pinned-network-main-${suffix}`,
+      workspacePath: producerPath,
+      environmentKind: "named",
+      environmentName: "main",
+    })
+    await uploadModuleState(producerWorkspaceId)
+    const [producerState] = await db
+      .select()
+      .from(stateVersions)
+      .where(eq(stateVersions.workspaceId, producerWorkspaceId))
+
+    const [repository] = await db
+      .insert(repositories)
+      .values({
+        orgId: testOrgId,
+        githubId: 900001,
+        name: TEST_REPO,
+        fullName: `${TEST_ORG_SLUG}/${TEST_REPO}`,
+      })
+      .onConflictDoUpdate({
+        target: repositories.githubId,
+        set: { orgId: testOrgId },
+      })
+      .returning()
+    const snapshot = await publishSharedOutputSnapshot({
+      orgId: testOrgId,
+      repositoryId: repository.id,
+      repo: TEST_REPO,
+      workspaceId: producerWorkspaceId,
+      workspacePath: producerPath,
+      environmentName: "main",
+      sourceRevision: "pinned-producer-revision",
+      sourceRef: "refs/heads/main",
+      stateVersionId: producerState.id,
+      stateSerial: producerState.serial,
+      stateFingerprint: producerState.md5,
+      outputs: {
+        vpc_id: { value: "vpc-0123456789abcdef0", sensitive: false },
+      },
+    })
+
+    const consumerWorkspaceId = await createModuleWorkspace({
+      name: `pinned-network-consumer-${suffix}`,
+      workspacePath: consumerPath,
+      environmentKind: "transient",
+      environmentName: "pr-42",
+    })
+    const capability = await createTestRunCapability(
+      "pinned-managed-output",
+      consumerWorkspaceId,
+      testOrgId,
+    )
+    await bindRunGroupSharedOutput({
+      runGroupId: capability.runGroupId,
+      consumerWorkspacePath: consumerPath,
+      moduleName: "network",
+      snapshot,
+      outputNames: ["vpc_id"],
+    })
+
+    const versionsRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/${producerModuleName}/yaffle/versions`,
+        capability.token,
+      ),
+    )
+    expect(versionsRes.status).toBe(200)
+    expect((await versionsRes.json()).modules[0].versions).toEqual([{ version: "1.0.1" }])
+
+    const downloadRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/${producerModuleName}/yaffle/1.0.1/download`,
+        capability.token,
+      ),
+    )
+    expect(downloadRes.status).toBe(204)
+    const archiveUrl = downloadRes.headers.get("X-Terraform-Get")
+    expect(archiveUrl).toContain("1.0.1/archive.tar.gz")
+
+    await db
+      .update(stateVersions)
+      .set({ outputs: { vpc_id: { value: "mutated-after-pin", sensitive: false } } })
+      .where(eq(stateVersions.id, producerState.id))
+    const archiveRes = await app.fetch(new Request(`http://localhost${archiveUrl}`))
+    expect(archiveRes.status).toBe(200)
+    const archiveContents = gunzipSync(Buffer.from(await archiveRes.arrayBuffer())).toString("utf8")
+    expect(archiveContents).toContain("vpc-0123456789abcdef0")
+    expect(archiveContents).not.toContain("mutated-after-pin")
+
+    const unpinnedVersionRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${TEST_NAMESPACE}/${producerModuleName}/yaffle/1.0.2/download`,
+        capability.token,
+      ),
+    )
+    expect(unpinnedVersionRes.status).toBe(404)
   })
 
   test("resolves module versions by source-neutral transient environment name", async () => {

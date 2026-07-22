@@ -260,10 +260,18 @@ function validateModuleOutputReferences(values: {
       values.executionSnapshot,
       reference.producerWorkspacePath,
     )
-    if (!consumer || !producer) {
+    if (!consumer) {
       errors.push(
-        `Reference from "${reference.consumerWorkspacePath}" to "${reference.producerWorkspacePath}" is outside the scanned workspace set`,
+        `Reference consumer "${reference.consumerWorkspacePath}" is outside the scanned workspace set`,
       )
+      continue
+    }
+    if (!producer) {
+      if (values.executionSnapshot.environment.kind !== "transient") {
+        errors.push(
+          `Reference from "${reference.consumerWorkspacePath}" to "${reference.producerWorkspacePath}" is outside the scanned workspace set`,
+        )
+      }
       continue
     }
     if (!(reference.outputName in producer.outputs)) {

@@ -79,6 +79,11 @@ import { resolveExecutionCredentialsForDeployment } from "../lib/execution-crede
 import { validateAutomaticIsolationExecutionContext } from "../lib/automatic-isolation-execution-context.ts"
 import { publishHostedOutputModuleForRunGroupBinding } from "../lib/hosted-output-modules.ts"
 import {
+  listManagedSharedOutputPins,
+  publishManagedSharedOutputSnapshotForApply,
+  publishManagedSharedOutputSnapshotForConvergence,
+} from "../lib/managed-shared-output-snapshots.ts"
+import {
   executeHostedLifecycleForDeployment,
   reconcileHostedDeploymentState,
 } from "../lib/hosted-lifecycle.ts"
@@ -1428,6 +1433,12 @@ runnerJobRoute.post("/complete", async (c) => {
             })
             events.emitRunUpdate(skippedApply.id, deployment.id)
 
+            await publishManagedSharedOutputSnapshotForConvergence({
+              runGroupId: capability.runGroupId,
+              deploymentId: deployment.id,
+              workspacePath: deployment.workspacePath,
+            })
+
             await publishHostedOutputModuleForRunGroupBinding({
               runGroupId: executionRunGroupId,
               deploymentId: deployment.id,
@@ -1472,6 +1483,13 @@ runnerJobRoute.post("/complete", async (c) => {
         }
       } else if (jobType === "apply") {
         try {
+          await publishManagedSharedOutputSnapshotForApply({
+            runGroupId: capability.runGroupId,
+            deploymentId: deployment.id,
+            runId,
+            jobId,
+            workspacePath: deployment.workspacePath,
+          })
           await publishHostedOutputModuleForRunGroupBinding({
             runGroupId: executionRunGroupId,
             deploymentId: deployment.id,
@@ -2049,6 +2067,11 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
     )
   }
 
+  const sharedOutputSnapshots = await listManagedSharedOutputPins({
+    runGroupId: runGroup.id,
+    consumerWorkspacePath: deployment.workspacePath,
+  })
+
   return c.json({
     data: {
       workspaceUrl,
@@ -2071,6 +2094,7 @@ runnerJobRoute.get("/job/:jobId/context", async (c) => {
       lockState: isMergeImpact ? false : undefined,
       persistPlanFile: isMergeImpact ? false : undefined,
       planFileUrl,
+      sharedOutputSnapshots,
     },
   })
 })

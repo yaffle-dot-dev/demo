@@ -10,6 +10,9 @@ import {
   jobs,
   organizations,
   repositories,
+  sharedOutputSnapshots,
+  stateVersions,
+  workspaces,
 } from "../db/schema.ts"
 import { db } from "../lib/db.ts"
 import { cleanupTestData, createTestContext, type TestContext } from "../test-utils/auth.ts"
@@ -54,14 +57,61 @@ describe("org deletion", () => {
       installedAt: new Date(),
     })
 
-    await db.insert(repositories).values({
+    const [repository] = await db
+      .insert(repositories)
+      .values({
+        orgId: adminCtx.org.id,
+        installationId: 4242,
+        githubId: 9001,
+        name: "infra",
+        fullName: "delete-smoke-account/infra",
+        defaultBranch: "main",
+        isActive: true,
+      })
+      .returning()
+
+    const [workspace] = await db
+      .insert(workspaces)
+      .values({
+        orgId: adminCtx.org.id,
+        name: "delete-snapshot-workspace",
+        repo: "infra",
+        workspacePath: "infra/shared",
+        environmentKind: "named",
+        environmentName: "main",
+        ref: "refs/heads/main",
+      })
+      .returning()
+    const [stateVersion] = await db
+      .insert(stateVersions)
+      .values({
+        workspaceId: workspace.id,
+        serial: 1,
+        md5: "delete-snapshot-state",
+        size: 1,
+        s3Key: "delete-snapshot-state-key",
+        status: "finalized",
+        outputs: { network_id: { value: "network-1", sensitive: false } },
+      })
+      .returning()
+    await db
+      .update(workspaces)
+      .set({ currentStateVersionId: stateVersion.id })
+      .where(eq(workspaces.id, workspace.id))
+    await db.insert(sharedOutputSnapshots).values({
+      publicationVersion: 1,
       orgId: adminCtx.org.id,
-      installationId: 4242,
-      githubId: 9001,
-      name: "infra",
-      fullName: "delete-smoke-account/infra",
-      defaultBranch: "main",
-      isActive: true,
+      repositoryId: repository.id,
+      repo: repository.name,
+      workspaceId: workspace.id,
+      workspacePath: workspace.workspacePath,
+      environmentName: workspace.environmentName,
+      sourceRevision: "delete-snapshot-revision",
+      sourceRef: "refs/heads/main",
+      stateVersionId: stateVersion.id,
+      stateSerial: stateVersion.serial,
+      stateFingerprint: stateVersion.md5,
+      values: { network_id: { value: "network-1", sensitive: false } },
     })
 
     await db.insert(githubRepoMappings).values({
@@ -112,6 +162,12 @@ describe("org deletion", () => {
       .limit(1)
     expect(repositoryRows).toHaveLength(1)
     expect(repositoryRows[0]?.orgId).toBeNull()
+
+    const snapshotRows = await db
+      .select()
+      .from(sharedOutputSnapshots)
+      .where(eq(sharedOutputSnapshots.orgId, adminCtx.org.id))
+    expect(snapshotRows).toHaveLength(0)
 
     const mappingRows = await db
       .select()

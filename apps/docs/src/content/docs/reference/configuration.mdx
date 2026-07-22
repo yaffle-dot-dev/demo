@@ -301,6 +301,31 @@ Rules:
 - same-repo consumers can read only explicitly selected `internal` and `public` outputs
 - consumer selectors match Yaffle org slug, repo slug, and workspace path
 
+A transient workspace can consume outputs from a named-only workspace through a normal Yaffle
+module source:
+
+```hcl
+module "network" {
+  source = "yaffle.dev/acme--platform/infra--network/yaffle"
+}
+
+resource "aws_ecs_service" "api" {
+  network_configuration {
+    subnets = module.network.private_subnet_ids
+  }
+}
+```
+
+After a successful named apply, Yaffle publishes an immutable output snapshot. Before planning the
+transient environment, Yaffle authorizes and pins the snapshot ID, producer revision, state identity,
+serial, and fingerprint. Plan, apply, retries, and destroy therefore consume the same values without
+managing or destroying the named producer.
+
+The producer must declare every referenced output in its `outputs` policy. Yaffle fails before
+planning when the snapshot is missing, ambiguous, incompatible, unauthorized, or sensitive. During
+beta, automatic transient resolution requires the workspace to publish from exactly one named
+environment.
+
 <Aside type="note">
   Sensitive Terraform values are redacted in viewer APIs and rejected from output modules, Actions,
   lifecycle payloads, and public policies. Store the value in Secrets Manager or SSM, export the ARN

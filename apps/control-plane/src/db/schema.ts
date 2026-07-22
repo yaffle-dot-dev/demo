@@ -17,6 +17,7 @@ import { sql } from "drizzle-orm"
 import { uuidv7 } from "uuidv7"
 
 import type { ExecutionSnapshotV1 } from "../lib/execution-snapshot.ts"
+import type { SharedOutputValue } from "@yaffle/shared"
 
 // Re-export BetterAuth tables
 export * from "./auth-schema"
@@ -750,6 +751,105 @@ export const stateVersions = pgTable(
       "state_versions_runner_capability_check",
       sql`(${t.runId} IS NULL AND ${t.jobId} IS NULL) OR (${t.runId} IS NOT NULL AND ${t.jobId} IS NOT NULL)`,
     ),
+  ],
+)
+
+export const sharedOutputSnapshots = pgTable(
+  "shared_output_snapshots",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    publicationVersion: integer("publication_version").notNull(),
+    orgId: uuid("org_id")
+      .references(() => organizations.id)
+      .notNull(),
+    repositoryId: uuid("repository_id")
+      .references(() => repositories.id)
+      .notNull(),
+    repo: text("repo").notNull(),
+    workspaceId: uuid("workspace_id")
+      .references(() => workspaces.id)
+      .notNull(),
+    workspacePath: text("workspace_path").notNull(),
+    environmentName: text("environment_name").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    sourceRef: text("source_ref"),
+    stateVersionId: uuid("state_version_id")
+      .references(() => stateVersions.id)
+      .notNull(),
+    stateSerial: integer("state_serial").notNull(),
+    stateFingerprint: text("state_fingerprint").notNull(),
+    values: jsonb("values").$type<Record<string, SharedOutputValue>>().notNull(),
+    publishedAt: timestamp("published_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("shared_output_snapshots_scope_version_unique").on(
+      t.orgId,
+      t.repositoryId,
+      t.workspacePath,
+      t.environmentName,
+      t.publicationVersion,
+    ),
+    unique("shared_output_snapshots_state_revision_unique").on(t.stateVersionId, t.sourceRevision),
+    index("shared_output_snapshots_resolution_idx").on(
+      t.orgId,
+      t.repo,
+      t.workspacePath,
+      t.publishedAt,
+    ),
+    check("shared_output_snapshots_publication_version_check", sql`${t.publicationVersion} > 0`),
+    check("shared_output_snapshots_state_serial_check", sql`${t.stateSerial} >= 0`),
+  ],
+)
+
+export const runGroupSharedOutputBindings = pgTable(
+  "run_group_shared_output_bindings",
+  {
+    id: uuid("id")
+      .primaryKey()
+      .$defaultFn(() => uuidv7()),
+    runGroupId: uuid("run_group_id")
+      .references(() => runGroups.id, { onDelete: "cascade" })
+      .notNull(),
+    consumerWorkspacePath: text("consumer_workspace_path").notNull(),
+    moduleName: text("module_name").notNull(),
+    snapshotId: uuid("snapshot_id")
+      .references(() => sharedOutputSnapshots.id)
+      .notNull(),
+    producerOrgId: uuid("producer_org_id")
+      .references(() => organizations.id)
+      .notNull(),
+    producerRepositoryId: uuid("producer_repository_id")
+      .references(() => repositories.id)
+      .notNull(),
+    producerRepo: text("producer_repo").notNull(),
+    producerWorkspacePath: text("producer_workspace_path").notNull(),
+    producerEnvironmentName: text("producer_environment_name").notNull(),
+    stateVersionId: uuid("state_version_id")
+      .references(() => stateVersions.id)
+      .notNull(),
+    stateSerial: integer("state_serial").notNull(),
+    stateFingerprint: text("state_fingerprint").notNull(),
+    sourceRevision: text("source_revision").notNull(),
+    outputNames: jsonb("output_names").$type<string[]>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [
+    unique("run_group_shared_output_bindings_producer_unique").on(
+      t.runGroupId,
+      t.consumerWorkspacePath,
+      t.producerRepositoryId,
+      t.producerWorkspacePath,
+    ),
+    index("run_group_shared_output_bindings_resolution_idx").on(
+      t.runGroupId,
+      t.consumerWorkspacePath,
+      t.producerOrgId,
+      t.producerRepositoryId,
+      t.producerWorkspacePath,
+    ),
+    check("run_group_shared_output_bindings_state_serial_check", sql`${t.stateSerial} >= 0`),
   ],
 )
 

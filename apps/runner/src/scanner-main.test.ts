@@ -128,6 +128,36 @@ locals {
     ])
   })
 
+  test("reports named-only output references without adding them to the transient graph", async () => {
+    const result = await scanTarball(
+      await createSourceTarball({
+        "apps/api/infra/main.tf": `
+module "shared" {
+  source = "yaffle.dev/org--repo/infra--shared/yaffle"
+}
+
+locals {
+  cluster_arn = module.shared.cluster_arn
+}
+`,
+      }),
+      ["apps/api/infra"],
+      {},
+      "org--repo",
+      [],
+    )
+
+    expect(result.edges).toEqual([])
+    expect(result.moduleOutputReferences).toEqual([
+      {
+        consumerWorkspacePath: "apps/api/infra",
+        producerWorkspacePath: "infra/shared",
+        moduleName: "shared",
+        outputName: "cluster_arn",
+      },
+    ])
+  })
+
   test("blocks linked Terraform source in an automatically isolated workspace", async () => {
     const result = await scanTarball(
       await createSymlinkTarball("infra/main.tf", "../shared/main.tf"),

@@ -260,10 +260,7 @@ export async function scanTarball(
       variables: workspaceVariables[workspace],
     })
     for (const reference of references) {
-      if (
-        knownWorkspaces.has(reference.producerWorkspacePath) &&
-        reference.producerWorkspacePath !== workspace
-      ) {
+      if (reference.producerWorkspacePath !== workspace) {
         moduleOutputReferences.push({ consumerWorkspacePath: workspace, ...reference })
       }
     }

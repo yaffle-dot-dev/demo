@@ -39,6 +39,11 @@ import {
   type ProducerConfigState,
 } from "../../lib/workspace-exports.ts"
 import { buildHostedModuleVersion, parseHostedModuleVersion } from "../../lib/principal-tokens.ts"
+import {
+  ManagedSharedOutputError,
+  resolveBoundManagedSharedOutput,
+} from "../../lib/managed-shared-output-snapshots.ts"
+import { findSharedOutputSnapshotById } from "../../db/queries/shared-output-snapshots.ts"
 
 // Hono context variables for TFC auth
 type TfcVariables = {
@@ -82,6 +87,7 @@ const ARCHIVE_TOKEN_TTL_MS = 5 * 60 * 1000 // 5 minutes
 interface ArchiveTokenPayload {
   exp: number
   stateVersionId?: string
+  sharedOutputSnapshotId?: string
   hostedOutputModuleId?: string
   outputNames?: string[]
 }
@@ -142,6 +148,8 @@ function verifyArchiveToken(path: string, token: string): ArchiveTokenPayload | 
 
   if (
     typeof payload.stateVersionId !== "string" &&
+    (typeof payload.sharedOutputSnapshotId !== "string" ||
+      payload.sharedOutputSnapshotId.length === 0) &&
     (typeof payload.hostedOutputModuleId !== "string" || payload.hostedOutputModuleId.length === 0)
   ) {
     return null
@@ -327,6 +335,43 @@ function deriveTransientEnvironment(options: {
   return { allowed: true, environment: boundEnvironment }
 }
 
+async function resolvePinnedSharedOutput(values: {
+  auth: TfcAuthContext
+  consumerWorkspace: ModuleConsumerWorkspace | null
+  producerOrgId: string
+  producerRepositoryId: string
+  producerWorkspacePath: string
+}): Promise<Awaited<ReturnType<typeof resolveBoundManagedSharedOutput>>> {
+  if (
+    values.auth.type !== "run" ||
+    !values.auth.runGroupId ||
+    !values.consumerWorkspace ||
+    values.consumerWorkspace.environmentKind !== "transient"
+  ) {
+    return undefined
+  }
+
+  return resolveBoundManagedSharedOutput({
+    runGroupId: values.auth.runGroupId,
+    consumerWorkspacePath: values.consumerWorkspace.workspacePath,
+    producerOrgId: values.producerOrgId,
+    producerRepositoryId: values.producerRepositoryId,
+    producerWorkspacePath: values.producerWorkspacePath,
+  })
+}
+
+async function resolveRepositoryForConsumer(
+  consumer: ModuleConsumerWorkspace | null,
+): Promise<Awaited<ReturnType<typeof findRepoByName>>> {
+  if (!consumer) {
+    return undefined
+  }
+  return consumer.repo.includes("/")
+    ? ((await findRepoByFullName(consumer.repo)) ??
+        (await findRepoByName(consumer.orgId, consumer.repo.split("/").pop() ?? consumer.repo)))
+    : findRepoByName(consumer.orgId, consumer.repo)
+}
+
 async function loadProducerConfig(
   workspace: Workspace,
   producerOrgSlug: string,
@@ -487,11 +532,26 @@ registryRoute.get("/:namespace/:name/:provider/versions", async (c) => {
   // Convert module name to workspace path
   const workspacePath = moduleNameToWorkspacePath(moduleName)
   const consumerWorkspace = await resolveConsumerWorkspace(auth)
+  const [producerRepository, consumerRepository] = await Promise.all([
+    findRepoByName(org.id, repo),
+    resolveRepositoryForConsumer(consumerWorkspace),
+  ])
+  const isStableSameRepoRun =
+    auth.type === "run" &&
+    auth.orgId === org.id &&
+    producerRepository?.id === consumerRepository?.id
   const environmentDecision = deriveTransientEnvironment({
     explicitEnvironment: parseTransientEnvironmentContext(environmentParam ?? null),
     consumerWorkspace,
   })
   if (!environmentDecision.allowed) {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
+  if (
+    auth.type === "run" &&
+    consumerWorkspace?.environmentKind === "transient" &&
+    !isStableSameRepoRun
+  ) {
     return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
   }
   const transientEnvironment = environmentDecision.environment
@@ -501,8 +561,32 @@ registryRoute.get("/:namespace/:name/:provider/versions", async (c) => {
   let stateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> = []
   let transientWorkspace: Workspace | undefined
   let transientStateVersions: Awaited<ReturnType<typeof listStateVersionsForModule>> | undefined
+  let pinned: Awaited<ReturnType<typeof resolveBoundManagedSharedOutput>>
+  try {
+    pinned = isStableSameRepoRun
+      ? await resolvePinnedSharedOutput({
+          auth,
+          consumerWorkspace,
+          producerOrgId: org.id,
+          producerRepositoryId: producerRepository!.id,
+          producerWorkspacePath: workspacePath,
+        })
+      : undefined
+  } catch (error) {
+    if (error instanceof ManagedSharedOutputError) {
+      return jsonApiErrorResponse(
+        409,
+        "Managed shared output snapshot is incompatible",
+        error.message,
+      )
+    }
+    throw error
+  }
 
-  if (transientEnvironment) {
+  if (pinned) {
+    workspace = pinned.workspace
+    stateVersions = [pinned.stateVersion]
+  } else if (transientEnvironment) {
     transientWorkspace = await findTransientWorkspace(
       org.id,
       repo,
@@ -556,7 +640,23 @@ registryRoute.get("/:namespace/:name/:provider/versions", async (c) => {
     )
   }
 
-  if (auth.type !== "user") {
+  if (
+    auth.type === "run" &&
+    consumerWorkspace?.environmentKind === "transient" &&
+    workspace.environmentKind === "named" &&
+    !pinned
+  ) {
+    if (!isStableSameRepoRun) {
+      return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+    }
+    return jsonApiErrorResponse(
+      409,
+      "Managed shared output snapshot is not pinned",
+      `The transient run did not authorize a snapshot for workspace ${workspacePath}. Rescan the run after the named producer publishes its outputs.`,
+    )
+  }
+
+  if (auth.type !== "user" && !pinned) {
     const producerConfigResult = await loadProducerConfig(workspace, orgSlug)
     const accessDecision = resolveModuleAccessDecision({
       authType: auth.type,
@@ -707,6 +807,14 @@ registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => 
   // Convert module name to workspace path
   const workspacePath = moduleNameToWorkspacePath(moduleName)
   const consumerWorkspace = await resolveConsumerWorkspace(auth)
+  const [producerRepository, consumerRepository] = await Promise.all([
+    findRepoByName(org.id, repo),
+    resolveRepositoryForConsumer(consumerWorkspace),
+  ])
+  const isStableSameRepoRun =
+    auth.type === "run" &&
+    auth.orgId === org.id &&
+    producerRepository?.id === consumerRepository?.id
   const environmentDecision = deriveTransientEnvironment({
     explicitEnvironment: parseTransientEnvironmentContext(environmentParam ?? null),
     consumerWorkspace,
@@ -714,33 +822,85 @@ registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => 
   if (!environmentDecision.allowed) {
     return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
   }
+  if (
+    auth.type === "run" &&
+    consumerWorkspace?.environmentKind === "transient" &&
+    !isStableSameRepoRun
+  ) {
+    return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+  }
   const transientEnvironment = environmentDecision.environment
 
-  // Resolve the module
-  const resolved = await resolveModule({
-    orgId: org.id,
-    repo,
-    workspacePath,
-    serial,
-    transientEnvironment,
-  })
+  let pinned: Awaited<ReturnType<typeof resolveBoundManagedSharedOutput>>
+  try {
+    pinned = isStableSameRepoRun
+      ? await resolvePinnedSharedOutput({
+          auth,
+          consumerWorkspace,
+          producerOrgId: org.id,
+          producerRepositoryId: producerRepository!.id,
+          producerWorkspacePath: workspacePath,
+        })
+      : undefined
+  } catch (error) {
+    if (error instanceof ManagedSharedOutputError) {
+      return jsonApiErrorResponse(
+        409,
+        "Managed shared output snapshot is incompatible",
+        error.message,
+      )
+    }
+    throw error
+  }
+  const resolved = pinned
+    ? serial === "latest" || serial === pinned.stateVersion.serial
+      ? {
+          workspace: pinned.workspace,
+          stateVersion: pinned.stateVersion,
+          isTransient: false,
+        }
+      : null
+    : await resolveModule({
+        orgId: org.id,
+        repo,
+        workspacePath,
+        serial,
+        transientEnvironment,
+      })
 
   if (!resolved) {
     return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
   }
 
-  const producerConfigResult = await loadProducerConfig(resolved.workspace, orgSlug)
+  if (
+    auth.type === "run" &&
+    consumerWorkspace?.environmentKind === "transient" &&
+    resolved.workspace.environmentKind === "named" &&
+    !pinned
+  ) {
+    if (!isStableSameRepoRun) {
+      return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+    }
+    return jsonApiErrorResponse(
+      409,
+      "Managed shared output snapshot is not pinned",
+      `The transient run did not authorize a snapshot for workspace ${workspacePath}. Rescan the run after the named producer publishes its outputs.`,
+    )
+  }
 
-  const accessDecision = resolveModuleAccessDecision({
-    authType: auth.type,
-    producerWorkspace: {
-      ...resolved.workspace,
-      repo: producerConfigResult.canonicalRepo,
-    },
-    producerConfigState: producerConfigResult.state,
-    producerConfig: producerConfigResult.config,
-    consumerWorkspace,
-  })
+  const producerConfigResult = pinned ? null : await loadProducerConfig(resolved.workspace, orgSlug)
+  const accessDecision = pinned
+    ? { allowed: true as const, allowedOutputs: pinned.binding.outputNames }
+    : resolveModuleAccessDecision({
+        authType: auth.type,
+        producerWorkspace: {
+          ...resolved.workspace,
+          repo: producerConfigResult!.canonicalRepo,
+        },
+        producerConfigState: producerConfigResult!.state,
+        producerConfig: producerConfigResult!.config,
+        consumerWorkspace,
+      })
   if (!accessDecision.allowed) {
     return jsonApiErrorResponse(
       accessDecision.errorStatus ?? 403,
@@ -749,12 +909,12 @@ registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => 
     )
   }
 
-  const filteredOutputs = filterOutputsForAccess(
-    resolved.stateVersion.outputs as Record<string, unknown> | null,
-    accessDecision.allowedOutputs,
-  )
+  const sourceOutputs = pinned
+    ? pinned.snapshot.values
+    : (resolved.stateVersion.outputs as Record<string, unknown> | null)
+  const filteredOutputs = filterOutputsForAccess(sourceOutputs, accessDecision.allowedOutputs)
   const sensitivePublicOutputs = findSensitiveExportedOutputs(
-    resolved.stateVersion.outputs as Record<string, unknown> | null,
+    sourceOutputs,
     accessDecision.allowedOutputs,
   )
   if (sensitivePublicOutputs.length > 0) {
@@ -762,9 +922,9 @@ registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => 
   }
 
   const canUseSharedArchive =
-    accessDecision.allowedOutputs === null ||
-    Object.keys(filteredOutputs ?? {}).length ===
-      Object.keys((resolved.stateVersion.outputs as Record<string, unknown> | null) ?? {}).length
+    !pinned &&
+    (accessDecision.allowedOutputs === null ||
+      Object.keys(filteredOutputs ?? {}).length === Object.keys(sourceOutputs ?? {}).length)
 
   log.info("Module download requested", {
     namespace,
@@ -781,7 +941,9 @@ registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => 
   // Build archive URL with signed token
   const archivePath = `/tfc/registry/v1/modules/${namespace}/${moduleName}/${provider}/${version}/archive.tar.gz`
   const token = signArchiveUrl(archivePath, {
-    stateVersionId: resolved.stateVersion.id,
+    ...(pinned
+      ? { sharedOutputSnapshotId: pinned.snapshot.id }
+      : { stateVersionId: resolved.stateVersion.id }),
     ...(canUseSharedArchive || !accessDecision.allowedOutputs
       ? {}
       : { outputNames: accessDecision.allowedOutputs }),
@@ -868,7 +1030,7 @@ registryRoute.get("/:namespace/:name/:provider/:version/archive.tar.gz", async (
       400,
     )
   }
-  const { orgSlug } = parsed
+  const { orgSlug, repo } = parsed
 
   // Find the organization
   const org = await findOrgBySlug(orgSlug)
@@ -878,6 +1040,33 @@ registryRoute.get("/:namespace/:name/:provider/:version/archive.tar.gz", async (
 
   // Token was verified, no need for membership check on archive download
   // (membership was checked when the download URL was generated)
+
+  if (archiveToken.sharedOutputSnapshotId) {
+    const snapshot = await findSharedOutputSnapshotById(archiveToken.sharedOutputSnapshotId)
+    if (
+      !snapshot ||
+      snapshot.orgId !== org.id ||
+      snapshot.repo !== repo ||
+      snapshot.workspacePath !== moduleNameToWorkspacePath(moduleName) ||
+      serialToVersion(snapshot.stateSerial) !== version
+    ) {
+      return c.json({ errors: [{ status: "404", title: "Module not found" }] }, 404)
+    }
+
+    const outputs = filterOutputsForAccess(snapshot.values, archiveToken.outputNames ?? null)
+    const archive = await generateShimModule({
+      workspacePath: snapshot.workspacePath,
+      serial: snapshot.stateSerial,
+      outputs,
+    })
+    return new Response(archive.buffer as ArrayBuffer, {
+      status: 200,
+      headers: {
+        "Content-Type": "application/gzip",
+        "Content-Disposition": `attachment; filename="${moduleName}-${version}.tar.gz"`,
+      },
+    })
+  }
 
   const stateVersionId = archiveToken.stateVersionId
   if (!stateVersionId) {

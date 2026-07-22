@@ -53,6 +53,15 @@ function config(): YaffleTomlConfig {
         ],
         verification: [],
       },
+      {
+        path: "infra/shared",
+        environments: ["main"],
+        automaticPreviewIsolation: false,
+        variables: {},
+        outputs: { network_id: { visibility: "internal" } },
+        activation: [],
+        verification: [],
+      },
     ],
     cloud: {
       triggers: {},
@@ -101,6 +110,9 @@ describe("execution snapshot", () => {
         endpoint: { visibility: "internal" },
       },
     })
+    expect(snapshot.managedOutputProducers).toEqual([
+      { path: "infra/shared", environmentNames: ["main"] },
+    ])
   })
 
   test("does not retain mutable references to repository configuration", () => {

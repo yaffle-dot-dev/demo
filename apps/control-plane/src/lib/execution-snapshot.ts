@@ -68,6 +68,10 @@ export interface ExecutionSnapshotV1 {
     sourcePullRequestNumber: number | null
   }
   workspaces: ExecutionSnapshotWorkspace[]
+  managedOutputProducers?: Array<{
+    path: string
+    environmentNames: string[]
+  }>
   mergeImpact?: MergeImpactSnapshot
 }
 
@@ -150,6 +154,9 @@ export function buildExecutionSnapshot(values: {
   }
 }): ExecutionSnapshotV1 {
   const selectedPaths = new Set(values.workspacePaths)
+  const declaredEnvironmentNames = new Set(
+    values.config.environments.map((environment) => environment.name),
+  )
   const workspaces = values.config.workspaces
     .filter((workspace) => selectedPaths.has(workspace.path))
     .map((workspace): ExecutionSnapshotWorkspace => {
@@ -199,6 +206,16 @@ export function buildExecutionSnapshot(values: {
       sourcePullRequestNumber: values.ctx.kind === "pull_request" ? values.ctx.prNumber : null,
     },
     workspaces,
+    managedOutputProducers: values.config.workspaces
+      .filter((workspace) => !selectedPaths.has(workspace.path))
+      .map((workspace) => ({
+        path: workspace.path,
+        environmentNames:
+          workspace.environments === "*"
+            ? []
+            : workspace.environments.filter((name) => declaredEnvironmentNames.has(name)).sort(),
+      }))
+      .filter((producer) => producer.environmentNames.length > 0),
     mergeImpact: values.mergeImpact
       ? {
           environmentName: values.mergeImpact.environmentName,

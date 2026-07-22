@@ -38,6 +38,7 @@ import {
   ExecutionSnapshotInvariantError,
   findExecutionSnapshotWorkspace,
 } from "./execution-snapshot.ts"
+import { bindManagedSharedOutputSnapshots } from "./managed-shared-output-snapshots.ts"
 
 interface RunGroupOrchestratorDependencies {
   completeRunGroupCheck: typeof completeRunGroupCheck
@@ -85,6 +86,15 @@ export async function completeRunGroup(
       )
     }
   }
+
+  await bindManagedSharedOutputSnapshots({
+    runGroupId,
+    orgId: runGroup.orgId,
+    repo: runGroup.repo,
+    environmentKind: runGroup.environmentKind,
+    selectedWorkspacePaths: executionOrder,
+    references: scanResult.moduleOutputReferences ?? [],
+  })
 
   // Store graph + S3 key on run group
   await updateRunGroupDependencyGraph(runGroupId, graph)

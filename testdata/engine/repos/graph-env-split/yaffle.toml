@@ -9,6 +9,7 @@ name = "staging"
 [[workspaces]]
 path = "infra/named"
 environments = ["main"]
+outputs.environment_name = { visibility = "internal" }
 
 [[workspaces]]
 path = "apps/shared/infra"

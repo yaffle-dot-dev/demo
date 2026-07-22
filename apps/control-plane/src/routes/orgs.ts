@@ -42,6 +42,8 @@ import {
   jobs,
   organizations,
   repositories,
+  runGroupSharedOutputBindings,
+  sharedOutputSnapshots,
   tfRuns,
   workspaceDeployments,
   workspaces,
@@ -505,6 +507,10 @@ orgsRoute.delete("/:slug", async (c) => {
       await tx.delete(approvals).where(inArray(approvals.deploymentId, deploymentIds))
     }
 
+    await tx
+      .delete(runGroupSharedOutputBindings)
+      .where(eq(runGroupSharedOutputBindings.producerOrgId, org.id))
+    await tx.delete(sharedOutputSnapshots).where(eq(sharedOutputSnapshots.orgId, org.id))
     await tx.delete(workspaces).where(eq(workspaces.orgId, org.id))
 
     if (deploymentIds.length > 0) {
