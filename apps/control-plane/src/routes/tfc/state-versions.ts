@@ -987,9 +987,22 @@ function normalizeTerraformStateOutputs(value: unknown): Record<string, unknown>
     )
   }
 
+  const outputs = Object.fromEntries(
+    Object.entries(value).map(([name, output]) => [
+      name,
+      output &&
+      typeof output === "object" &&
+      !Array.isArray(output) &&
+      "value" in output &&
+      !("sensitive" in output)
+        ? { ...output, sensitive: false }
+        : output,
+    ]),
+  )
+
   return (
     selectTerraformOutputs({
-      outputs: value as Record<string, unknown>,
+      outputs,
       selection: { kind: "all" },
       sensitive: "redact",
     }) ?? undefined

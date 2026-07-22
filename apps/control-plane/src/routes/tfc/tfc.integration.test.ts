@@ -562,7 +562,7 @@ describe("OAuth and Public URL Security", () => {
     }
   })
 
-  test("rejects state outputs without explicit sensitivity metadata", async () => {
+  test("normalizes omitted false sensitivity metadata from Terraform state", async () => {
     const workspaceRes = await app.fetch(
       authRequest("POST", `/tfc/api/v2/organizations/${TEST_ORG_SLUG}/workspaces`, testUserToken, {
         data: {
@@ -612,10 +612,26 @@ describe("OAuth and Public URL Security", () => {
       }),
     )
 
-    expect(uploadRes.status).toBe(422)
-    const body = await uploadRes.json()
-    expect(body.errors[0].detail).toContain("endpoint")
-    expect(JSON.stringify(body)).not.toContain("https://api.example.test")
+    expect(uploadRes.status).toBe(200)
+
+    const outputsRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/api/v2/workspaces/${workspaceId}/current-state-version-outputs`,
+        testUserToken,
+      ),
+    )
+    expect(outputsRes.status).toBe(200)
+    const body = await outputsRes.json()
+    expect(body.data).toEqual([
+      expect.objectContaining({
+        attributes: expect.objectContaining({
+          name: "endpoint",
+          sensitive: false,
+          value: "https://api.example.test",
+        }),
+      }),
+    ])
   })
 })
 

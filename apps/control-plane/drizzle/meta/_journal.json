@@ -260,6 +260,13 @@
       "when": 1784669599000,
       "tag": "0036_authorized_apply_decisions",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1784728200000,
+      "tag": "0037_normalize_state_output_sensitivity",
+      "breakpoints": true
     }
   ]
 }
