@@ -10,6 +10,7 @@ import type {
   AutomaticIsolationArtifactManifest,
   AutomaticIsolationIdentity,
   AutomaticIsolationPreflight,
+  WorkspaceModuleOutputReference,
 } from "@yaffle/shared"
 
 export interface ScannerConfig {
@@ -39,6 +40,7 @@ export interface ScanClaimResponse {
 export interface ScanResult {
   graph: { workspaces: string[]; edges: [string, string][] }
   executionOrder: string[]
+  moduleOutputReferences: WorkspaceModuleOutputReference[]
   workspaceS3Key?: string
   workspaceArtifactSha256?: string
   automaticIsolationPreflight?: AutomaticIsolationPreflight

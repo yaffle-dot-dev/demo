@@ -224,6 +224,110 @@ describe("scanner completion", () => {
     expect(mockFailScanJob).not.toHaveBeenCalled()
   })
 
+  test("fails before planning when a consumer references an undeclared output", async () => {
+    mockFindRunGroupById.mockImplementation(async () => ({
+      orgId: "org-1",
+      repo: "widgets",
+      environmentKind: "transient",
+      environmentName: "pr-42",
+      executionSnapshot: {
+        version: 1,
+        source: {
+          owner: "acme",
+          repository: "widgets",
+          repositoryId: 987654321,
+          ref: "refs/heads/feature",
+          commitSha: "0123456789abcdef",
+        },
+        environment: { kind: "transient", name: "pr-42" },
+        workspaces: [
+          { path: "infra/shared", outputs: {}, automaticPreviewIsolation: false },
+          { path: "apps/api/infra", outputs: {}, automaticPreviewIsolation: false },
+        ],
+      },
+    }))
+
+    const response = await buildApp().fetch(
+      requestBody({
+        ...baseResult,
+        graph: {
+          workspaces: ["infra/shared", "apps/api/infra"],
+          edges: [["apps/api/infra", "infra/shared"]],
+        },
+        executionOrder: ["infra/shared", "apps/api/infra"],
+        moduleOutputReferences: [
+          {
+            consumerWorkspacePath: "apps/api/infra",
+            producerWorkspacePath: "infra/shared",
+            moduleName: "shared",
+            outputName: "cluster_arn",
+          },
+        ],
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(mockFailScanJob).toHaveBeenCalledWith(
+      "scan-job-1",
+      expect.stringContaining('references undeclared output "cluster_arn"'),
+    )
+    expect(mockCompleteRunGroup).not.toHaveBeenCalled()
+    expect(mockCompleteRunGroupCheck).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Workspace output contract validation failed" }),
+    )
+  })
+
+  test("creates plan work when referenced outputs are declared", async () => {
+    mockFindRunGroupById.mockImplementation(async () => ({
+      orgId: "org-1",
+      repo: "widgets",
+      environmentKind: "transient",
+      environmentName: "pr-42",
+      executionSnapshot: {
+        version: 1,
+        source: {
+          owner: "acme",
+          repository: "widgets",
+          repositoryId: 987654321,
+          ref: "refs/heads/feature",
+          commitSha: "0123456789abcdef",
+        },
+        environment: { kind: "transient", name: "pr-42" },
+        workspaces: [
+          {
+            path: "infra/shared",
+            outputs: { cluster_arn: { visibility: "internal" } },
+            automaticPreviewIsolation: false,
+          },
+          { path: "apps/api/infra", outputs: {}, automaticPreviewIsolation: false },
+        ],
+      },
+    }))
+
+    const response = await buildApp().fetch(
+      requestBody({
+        ...baseResult,
+        graph: {
+          workspaces: ["infra/shared", "apps/api/infra"],
+          edges: [["apps/api/infra", "infra/shared"]],
+        },
+        executionOrder: ["infra/shared", "apps/api/infra"],
+        moduleOutputReferences: [
+          {
+            consumerWorkspacePath: "apps/api/infra",
+            producerWorkspacePath: "infra/shared",
+            moduleName: "shared",
+            outputName: "cluster_arn",
+          },
+        ],
+      }),
+    )
+
+    expect(response.status).toBe(200)
+    expect(mockCompleteRunGroup).toHaveBeenCalledTimes(1)
+    expect(mockFailScanJob).not.toHaveBeenCalled()
+  })
+
   test("creates plan work for an artifact bound to the immutable execution snapshot", async () => {
     mockFindScanJobById.mockImplementation(async () => ({
       status: "running",

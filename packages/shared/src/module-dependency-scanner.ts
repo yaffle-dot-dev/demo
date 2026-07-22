@@ -56,8 +56,20 @@ export interface InferredDependencyGraph {
   edges: [string, string][]
 }
 
+export interface YaffleModuleOutputReference {
+  moduleName: string
+  producerWorkspacePath: string
+  outputName: string
+}
+
+export interface WorkspaceModuleOutputReference extends YaffleModuleOutputReference {
+  consumerWorkspacePath: string
+}
+
 const DEFAULT_ALLOWED_MODULE_HOSTS = ["yaffle.dev", "yaffle.local", ".ts.net"]
 const INTERPOLATION_PATTERN = /\$\{\s*(var|local)\.([A-Za-z0-9_]+)\s*\}/g
+const HCL_EXPRESSION_PATTERN = /\$\{([^}]*)\}/g
+const MODULE_OUTPUT_REFERENCE_PATTERN = /module\.([A-Za-z0-9_-]+)(?:\[[^\]]+\])?\.([A-Za-z0-9_]+)/g
 
 interface ParsedHclDocument {
   variable?: Record<string, Array<Record<string, unknown>>>
@@ -250,6 +262,66 @@ function listModuleSources(document: ParsedHclDocument): string[] {
   }
 
   return sources
+}
+
+function collectStrings(value: unknown, strings: string[]): void {
+  if (typeof value === "string") {
+    strings.push(value)
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectStrings(item, strings)
+    return
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectStrings(item, strings)
+  }
+}
+
+export function extractYaffleModuleOutputReferencesFromContent(
+  content: string,
+  options?: string[] | DependencyScannerOptions,
+): YaffleModuleOutputReference[] {
+  const normalizedOptions = Array.isArray(options) ? { allowedHosts: options } : options
+  const hosts = getAllowedModuleHosts(normalizedOptions)
+  const document = parseHclDocument(content)
+  if (!document) return []
+
+  const context = buildResolutionContext(document, normalizedOptions?.variables)
+  const workspaceByModule = new Map<string, string>()
+  for (const [moduleName, entries] of Object.entries(document.module ?? {})) {
+    for (const entry of entries) {
+      if (typeof entry.source !== "string") continue
+      const source = resolveExpressionValue(entry.source, context)
+      if (!source) continue
+      const workspacePath = parseYaffleModuleWorkspacePath(
+        source,
+        hosts,
+        normalizedOptions?.currentNamespace,
+      )
+      if (workspacePath) workspaceByModule.set(moduleName, workspacePath)
+    }
+  }
+
+  const strings: string[] = []
+  collectStrings(document, strings)
+  const references = new Map<string, YaffleModuleOutputReference>()
+  for (const value of strings) {
+    HCL_EXPRESSION_PATTERN.lastIndex = 0
+    for (const expressionMatch of value.matchAll(HCL_EXPRESSION_PATTERN)) {
+      MODULE_OUTPUT_REFERENCE_PATTERN.lastIndex = 0
+      for (const match of expressionMatch[1].matchAll(MODULE_OUTPUT_REFERENCE_PATTERN)) {
+        const moduleName = match[1]
+        const outputName = match[2]
+        const producerWorkspacePath = workspaceByModule.get(moduleName)
+        if (!producerWorkspacePath) continue
+        const reference = { moduleName, producerWorkspacePath, outputName }
+        references.set(`${moduleName}\0${producerWorkspacePath}\0${outputName}`, reference)
+      }
+    }
+  }
+
+  return [...references.values()]
 }
 
 /**

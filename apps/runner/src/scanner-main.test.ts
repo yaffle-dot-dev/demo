@@ -98,6 +98,36 @@ describe("findWorkspaceForTerraformPath", () => {
 })
 
 describe("scanTarball", () => {
+  test("reports same-repository module output references", async () => {
+    const result = await scanTarball(
+      await createSourceTarball({
+        "infra/shared/main.tf": `output "cluster_arn" { value = "test" }`,
+        "apps/api/infra/main.tf": `
+module "shared" {
+  source = "yaffle.dev/org--repo/infra--shared/yaffle"
+}
+
+locals {
+  cluster_arn = module.shared.cluster_arn
+}
+`,
+      }),
+      ["infra/shared", "apps/api/infra"],
+      {},
+      "org--repo",
+      [],
+    )
+
+    expect(result.moduleOutputReferences).toEqual([
+      {
+        consumerWorkspacePath: "apps/api/infra",
+        producerWorkspacePath: "infra/shared",
+        moduleName: "shared",
+        outputName: "cluster_arn",
+      },
+    ])
+  })
+
   test("blocks linked Terraform source in an automatically isolated workspace", async () => {
     const result = await scanTarball(
       await createSymlinkTarball("infra/main.tf", "../shared/main.tf"),

@@ -270,6 +270,7 @@ beforeEach(async () => {
 
   for (const [orgId, workspaceName] of [
     [producerOrgId, PRODUCER_WORKSPACE_NAME],
+    [producerOrgId, CONSUMER_WORKSPACE_NAME],
     [consumerOrgId, CONSUMER_WORKSPACE_NAME],
   ] as const) {
     const existing = await findWorkspaceByName(orgId, workspaceName)
@@ -292,6 +293,74 @@ beforeEach(async () => {
     installationId: 1002,
     name: CONSUMER_REPO_NAME,
     fullName: "other-github/foo-service",
+  })
+})
+
+describe("Module Registry same-repository access", () => {
+  test("canonicalizes short repository names before evaluating output access", async () => {
+    mockFetchFileContent.mockImplementation(
+      async () => `
+version = 1
+
+[[environments]]
+name = "main"
+
+[[workspaces]]
+path = "platform/database"
+environments = ["main"]
+
+outputs.connection_string = { visibility = "internal" }
+`,
+    )
+
+    const producerWorkspaceId = await createWorkspaceForOrg({
+      orgSlug: PRODUCER_ORG_SLUG,
+      token: producerUserToken,
+      name: PRODUCER_WORKSPACE_NAME,
+      repo: PRODUCER_REPO,
+      workspacePath: "platform/database",
+    })
+    await uploadState({
+      workspaceId: producerWorkspaceId,
+      token: producerUserToken,
+      state: JSON.stringify({
+        version: 4,
+        terraform_version: "1.12.0",
+        serial: 1,
+        lineage: "12345678-1234-1234-1234-123456789012",
+        outputs: {
+          connection_string: {
+            value: "postgres://example",
+            type: "string",
+            sensitive: false,
+          },
+        },
+        resources: [],
+      }),
+    })
+
+    const consumerWorkspaceId = await createWorkspaceForOrg({
+      orgSlug: PRODUCER_ORG_SLUG,
+      token: producerUserToken,
+      name: CONSUMER_WORKSPACE_NAME,
+      repo: PRODUCER_REPO,
+      workspacePath: "apps/api/infra",
+    })
+    const runToken = await generateTestRunToken(
+      "same-repo-short-name",
+      consumerWorkspaceId,
+      producerOrgId,
+    )
+
+    const versionsRes = await app.fetch(
+      authRequest(
+        "GET",
+        `/tfc/registry/v1/modules/${PRODUCER_NAMESPACE}/platform--database/yaffle/versions`,
+        runToken,
+      ),
+    )
+
+    expect(versionsRes.status).toBe(200)
   })
 })
 

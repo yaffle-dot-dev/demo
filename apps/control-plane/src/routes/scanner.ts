@@ -15,6 +15,7 @@ import { z } from "zod"
 import {
   computeAutomaticIsolationArtifactHash,
   type AutomaticIsolationArtifactManifest,
+  type WorkspaceModuleOutputReference,
 } from "@yaffle/shared"
 
 import { verifyScanJobToken, type ScanJobTokenPayload } from "../lib/job-token.ts"
@@ -186,6 +187,19 @@ const scanCompletionSchema = z.union([
           .max(10000),
       }),
       executionOrder: z.array(z.string().min(1).max(1024)).max(1000),
+      moduleOutputReferences: z
+        .array(
+          z
+            .object({
+              consumerWorkspacePath: z.string().min(1).max(1024),
+              producerWorkspacePath: z.string().min(1).max(1024),
+              moduleName: z.string().min(1).max(256),
+              outputName: z.string().min(1).max(256),
+            })
+            .strict(),
+        )
+        .max(10000)
+        .default([]),
       workspaceS3Key: z.string().min(1).max(2048).optional(),
       workspaceArtifactSha256: z
         .string()
@@ -199,6 +213,44 @@ const scanCompletionSchema = z.union([
     })
     .strict(),
 ])
+
+function validateModuleOutputReferences(values: {
+  references: WorkspaceModuleOutputReference[]
+  executionSnapshot: NonNullable<Awaited<ReturnType<typeof findRunGroupById>>>["executionSnapshot"]
+}): string | null {
+  if (!values.executionSnapshot) {
+    return values.references.length === 0
+      ? null
+      : "module output references are not bound to an execution snapshot"
+  }
+
+  const errors: string[] = []
+  for (const reference of values.references) {
+    const consumer = findExecutionSnapshotWorkspace(
+      values.executionSnapshot,
+      reference.consumerWorkspacePath,
+    )
+    const producer = findExecutionSnapshotWorkspace(
+      values.executionSnapshot,
+      reference.producerWorkspacePath,
+    )
+    if (!consumer || !producer) {
+      errors.push(
+        `Reference from "${reference.consumerWorkspacePath}" to "${reference.producerWorkspacePath}" is outside the scanned workspace set`,
+      )
+      continue
+    }
+    if (!(reference.outputName in producer.outputs)) {
+      errors.push(
+        `Workspace "${reference.consumerWorkspacePath}" references undeclared output "${reference.outputName}" from "${reference.producerWorkspacePath}" via module "${reference.moduleName}"; declare outputs.${reference.outputName} on workspace "${reference.producerWorkspacePath}" in yaffle.toml`,
+      )
+    }
+  }
+
+  return errors.length > 0
+    ? `Workspace output contract violations:\n- ${errors.join("\n- ")}`
+    : null
+}
 
 function validateAutomaticIsolationArtifacts(values: {
   workspacePaths: string[]
@@ -512,6 +564,7 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
     const result: ScanJobResult = {
       graph: body.graph,
       executionOrder: body.executionOrder,
+      moduleOutputReferences: body.moduleOutputReferences,
       workspaceS3Key: body.workspaceS3Key,
       workspaceArtifactSha256: body.workspaceArtifactSha256,
       automaticIsolationPreflight: body.automaticIsolationPreflight,
@@ -520,6 +573,24 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
 
     if (runningJob.status !== "running") {
       return c.json({ error: { code: "CONFLICT", message: "Job not found or not running" } }, 409)
+    }
+
+    const moduleOutputError = validateModuleOutputReferences({
+      references: result.moduleOutputReferences ?? [],
+      executionSnapshot: runGroup.executionSnapshot,
+    })
+    if (moduleOutputError) {
+      const failedJob = await deps.failScanJob(scanJobId, moduleOutputError)
+      if (failedJob) {
+        await deps.updateRunGroupStatus(failedJob.runGroupId, "failed", { completedAt: new Date() })
+        await deps.completeRunGroupCheck({
+          runGroupId: failedJob.runGroupId,
+          conclusion: "failure",
+          title: "Workspace output contract validation failed",
+          summary: `${moduleOutputError}. No Terraform plan was created.`,
+        })
+      }
+      return c.json({ ok: true })
     }
 
     const coverageError = validateAutomaticIsolationPreflightCoverage(

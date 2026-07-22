@@ -330,7 +330,11 @@ function deriveTransientEnvironment(options: {
 async function loadProducerConfig(
   workspace: Workspace,
   producerOrgSlug: string,
-): Promise<{ state: ProducerConfigState; config: YaffleTomlConfig | null }> {
+): Promise<{
+  state: ProducerConfigState
+  config: YaffleTomlConfig | null
+  canonicalRepo: string
+}> {
   const { owner, repo } = parseRepoRef(workspace.repo, producerOrgSlug)
   const repository = workspace.repo.includes("/")
     ? ((await findRepoByFullName(`${owner}/${repo}`)) ??
@@ -338,9 +342,10 @@ async function loadProducerConfig(
     : await findRepoByName(workspace.orgId, repo)
 
   const resolvedOwner = repository?.fullName.split("/")[0] ?? owner
+  const canonicalRepo = repository?.fullName ?? workspace.repo
   const installationId = repository?.installationId
   if (!installationId) {
-    return { state: "missing", config: null }
+    return { state: "missing", config: null, canonicalRepo }
   }
 
   try {
@@ -353,8 +358,8 @@ async function loadProducerConfig(
     )
 
     return rawConfig
-      ? { state: "loaded", config: parseYaffleToml(rawConfig) }
-      : { state: "missing", config: null }
+      ? { state: "loaded", config: parseYaffleToml(rawConfig), canonicalRepo }
+      : { state: "missing", config: null, canonicalRepo }
   } catch (err) {
     log.warn("Failed to load producer yaffle.toml for module registry authz", {
       workspaceId: workspace.id,
@@ -362,7 +367,7 @@ async function loadProducerConfig(
       ref: workspace.ref,
       error: err instanceof Error ? err.message : String(err),
     })
-    return { state: "unavailable", config: null }
+    return { state: "unavailable", config: null, canonicalRepo }
   }
 }
 
@@ -555,7 +560,7 @@ registryRoute.get("/:namespace/:name/:provider/versions", async (c) => {
     const producerConfigResult = await loadProducerConfig(workspace, orgSlug)
     const accessDecision = resolveModuleAccessDecision({
       authType: auth.type,
-      producerWorkspace: workspace,
+      producerWorkspace: { ...workspace, repo: producerConfigResult.canonicalRepo },
       producerConfigState: producerConfigResult.state,
       producerConfig: producerConfigResult.config,
       consumerWorkspace,
@@ -728,7 +733,10 @@ registryRoute.get("/:namespace/:name/:provider/:version/download", async (c) => 
 
   const accessDecision = resolveModuleAccessDecision({
     authType: auth.type,
-    producerWorkspace: resolved.workspace,
+    producerWorkspace: {
+      ...resolved.workspace,
+      repo: producerConfigResult.canonicalRepo,
+    },
     producerConfigState: producerConfigResult.state,
     producerConfig: producerConfigResult.config,
     consumerWorkspace,

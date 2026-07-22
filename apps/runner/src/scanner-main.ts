@@ -25,12 +25,14 @@ import {
   combineAutomaticIsolationPreflights,
   deriveAutomaticIsolationWorkspaceStatus,
   extractDependenciesFromContent,
+  extractYaffleModuleOutputReferencesFromContent,
   inspectAutomaticPreviewIsolationWorkspace,
   type AutomaticIsolationFinding,
   type AutomaticIsolationIdentity,
   type AutomaticIsolationPreflight,
   type AutomaticIsolationSourceFile,
   type DependencyScannerVariableBindingsByPath,
+  type WorkspaceModuleOutputReference,
 } from "@yaffle/shared"
 
 import { ScannerApiClient } from "./lib/scanner-api-client.ts"
@@ -143,12 +145,14 @@ export async function scanTarball(
 ): Promise<{
   workspaces: string[]
   edges: [string, string][]
+  moduleOutputReferences: WorkspaceModuleOutputReference[]
   automaticIsolationPreflight?: AutomaticIsolationPreflight
   automaticIsolationArtifacts?: CompiledAutomaticIsolationArtifact[]
 }> {
   const knownWorkspaces = new Set(workspacePaths)
   const isolationWorkspaces = new Set(automaticIsolationWorkspacePaths)
   const edges: [string, string][] = []
+  const moduleOutputReferences: WorkspaceModuleOutputReference[] = []
 
   // Map workspace path → concatenated Terraform file contents
   const workspaceContents = new Map<string, AutomaticIsolationSourceFile[]>()
@@ -251,6 +255,18 @@ export async function scanTarball(
         edges.push([workspace, dep])
       }
     }
+    const references = extractYaffleModuleOutputReferencesFromContent(contents.join("\n\n"), {
+      currentNamespace,
+      variables: workspaceVariables[workspace],
+    })
+    for (const reference of references) {
+      if (
+        knownWorkspaces.has(reference.producerWorkspacePath) &&
+        reference.producerWorkspacePath !== workspace
+      ) {
+        moduleOutputReferences.push({ consumerWorkspacePath: workspace, ...reference })
+      }
+    }
   }
 
   const automaticIsolationArtifacts: CompiledAutomaticIsolationArtifact[] = []
@@ -292,11 +308,13 @@ export async function scanTarball(
   log("Tarball scan complete", {
     workspaceCount: workspacePaths.length,
     edgeCount: edges.length,
+    moduleOutputReferenceCount: moduleOutputReferences.length,
   })
 
   return {
     workspaces: workspacePaths,
     edges,
+    moduleOutputReferences,
     automaticIsolationPreflight,
     automaticIsolationArtifacts:
       automaticIsolationArtifacts.length > 0 ? automaticIsolationArtifacts : undefined,
@@ -512,6 +530,7 @@ export async function runScanner(): Promise<void> {
       await apiClient.complete({
         graph: graph.toSerializable(),
         executionOrder: filteredOrder,
+        moduleOutputReferences: inferredGraph.moduleOutputReferences,
         automaticIsolationPreflight: inferredGraph.automaticIsolationPreflight,
       })
       log("Automatic preview isolation preflight requires attention", {
@@ -557,6 +576,7 @@ export async function runScanner(): Promise<void> {
     await apiClient.complete({
       graph: graph.toSerializable(),
       executionOrder: filteredOrder,
+      moduleOutputReferences: inferredGraph.moduleOutputReferences,
       workspaceS3Key,
       workspaceArtifactSha256,
       automaticIsolationPreflight: inferredGraph.automaticIsolationPreflight,

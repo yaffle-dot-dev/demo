@@ -2,6 +2,7 @@ import { describe, it, expect } from "@yaffle/test"
 
 import {
   extractDependenciesFromContent,
+  extractYaffleModuleOutputReferencesFromContent,
   moduleNameToWorkspacePath,
   workspacePathToModuleName,
 } from "@yaffle/shared"
@@ -280,5 +281,60 @@ module "ws2" {
     const deps = extractDependenciesFromContent(content)
     expect(deps).toContain("infra/a")
     expect(deps).toContain("infra/b")
+  })
+})
+
+describe("extractYaffleModuleOutputReferencesFromContent", () => {
+  it("associates referenced outputs with their producer workspace", () => {
+    const references = extractYaffleModuleOutputReferencesFromContent(`
+module "shared" {
+  source = "yaffle.dev/org--repo/infra--shared/yaffle"
+}
+
+locals {
+  zone_id = module.shared.route53_zone_id
+  price   = module.shared.stripe_pricing.pro.price_id
+  copy    = module.shared.route53_zone_id
+  both    = [module.shared.route53_zone_id, module.shared.stripe_pricing]
+}
+`)
+
+    expect(references).toEqual([
+      {
+        moduleName: "shared",
+        producerWorkspacePath: "infra/shared",
+        outputName: "route53_zone_id",
+      },
+      {
+        moduleName: "shared",
+        producerWorkspacePath: "infra/shared",
+        outputName: "stripe_pricing",
+      },
+    ])
+  })
+
+  it("supports indexed module instances and ignores non-Yaffle modules", () => {
+    const references = extractYaffleModuleOutputReferencesFromContent(`
+module "core" {
+  source = "yaffle.dev/org--repo/infra--production/yaffle"
+}
+
+module "external" {
+  source = "terraform-aws-modules/vpc/aws"
+}
+
+locals {
+  cluster = module.core[0].ecs_cluster_arn
+  ignored = module.external.vpc_id
+}
+`)
+
+    expect(references).toEqual([
+      {
+        moduleName: "core",
+        producerWorkspacePath: "infra/production",
+        outputName: "ecs_cluster_arn",
+      },
+    ])
   })
 })

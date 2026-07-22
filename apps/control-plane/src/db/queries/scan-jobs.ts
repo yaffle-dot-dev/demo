@@ -3,6 +3,7 @@ import { and, desc, eq, lt, or, isNull } from "drizzle-orm"
 import type {
   AutomaticIsolationArtifactManifest,
   AutomaticIsolationPreflight,
+  WorkspaceModuleOutputReference,
 } from "@yaffle/shared"
 
 import type { WorkspaceVariablesByPath } from "../../lib/workspace-variables.ts"
@@ -17,6 +18,7 @@ export type ScanJob = typeof scanJobs.$inferSelect
 export interface ScanJobResult {
   graph: { workspaces: string[]; edges: [string, string][] }
   executionOrder: string[]
+  moduleOutputReferences?: WorkspaceModuleOutputReference[]
   workspaceS3Key?: string
   workspaceArtifactSha256?: string
   automaticIsolationPreflight?: AutomaticIsolationPreflight
