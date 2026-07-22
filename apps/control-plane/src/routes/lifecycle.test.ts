@@ -11,12 +11,8 @@ import { connections, environmentPolicies, organizations, repositories } from ".
 import { lifecycleRoute } from "./lifecycle.ts"
 import { localFirstRoute } from "./local-first.ts"
 
-const TEST_FEATURE_TOKEN = "test-feature-token"
-
 function featureHeaders(): Record<string, string> {
-  return {
-    "feature-token": TEST_FEATURE_TOKEN,
-  }
+  return {}
 }
 
 describe("lifecycleRoute", () => {
@@ -25,13 +21,11 @@ describe("lifecycleRoute", () => {
   app.route("/api/lifecycle", lifecycleRoute)
 
   beforeEach(async () => {
-    process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN = TEST_FEATURE_TOKEN
     resetRateLimitStore()
     await cleanupTestData()
   })
 
   afterEach(async () => {
-    delete process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN
     resetRateLimitStore()
     await cleanupTestData()
   })

@@ -1,3 +1,5 @@
+import { createHmac } from "node:crypto"
+
 import { SignJWT, jwtVerify, type JWTPayload } from "jose"
 
 import { getEnv } from "./env.ts"
@@ -32,12 +34,15 @@ export interface ExecutionTokenPayload extends JWTPayload {
 
 function getJwtSecret(variableName: string): Uint8Array {
   const env = getEnv()
-  const secret = process.env[variableName] ?? env.betterAuthSecret
-  if (!secret) {
-    throw new Error(`${variableName} or BETTER_AUTH_SECRET must be configured`)
+  const dedicatedSecret = process.env[variableName]?.trim()
+  if (dedicatedSecret) {
+    return new TextEncoder().encode(dedicatedSecret)
   }
+  if (!env.betterAuthSecret) throw new Error("BETTER_AUTH_SECRET must be configured")
 
-  return new TextEncoder().encode(secret)
+  return createHmac("sha256", env.betterAuthSecret)
+    .update(`yaffle-token-signing:${variableName}:v1`)
+    .digest()
 }
 
 export async function generateAnonymousSessionToken(params: {

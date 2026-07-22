@@ -21,7 +21,7 @@ meaningful protection.
 ### Access gate
 
 Until the broader self-serve launch path is ready, local-first bootstrap and
-publish APIs remain gated behind `YAFFLE_LOCAL_FIRST_FEATURE_TOKEN`.
+publish APIs require scoped bearer tokens and are protected by application and edge rate limits.
 
 - missing or invalid feature token fails closed
 - if rate limiting or request protection cannot run, anonymous bootstrap and

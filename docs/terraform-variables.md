@@ -7,7 +7,7 @@ variable table or Terraform examples here.
 
 ## Implementations
 
-- Rust engine injection: `crates/yaffle-engine/src/lib.rs`
+- Rust engine injection: `cli/crates/yaffle-engine/src/lib.rs` in the nested CLI checkout
 - Hosted TypeScript context: `apps/control-plane/src/lib/workspace-variables.ts`
 - Template rendering: `apps/control-plane/src/lib/templating.ts`
 - Legacy local declaration injection: `apps/control-plane/src/lib/state.ts`

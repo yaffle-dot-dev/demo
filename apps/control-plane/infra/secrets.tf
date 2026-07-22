@@ -18,7 +18,6 @@ locals {
     github-app-id              = "GitHub App ID"
     github-app-private-key     = "GitHub App private key (PEM)"
     github-webhook-secret      = "GitHub webhook HMAC secret"
-    local-first-feature-token  = "Local-first backend feature token"
     better-auth-secret         = "BetterAuth encryption secret (32+ chars)"
     github-oauth-client-id     = "GitHub OAuth app client ID"
     github-oauth-client-secret = "GitHub OAuth app client secret"

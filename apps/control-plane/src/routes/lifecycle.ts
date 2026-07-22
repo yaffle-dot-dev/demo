@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
+import { createHmac, randomBytes, randomUUID } from "node:crypto"
 
 import { Hono, type MiddlewareHandler } from "hono"
 import { z } from "zod"
@@ -55,7 +55,6 @@ type PrincipalVariables = {
   principalAuth: PrincipalAuthContext
 }
 
-const LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR = "YAFFLE_LOCAL_FIRST_FEATURE_TOKEN"
 const LIFECYCLE_BODY_MAX_BYTES = 64 * 1024
 
 const lifecycleCreateRateLimit = {
@@ -182,25 +181,6 @@ const callbackBodySchema = z.object({
 
 export const lifecycleRoute = new Hono<{ Variables: PrincipalVariables }>()
 
-const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
-  const expectedToken = process.env[LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR]?.trim()
-  if (!expectedToken) {
-    return c.json({ error: { code: "NOT_FOUND", message: "not found" } }, 404)
-  }
-
-  const providedToken = c.req.header("feature-token")?.trim() ?? ""
-  const expected = Buffer.from(expectedToken)
-  const provided = Buffer.from(providedToken)
-  if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
-    return c.json(
-      { error: { code: "INVALID_FEATURE_TOKEN", message: "invalid feature token" } },
-      403,
-    )
-  }
-
-  return next()
-}
-
 function enforceRouteRateLimit(options: {
   bucket: string
   limit: number
@@ -231,22 +211,16 @@ function mergeCallbackMetadata(
   }
 }
 
-lifecycleRoute.use("/runs", enforceFeatureToken)
-lifecycleRoute.use("/items", enforceFeatureToken)
-lifecycleRoute.use("/state", enforceFeatureToken)
 lifecycleRoute.use("/runs", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/items", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/state", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/runs", principalAuth())
 lifecycleRoute.use("/items", principalAuth())
-lifecycleRoute.use("/items/*", enforceFeatureToken)
 lifecycleRoute.use("/items/*", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/items/*", principalAuth())
 lifecycleRoute.use("/state", principalAuth())
-lifecycleRoute.use("/admission", enforceFeatureToken)
 lifecycleRoute.use("/admission", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/admission", principalAuth())
-lifecycleRoute.use("/dispatch", enforceFeatureToken)
 lifecycleRoute.use("/dispatch", enforceRouteRateLimit(lifecycleCreateRateLimit))
 lifecycleRoute.use("/dispatch", principalAuth())
 
@@ -932,7 +906,11 @@ async function resolvePrincipalTier(
     return "free_local"
   }
   const org = await findOrgById(orgId)
-  if (org && org.planTier !== "free" && ["active", "trialing"].includes(org.subscriptionStatus)) {
+  if (
+    org &&
+    ["pro", "team"].includes(org.planTier) &&
+    ["active", "trialing"].includes(org.subscriptionStatus)
+  ) {
     return "paid_cloud"
   }
 

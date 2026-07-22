@@ -25,7 +25,7 @@ cleanup() {
 trap cleanup EXIT
 
 validate_inputs() {
-  if [[ "$PROJECT" != "outputs-action" && "$PROJECT" != "cli" ]]; then
+  if [[ "$PROJECT" != "outputs-action" ]]; then
     fail "unsupported project for check-project-sync.sh: $PROJECT"
   fi
 

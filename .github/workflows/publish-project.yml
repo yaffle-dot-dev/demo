@@ -97,12 +97,6 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install Bun
-        if: inputs.project == 'cli'
-        run: |
-          curl -fsSL https://bun.sh/install | bash
-          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
-
       - name: Publish standalone repo
         env:
           PROJECT: ${{ inputs.project }}

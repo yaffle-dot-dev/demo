@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "@yaffle/test"
+import { afterEach, describe, expect, test } from "@yaffle/test"
 import { Hono } from "hono"
 
 import { db } from "../lib/db.ts"
@@ -23,16 +23,24 @@ import {
 
 import { createCloudConvergeRoute } from "./cloud-converge.ts"
 
-const TEST_FEATURE_TOKEN = "test-feature-token"
-
 describe("cloudConvergeRoute", () => {
-  beforeEach(() => {
-    process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN = TEST_FEATURE_TOKEN
+  afterEach(async () => {
+    await cleanupTestData()
   })
 
-  afterEach(async () => {
-    delete process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN
-    await cleanupTestData()
+  test("rejects remote converge without a bearer token", async () => {
+    const app = new Hono()
+    app.route("/api/cloud", createCloudConvergeRoute())
+
+    const response = await app.fetch(
+      new Request("http://localhost/api/cloud/converge", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      }),
+    )
+
+    expect(response.status).toBe(401)
   })
 
   test("creates a hosted manual run group for a paid-cloud approver", async () => {
@@ -111,7 +119,6 @@ environments = ["main"]
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "feature-token": TEST_FEATURE_TOKEN,
           "content-type": "application/json",
         },
         body: JSON.stringify({
@@ -137,6 +144,18 @@ environments = ["main"]
     expect(seen.scan?.workspacePaths).toEqual(["apps/control-plane/infra"])
     expect(seen.scan?.automaticIsolationWorkspacePaths).toEqual([])
     expect(seen.scan?.installationToken).toBe("installation-token")
+
+    const oversized = await app.fetch(
+      new Request("http://localhost/api/cloud/converge", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ padding: "x".repeat(33 * 1024) }),
+      }),
+    )
+    expect(oversized.status).toBe(413)
 
     const runGroup = await db.query.runGroups.findFirst({
       where: (runGroups, { eq }) => eq(runGroups.id, body.data.runGroupId),
@@ -179,7 +198,6 @@ environments = ["main"]
       new Request("http://localhost/api/cloud/capabilities?repoFullName=test-org/fixture", {
         headers: {
           authorization: `Bearer ${token}`,
-          "feature-token": TEST_FEATURE_TOKEN,
         },
       }),
     )
@@ -224,7 +242,6 @@ environments = ["main"]
       new Request("http://localhost/api/cloud/capabilities?repoFullName=test-org/fixture", {
         headers: {
           authorization: `Bearer ${token}`,
-          "feature-token": TEST_FEATURE_TOKEN,
         },
       }),
     )
@@ -303,7 +320,6 @@ environments = ["main"]
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "feature-token": TEST_FEATURE_TOKEN,
           "content-type": "application/json",
         },
         body: JSON.stringify({
@@ -325,10 +341,14 @@ environments = ["main"]
     expect(seen.workspacePaths).toEqual(["apps/control-plane/infra", "apps/web/infra"])
   })
 
-  test("rejects users without paid-cloud entitlement", async () => {
+  test("rejects inactive paid-cloud subscriptions", async () => {
     const user = await createTestUser({ id: "remote-converge-free-user" })
     const org = await createTestOrg({ slug: "remote-converge-free-org" })
     await addMembership(org.id, user.id, "approver")
+    await updateOrg(org.id, {
+      planTier: "pro",
+      subscriptionStatus: "past_due",
+    })
     await db.insert(repositories).values({
       orgId: org.id,
       githubId: 54321,
@@ -360,7 +380,6 @@ environments = ["main"]
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "feature-token": TEST_FEATURE_TOKEN,
           "content-type": "application/json",
         },
         body: JSON.stringify({
@@ -432,7 +451,6 @@ environments = ["main"]
         method: "POST",
         headers: {
           authorization: `Bearer ${token}`,
-          "feature-token": TEST_FEATURE_TOKEN,
           "content-type": "application/json",
         },
         body: JSON.stringify({
@@ -573,7 +591,6 @@ environments = ["main"]
         method: "GET",
         headers: {
           authorization: `Bearer ${token}`,
-          "feature-token": TEST_FEATURE_TOKEN,
         },
       }),
     )
@@ -717,7 +734,6 @@ environments = ["main"]
         method: "GET",
         headers: {
           authorization: `Bearer ${token}`,
-          "feature-token": TEST_FEATURE_TOKEN,
         },
       }),
     )

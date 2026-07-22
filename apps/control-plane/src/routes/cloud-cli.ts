@@ -30,8 +30,6 @@ import { logger as log } from "../lib/telemetry.ts"
 
 export const cloudCliRoute = new Hono()
 
-const LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR = "YAFFLE_LOCAL_FIRST_FEATURE_TOKEN"
-
 const CLOUD_CLI_AUTHORIZE_RATE_LIMIT = {
   bucket: "cloud-cli-authorize",
   limit: 20,
@@ -47,15 +45,16 @@ const CLOUD_CLI_TOKEN_RATE_LIMIT = {
 const CLOUD_CLI_TOKEN_MAX_BYTES = 16 * 1024
 const CLOUD_CLI_AUTHORIZE_REQUEST_MAX_BYTES = 8 * 1024
 const CLOUD_CLI_AUTHORIZE_REQUEST_TTL_MS = 5 * 60 * 1000
+const pkceValueSchema = z.string().regex(/^[A-Za-z0-9_-]{43,128}$/)
 
-const callbackPortSchema = z.number().int().min(10000).max(10010)
+const callbackPortSchema = z.number().int().min(1024).max(65535)
 
 const authorizeRequestSchema = z
   .object({
     client_id: z.literal("yaffle-cli"),
     redirect_port: callbackPortSchema,
     response_type: z.literal("code"),
-    code_challenge: z.string().min(43).max(128),
+    code_challenge: pkceValueSchema,
     code_challenge_method: z.literal("S256"),
     state: z.string().optional(),
   })
@@ -65,7 +64,7 @@ const legacyAuthorizeQuerySchema = z.object({
   client_id: z.literal("yaffle-cli"),
   redirect_uri: z.string().url(),
   response_type: z.literal("code"),
-  code_challenge: z.string().min(43).max(128),
+  code_challenge: pkceValueSchema,
   code_challenge_method: z.literal("S256"),
   state: z.string().optional(),
 })
@@ -82,7 +81,7 @@ const tokenBodySchema = z
   .object({
     grant_type: z.literal("authorization_code"),
     code: z.string(),
-    code_verifier: z.string().min(43).max(128),
+    code_verifier: pkceValueSchema,
     redirect_port: callbackPortSchema,
     client_id: z.literal("yaffle-cli"),
     current_principal_token: z.string().min(1).nullish(),
@@ -196,35 +195,6 @@ function renderAuthorizeSuccessPage(finalRedirect: string): string {
 </html>`
 }
 
-function validateFeatureToken(providedToken: string): Response | null {
-  const expectedToken = process.env[LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR]?.trim()
-  if (!expectedToken) {
-    return new Response(JSON.stringify({ error: { code: "NOT_FOUND", message: "not found" } }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
-    })
-  }
-
-  const expected = Buffer.from(expectedToken)
-  const provided = Buffer.from(providedToken)
-  if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
-    return new Response(
-      JSON.stringify({
-        error: {
-          code: "INVALID_FEATURE_TOKEN",
-          message: "invalid feature token",
-        },
-      }),
-      {
-        status: 403,
-        headers: { "Content-Type": "application/json" },
-      },
-    )
-  }
-
-  return null
-}
-
 function callbackRedirectUri(redirectPort: number): string {
   return `http://localhost:${redirectPort}/callback`
 }
@@ -247,7 +217,7 @@ function validateLoopbackRedirectUri(redirectUri: string): Response | null {
     )
   }
 
-  if (redirectUrl.hostname !== "localhost" && redirectUrl.hostname !== "127.0.0.1") {
+  if (redirectUrl.hostname !== "localhost") {
     return Response.json(
       { error: "invalid_request", error_description: "redirect_uri must be localhost" },
       { status: 400 },
@@ -255,9 +225,9 @@ function validateLoopbackRedirectUri(redirectUri: string): Response | null {
   }
 
   const port = Number.parseInt(redirectUrl.port || "80", 10)
-  if (port < 10000 || port > 10010) {
+  if (port < 1024 || port > 65535) {
     return Response.json(
-      { error: "invalid_request", error_description: "redirect_uri port must be 10000-10010" },
+      { error: "invalid_request", error_description: "redirect_uri port must be 1024-65535" },
       { status: 400 },
     )
   }
@@ -281,8 +251,11 @@ function redirectPortFromLegacyAuthorizeQuery(query: LegacyAuthorizeQuery): numb
   return Number.parseInt(new URL(query.redirect_uri).port, 10)
 }
 
-function authorizeSigningSecret(): string | null {
-  return process.env.BETTER_AUTH_SECRET?.trim() || null
+function authorizeSigningSecret(): Buffer | null {
+  const authSecret = process.env.BETTER_AUTH_SECRET?.trim()
+  if (!authSecret) return null
+
+  return createHmac("sha256", authSecret).update("yaffle-cloud-cli-authorize-v1").digest()
 }
 
 function signAuthorizeRequest(input: AuthorizeRequest): string | null {
@@ -397,11 +370,6 @@ cloudCliRoute.post("/cli/authorize-requests", async (c) => {
     return rateLimitResponse
   }
 
-  const featureTokenError = validateFeatureToken(c.req.header("feature-token")?.trim() ?? "")
-  if (featureTokenError) {
-    return featureTokenError
-  }
-
   const requestBody = await readJsonBody(c.req.raw, CLOUD_CLI_AUTHORIZE_REQUEST_MAX_BYTES)
   if (requestBody instanceof Response) {
     return requestBody
@@ -493,11 +461,6 @@ cloudCliRoute.post("/cli/token", async (c) => {
     return rateLimitResponse
   }
 
-  const featureTokenError = validateFeatureToken(c.req.header("feature-token")?.trim() ?? "")
-  if (featureTokenError) {
-    return featureTokenError
-  }
-
   const requestBody = await readJsonBody(c.req.raw)
   if (requestBody instanceof Response) {
     return requestBody
@@ -515,19 +478,16 @@ cloudCliRoute.post("/cli/token", async (c) => {
   }
 
   const body = parsed.data
-  const pending = await takeCloudCliAuthorizationCode(body.code)
-  if (!pending || pending.expiresAt.getTime() <= Date.now()) {
-    return c.json({ error: "invalid_grant", error_description: "Invalid or expired code" }, 400)
-  }
-
   const redirectUri = callbackRedirectUri(body.redirect_port)
-  if (pending.redirectUri !== redirectUri) {
-    return c.json({ error: "invalid_grant", error_description: "redirect_uri mismatch" }, 400)
-  }
-
   const verifierHash = createHash("sha256").update(body.code_verifier).digest("base64url")
-  if (verifierHash !== pending.codeChallenge) {
-    return c.json({ error: "invalid_grant", error_description: "PKCE validation failed" }, 400)
+  const pending = await takeCloudCliAuthorizationCode({
+    code: body.code,
+    redirectUri,
+    codeChallenge: verifierHash,
+    now: new Date(),
+  })
+  if (!pending) {
+    return c.json({ error: "invalid_grant", error_description: "Invalid or expired code" }, 400)
   }
 
   const authUser = await findUserById(pending.userId)
@@ -560,11 +520,14 @@ cloudCliRoute.post("/cli/token", async (c) => {
         })
         convertedFromAnonymous = true
       }
-    } else if (!(await verifyAccountPrincipalToken(body.current_principal_token))) {
-      return c.json(
-        { error: "invalid_grant", error_description: "Current principal token is invalid" },
-        400,
-      )
+    } else {
+      const currentAccount = await verifyAccountPrincipalToken(body.current_principal_token)
+      if (!currentAccount || currentAccount.user_id !== authUser.id) {
+        return c.json(
+          { error: "invalid_grant", error_description: "Current principal token is invalid" },
+          400,
+        )
+      }
     }
   }
 

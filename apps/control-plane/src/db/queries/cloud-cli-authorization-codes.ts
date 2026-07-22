@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 
-import { eq } from "drizzle-orm"
+import { and, eq, gt } from "drizzle-orm"
 
 import { db } from "../../lib/db.ts"
 import { cloudCliAuthorizationCodes } from "../schema.ts"
@@ -36,13 +36,23 @@ export async function createCloudCliAuthorizationCode(
   })
 }
 
-export async function takeCloudCliAuthorizationCode(
-  code: string,
-): Promise<CloudCliAuthorizationCode | undefined> {
+export async function takeCloudCliAuthorizationCode(input: {
+  code: string
+  redirectUri: string
+  codeChallenge: string
+  now: Date
+}): Promise<CloudCliAuthorizationCode | undefined> {
   return withDbSpan("delete", "cloud_cli_authorization_codes", async () => {
     const rows = await db
       .delete(cloudCliAuthorizationCodes)
-      .where(eq(cloudCliAuthorizationCodes.codeHash, hashCloudCliAuthorizationCode(code)))
+      .where(
+        and(
+          eq(cloudCliAuthorizationCodes.codeHash, hashCloudCliAuthorizationCode(input.code)),
+          eq(cloudCliAuthorizationCodes.redirectUri, input.redirectUri),
+          eq(cloudCliAuthorizationCodes.codeChallenge, input.codeChallenge),
+          gt(cloudCliAuthorizationCodes.expiresAt, input.now),
+        ),
+      )
       .returning()
 
     return rows[0]

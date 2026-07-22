@@ -9,7 +9,6 @@ const IGNORE_PATTERNS = [
   ".direnv/**",
   ".agents/**",
   ".opencode/**",
-  "packages/cli/**",
   "actions/outputs-action/dist/**",
   "**/*.svelte",
 ]

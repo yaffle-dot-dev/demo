@@ -165,6 +165,7 @@ yaffle/
 │   └── aws-runner/        # BYOA module (future)
 ├── packages/
 │   └── shared/            # Shared TypeScript packages
+├── cli/                   # Ignored nested checkout of yaffle-dot-dev/cli
 ├── actions/
 │   └── outputs-action/    # GitHub Action for fetching TF outputs
 └── yaffle.toml            # Self-dogfooding config

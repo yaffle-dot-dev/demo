@@ -10,7 +10,6 @@
   "scripts": {
     "check": "vp run typecheck",
     "ci": "vp exec tsx scripts/ci/main.ts",
-    "yaffle": "cargo run -p yaffle-cli --",
     "dev:control-plane": "vp run @yaffle/control-plane#dev",
     "dev:web": "vp run @yaffle/web#dev",
     "dev:mlp": "vp run @yaffle/marketing#dev",
@@ -23,7 +22,6 @@
     "format:check": "vp fmt . --check",
     "smoke": "vp run @yaffle/control-plane#smoke",
     "smoke:browser": "vp run @yaffle/web#smoke",
-    "smoke:local-first": "vp exec tsx scripts/smoke/local-first.ts",
     "test": "vp run -r test && vp run test:scripts",
     "test:scripts": "vp test run scripts",
     "db:generate": "vp run @yaffle/control-plane#db:generate",

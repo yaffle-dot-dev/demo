@@ -1,7 +1,6 @@
 # Rust CLI Core
 
-This document is the local engineering reference for the Rust CLI/bootstrap
-direction introduced in Project 1.
+This document records the control-plane integration boundary for the standalone Rust CLI.
 
 It complements `docs/core-semantics.md` by describing the implementation layout
 rather than the product semantics.
@@ -25,14 +24,15 @@ the forward architecture.
 
 ## Rust workspace layout
 
-The initial Rust workspace lives at the repo root and currently contains:
+The Rust workspace lives in the separate `yaffle-dot-dev/cli` repository. A local nested checkout at
+`cli/` contains:
 
-- `crates/yaffle-cli`
-- `crates/yaffle-contracts`
-- `crates/yaffle-config`
-- `crates/yaffle-engine`
-- `crates/yaffle-graph`
-- `crates/yaffle-tofu`
+- `cli/crates/yaffle-cli`
+- `cli/crates/yaffle-contracts`
+- `cli/crates/yaffle-config`
+- `cli/crates/yaffle-engine`
+- `cli/crates/yaffle-graph`
+- `cli/crates/yaffle-tofu`
 
 These crate boundaries are intentionally lightweight for now. They exist to keep
 the Rust path moving without re-deciding layout every time we touch the CLI.
@@ -55,8 +55,7 @@ Current implementation status:
 - graph/doctor/outputs/converge/status/wait/destroy execute through the shared
   Rust engine dispatcher
 - fixture-backed engine repos cover real local `tofu` execution paths
-- `yaffle converge` now defaults to an interactive terminal experience in a TTY
-  and falls back to `--plain` / `--json` when needed
+- local commands are native Rust processes with human or `--json` output and no Bun renderer
 - `yaffle tf login` emits scoped shell exports for raw `tofu`
 - `yaffle cloud login` now completes an account-backed browser login flow and
   can replace a machine-local guest session with an account principal
@@ -86,11 +85,11 @@ The current frozen CLI alpha policy is:
 - otherwise prefer a Yaffle-managed cached toolchain
 - fall back to system `tofu` only as a compatibility path
 
-The initial Rust abstraction for this lives in `crates/yaffle-tofu`.
+The Rust abstraction for this lives in `cli/crates/yaffle-tofu`.
 
 Current implementation status:
 
-- `crates/yaffle-tofu` resolves `tofu` through a typed source policy
+- `cli/crates/yaffle-tofu` resolves `tofu` through a typed source policy
 - explicit override is currently supported via `YAFFLE_TOFU_PATH`
 - bundled and managed slots exist in the resolver contract even though acquisition is not implemented yet
 - system `tofu` remains the active fallback path used by local dogfooding
@@ -105,19 +104,14 @@ Current implementation status:
 
 ## Local entrypoint
 
-For now, the repo-level command is:
+Run commands from the nested CLI repository when it is checked out:
 
 ```bash
-pnpm run yaffle -- ...
+cd cli
+cargo run -p yaffle-cli -- --help
 ```
 
-which delegates to:
-
-```bash
-cargo run -p yaffle-cli -- ...
-```
-
-This is an interim dogfooding path and may evolve as packaging is finalized.
+The parent package scripts and Nix flake do not build or publish the CLI.
 
 ## Implementation rule
 

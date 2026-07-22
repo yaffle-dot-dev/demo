@@ -46,3 +46,6 @@ backups
 **/.DS_Store
 
 /.ci/**
+
+# Nested public repositories kept locally for cross-repository development
+/cli/

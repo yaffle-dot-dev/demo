@@ -14,37 +14,27 @@ import { tfcRoute } from "./tfc/index.ts"
 process.env.YAFFLE_PUBLIC_API_URL ??= "http://localhost:3000"
 process.env.BETTER_AUTH_SECRET ??= "test-better-auth-secret-which-is-long-enough"
 
-const TEST_FEATURE_TOKEN = "local-first-test-token"
-
 const app = new Hono()
 app.route("/api", localFirstRoute)
 app.route("/tfc", tfcRoute)
 
 describe("localFirstRoute + execution-backed module registry", () => {
   beforeEach(async () => {
-    process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN = TEST_FEATURE_TOKEN
     resetRateLimitStore()
     await cleanupTestData()
   })
 
   afterEach(async () => {
-    delete process.env.YAFFLE_LOCAL_FIRST_FEATURE_TOKEN
     resetRateLimitStore()
     await cleanupTestData()
   })
 
-  test("rejects anonymous session bootstrap without the feature token", async () => {
+  test("bootstraps an anonymous session without a client secret", async () => {
     const sessionRes = await app.fetch(
       new Request("http://localhost/api/sessions/anonymous", { method: "POST" }),
     )
 
-    expect(sessionRes.status).toBe(403)
-    expect(await sessionRes.json()).toEqual({
-      error: {
-        code: "INVALID_FEATURE_TOKEN",
-        message: "invalid feature token",
-      },
-    })
+    expect(sessionRes.status).toBe(201)
   })
 
   test("bootstraps anonymous session, publishes hosted module outputs, and serves them via registry", async () => {
@@ -498,9 +488,7 @@ describe("localFirstRoute + execution-backed module registry", () => {
 })
 
 function featureHeaders(): Record<string, string> {
-  return {
-    "feature-token": TEST_FEATURE_TOKEN,
-  }
+  return {}
 }
 
 function extractFileFromTar(tar: Buffer, filename: string): string {

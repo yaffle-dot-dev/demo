@@ -70,7 +70,6 @@
                 lib.hasSuffix "/.terraform" relativePath ||
                 lib.hasInfix "/.terraform/" relativePath ||
                 lib.hasPrefix "actions/" relativePath ||
-                lib.hasPrefix "crates/" relativePath ||
                 lib.hasPrefix "plans/" relativePath
               );
           };
@@ -456,12 +455,6 @@
             };
           };
 
-          yaffle-cli = pkgs.callPackage ./nix/yaffle-cli.nix {
-            inherit pkgs;
-            lib = pkgs.lib;
-            src = repoRoot;
-          };
-
           lambda-layer-tailscale = pkgs.callPackage ./nix/lambda-layers/tailscale-layer.nix {
             inherit pkgs;
             lib = pkgs.lib;
@@ -471,10 +464,8 @@
             control-plane-image
             lambda-layer-tailscale
             runner-image
-            web-image
-            yaffle-cli;
-          default = yaffle-cli;
-          yaffle-outputs = yaffle-cli;
+            web-image;
+          default = control-plane-image;
         }
       );
 
@@ -483,7 +474,6 @@
           pkgs = import nixpkgs {
             inherit system;
           };
-          yaffle-cli = self.packages.${system}.yaffle-cli;
           repoVp = pkgs.writeShellScriptBin "vp" ''
             if [ ! -f package.json ]; then
               echo "Error: Must run from yaffle repo root" >&2
@@ -519,21 +509,6 @@
           vp = {
             type = "app";
             program = "${repoVp}/bin/vp";
-          };
-          yaffle-outputs = {
-            type = "app";
-            program = "${yaffle-cli}/bin/yaffle-outputs";
-          };
-          yaffle = {
-            type = "app";
-            program = toString (pkgs.writeShellScript "yaffle" ''
-              if [ ! -f "Cargo.toml" ]; then
-                echo "Error: Must run from yaffle repo root" >&2
-                exit 1
-              fi
-              export PATH="${pkgs.cargo}/bin:${pkgs.rustc}/bin:$PATH"
-              exec cargo run -p yaffle-cli -- "$@"
-            '');
           };
           ci = mkRepoNodeApp "ci" "scripts/ci/main.ts";
           deploy-marketing = mkRepoNodeApp "deploy-marketing" "scripts/deploy-marketing.ts";

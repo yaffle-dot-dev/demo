@@ -1,5 +1,4 @@
-import { Hono, type MiddlewareHandler } from "hono"
-import { timingSafeEqual } from "node:crypto"
+import { Hono } from "hono"
 import { z } from "zod"
 
 import type { PushContext, WebhookContext } from "@yaffle/shared"
@@ -51,6 +50,11 @@ import {
 } from "../lib/workspace-variables.ts"
 import { principalAuth, type PrincipalAuthContext } from "../middleware/principal-auth.ts"
 import {
+  enforceRateLimit,
+  readRequestBodyText,
+  RequestBodyTooLargeError,
+} from "../lib/request-protection.ts"
+import {
   createScanJob,
   findLatestScanJobByRunGroup,
   type ScanJobResult,
@@ -80,8 +84,6 @@ type ScanDispatcher = (input: {
   installationToken: string
 }) => Promise<{ scanJobId: string }>
 
-const LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR = "YAFFLE_LOCAL_FIRST_FEATURE_TOKEN"
-
 const manualConvergeSchema = z.object({
   repoFullName: z.string().min(1),
   canonicalRepoNamespace: z.string().min(1),
@@ -101,6 +103,12 @@ const inventoryQuerySchema = z.object({
 })
 
 const uuidParam = z.string().uuid()
+const CLOUD_CONVERGE_BODY_MAX_BYTES = 32 * 1024
+const CLOUD_CONVERGE_RATE_LIMIT = {
+  bucket: "cloud-converge",
+  limit: 20,
+  windowMs: 60_000,
+} as const
 
 export function createCloudConvergeRoute(
   deps: {
@@ -114,10 +122,6 @@ export function createCloudConvergeRoute(
   const loadInstallationToken = deps.loadInstallationToken ?? getInstallationToken
   const scanDispatcher = deps.scanDispatcher ?? dispatchManualScan
 
-  route.use("/converge", enforceFeatureToken)
-  route.use("/converge/*", enforceFeatureToken)
-  route.use("/capabilities", enforceFeatureToken)
-  route.use("/inventory", enforceFeatureToken)
   route.use("/converge", principalAuth())
   route.use("/converge/*", principalAuth())
   route.use("/capabilities", principalAuth())
@@ -332,7 +336,11 @@ export function createCloudConvergeRoute(
       )
     }
 
-    const body = await c.req.json().catch(() => null)
+    const rateLimitResponse = enforceRateLimit(c, CLOUD_CONVERGE_RATE_LIMIT)
+    if (rateLimitResponse) return rateLimitResponse
+
+    const body = await readJsonBody(c.req.raw)
+    if (body instanceof Response) return body
     const parsed = manualConvergeSchema.safeParse(body)
     if (!parsed.success) {
       return c.json(
@@ -765,37 +773,6 @@ function omitLifecycleCallbackMetadata(payload: unknown): Record<string, unknown
   void metadata
   return publicPayload
 }
-const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
-  const expectedToken = process.env[LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR]?.trim()
-  if (!expectedToken) {
-    return c.json({ error: { code: "NOT_FOUND", message: "not found" } }, 404)
-  }
-
-  const providedToken = c.req.header("feature-token")?.trim() ?? ""
-  if (!featureTokenMatches(expectedToken, providedToken)) {
-    return c.json(
-      { error: { code: "INVALID_FEATURE_TOKEN", message: "invalid feature token" } },
-      403,
-    )
-  }
-
-  return next()
-}
-
-function featureTokenMatches(expectedToken: string, providedToken: string): boolean {
-  if (!expectedToken || !providedToken) {
-    return false
-  }
-
-  const expected = Buffer.from(expectedToken)
-  const provided = Buffer.from(providedToken)
-  if (expected.length !== provided.length) {
-    return false
-  }
-
-  return timingSafeEqual(expected, provided)
-}
-
 function hasMinRole(role: string, minRole: "viewer" | "approver" | "admin"): boolean {
   const levels: Record<string, number> = {
     viewer: 1,
@@ -806,10 +783,25 @@ function hasMinRole(role: string, minRole: "viewer" | "approver" | "admin"): boo
 }
 
 function isPaidCloudOrg(planTier: string, subscriptionStatus: string): boolean {
-  if (subscriptionStatus === "canceled" || subscriptionStatus === "unpaid") {
-    return false
+  return ["pro", "team"].includes(planTier) && ["active", "trialing"].includes(subscriptionStatus)
+}
+
+async function readJsonBody(request: Request): Promise<unknown> {
+  try {
+    const body = await readRequestBodyText(request, CLOUD_CONVERGE_BODY_MAX_BYTES)
+    return body ? (JSON.parse(body) as unknown) : {}
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return Response.json(
+        { error: { code: "REQUEST_TOO_LARGE", message: "request body is too large" } },
+        { status: 413 },
+      )
+    }
+    return Response.json(
+      { error: { code: "BAD_REQUEST", message: "request body must be valid JSON" } },
+      { status: 400 },
+    )
   }
-  return planTier !== "free"
 }
 
 function remoteConvergeCapabilityUnavailable(input: {

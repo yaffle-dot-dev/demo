@@ -252,6 +252,81 @@ resource "aws_wafv2_web_acl" "control_plane_direct_api" {
     }
   }
 
+  rule {
+    name     = "rate-limit-public-cli-write-direct-api"
+    priority = 40
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = 100
+        aggregate_key_type = "IP"
+
+        scope_down_statement {
+          and_statement {
+            statement {
+              byte_match_statement {
+                search_string         = local.api_domain
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  single_header {
+                    name = "host"
+                  }
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+
+            statement {
+              regex_match_statement {
+                regex_string = "^/api/cloud/(cli/(authorize-requests|token)|converge)$"
+
+                field_to_match {
+                  uri_path {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+
+            statement {
+              byte_match_statement {
+                search_string         = "POST"
+                positional_constraint = "EXACTLY"
+
+                field_to_match {
+                  method {}
+                }
+
+                text_transformation {
+                  priority = 0
+                  type     = "NONE"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "rateLimitPublicCliWriteDirectApi"
+      sampled_requests_enabled   = true
+    }
+  }
+
   visibility_config {
     cloudwatch_metrics_enabled = true
     metric_name                = "controlPlaneDirectApiWebAcl"

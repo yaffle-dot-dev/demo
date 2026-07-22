@@ -82,9 +82,6 @@ materialize_project() {
     outputs-action)
       :
       ;;
-    cli)
-      fail "cli now uses scripts/export-project.sh instead of subtree publish"
-      ;;
     demo)
       :
       ;;
@@ -104,7 +101,7 @@ validate_publish_tree() {
   require_file "$SPLIT_DIR/.github/workflows/edge.yml"
 
   case "$PROJECT" in
-    outputs-action|cli)
+    outputs-action)
       require_file "$SPLIT_DIR/package.json"
       ;;
   esac
@@ -139,23 +136,6 @@ validate_publish_tree() {
       require_file "$SPLIT_DIR/dist/index.js"
       require_file "$SPLIT_DIR/package-lock.json"
       ;;
-    cli)
-      require_file "$SPLIT_DIR/tsconfig.json"
-      require_file "$SPLIT_DIR/src/main.ts"
-      require_file "$SPLIT_DIR/src/lib/yaffle-client/index.ts"
-      require_file "$SPLIT_DIR/flake.nix"
-      require_file "$SPLIT_DIR/flake.lock"
-      require_file "$SPLIT_DIR/nix/yaffle-cli.nix"
-      require_file "$SPLIT_DIR/.github/workflows/release.yml"
-
-      if grep -R -n -E --exclude-dir=yaffle-client "from [\"']@yaffle/client[\"']" "$SPLIT_DIR/src" >/dev/null; then
-        fail "standalone CLI still contains @yaffle/client imports"
-      fi
-
-      if grep -n 'workspace:' "$SPLIT_DIR/package.json" >/dev/null; then
-        fail "standalone CLI package.json still contains workspace dependencies"
-      fi
-      ;;
     demo)
       require_file "$SPLIT_DIR/yaffle.toml"
 
@@ -188,31 +168,10 @@ validate_outputs_action_runtime() {
   echo "::endgroup::"
 }
 
-validate_cli_runtime() {
-  echo "::group::Validate cli"
-  pushd "$SPLIT_DIR" >/dev/null
-
-  if ! command -v vp >/dev/null 2>&1; then
-    fail "vp is required to validate the standalone CLI"
-  fi
-
-  vp install
-  vp run typecheck
-  vp test
-  vp run build
-
-  rm -rf node_modules dist
-  popd >/dev/null
-  echo "::endgroup::"
-}
-
 validate_runtime() {
   case "$PROJECT" in
     outputs-action)
       validate_outputs_action_runtime
-      ;;
-    cli)
-      validate_cli_runtime
       ;;
     demo)
       echo "::group::Validate demo"

@@ -1,5 +1,5 @@
 import { Hono, type MiddlewareHandler } from "hono"
-import { createHash, timingSafeEqual } from "node:crypto"
+import { createHash } from "node:crypto"
 import { z } from "zod"
 
 import {
@@ -36,8 +36,6 @@ type LocalFirstOperation =
   | "anonymous_session_bootstrap"
   | "execution_token_mint"
   | "output_module_publish"
-
-const LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR = "YAFFLE_LOCAL_FIRST_FEATURE_TOKEN"
 
 const ANONYMOUS_SESSION_RATE_LIMIT = {
   bucket: "anonymous-session-bootstrap",
@@ -78,26 +76,6 @@ const publishOutputModuleSchema = z.object({
 
 export const localFirstRoute = new Hono<{ Variables: PrincipalVariables }>()
 
-const enforceFeatureToken: MiddlewareHandler = async (c, next) => {
-  const operation = localFirstOperationFromPath(c.req.path)
-  const expectedToken = process.env[LOCAL_FIRST_FEATURE_TOKEN_ENV_VAR]?.trim()
-  if (!expectedToken) {
-    recordLocalFirstOperation(operation, "feature_disabled")
-    return c.json({ error: { code: "NOT_FOUND", message: "not found" } }, 404)
-  }
-
-  const providedToken = c.req.header("feature-token")?.trim() ?? ""
-  if (!featureTokenMatches(expectedToken, providedToken)) {
-    recordLocalFirstOperation(operation, "invalid_feature_token")
-    return c.json(
-      { error: { code: "INVALID_FEATURE_TOKEN", message: "invalid feature token" } },
-      403,
-    )
-  }
-
-  return next()
-}
-
 function enforceRouteRateLimit(options: {
   bucket: string
   limit: number
@@ -114,9 +92,6 @@ function enforceRouteRateLimit(options: {
   }
 }
 
-localFirstRoute.use("/sessions/anonymous", enforceFeatureToken)
-localFirstRoute.use("/execution-tokens", enforceFeatureToken)
-localFirstRoute.use("/output-modules", enforceFeatureToken)
 localFirstRoute.use("/sessions/anonymous", enforceRouteRateLimit(ANONYMOUS_SESSION_RATE_LIMIT))
 localFirstRoute.use("/execution-tokens", enforceRouteRateLimit(EXECUTION_TOKEN_RATE_LIMIT))
 localFirstRoute.use("/output-modules", enforceRouteRateLimit(OUTPUT_MODULE_PUBLISH_RATE_LIMIT))
@@ -337,18 +312,4 @@ function recordLocalFirstOperation(
     result,
     ...attrs,
   })
-}
-
-function featureTokenMatches(expectedToken: string, providedToken: string): boolean {
-  if (!providedToken) {
-    return false
-  }
-
-  const expected = Buffer.from(expectedToken)
-  const provided = Buffer.from(providedToken)
-  if (expected.length !== provided.length) {
-    return false
-  }
-
-  return timingSafeEqual(expected, provided)
 }

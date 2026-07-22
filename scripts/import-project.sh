@@ -35,7 +35,7 @@ require_file() {
 }
 
 validate_inputs() {
-  if [[ "$PROJECT" != "outputs-action" && "$PROJECT" != "cli" ]]; then
+  if [[ "$PROJECT" != "outputs-action" ]]; then
     fail "unsupported project for import-project.sh: $PROJECT"
   fi
 
@@ -109,58 +109,12 @@ validate_outputs_action_import() {
   echo "::endgroup::"
 }
 
-validate_cli_import() {
-  local project_dir="$1"
-
-  echo "::group::Validate imported cli"
-
-  require_file "$project_dir" "README.md"
-  require_file "$project_dir" "LICENSE"
-  require_file "$project_dir" ".gitignore"
-  require_file "$project_dir" "package.json"
-  require_file "$project_dir" "pnpm-lock.yaml"
-  require_file "$project_dir" "tsconfig.json"
-  require_file "$project_dir" "flake.nix"
-  require_file "$project_dir" "flake.lock"
-  require_file "$project_dir" "nix/yaffle-cli.nix"
-  require_file "$project_dir" "src/main.ts"
-  require_file "$project_dir" "src/client.ts"
-  require_file "$project_dir" "src/lib/yaffle-client/index.ts"
-  require_file "$project_dir" ".github/workflows/ci.yml"
-  require_file "$project_dir" ".github/workflows/edge.yml"
-  require_file "$project_dir" ".github/workflows/release.yml"
-  require_file "$project_dir" "CONTRIBUTING.md"
-  require_file "$project_dir" "CODE_OF_CONDUCT.md"
-  require_file "$project_dir" "SECURITY.md"
-
-  if grep -R -n -E "from [\"']@yaffle/client[\"']" "$project_dir/src" >/dev/null; then
-    fail "imported CLI still contains @yaffle/client imports"
-  fi
-
-  if grep -n 'workspace:' "$project_dir/package.json" >/dev/null; then
-    fail "imported CLI package.json still contains workspace dependencies"
-  fi
-
-  pushd "$project_dir" >/dev/null
-  vp install --frozen-lockfile
-  vp run typecheck
-  vp test
-  vp run build
-  rm -rf node_modules dist
-  popd >/dev/null
-
-  echo "::endgroup::"
-}
-
 validate_import() {
   local project_dir="$1"
 
   case "$PROJECT" in
     outputs-action)
       validate_outputs_action_import "$project_dir"
-      ;;
-    cli)
-      validate_cli_import "$project_dir"
       ;;
     *)
       fail "unsupported project for import validation: $PROJECT"

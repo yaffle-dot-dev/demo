@@ -10,7 +10,7 @@ field reference or setup examples in this file.
 Yaffle currently has two native parser implementations:
 
 - TypeScript control plane: `apps/control-plane/src/lib/config-toml.ts`
-- Rust CLI and engine: `crates/yaffle-config/src/lib.rs`
+- Rust CLI and engine: `cli/crates/yaffle-config/src/lib.rs` in the nested CLI checkout
 
 Both parse TOML, apply defaults and aliases, normalize the public model, and validate
 semantic invariants. This is duplicated implementation, not two separate contracts.
@@ -37,7 +37,7 @@ should not invoke Node, at runtime merely to share parsing.
 
 ## Related Internals
 
-- Graph selection: `crates/yaffle-graph/src/lib.rs`
+- Graph selection: `cli/crates/yaffle-graph/src/lib.rs`
 - Hosted execution config loading: `apps/control-plane/src/routes/cloud-converge.ts`
-- Local engine config loading: `crates/yaffle-engine/src/lib.rs`
+- Local engine config loading: `cli/crates/yaffle-engine/src/lib.rs`
 - Script/CI config loading: `scripts/ci/config.ts`

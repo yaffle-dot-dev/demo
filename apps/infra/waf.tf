@@ -11,6 +11,7 @@ locals {
     execution_token_mint        = 600
     output_module_publish       = 600
   }
+  public_cli_edge_rate_limit = 100
 }
 
 resource "aws_wafv2_web_acl" "cloudfront" {
@@ -22,6 +23,43 @@ resource "aws_wafv2_web_acl" "cloudfront" {
 
   default_action {
     allow {}
+  }
+
+  rule {
+    name     = "rate-limit-public-cli-api"
+    priority = 2
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = local.public_cli_edge_rate_limit
+        aggregate_key_type = "IP"
+
+        scope_down_statement {
+          regex_match_statement {
+            regex_string = "^/api/cloud/(cli/(authorize-requests|authorize|token)|converge)(/.*)?$"
+
+            field_to_match {
+              uri_path {}
+            }
+
+            text_transformation {
+              priority = 0
+              type     = "NONE"
+            }
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "rateLimitPublicCliApi"
+      sampled_requests_enabled   = true
+    }
   }
 
   rule {
