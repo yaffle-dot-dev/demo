@@ -24,7 +24,7 @@
     "smoke": "vp run @yaffle/control-plane#smoke",
     "smoke:browser": "vp run @yaffle/web#smoke",
     "smoke:local-first": "vp exec tsx scripts/smoke/local-first.ts",
-    "test": "vp run --filter './apps/*' --filter './packages/*' -r test && vp run test:scripts",
+    "test": "vp run -r test && vp run test:scripts",
     "test:scripts": "vp test run scripts",
     "db:generate": "vp run @yaffle/control-plane#db:generate",
     "db:migrate": "vp run @yaffle/control-plane#db:migrate",
