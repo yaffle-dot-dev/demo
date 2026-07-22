@@ -57,7 +57,7 @@ export interface SystemErrorLine {
 }
 
 export interface RunGroupSystemError {
-  kind: "config"
+  kind: "config" | "scan"
   title: string
   summary: string
   filePath: string

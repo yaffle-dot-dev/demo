@@ -224,6 +224,28 @@ describe("scanner completion", () => {
     expect(mockFailScanJob).not.toHaveBeenCalled()
   })
 
+  test("persists scanner failures for the environment page", async () => {
+    const response = await buildApp().fetch(requestBody({ error: "Unable to parse repository" }))
+
+    expect(response.status).toBe(200)
+    expect(mockUpdateRunGroupStatus).toHaveBeenCalledWith("run-group-1", "failed", {
+      completedAt: expect.any(Date),
+      dependencyGraph: {
+        workspaces: [],
+        edges: [],
+        systemError: {
+          kind: "scan",
+          title: "Repository scan failed",
+          summary: "Unable to parse repository",
+          filePath: "Repository scan",
+          line: null,
+          column: null,
+          excerpt: [],
+        },
+      },
+    })
+  })
+
   test("fails before planning when a consumer references an undeclared output", async () => {
     mockFindRunGroupById.mockImplementation(async () => ({
       orgId: "org-1",
@@ -272,6 +294,17 @@ describe("scanner completion", () => {
       expect.stringContaining('references undeclared output "cluster_arn"'),
     )
     expect(mockCompleteRunGroup).not.toHaveBeenCalled()
+    expect(mockUpdateRunGroupStatus).toHaveBeenCalledWith("run-group-1", "failed", {
+      completedAt: expect.any(Date),
+      dependencyGraph: expect.objectContaining({
+        systemError: expect.objectContaining({
+          kind: "scan",
+          title: "Workspace output contract validation failed",
+          summary: expect.stringContaining('references undeclared output "cluster_arn"'),
+          filePath: "yaffle.toml",
+        }),
+      }),
+    })
     expect(mockCompleteRunGroupCheck).toHaveBeenCalledWith(
       expect.objectContaining({ title: "Workspace output contract validation failed" }),
     )

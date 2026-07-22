@@ -28,7 +28,11 @@ import {
   heartbeatScanJob,
   type ScanJobResult,
 } from "../db/queries/scan-jobs.ts"
-import { findRunGroupById, updateRunGroupStatus } from "../db/queries/run-groups.ts"
+import {
+  findRunGroupById,
+  updateRunGroupStatus,
+  type RunGroupDependencyGraph,
+} from "../db/queries/run-groups.ts"
 import { completeRunGroupCheck } from "../lib/run-group-checks.ts"
 import { completeRunGroup } from "../lib/run-group-orchestrator.ts"
 import { createWorkspaceCache } from "../lib/workspace-cache.ts"
@@ -53,6 +57,28 @@ function repositoryFromUrl(rawUrl: string): string | null {
     return parts.length === 2 ? `${parts[0]}/${parts[1]}`.toLowerCase() : null
   } catch {
     return null
+  }
+}
+
+function scanFailureGraph(values: {
+  workspaces: string[]
+  edges?: [string, string][]
+  title: string
+  summary: string
+  filePath?: string
+}): RunGroupDependencyGraph {
+  return {
+    workspaces: values.workspaces,
+    edges: values.edges ?? [],
+    systemError: {
+      kind: "scan",
+      title: values.title,
+      summary: values.summary,
+      filePath: values.filePath ?? "Repository scan",
+      line: null,
+      column: null,
+      excerpt: [],
+    },
   }
 }
 
@@ -544,7 +570,14 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
       const failedJob = await deps.failScanJob(scanJobId, body.error)
 
       if (failedJob) {
-        await deps.updateRunGroupStatus(failedJob.runGroupId, "failed", { completedAt: new Date() })
+        await deps.updateRunGroupStatus(failedJob.runGroupId, "failed", {
+          completedAt: new Date(),
+          dependencyGraph: scanFailureGraph({
+            workspaces: (runningJob.workspacePaths as string[]) ?? [],
+            title: "Repository scan failed",
+            summary: body.error,
+          }),
+        })
         await deps.completeRunGroupCheck({
           runGroupId: failedJob.runGroupId,
           conclusion: "failure",
@@ -582,7 +615,16 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
     if (moduleOutputError) {
       const failedJob = await deps.failScanJob(scanJobId, moduleOutputError)
       if (failedJob) {
-        await deps.updateRunGroupStatus(failedJob.runGroupId, "failed", { completedAt: new Date() })
+        await deps.updateRunGroupStatus(failedJob.runGroupId, "failed", {
+          completedAt: new Date(),
+          dependencyGraph: scanFailureGraph({
+            workspaces: body.graph.workspaces,
+            edges: body.graph.edges,
+            title: "Workspace output contract validation failed",
+            summary: moduleOutputError,
+            filePath: "yaffle.toml",
+          }),
+        })
         await deps.completeRunGroupCheck({
           runGroupId: failedJob.runGroupId,
           conclusion: "failure",

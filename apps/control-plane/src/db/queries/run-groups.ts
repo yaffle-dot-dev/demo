@@ -14,6 +14,20 @@ export type NewRunGroup = typeof runGroups.$inferInsert
 
 export type RunGroupTrigger = "pr_opened" | "pr_sync" | "push" | "manual"
 
+export interface RunGroupSystemError {
+  kind: "config" | "scan"
+  title: string
+  summary: string
+  filePath: string
+  line: number | null
+  column: number | null
+  excerpt: Array<{ lineNumber: number; text: string; highlight: boolean }>
+}
+
+export type RunGroupDependencyGraph = SerializableDependencyGraph & {
+  systemError?: RunGroupSystemError
+}
+
 type AggregatedRunGroupStatus = "pending" | "running" | "success" | "failed" | "partial"
 
 const SUCCESS_RUN_STATUSES = new Set(["success", "skipped"])
@@ -85,6 +99,7 @@ export async function updateRunGroupStatus(
   extra?: {
     startedAt?: Date
     completedAt?: Date
+    dependencyGraph?: RunGroupDependencyGraph
   },
 ): Promise<void> {
   return withDbSpan("update", "run_groups", async () => {

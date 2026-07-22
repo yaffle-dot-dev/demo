@@ -1674,7 +1674,7 @@ interface SerializedSystemErrorLine {
 }
 
 interface SerializedSystemError {
-  kind: "config"
+  kind: "config" | "scan"
   title: string
   summary: string
   filePath: string
