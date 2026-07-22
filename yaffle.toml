@@ -39,14 +39,48 @@ path = "infra/shared"
 environments = ["main"]
 variables.cloudflare_zone_id = "ba87a43c4698d9a9ca066c62311445b6"
 variables.stripe_webhook_url = "https://yaffle.dev/api/webhooks/stripe"
+outputs.acm_certificate_validated_arn = { visibility = "internal" }
+outputs.app_deployer_role_arn = { visibility = "internal" }
+outputs.cloudflare_zone_id = { visibility = "internal" }
+outputs.depot_oidc_provider_arn = { visibility = "internal" }
+outputs.docs_deployer_role_arn = { visibility = "internal" }
+outputs.domain = { visibility = "internal" }
+outputs.github_actions_oidc_provider_arn = { visibility = "internal" }
+outputs.hookdeck_api_key_secret_arn = { visibility = "internal" }
+outputs.hookdeck_github_source_id = { visibility = "internal" }
+outputs.hookdeck_github_source_name = { visibility = "internal" }
+outputs.hookdeck_production_connection_name = { visibility = "internal" }
+outputs.hookdeck_production_destination_id = { visibility = "internal" }
+outputs.hookdeck_production_destination_name = { visibility = "internal" }
+outputs.hookdeck_webhook_secret_arn = { visibility = "internal" }
+outputs.route53_zone_id = { visibility = "internal" }
+outputs.site_deployer_role_arn = { visibility = "internal" }
+outputs.stripe_api_key_secret_arn = { visibility = "internal" }
+outputs.stripe_portal_configuration_id = { visibility = "internal" }
+outputs.stripe_pricing = { visibility = "internal" }
+outputs.stripe_webhook_signing_secret_arn = { visibility = "internal" }
+outputs.tailscale_layer_ssm_parameter_arn = { visibility = "internal" }
+outputs.tailscale_runner_authkey_secret_arn = { visibility = "internal" }
 
 [[workspaces]]
 path = "infra/production"
 environments = ["main"]
+outputs.ecs_cluster_arn = { visibility = "internal" }
+outputs.ecs_cluster_name = { visibility = "internal" }
+outputs.private_subnet_ids = { visibility = "internal" }
+outputs.public_subnet_ids = { visibility = "internal" }
+outputs.vpc_cidr_block = { visibility = "internal" }
+outputs.vpc_id = { visibility = "internal" }
 
 [[workspaces]]
 path = "infra/nonprod"
 environments = ["main"]
+outputs.ecs_cluster_arn = { visibility = "internal" }
+outputs.ecs_cluster_name = { visibility = "internal" }
+outputs.private_subnet_ids = { visibility = "internal" }
+outputs.public_subnet_ids = { visibility = "internal" }
+outputs.vpc_cidr_block = { visibility = "internal" }
+outputs.vpc_id = { visibility = "internal" }
 
 # ---------------------------------------------------------------------------
 # Application Infrastructure
@@ -63,6 +97,14 @@ outputs.app_deployer_role_arn = { visibility = "internal" }
 outputs.database_migration_url_secret_arn = { visibility = "internal" }
 outputs.provider_discovery_agent_token_secret_arn = { visibility = "internal" }
 outputs.provider_discovery_callback_secret_arn = { visibility = "internal" }
+outputs.alb_security_group_id = { visibility = "internal" }
+outputs.ecs_cluster_arn = { visibility = "internal" }
+outputs.https_listener_arn = { visibility = "internal" }
+outputs.private_subnet_ids = { visibility = "internal" }
+outputs.vpc_id = { visibility = "internal" }
+outputs.internal_domain = { visibility = "internal" }
+outputs.alb_dns_name = { visibility = "internal" }
+outputs.api_domain = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "control-plane"
@@ -94,6 +136,9 @@ variables.runner_memory = 1024
 outputs.task_definition_family = { visibility = "internal" }
 outputs.app_deployer_role_arn = { visibility = "internal" }
 outputs.scanner_lambda_function_name = { visibility = "internal" }
+outputs.execution_role_arn = { visibility = "internal" }
+outputs.task_role_arn = { visibility = "internal" }
+outputs.scanner_lambda_arn = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "runner"
@@ -117,6 +162,11 @@ environments = ["*"]
 outputs.primary_bucket_name = { visibility = "internal" }
 outputs.deploy_role_arn = { visibility = "internal" }
 outputs.site_deployer_role_arn = { visibility = "internal" }
+outputs.primary_bucket_arn = { visibility = "internal" }
+outputs.primary_bucket_regional_domain_name = { visibility = "internal" }
+outputs.replica_bucket_arn = { visibility = "internal" }
+outputs.replica_bucket_name = { visibility = "internal" }
+outputs.replica_bucket_regional_domain_name = { visibility = "internal" }
 
 [[workspaces]]
 path = "apps/docs/infra"
@@ -124,6 +174,11 @@ environments = ["*"]
 outputs.primary_bucket_name = { visibility = "internal" }
 outputs.deploy_role_arn = { visibility = "internal" }
 outputs.docs_deployer_role_arn = { visibility = "internal" }
+outputs.primary_bucket_arn = { visibility = "internal" }
+outputs.primary_bucket_regional_domain_name = { visibility = "internal" }
+outputs.replica_bucket_arn = { visibility = "internal" }
+outputs.replica_bucket_name = { visibility = "internal" }
+outputs.replica_bucket_regional_domain_name = { visibility = "internal" }
 
 [[workspaces]]
 path = "apps/web/infra"
