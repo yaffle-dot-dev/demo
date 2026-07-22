@@ -105,6 +105,7 @@ outputs.vpc_id = { visibility = "internal" }
 outputs.internal_domain = { visibility = "internal" }
 outputs.alb_dns_name = { visibility = "internal" }
 outputs.api_domain = { visibility = "internal" }
+outputs.api_url = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "control-plane"

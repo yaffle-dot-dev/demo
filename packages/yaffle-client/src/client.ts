@@ -342,7 +342,17 @@ export class YaffleClient {
     let status: PreviewStatus = preview.status
     let latestRun: Run | null = this.getLatestRun(initialDetails.runs)
 
-    if (waitFor && (preview.status === "failed" || preview.status === "destroyed")) {
+    const canRecoverSkippedApplyOutputs =
+      waitFor === "outputs" &&
+      outputs !== null &&
+      latestRun?.runType === "apply" &&
+      latestRun.status === "skipped"
+
+    if (
+      waitFor &&
+      (preview.status === "destroyed" ||
+        (preview.status === "failed" && !canRecoverSkippedApplyOutputs))
+    ) {
       throw this.buildFailedWorkspaceError({
         targetLabel,
         workspace,

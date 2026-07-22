@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from "drizzle-orm"
+import { and, desc, eq, inArray, isNotNull, sql } from "drizzle-orm"
 
 import type { RunStatus, RunType } from "@yaffle/shared"
 
@@ -425,6 +425,54 @@ export async function findLatestSuccessfulRunsForDeployments(
 }
 
 /**
+ * Find the latest apply/plan publication with outputs per deployment. A skipped
+ * no-change apply can republish the prior state under the current output policy.
+ */
+export async function findLatestOutputRunsForDeployments(
+  deploymentIds: string[],
+  runType?: RunType,
+): Promise<Map<string, TfRunOutputsItem>> {
+  if (deploymentIds.length === 0) {
+    return new Map()
+  }
+
+  return withDbSpan("select", "tf_runs", async () => {
+    const conditions = [
+      inArray(tfRuns.deploymentId, deploymentIds),
+      inArray(tfRuns.status, ["success", "skipped"]),
+      isNotNull(tfRuns.outputs),
+      eq(tfRuns.planPurpose, "environment"),
+    ]
+
+    if (runType) {
+      conditions.push(eq(tfRuns.runType, runType))
+    }
+
+    const rows = await db
+      .select({
+        id: tfRuns.id,
+        deploymentId: tfRuns.deploymentId,
+        runGroupId: tfRuns.runGroupId,
+        runType: tfRuns.runType,
+        status: tfRuns.status,
+        outputs: tfRuns.outputs,
+        createdAt: tfRuns.createdAt,
+      })
+      .from(tfRuns)
+      .where(and(...conditions))
+      .orderBy(tfRuns.deploymentId, desc(tfRuns.createdAt))
+
+    const map = new Map<string, TfRunOutputsItem>()
+    for (const row of rows) {
+      if (!map.has(row.deploymentId)) {
+        map.set(row.deploymentId, row)
+      }
+    }
+    return map
+  })
+}
+
+/**
  * Find the latest run for a deployment, optionally filtered by type.
  */
 export async function findLatestRun(
@@ -470,6 +518,32 @@ export async function findLatestSuccessfulRun(
     }
     if (runGroupId) {
       conditions.push(eq(tfRuns.runGroupId, runGroupId))
+    }
+
+    const rows = await db
+      .select()
+      .from(tfRuns)
+      .where(and(...conditions))
+      .orderBy(desc(tfRuns.createdAt))
+      .limit(1)
+
+    return rows[0]
+  })
+}
+
+export async function findLatestOutputRun(
+  deploymentId: string,
+  runType?: RunType,
+): Promise<TfRun | undefined> {
+  return withDbSpan("select", "tf_runs", async () => {
+    const conditions = [
+      eq(tfRuns.deploymentId, deploymentId),
+      inArray(tfRuns.status, ["success", "skipped"]),
+      isNotNull(tfRuns.outputs),
+      eq(tfRuns.planPurpose, "environment"),
+    ]
+    if (runType) {
+      conditions.push(eq(tfRuns.runType, runType))
     }
 
     const rows = await db

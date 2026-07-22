@@ -1413,19 +1413,20 @@ runnerJobRoute.post("/complete", async (c) => {
           await updateDeploymentStatus(deployment.id, "awaiting_apply", capability.runGroupId)
         } else {
           try {
-            const skippedApply = await createTfRun({
-              deploymentId: deployment.id,
-              runGroupId: executionRunGroupId ?? undefined,
-              runType: "apply",
-              status: "skipped",
-            })
-            events.emitRunUpdate(skippedApply.id, deployment.id)
-
             const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
             const latestOutputs =
               latestApply?.outputs && typeof latestApply.outputs === "object"
                 ? (latestApply.outputs as Record<string, unknown>)
                 : null
+
+            const skippedApply = await createTfRun({
+              deploymentId: deployment.id,
+              runGroupId: executionRunGroupId ?? undefined,
+              runType: "apply",
+              status: "skipped",
+              outputs: latestOutputs,
+            })
+            events.emitRunUpdate(skippedApply.id, deployment.id)
 
             await publishHostedOutputModuleForRunGroupBinding({
               runGroupId: executionRunGroupId,

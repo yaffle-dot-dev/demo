@@ -74,11 +74,67 @@ describe("YaffleClient.getOutputs", () => {
     expect(result.outputs).toEqual({})
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
+
+  test("returns current outputs when activation failed after an apply was skipped", async () => {
+    mockWorkspaceDetails({
+      status: "failed",
+      runStatus: "skipped",
+      workspacePath: "apps/control-plane/infra",
+      outputs: {
+        control_plane_service_name: { value: "yaffle-cp-main-use1" },
+      },
+    })
+    const client = new YaffleClient({
+      apiUrl: "https://yaffle.test",
+      auth,
+      logger,
+    })
+
+    const result = await client.getOutputs({
+      org: "yaffle-dot-dev",
+      repo: "yaffle",
+      target: { type: "env", name: "main" },
+      workspace: "apps/control-plane/infra",
+      waitFor: "outputs",
+    })
+
+    expect(result.outputs).toEqual({
+      control_plane_service_name: { value: "yaffle-cp-main-use1" },
+    })
+  })
+
+  test("rejects current outputs when the latest apply failed", async () => {
+    mockWorkspaceDetails({
+      status: "failed",
+      runStatus: "failed",
+      workspacePath: "apps/control-plane/infra",
+      outputs: {
+        control_plane_service_name: { value: "stale-service" },
+      },
+    })
+    const client = new YaffleClient({
+      apiUrl: "https://yaffle.test",
+      auth,
+      logger,
+    })
+
+    await expect(
+      client.getOutputs({
+        org: "yaffle-dot-dev",
+        repo: "yaffle",
+        target: { type: "env", name: "main" },
+        workspace: "apps/control-plane/infra",
+        waitFor: "outputs",
+      }),
+    ).rejects.toThrow(/latest run is apply failed/)
+  })
 })
 
 function mockWorkspaceDetails(options: {
   status: string
   outputs: Record<string, unknown> | null
+  runStatus?: string
+  workspacePath?: string
 }) {
   return vi.spyOn(globalThis, "fetch").mockResolvedValue(
     Response.json({
@@ -87,7 +143,7 @@ function mockWorkspaceDetails(options: {
           {
             preview: {
               id: "preview-1",
-              workspacePath: "apps/web/infra",
+              workspacePath: options.workspacePath ?? "apps/web/infra",
               status: options.status,
               connectionStatus: "ready",
               missingProviders: [],
@@ -105,7 +161,7 @@ function mockWorkspaceDetails(options: {
                 previewId: "preview-1",
                 runGroupId: "run-group-1",
                 runType: "apply",
-                status: "success",
+                status: options.runStatus ?? "success",
                 checkRunId: null,
                 planSummary: null,
                 outputs: options.outputs,

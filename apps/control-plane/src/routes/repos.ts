@@ -15,8 +15,8 @@ import { findRepoByName } from "../db/queries/repositories.ts"
 import {
   listRunsForPreview,
   listRunsForDeployments,
-  findLatestSuccessfulRun,
-  findLatestSuccessfulRunsForDeployments,
+  findLatestOutputRun,
+  findLatestOutputRunsForDeployments,
   type TfRunListItem,
 } from "../db/queries/tf-runs.ts"
 import { getSpansForRun } from "../db/queries/resource-spans.ts"
@@ -185,7 +185,7 @@ reposRoute.get(
     const deploymentsWithRuns = await Promise.all(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
-        const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
+        const latestApply = await findLatestOutputRun(deployment.id, "apply")
         const outputAudience = outputAudienceForAuth(auth)
         const outputs = selectEnvironmentOutputs(latestApply?.outputs, outputAudience, {})
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
@@ -289,7 +289,7 @@ reposRoute.get(
           const deploymentsWithRuns = await Promise.all(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
-              const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
+              const latestApply = await findLatestOutputRun(deployment.id, "apply")
               const outputAudience = outputAudienceForAuth(auth)
               const outputs = selectEnvironmentOutputs(latestApply?.outputs, outputAudience, {})
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
@@ -470,7 +470,7 @@ reposRoute.get(
     const deploymentsWithRuns = await Promise.all(
       deployments.map(async (deployment) => {
         const runs = await listRunsForPreview(deployment.id)
-        const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
+        const latestApply = await findLatestOutputRun(deployment.id, "apply")
         const outputAudience = outputAudienceForAuth(auth)
         const outputs = selectEnvironmentOutputs(latestApply?.outputs, outputAudience, {})
         const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
@@ -563,7 +563,7 @@ reposRoute.get(
           const deploymentsWithRuns = await Promise.all(
             deployments.map(async (deployment) => {
               const runs = await listRunsForPreview(deployment.id)
-              const latestApply = await findLatestSuccessfulRun(deployment.id, "apply")
+              const latestApply = await findLatestOutputRun(deployment.id, "apply")
               const outputAudience = outputAudienceForAuth(auth)
               const outputs = selectEnvironmentOutputs(latestApply?.outputs, outputAudience, {})
               const connectionReadiness = await getConnectionReadinessForDeployment(deployment)
@@ -880,7 +880,7 @@ async function buildEnvironmentSnapshotData(params: {
     visibleRunGroupIds.length > 0
       ? listRunsForDeployments(deploymentIds, { runGroupIds: visibleRunGroupIds })
       : listRunsForDeployments(deploymentIds),
-    findLatestSuccessfulRunsForDeployments(deploymentIds, "apply"),
+    findLatestOutputRunsForDeployments(deploymentIds, "apply"),
     listConnectionsForOrg(params.orgId),
     findRunGroupWorkspaceMetadataForRunGroups(deploymentRunGroupIds),
   ])

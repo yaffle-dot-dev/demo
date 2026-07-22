@@ -94,6 +94,7 @@ beforeAll(async () => {
             approval: { required: false, approvers: [] },
             lifecycle: { activation: [], verification: [] },
             outputs: {
+              carried: { visibility: "internal" },
               endpoint: { visibility: "internal" },
               password: { visibility: "internal" },
             },
@@ -177,6 +178,19 @@ beforeAll(async () => {
     },
     completedAt: new Date(),
   })
+  await db.insert(tfRuns).values({
+    deploymentId: deployment.id,
+    runGroupId: runGroup.id,
+    runType: "apply",
+    status: "skipped",
+    outputs: {
+      carried: { value: "current-policy", type: "string", sensitive: false },
+      endpoint: { value: "https://api.example.test", type: "string", sensitive: false },
+      password: { value: "do-not-expose", type: "string", sensitive: true },
+      unselected: { value: "internal-only", type: "string", sensitive: false },
+    },
+    completedAt: new Date(),
+  })
 })
 
 afterAll(async () => {
@@ -221,8 +235,13 @@ describe("environment output authorization", () => {
     expect(response.status).toBe(200)
     const body = await response.json()
     const workspace = body.data.workspaces[0]
-    expect(Object.keys(workspace.outputs).sort()).toEqual(["endpoint", "password"])
-    expect(Object.keys(workspace.runs[0].outputs).sort()).toEqual(["endpoint", "password"])
+    expect(Object.keys(workspace.outputs).sort()).toEqual(["carried", "endpoint", "password"])
+    expect(workspace.outputs.carried.value).toBe("current-policy")
+    expect(Object.keys(workspace.runs[0].outputs).sort()).toEqual([
+      "carried",
+      "endpoint",
+      "password",
+    ])
     expect(workspace.outputs.password.value).toBeNull()
     expect(JSON.stringify(body)).not.toContain("internal-only")
   })
