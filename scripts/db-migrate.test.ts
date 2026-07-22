@@ -3,15 +3,17 @@ import { describe, expect, test } from "@yaffle/test"
 import { assertRequiredSchema, dbMigrate, REQUIRED_SCHEMA_COLUMNS } from "./db-migrate.ts"
 
 describe("assertRequiredSchema", () => {
-  test("covers the physical schema required by migrations 0030-0033", () => {
+  test("covers the physical schema required by migrations 0030-0036", () => {
     expect(REQUIRED_SCHEMA_COLUMNS).toEqual([
       "approvals.run_group_id",
       "iac_job_history.run_group_id",
       "iac_job_history.plan_purpose",
+      "iac_job_history.apply_decision",
       "iac_job_history.target_state_version_id",
       "iac_job_history.target_workspace_id",
       "iac_jobs.run_group_id",
       "iac_jobs.plan_purpose",
+      "iac_jobs.apply_decision",
       "iac_jobs.target_state_version_id",
       "iac_jobs.target_workspace_id",
       "run_groups.execution_snapshot",

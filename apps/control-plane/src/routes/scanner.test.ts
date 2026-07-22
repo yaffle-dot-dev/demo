@@ -224,6 +224,24 @@ describe("scanner completion", () => {
     expect(mockFailScanJob).not.toHaveBeenCalled()
   })
 
+  test("persists run initialization failures for the environment page", async () => {
+    mockCompleteRunGroup.mockRejectedValueOnce(new Error('column "apply_decision" does not exist'))
+
+    const response = await buildApp().fetch(requestBody(baseResult))
+
+    expect(response.status).toBe(200)
+    expect(mockUpdateRunGroupStatus).toHaveBeenCalledWith("run-group-1", "failed", {
+      completedAt: expect.any(Date),
+      dependencyGraph: expect.objectContaining({
+        systemError: expect.objectContaining({
+          kind: "scan",
+          title: "Run initialization failed",
+          summary: 'column "apply_decision" does not exist',
+        }),
+      }),
+    })
+  })
+
   test("persists scanner failures for the environment page", async () => {
     const response = await buildApp().fetch(requestBody({ error: "Unable to parse repository" }))
 

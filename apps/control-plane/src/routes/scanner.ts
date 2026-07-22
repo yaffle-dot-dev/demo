@@ -716,7 +716,15 @@ export function createScannerRoute(overrides: Partial<ScannerRouteDependencies> 
       await deps.completeRunGroup(job.runGroupId, result)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      await deps.updateRunGroupStatus(job.runGroupId, "failed", { completedAt: new Date() })
+      await deps.updateRunGroupStatus(job.runGroupId, "failed", {
+        completedAt: new Date(),
+        dependencyGraph: scanFailureGraph({
+          workspaces: result.graph.workspaces,
+          edges: result.graph.edges,
+          title: "Run initialization failed",
+          summary: message,
+        }),
+      })
       await deps.completeRunGroupCheck({
         runGroupId: job.runGroupId,
         conclusion: "failure",
