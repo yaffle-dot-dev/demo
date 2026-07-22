@@ -278,6 +278,15 @@ function collectStrings(value: unknown, strings: string[]): void {
   }
 }
 
+function listHclExpressions(value: string): string[] {
+  if (value.startsWith("${") && value.endsWith("}")) {
+    return [value.slice(2, -1)]
+  }
+
+  HCL_EXPRESSION_PATTERN.lastIndex = 0
+  return Array.from(value.matchAll(HCL_EXPRESSION_PATTERN), (match) => match[1])
+}
+
 export function extractYaffleModuleOutputReferencesFromContent(
   content: string,
   options?: string[] | DependencyScannerOptions,
@@ -307,10 +316,9 @@ export function extractYaffleModuleOutputReferencesFromContent(
   collectStrings(document, strings)
   const references = new Map<string, YaffleModuleOutputReference>()
   for (const value of strings) {
-    HCL_EXPRESSION_PATTERN.lastIndex = 0
-    for (const expressionMatch of value.matchAll(HCL_EXPRESSION_PATTERN)) {
+    for (const expression of listHclExpressions(value)) {
       MODULE_OUTPUT_REFERENCE_PATTERN.lastIndex = 0
-      for (const match of expressionMatch[1].matchAll(MODULE_OUTPUT_REFERENCE_PATTERN)) {
+      for (const match of expression.matchAll(MODULE_OUTPUT_REFERENCE_PATTERN)) {
         const moduleName = match[1]
         const outputName = match[2]
         const producerWorkspacePath = workspaceByModule.get(moduleName)

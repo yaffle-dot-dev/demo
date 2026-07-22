@@ -139,6 +139,7 @@ outputs.scanner_lambda_function_name = { visibility = "internal" }
 outputs.execution_role_arn = { visibility = "internal" }
 outputs.task_role_arn = { visibility = "internal" }
 outputs.scanner_lambda_arn = { visibility = "internal" }
+outputs.security_group_id = { visibility = "internal" }
 
 [[workspaces.activation]]
 key = "runner"

@@ -337,4 +337,31 @@ locals {
       },
     ])
   })
+
+  it("finds output references inside nested collection expressions", () => {
+    const references = extractYaffleModuleOutputReferencesFromContent(`
+module "runner" {
+  source = "yaffle.dev/org--repo/apps--runner--infra/yaffle"
+}
+
+resource "example" "control_plane" {
+  config = jsonencode([
+    {
+      environment = [
+        { name = "BEFORE", value = "before" },
+        { name = "YAFFLE_ECS_SECURITY_GROUPS", value = module.runner.security_group_id },
+      ]
+    }
+  ])
+}
+`)
+
+    expect(references).toEqual([
+      {
+        moduleName: "runner",
+        producerWorkspacePath: "apps/runner/infra",
+        outputName: "security_group_id",
+      },
+    ])
+  })
 })
