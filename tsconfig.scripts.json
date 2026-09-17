@@ -1,8 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "types": ["node"]
-  },
-  "include": ["scripts/**/*.ts", "apps/**/*.yaffle.deployable.ts"],
-  "exclude": ["node_modules", "dist"]
-}

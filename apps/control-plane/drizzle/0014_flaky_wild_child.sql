@@ -1,1 +1,0 @@
-CREATE INDEX "jobs_pending_claim_idx" ON "jobs" USING btree ("run_at","created_at","id") WHERE "jobs"."status" = 'pending' and "jobs"."locked_by" is null;

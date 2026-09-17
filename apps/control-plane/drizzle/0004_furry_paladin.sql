@@ -1,1 +1,0 @@
-CREATE INDEX "tf_runs_deployment_id_idx" ON "tf_runs" USING btree ("deployment_id","created_at" DESC NULLS LAST);

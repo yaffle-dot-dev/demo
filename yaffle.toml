@@ -1,283 +1,77 @@
+# Yaffle configuration demo
+
 version = 1
 
-# =============================================================================
-# Environments
-# =============================================================================
-# Named, long-lived deployment targets
+[[environments]]
+name = "production"
 
 [[environments]]
-name = "main"
+name = "staging"
 
-# =============================================================================
-# Cloud
-# =============================================================================
-# Cloud-only automation like forge and webhook triggers lives here. Local CLI
-# orchestration does not require this section.
+[[environments]]
+name = "development"
 
 [cloud]
 
-# Deploy to main environment when main branch is pushed
 [[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/main"]
-environment = "main"
+environment = "production"
 
-# Create transient environments for all pull requests
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/staging"]
+environment = "staging"
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/develop"]
+environment = "development"
+
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
-# =============================================================================
-# Workspaces
-# =============================================================================
-
-# ---------------------------------------------------------------------------
-# Core Infrastructure (shared, production, nonprod)
-# ---------------------------------------------------------------------------
-# These are foundational - changes here affect all applications.
+[[cloud.approvals]]
+workspaces = ["infra/core", "infra/database"]
+environments = ["production"]
+approvers = ["github:user:lamalex"]
 
 [[workspaces]]
 path = "infra/shared"
-environments = ["main"]
-variables.cloudflare_zone_id = "ba87a43c4698d9a9ca066c62311445b6"
-variables.stripe_webhook_url = "https://yaffle.dev/api/webhooks/stripe"
-outputs.acm_certificate_validated_arn = { visibility = "internal" }
-outputs.app_deployer_role_arn = { visibility = "internal" }
-outputs.cloudflare_zone_id = { visibility = "internal" }
-outputs.depot_oidc_provider_arn = { visibility = "internal" }
-outputs.docs_deployer_role_arn = { visibility = "internal" }
-outputs.domain = { visibility = "internal" }
-outputs.github_actions_oidc_provider_arn = { visibility = "internal" }
-outputs.hookdeck_api_key_secret_arn = { visibility = "internal" }
-outputs.hookdeck_github_source_id = { visibility = "internal" }
-outputs.hookdeck_github_source_name = { visibility = "internal" }
-outputs.hookdeck_production_connection_name = { visibility = "internal" }
-outputs.hookdeck_production_destination_id = { visibility = "internal" }
-outputs.hookdeck_production_destination_name = { visibility = "internal" }
-outputs.hookdeck_webhook_secret_arn = { visibility = "internal" }
-outputs.route53_zone_id = { visibility = "internal" }
-outputs.site_deployer_role_arn = { visibility = "internal" }
-outputs.stripe_api_key_secret_arn = { visibility = "internal" }
-outputs.stripe_portal_configuration_id = { visibility = "internal" }
-outputs.stripe_pricing = { visibility = "internal" }
-outputs.stripe_webhook_signing_secret_arn = { visibility = "internal" }
-outputs.tailscale_layer_ssm_parameter_arn = { visibility = "internal" }
-outputs.tailscale_runner_authkey_secret_arn = { visibility = "internal" }
-
-[[workspaces]]
-path = "infra/production"
-environments = ["main"]
-outputs.ecs_cluster_arn = { visibility = "internal" }
-outputs.ecs_cluster_name = { visibility = "internal" }
+environments = ["production"]
+outputs.network_id = { visibility = "internal" }
 outputs.private_subnet_ids = { visibility = "internal" }
-outputs.public_subnet_ids = { visibility = "internal" }
-outputs.vpc_cidr_block = { visibility = "internal" }
-outputs.vpc_id = { visibility = "internal" }
 
 [[workspaces]]
-path = "infra/nonprod"
-environments = ["main"]
-outputs.ecs_cluster_arn = { visibility = "internal" }
-outputs.ecs_cluster_name = { visibility = "internal" }
-outputs.private_subnet_ids = { visibility = "internal" }
-outputs.public_subnet_ids = { visibility = "internal" }
-outputs.vpc_cidr_block = { visibility = "internal" }
-outputs.vpc_id = { visibility = "internal" }
-
-# ---------------------------------------------------------------------------
-# Application Infrastructure
-# ---------------------------------------------------------------------------
+path = "infra/core"
+environments = ["production", "staging"]
+variables.project_name = "yaffle-demo"
+variables.enable_monitoring = true
+variables.retention_days = 30
 
 [[workspaces]]
-path = "apps/control-plane/infra"
+path = "infra/database"
+environments = ["production"]
+variables.instance_count = 3
+variables.enable_backups = true
+
+[[workspaces]]
+path = "infra/app"
 environments = ["*"]
-variables.private_beta_invites_required = true
-variables.private_beta_operator_identifiers = "dev@launi.me"
-outputs.ecs_cluster_name = { visibility = "internal" }
-outputs.control_plane_service_name = { visibility = "internal" }
-outputs.app_deployer_role_arn = { visibility = "internal" }
-outputs.database_migration_url_secret_arn = { visibility = "internal" }
-outputs.provider_discovery_agent_token_secret_arn = { visibility = "internal" }
-outputs.provider_discovery_callback_secret_arn = { visibility = "internal" }
-outputs.alb_security_group_id = { visibility = "internal" }
-outputs.ecs_cluster_arn = { visibility = "internal" }
-outputs.https_listener_arn = { visibility = "internal" }
-outputs.private_subnet_ids = { visibility = "internal" }
-outputs.vpc_id = { visibility = "internal" }
-outputs.internal_domain = { visibility = "internal" }
-outputs.alb_dns_name = { visibility = "internal" }
-outputs.api_domain = { visibility = "internal" }
-outputs.api_url = { visibility = "internal" }
-
-[[workspaces.activation]]
-key = "control-plane"
-environments = ["main"]
-kind = "github_repository_dispatch"
-timeout = "30m"
-failure = "failed"
-scopes = ["usable"]
-
-[workspaces.activation.github]
-event_type = "yaffle.activation"
-
-[[workspaces.verification]]
-key = "control-plane"
-environments = ["main"]
-kind = "github_repository_dispatch"
-timeout = "10m"
-failure = "failed"
-scopes = ["acceptable"]
-
-[workspaces.verification.github]
-event_type = "yaffle.verification"
+variables.min_instances = 1
+variables.max_instances = 5
+variables.enable_debug = false
 
 [[workspaces]]
-path = "apps/runner/infra"
+path = "infra/feature-flags"
 environments = ["*"]
-variables.runner_cpu = 512
-variables.runner_memory = 1024
-outputs.task_definition_family = { visibility = "internal" }
-outputs.app_deployer_role_arn = { visibility = "internal" }
-outputs.scanner_lambda_function_name = { visibility = "internal" }
-outputs.execution_role_arn = { visibility = "internal" }
-outputs.task_role_arn = { visibility = "internal" }
-outputs.scanner_lambda_arn = { visibility = "internal" }
-outputs.security_group_id = { visibility = "internal" }
-
-[[workspaces.activation]]
-key = "runner"
-environments = ["main"]
-kind = "github_repository_dispatch"
-timeout = "20m"
-failure = "failed"
-scopes = ["usable"]
-
-[workspaces.activation.github]
-event_type = "yaffle.activation"
-# ---------------------------------------------------------------------------
-# App S3 Buckets (owned by individual apps)
-# ---------------------------------------------------------------------------
-# These create the S3 buckets for each app. They must be applied before
-# apps/infra which references their outputs for CloudFront configuration.
 
 [[workspaces]]
-path = "apps/marketing/infra"
+path = "infra/sandbox"
+environments = ["development"]
+variables.sandbox_mode = true
+
+[[workspaces]]
+path = "infra/preview-isolation"
 environments = ["*"]
-outputs.primary_bucket_name = { visibility = "internal" }
-outputs.deploy_role_arn = { visibility = "internal" }
-outputs.site_deployer_role_arn = { visibility = "internal" }
-outputs.primary_bucket_arn = { visibility = "internal" }
-outputs.primary_bucket_regional_domain_name = { visibility = "internal" }
-outputs.replica_bucket_arn = { visibility = "internal" }
-outputs.replica_bucket_name = { visibility = "internal" }
-outputs.replica_bucket_regional_domain_name = { visibility = "internal" }
-
-[[workspaces]]
-path = "apps/docs/infra"
-environments = ["*"]
-outputs.primary_bucket_name = { visibility = "internal" }
-outputs.deploy_role_arn = { visibility = "internal" }
-outputs.docs_deployer_role_arn = { visibility = "internal" }
-outputs.primary_bucket_arn = { visibility = "internal" }
-outputs.primary_bucket_regional_domain_name = { visibility = "internal" }
-outputs.replica_bucket_arn = { visibility = "internal" }
-outputs.replica_bucket_name = { visibility = "internal" }
-outputs.replica_bucket_regional_domain_name = { visibility = "internal" }
-
-[[workspaces]]
-path = "apps/web/infra"
-environments = ["*"]
-outputs.primary_bucket_name = { visibility = "internal" }
-outputs.deploy_role_arn = { visibility = "internal" }
-outputs.app_deployer_role_arn = { visibility = "internal" }
-outputs.web_service_name = { visibility = "internal" }
-
-[[workspaces.activation]]
-key = "web"
-environments = ["main"]
-kind = "github_repository_dispatch"
-timeout = "30m"
-failure = "failed"
-scopes = ["usable"]
-
-[workspaces.activation.github]
-event_type = "yaffle.activation"
-
-[[workspaces.verification]]
-key = "web"
-environments = ["main"]
-kind = "github_repository_dispatch"
-timeout = "10m"
-failure = "failed"
-scopes = ["acceptable"]
-
-[workspaces.verification.github]
-event_type = "yaffle.verification"
-
-[[workspaces]]
-path = "apps/provider-discovery-agent/infra"
-environments = ["*"]
-outputs.environment = { visibility = "internal" }
-outputs.worker_name = { visibility = "internal" }
-outputs.worker_host = { visibility = "internal" }
-outputs.worker_route_pattern = { visibility = "internal" }
-outputs.worker_url = { visibility = "internal" }
-outputs.ai_gateway_id = { visibility = "internal" }
-outputs.cloudflare_account_id_secret_id = { visibility = "internal" }
-outputs.cloudflare_api_token_secret_id = { visibility = "internal" }
-outputs.agent_token_secret_id = { visibility = "internal" }
-outputs.agent_token_secret_arn = { visibility = "internal" }
-outputs.callback_secret_secret_id = { visibility = "internal" }
-outputs.callback_secret_secret_arn = { visibility = "internal" }
-outputs.github_token_secret_id = { visibility = "internal" }
-
-[[workspaces.activation]]
-key = "provider-discovery-agent"
-environments = ["main"]
-kind = "github_repository_dispatch"
-timeout = "20m"
-failure = "failed"
-scopes = ["usable"]
-
-[workspaces.activation.github]
-event_type = "yaffle.activation"
-
-[[workspaces.verification]]
-key = "provider-discovery-agent"
-environments = ["main"]
-kind = "github_repository_dispatch"
-timeout = "10m"
-failure = "failed"
-scopes = ["acceptable"]
-
-[workspaces.verification.github]
-event_type = "yaffle.verification"
-
-[[workspaces]]
-path = "apps/traffic-controller/infra"
-environments = ["main"]
-outputs.api_lambda_function_name = { visibility = "internal" }
-outputs.reconcile_lambda_function_name = { visibility = "internal" }
-outputs.app_deployer_role_arn = { visibility = "internal" }
-
-[[workspaces.activation]]
-key = "traffic-controller"
-environments = ["main"]
-kind = "github_repository_dispatch"
-timeout = "20m"
-failure = "failed"
-scopes = ["usable"]
-
-[workspaces.activation.github]
-event_type = "yaffle.activation"
-
-# ---------------------------------------------------------------------------
-# Unified Frontend (CloudFront + routing)
-# ---------------------------------------------------------------------------
-# This creates the CloudFront distribution that routes to all app buckets.
-# Depends on apps/marketing/infra and apps/web/infra outputs.
-
-[[workspaces]]
-path = "apps/infra"
-environments = ["*"]
-outputs.site_url = { visibility = "internal" }
-outputs.cloudfront_distribution_id = { visibility = "internal" }
-outputs.invalidation_role_arn = { visibility = "internal" }
+automatic_preview_isolation = true
+variables.resource_name = "yaffle-product-demo"
+variables.environment = "{{ environment }}"
+variables.demo_message = "Automatic preview isolation is live"
