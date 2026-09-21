@@ -27,6 +27,12 @@ environment = "staging"
 ref_patterns = ["refs/heads/develop"]
 environment = "development"
 
+# Factory first-flight: the lane routes this exact ref to the local stack while
+# the product manifest independently declares what that push should execute.
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/first-flight"]
+environment = "development"
+
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
