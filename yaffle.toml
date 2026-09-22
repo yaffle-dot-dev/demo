@@ -44,14 +44,6 @@ workspaces = ["infra/core", "infra/database"]
 environments = ["production"]
 approvers = ["github:user:lamalex"]
 
-# Shared network infrastructure runs only in production. Transient application
-# workspaces consume its immutable output snapshot instead of recreating it.
-[[workspaces]]
-path = "infra/shared"
-environments = ["production"]
-outputs.network_id = { visibility = "internal" }
-outputs.private_subnet_ids = { visibility = "internal" }
-
 [[workspaces]]
 path = "infra/core"
 environments = ["production", "staging"]
