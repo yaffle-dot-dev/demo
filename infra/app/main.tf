@@ -18,15 +18,21 @@ variable "enable_debug" {
   type = bool
 }
 
-module "shared_network" {
-  source = "yaffle.dev/yaffle-dot-dev--yaffle-demo/infra--shared/yaffle"
+resource "terraform_data" "network" {
+  input = {
+    network_id = "network-${var.environment}"
+    subnets = [
+      "subnet-a-${var.environment}",
+      "subnet-b-${var.environment}",
+    ]
+  }
 }
 
 resource "terraform_data" "application" {
   input = {
     environment        = var.environment
-    network_id         = module.shared_network.network_id
-    private_subnet_ids = module.shared_network.private_subnet_ids
+    network_id         = terraform_data.network.output.network_id
+    private_subnet_ids = terraform_data.network.output.subnets
     min_instances      = var.min_instances
     max_instances      = var.max_instances
     debug              = var.enable_debug
