@@ -78,7 +78,7 @@ environments = ["*"]
 engine = { kind = "alchemy", entrypoint = "alchemy.run.ts", stack = "YaffleDemoEdge", providers = [
   "cloudflare",
 ] }
-variables.demo_message = "Hello from a Yaffle-managed Cloudflare preview"
+variables.demo_message = "Hello from Yaffle's multi-cloud preview"
 outputs.url = { visibility = "internal" }
 outputs.worker_name = { visibility = "internal" }
 outputs.kv_namespace_id = { visibility = "internal" }
