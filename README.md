@@ -1,30 +1,26 @@
-# Yaffle Automatic Preview Isolation Demo
+# Yaffle Multi-Cloud IaC Orchestration Demo
 
-One Terraform workspace demonstrates the complete Yaffle product loop:
+This repository demonstrates one Yaffle environment graph orchestrating two
+infrastructure engines and two provider boundaries:
 
-1. Open a pull request.
-2. Yaffle materializes an isolated resource name for `pr-{number}`.
-3. The preview plans and applies without changing repository source.
-4. Merge the pull request.
-5. Yaffle destroys the preview and applies the original unsuffixed name to `production`.
+- OpenTofu manages the existing local, application, database, and feature-flag
+  workspaces.
+- Alchemy manages a public Cloudflare Worker and its Workers KV namespace.
 
-## The Story
+A pull request produces one `pr-{number}` environment across both engines.
+Yaffle keeps each engine's state native while applying the same environment
+identity, approval, output, and teardown lifecycle to the complete graph.
 
-The repository configures one stable filename:
+## Automatic OpenTofu preview isolation
+
+The `infra/preview-isolation` workspace configures one stable filename:
 
 ```toml
 variables.resource_name = "yaffle-product-demo"
 ```
 
-The Terraform source uses that value directly:
-
-```hcl
-resource "local_file" "demo" {
-  filename = var.resource_name
-}
-```
-
-Yaffle treats the same source differently according to environment ownership:
+Yaffle materializes an isolated name for a pull request without rewriting the
+repository source.
 
 | Event                          | Environment   | Materialized filename                 |
 | ------------------------------ | ------------- | ------------------------------------- |
@@ -32,38 +28,71 @@ Yaffle treats the same source differently according to environment ownership:
 | Pull request closed            | `pr-{number}` | Preview resource destroyed            |
 | Push to `main`                 | `production`  | `yaffle-product-demo`                 |
 
-The suffix is deterministic for the organization, repository, workspace, and environment. Yaffle
-adds it only inside the immutable execution artifact. It does not rewrite `main.tf`.
+The exact `hashicorp/local` `2.5.3` strategy keeps this part of the demo free
+while exercising provider resolution, immutable source transformation, plan,
+apply, outputs, and destroy.
 
-## Run The Product Demo
+## Cloudflare preview
 
-Prerequisite: install the Yaffle GitHub App for this repository and connect it to your Yaffle
-organization.
+The `infra/cloudflare` workspace is authored with Alchemy. Every selected
+environment receives:
 
-1. Create a branch.
-2. Change `variables.demo_message` in `yaffle.toml`.
-3. Open a pull request.
-4. Watch the Yaffle check create and apply the `pr-{number}` preview.
-5. Inspect the `configured_filename`, `materialized_filename`, and `environment` outputs.
-6. Merge the pull request.
-7. Watch Yaffle destroy the preview and run the named `production` environment.
+- one public Cloudflare Worker exposing `/` and `/health`;
+- one Workers KV namespace bound to that Worker; and
+- durable Cloudflare-hosted Alchemy state.
 
-The pull-request output should show the configured name and materialized name diverging. The
-production output should show both names as `yaffle-product-demo`.
+The Worker reads an optional `message` value from KV but performs no
+request-driven writes. Observability is disabled for this low-volume harness.
+Its URL and resource identifiers use Yaffle's Terraform-compatible output
+envelope so the control plane can apply the same sensitivity and sharing rules
+regardless of engine.
 
-## Why `local_file`?
+The URL is currently an internal Yaffle output. It is visible to this
+repository's environment graph but is not exported to another repository.
 
-The demo needs no cloud account, credentials, or billable infrastructure. The exact
-`hashicorp/local` `2.5.3` strategy exercises provider resolution, source transformation, artifact
-verification, plan, apply, outputs, and destroy.
+## Run the demo
 
-The generated file exists only on the ephemeral runner. This is a product-mechanics demonstration,
-not a recommendation to manage durable infrastructure with `local_file`.
+Prerequisites:
 
-## Validate Locally
+1. Install the Yaffle GitHub App for this repository and connect it to your
+   Yaffle organization.
+2. Configure the existing OpenTofu provider connections required by the
+   selected workspaces.
+3. Add a Cloudflare connection scoped to `infra/cloudflare`. It must provide
+   `CLOUDFLARE_ACCOUNT_ID` plus either `CLOUDFLARE_API_TOKEN` or Alchemy's
+   API-key/email credential pair.
+4. Allow the first hosted plan to bootstrap or upgrade Alchemy's shared
+   Cloudflare state-store Worker. The plan remains a dry run for repository
+   resources; only this provider prerequisite may be created during planning.
+
+Then:
+
+1. Create a branch and change either demo message in `yaffle.toml`.
+2. Open a pull request.
+3. Watch Yaffle plan the OpenTofu and Alchemy workspaces under one transient
+   environment.
+4. Approve and deploy the preview.
+5. Inspect the OpenTofu outputs and request the Cloudflare Worker's `/health`
+   endpoint.
+6. Close the pull request and watch Yaffle destroy the preview in reverse
+   dependency order.
+
+## Cross-engine outputs
+
+Both engines already report outputs through the same immutable Yaffle output
+contract. The next adapter boundary is consumption: an engine-neutral workspace
+dependency declaration can inject an authorized output snapshot into Alchemy,
+OpenTofu, Pulumi, or a future engine without granting access to the producer's
+native state backend.
+
+That keeps the product abstraction at `workspace -> outputs`, rather than
+coupling orchestration to Terraform modules or Alchemy state internals.
+
+## Validate locally
 
 ```bash
 tofu -chdir=infra/preview-isolation fmt -check
 tofu -chdir=infra/preview-isolation init -backend=false -lockfile=readonly
 tofu -chdir=infra/preview-isolation validate
+pnpm typecheck
 ```
