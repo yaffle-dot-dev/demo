@@ -1,9 +1,7 @@
-# Yaffle configuration demo
+# Yaffle multi-engine orchestration demo
 
 version = 1
 
-# Named environments. Pull requests use transient pr-{number} environments and
-# do not need to be declared here.
 [[environments]]
 name = "production"
 
@@ -30,11 +28,10 @@ environment = "development"
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
-# Production changes to core and database infrastructure require approval from
-# the linked GitHub account for lamalex. Change this to your GitHub login when
-# adapting the demo for another account.
+# Production changes to core, database, and edge infrastructure require
+# approval from the linked GitHub account for lamalex.
 [[cloud.approvals]]
-workspaces = ["infra/core", "infra/database"]
+workspaces = ["infra/core", "infra/database", "infra/cloudflare"]
 environments = ["production"]
 approvers = ["github:user:lamalex"]
 
@@ -74,3 +71,14 @@ automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
 variables.environment = "{{ environment }}"
 variables.demo_message = "Automatic preview isolation is live"
+
+[[workspaces]]
+path = "infra/cloudflare"
+environments = ["*"]
+engine = { kind = "alchemy", entrypoint = "alchemy.run.ts", stack = "YaffleDemoEdge", providers = [
+  "cloudflare",
+] }
+variables.demo_message = "Hello from a Yaffle-managed Cloudflare preview"
+outputs.url = { visibility = "internal" }
+outputs.worker_name = { visibility = "internal" }
+outputs.kv_namespace_id = { visibility = "internal" }

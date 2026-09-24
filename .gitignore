@@ -2,4 +2,6 @@
 **/terraform.tfstate
 **/terraform.tfstate.backup
 **/.tfplan
+.alchemy/
+node_modules/
 crash.log
