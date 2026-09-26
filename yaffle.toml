@@ -1,4 +1,4 @@
-# Yaffle configuration demo
+# Yaffle multi-engine orchestration demo
 
 version = 1
 
@@ -28,16 +28,12 @@ environment = "development"
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
+# Production changes to core, database, and edge infrastructure require
+# approval from the linked GitHub account for lamalex.
 [[cloud.approvals]]
-workspaces = ["infra/core", "infra/database"]
+workspaces = ["infra/core", "infra/database", "infra/cloudflare"]
 environments = ["production"]
 approvers = ["github:user:lamalex"]
-
-[[workspaces]]
-path = "infra/shared"
-environments = ["production"]
-outputs.network_id = { visibility = "internal" }
-outputs.private_subnet_ids = { visibility = "internal" }
 
 [[workspaces]]
 path = "infra/core"
@@ -75,3 +71,14 @@ automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
 variables.environment = "{{ environment }}"
 variables.demo_message = "Automatic preview isolation is live"
+
+[[workspaces]]
+path = "infra/cloudflare"
+environments = ["*"]
+engine = { kind = "alchemy", entrypoint = "alchemy.run.ts", stack = "YaffleDemoEdge", providers = [
+  "cloudflare",
+] }
+variables.demo_message = "Hello from a Yaffle-managed Cloudflare preview"
+outputs.url = { visibility = "internal" }
+outputs.worker_name = { visibility = "internal" }
+outputs.kv_namespace_id = { visibility = "internal" }
