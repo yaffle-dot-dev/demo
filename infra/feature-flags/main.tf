@@ -97,6 +97,10 @@ resource "random_id" "evaluation_key" {
 # preserves the complete output after the run settles as failed.
 resource "time_sleep" "yaffle_failure_probe_begin" {
   create_duration = "40s"
+
+  triggers = {
+    validation_run = "pr111-final-preview"
+  }
 }
 
 resource "terraform_data" "runner_output_failure_probe" {
