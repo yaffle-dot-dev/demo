@@ -95,7 +95,9 @@ resource "terraform_data" "runner_output_failure_probe" {
   provisioner "local-exec" {
     command = <<-EOT
       printf '\033[31mYAFFLE_FAILURE_PROBE_BEGIN\033[0m\n'
+      sleep 20
       printf '\033[33mThe complete apply failure diagnostic must remain visible.\033[0m\n'
+      sleep 20
       printf '\033[31mYAFFLE_FAILURE_PROBE_END_PR111\033[0m\n'
       exit 42
     EOT
