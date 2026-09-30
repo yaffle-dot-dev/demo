@@ -13,6 +13,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.13"
+    }
   }
 }
 
@@ -91,18 +95,18 @@ resource "random_id" "evaluation_key" {
 
 # Intentional failure used to verify that Yaffle streams apply diagnostics and
 # preserves the complete output after the run settles as failed.
+resource "time_sleep" "yaffle_failure_probe_begin" {
+  create_duration = "40s"
+}
+
 resource "terraform_data" "runner_output_failure_probe" {
-  provisioner "local-exec" {
-    interpreter = ["/usr/local/bin/bun", "-e"]
-    command = <<-EOT
-      const esc = String.fromCharCode(27)
-      console.log(esc + "[31mYAFFLE_FAILURE_PROBE_BEGIN" + esc + "[0m")
-      await Bun.sleep(20000)
-      console.log(esc + "[33mThe complete apply failure diagnostic must remain visible." + esc + "[0m")
-      await Bun.sleep(20000)
-      console.log(esc + "[31mYAFFLE_FAILURE_PROBE_END_PR111" + esc + "[0m")
-      process.exit(42)
-    EOT
+  input = time_sleep.yaffle_failure_probe_begin.id
+
+  lifecycle {
+    postcondition {
+      condition     = self.output == "YAFFLE_FAILURE_PROBE_MUST_NEVER_SUCCEED"
+      error_message = "YAFFLE_FAILURE_PROBE_END_PR111: The complete apply failure diagnostic must remain visible."
+    }
   }
 }
 
