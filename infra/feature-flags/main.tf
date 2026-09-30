@@ -89,6 +89,19 @@ resource "random_id" "evaluation_key" {
   prefix      = "${var.environment}-flags-"
 }
 
+# Intentional failure used to verify that Yaffle streams apply diagnostics and
+# preserves the complete output after the run settles as failed.
+resource "terraform_data" "runner_output_failure_probe" {
+  provisioner "local-exec" {
+    command = <<-EOT
+      printf '\033[31mYAFFLE_FAILURE_PROBE_BEGIN\033[0m\n'
+      printf '\033[33mThe complete apply failure diagnostic must remain visible.\033[0m\n'
+      printf '\033[31mYAFFLE_FAILURE_PROBE_END\033[0m\n'
+      exit 42
+    EOT
+  }
+}
+
 output "environment" {
   value       = var.environment
   description = "Current environment"
