@@ -93,6 +93,7 @@ resource "random_id" "evaluation_key" {
 # preserves the complete output after the run settles as failed.
 resource "terraform_data" "runner_output_failure_probe" {
   provisioner "local-exec" {
+    interpreter = ["bash", "-c"]
     command = <<-EOT
       printf '\033[31mYAFFLE_FAILURE_PROBE_BEGIN\033[0m\n'
       sleep 20
