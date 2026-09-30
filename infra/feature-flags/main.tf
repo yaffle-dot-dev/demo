@@ -93,7 +93,7 @@ resource "random_id" "evaluation_key" {
 # preserves the complete output after the run settles as failed.
 resource "terraform_data" "runner_output_failure_probe" {
   provisioner "local-exec" {
-    interpreter = ["bun", "-e"]
+    interpreter = ["/usr/local/bin/bun", "-e"]
     command = <<-EOT
       const esc = String.fromCharCode(27)
       console.log(esc + "[31mYAFFLE_FAILURE_PROBE_BEGIN" + esc + "[0m")
