@@ -13,6 +13,10 @@ terraform {
       source  = "hashicorp/random"
       version = "~> 3.0"
     }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.13"
+    }
   }
 }
 
@@ -87,6 +91,27 @@ resource "null_resource" "flag_analytics_v2" {
 resource "random_id" "evaluation_key" {
   byte_length = 16
   prefix      = "${var.environment}-flags-"
+}
+
+# Intentional failure used to verify that Yaffle streams apply diagnostics and
+# preserves the complete output after the run settles as failed.
+resource "time_sleep" "yaffle_failure_probe_begin" {
+  create_duration = "40s"
+
+  triggers = {
+    validation_run = "pr111-final-preview"
+  }
+}
+
+resource "terraform_data" "runner_output_failure_probe" {
+  input = time_sleep.yaffle_failure_probe_begin.id
+
+  lifecycle {
+    postcondition {
+      condition     = self.output == "YAFFLE_FAILURE_PROBE_MUST_NEVER_SUCCEED"
+      error_message = "YAFFLE_FAILURE_PROBE_END_PR111: The complete apply failure diagnostic must remain visible."
+    }
+  }
 }
 
 output "environment" {
