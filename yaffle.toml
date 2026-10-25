@@ -70,7 +70,7 @@ environments = ["*"]
 automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
 variables.environment = "{{ environment }}"
-variables.demo_message = "Automatic preview isolation is live"
+variables.demo_message = "Testing environment tools through the PR 175 Yaffle MCP preview"
 
 [[workspaces]]
 path = "infra/cloudflare"
