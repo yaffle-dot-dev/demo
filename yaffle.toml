@@ -11,6 +11,12 @@ name = "staging"
 [[environments]]
 name = "development"
 
+[[environments]]
+name = "handoff-candidate-262"
+
+[[environments]]
+name = "handoff-control-261"
+
 [cloud]
 
 [[cloud.triggers.github.push]]
@@ -25,6 +31,14 @@ environment = "staging"
 ref_patterns = ["refs/heads/develop"]
 environment = "development"
 
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/acceptance/handoff-candidate-262"]
+environment = "handoff-candidate-262"
+
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/acceptance/handoff-control-261"]
+environment = "handoff-control-261"
+
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
@@ -33,6 +47,12 @@ branch_patterns = ["*"]
 [[cloud.approvals]]
 workspaces = ["infra/core", "infra/database", "infra/cloudflare"]
 environments = ["production"]
+approvers = ["github:user:lamalex"]
+
+# Keep both acceptance environments at explicit approval gates before mutation.
+[[cloud.approvals]]
+workspaces = ["infra/app", "infra/feature-flags", "infra/preview-isolation", "infra/cloudflare"]
+environments = ["handoff-candidate-262", "handoff-control-261"]
 approvers = ["github:user:lamalex"]
 
 [[workspaces]]
