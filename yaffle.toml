@@ -12,10 +12,10 @@ name = "staging"
 name = "development"
 
 [[environments]]
-name = "handoff-candidate-262"
+name = "handoff-candidate-262-v2"
 
 [[environments]]
-name = "handoff-control-261"
+name = "handoff-control-261-v2"
 
 [cloud]
 
@@ -33,11 +33,11 @@ environment = "development"
 
 [[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/acceptance/handoff-candidate-262"]
-environment = "handoff-candidate-262"
+environment = "handoff-candidate-262-v2"
 
 [[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/acceptance/handoff-control-261"]
-environment = "handoff-control-261"
+environment = "handoff-control-261-v2"
 
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
