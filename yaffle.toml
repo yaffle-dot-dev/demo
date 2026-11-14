@@ -1,68 +1,20 @@
-# Yaffle multi-engine orchestration demo
+# Test-only integration-control proof against Environments PR #256.
+# Do not merge: only disposable, credential-free preview workspaces are selected.
 
 version = 1
 
-[[environments]]
-name = "production"
-
-[[environments]]
-name = "staging"
-
-[[environments]]
-name = "development"
-
 [cloud]
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/main"]
-environment = "production"
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/staging"]
-environment = "staging"
-
-[[cloud.triggers.github.push]]
-ref_patterns = ["refs/heads/develop"]
-environment = "development"
 
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
-# Production changes to core, database, and edge infrastructure require
-# approval from the linked GitHub account for lamalex.
-[[cloud.approvals]]
-workspaces = ["infra/core", "infra/database", "infra/cloudflare"]
-environments = ["production"]
-approvers = ["github:user:lamalex"]
-
-[[workspaces]]
-path = "infra/core"
-environments = ["production", "staging"]
-variables.project_name = "yaffle-demo"
-variables.enable_monitoring = true
-variables.retention_days = 30
-
-[[workspaces]]
-path = "infra/database"
-environments = ["production"]
-variables.instance_count = 3
-variables.enable_backups = true
-
 [[workspaces]]
 path = "infra/app"
 environments = ["*"]
+variables.environment = "{{ environment }}"
 variables.min_instances = 1
 variables.max_instances = 5
 variables.enable_debug = false
-
-[[workspaces]]
-path = "infra/feature-flags"
-environments = ["*"]
-
-[[workspaces]]
-path = "infra/sandbox"
-environments = ["development"]
-variables.sandbox_mode = true
 
 [[workspaces]]
 path = "infra/preview-isolation"
@@ -70,15 +22,4 @@ environments = ["*"]
 automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
 variables.environment = "{{ environment }}"
-variables.demo_message = "Automatic preview isolation is live"
-
-[[workspaces]]
-path = "infra/cloudflare"
-environments = ["*"]
-engine = { kind = "alchemy", entrypoint = "alchemy.run.ts", stack = "YaffleDemoEdge", providers = [
-  "cloudflare",
-] }
-variables.demo_message = "Hello from a Yaffle-managed Cloudflare preview"
-outputs.url = { visibility = "internal" }
-outputs.worker_name = { visibility = "internal" }
-outputs.kv_namespace_id = { visibility = "internal" }
+variables.demo_message = "Integration Control routes this disposable demo to Environments PR #256"
