@@ -12,7 +12,7 @@ name = "staging"
 name = "development"
 
 [[environments]]
-name = "handoff-candidate-262-v5"
+name = "handoff-candidate-262-failure-v6"
 
 [[environments]]
 name = "handoff-control-261-v5"
@@ -33,7 +33,7 @@ environment = "development"
 
 [[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/acceptance/handoff-candidate-262"]
-environment = "handoff-candidate-262-v5"
+environment = "handoff-candidate-262-failure-v6"
 
 [[cloud.triggers.github.push]]
 ref_patterns = ["refs/heads/acceptance/handoff-control-261"]
@@ -48,7 +48,7 @@ branch_patterns = ["*"]
 [[workspaces]]
 path = "infra/core"
 environments = ["*"]
-variables.test_revision = "paired-v5-20261114-C"
+variables.test_revision = "failure-v6-20261114-A"
 variables.delay_seconds = 2
 variables.project_name = "yaffle-demo"
 variables.enable_monitoring = true
@@ -58,8 +58,8 @@ variables.retention_days = 30
 path = "infra/database"
 environments = ["*"]
 depends_on = ["infra/core"]
-variables.test_revision = "paired-v5-20261114-C"
-variables.delay_seconds = 60
+variables.test_revision = "failure-v6-20261114-A"
+variables.delay_seconds = 30
 variables.instance_count = 3
 variables.enable_backups = true
 
@@ -67,7 +67,7 @@ variables.enable_backups = true
 path = "infra/app"
 environments = ["*"]
 depends_on = ["infra/database", "infra/feature-flags"]
-variables.test_revision = "paired-v5-20261114-C"
+variables.test_revision = "failure-v6-20261114-A"
 variables.delay_seconds = 3
 variables.min_instances = 1
 variables.max_instances = 5
@@ -77,13 +77,13 @@ variables.enable_debug = false
 path = "infra/feature-flags"
 environments = ["*"]
 depends_on = ["infra/core"]
-variables.test_revision = "paired-v5-20261114-C"
-variables.delay_seconds = 3
+variables.test_revision = "failure-v6-20261114-A"
+variables.delay_seconds = 120
 
 [[workspaces]]
 path = "infra/sandbox"
 environments = ["*"]
-variables.test_revision = "paired-v5-20261114-C"
+variables.test_revision = "failure-v6-20261114-A"
 variables.delay_seconds = 10
 variables.sandbox_mode = true
 
@@ -91,7 +91,7 @@ variables.sandbox_mode = true
 path = "infra/preview-isolation"
 environments = ["*"]
 depends_on = ["infra/app"]
-variables.test_revision = "paired-v5-20261114-C"
+variables.test_revision = "failure-v6-20261114-A"
 variables.delay_seconds = 2
 automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"

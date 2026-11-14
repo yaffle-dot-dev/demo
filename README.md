@@ -22,6 +22,13 @@ the demo itself does not create cloud resources.
 
 ## Serial-push graph and timing
 
+The current candidate-only v6 failure trial uses `handoff-candidate-262-failure-v6`.
+Its A revision intentionally fails the database apply with a state-only
+`terraform_data` postcondition after a 30-second wait; feature-flags waits 120
+seconds to expose surviving-sibling progress. B must never execute. C removes
+the failure resource and restores the ordinary waits below. Do not push these
+fault-injection commits to the control branch or the production branch.
+
 All six workspaces are selected in **every** named and pull-request environment.
 Every selected dependency is therefore included, not silently filtered out.
 There are no approval rules, including for the local-only `production` environment.
@@ -72,7 +79,7 @@ validation below does not push or contact a live Yaffle environment.
    ```
 
    The standalone acceptance fixture maps those exact refs to
-   `handoff-candidate-262-v5` and `handoff-control-261-v5`, respectively. These fresh
+   `handoff-candidate-262-failure-v6` and `handoff-control-261-v5`, respectively. These fresh
    environment scopes preserve the original acceptance history, including the
    held candidate revision; they do not repair or release that revision. The canonical
    `demo/` source intentionally has no acceptance-specific declarations or triggers;
