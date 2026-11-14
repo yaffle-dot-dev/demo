@@ -12,6 +12,9 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        workspace: [core, database, app, feature-flags, sandbox, preview-isolation]
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -31,10 +34,10 @@ jobs:
           grep -q '^environments = \["\*"\]$' yaffle.toml
 
       - name: Check formatting
-        run: tofu -chdir=infra/preview-isolation fmt -check
+        run: tofu -chdir=infra/${{ matrix.workspace }} fmt -check
 
       - name: Initialize providers
-        run: tofu -chdir=infra/preview-isolation init -backend=false -input=false -lockfile=readonly
+        run: tofu -chdir=infra/${{ matrix.workspace }} init -backend=false -input=false -lockfile=readonly
 
       - name: Validate Terraform
-        run: tofu -chdir=infra/preview-isolation validate
+        run: tofu -chdir=infra/${{ matrix.workspace }} validate

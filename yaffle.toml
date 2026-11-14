@@ -42,35 +42,33 @@ environment = "handoff-control-261"
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
-# Production changes to core and database fixtures require
-# approval from the linked GitHub account for lamalex.
-[[cloud.approvals]]
-workspaces = ["infra/core", "infra/database"]
-environments = ["production"]
-approvers = ["github:user:lamalex"]
-
-# Keep both acceptance environments at explicit approval gates before mutation.
-[[cloud.approvals]]
-workspaces = ["infra/app", "infra/feature-flags", "infra/preview-isolation"]
-environments = ["handoff-candidate-262", "handoff-control-261"]
-approvers = ["github:user:lamalex"]
+# Local fixtures execute automatically in every environment, including production.
+# Change all six test_revision values together for each serial push (A, B, C).
 
 [[workspaces]]
 path = "infra/core"
-environments = ["production", "staging"]
+environments = ["*"]
+variables.test_revision = "A"
+variables.delay_seconds = 2
 variables.project_name = "yaffle-demo"
 variables.enable_monitoring = true
 variables.retention_days = 30
 
 [[workspaces]]
 path = "infra/database"
-environments = ["production"]
+environments = ["*"]
+depends_on = ["infra/core"]
+variables.test_revision = "A"
+variables.delay_seconds = 60
 variables.instance_count = 3
 variables.enable_backups = true
 
 [[workspaces]]
 path = "infra/app"
 environments = ["*"]
+depends_on = ["infra/database", "infra/feature-flags"]
+variables.test_revision = "A"
+variables.delay_seconds = 3
 variables.min_instances = 1
 variables.max_instances = 5
 variables.enable_debug = false
@@ -78,15 +76,23 @@ variables.enable_debug = false
 [[workspaces]]
 path = "infra/feature-flags"
 environments = ["*"]
+depends_on = ["infra/core"]
+variables.test_revision = "A"
+variables.delay_seconds = 3
 
 [[workspaces]]
 path = "infra/sandbox"
-environments = ["development"]
+environments = ["*"]
+variables.test_revision = "A"
+variables.delay_seconds = 10
 variables.sandbox_mode = true
 
 [[workspaces]]
 path = "infra/preview-isolation"
 environments = ["*"]
+depends_on = ["infra/app"]
+variables.test_revision = "A"
+variables.delay_seconds = 2
 automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
 variables.environment = "{{ environment }}"

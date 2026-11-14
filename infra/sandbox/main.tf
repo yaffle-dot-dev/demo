@@ -1,5 +1,5 @@
 # Sandbox Infrastructure
-# Deploys to development only.
+# Deploys to all environments as an independent branch.
 
 terraform {
   required_version = ">= 1.0"

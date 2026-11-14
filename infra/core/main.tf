@@ -1,5 +1,5 @@
 # Core Infrastructure
-# Deploys to: production, staging (named environments only)
+# Deploys to all environments as the fan-out root.
 # Demonstrates workspace variables passed from yaffle.toml
 
 terraform {
