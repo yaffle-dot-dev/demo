@@ -1,15 +1,24 @@
-# Yaffle Multi-Cloud IaC Orchestration Demo
+# Yaffle Local-Only Orchestration Demo
 
-This repository demonstrates one Yaffle environment graph orchestrating two
-infrastructure engines and two provider boundaries:
+This repository exercises Yaffle plans, approvals, applies, outputs, and teardown
+without provisioning cloud infrastructure. It contains no AWS or Cloudflare
+resources and needs no cloud-provider credentials.
 
-- OpenTofu manages the existing local, application, database, and feature-flag
-  workspaces.
-- Alchemy manages a public Cloudflare Worker and its Workers KV namespace.
+The six OpenTofu workspaces use only `terraform_data` and the `null`, `random`,
+`time`, and `local` providers:
 
-A pull request produces one `pr-{number}` environment across both engines.
-Yaffle keeps each engine's state native while applying the same environment
-identity, approval, output, and teardown lifecycle to the complete graph.
+| Workspace                 | Purpose                                                   | Side effects                             |
+| ------------------------- | --------------------------------------------------------- | ---------------------------------------- |
+| `infra/core`              | Project settings, monitoring flags, and rotation metadata | State only                               |
+| `infra/database`          | Simulated database instances and backup settings          | State only                               |
+| `infra/app`               | Simulated network and application configuration           | State only                               |
+| `infra/feature-flags`     | Environment-specific feature flags                        | State only                               |
+| `infra/sandbox`           | Sandbox metadata and experiment variants                  | State only                               |
+| `infra/preview-isolation` | Automatic preview naming                                  | A file in the runner's working directory |
+
+Names such as database, network, and monitoring represent fixtures, not deployed
+services. Hosted execution still uses Yaffle's runner and state-storage services;
+the demo itself does not create cloud resources.
 
 ## Automatic OpenTofu preview isolation
 
@@ -25,68 +34,33 @@ repository source.
 | Event                          | Environment   | Materialized filename                 |
 | ------------------------------ | ------------- | ------------------------------------- |
 | Pull request opened or updated | `pr-{number}` | `yaffle-product-demo-{stable-suffix}` |
-| Pull request closed            | `pr-{number}` | Preview resource destroyed            |
+| Pull request closed            | `pr-{number}` | Preview file destroyed                |
 | Push to `main`                 | `production`  | `yaffle-product-demo`                 |
 
-The exact `hashicorp/local` `2.5.3` strategy keeps this part of the demo free
-while exercising provider resolution, immutable source transformation, plan,
-apply, outputs, and destroy.
-
-## Cloudflare preview
-
-The `infra/cloudflare` workspace is authored with Alchemy. Every selected
-environment receives:
-
-- one public Cloudflare Worker exposing `/` and `/health`;
-- one Workers KV namespace bound to that Worker; and
-- durable Cloudflare-hosted Alchemy state.
-
-The Worker reads an optional `message` value from KV but performs no
-request-driven writes. Observability is disabled for this low-volume harness.
-Its URL and resource identifiers use Yaffle's Terraform-compatible output
-envelope so the control plane can apply the same sensitivity and sharing rules
-regardless of engine.
-
-The URL is currently an internal Yaffle output. It is visible to this
-repository's environment graph but is not exported to another repository.
+The pinned `hashicorp/local` `2.5.3` provider exercises provider resolution,
+immutable source transformation, plan, apply, outputs, and destroy without a
+cloud account.
 
 ## Run the demo
 
-Prerequisites:
+Install the Yaffle GitHub App for this repository and connect it to your Yaffle
+organization. No AWS or Cloudflare connection is required.
 
-1. Install the Yaffle GitHub App for this repository and connect it to your
-   Yaffle organization.
-2. Configure the existing OpenTofu provider connections required by the
-   selected workspaces.
-3. Add a Cloudflare connection scoped to `infra/cloudflare`. It must provide
-   `CLOUDFLARE_ACCOUNT_ID` plus either `CLOUDFLARE_API_TOKEN` or Alchemy's
-   API-key/email credential pair.
-4. Allow the first hosted plan to bootstrap or upgrade Alchemy's shared
-   Cloudflare state-store Worker. The plan remains a dry run for repository
-   resources; only this provider prerequisite may be created during planning.
-
-Then:
-
-1. Create a branch and change either demo message in `yaffle.toml`.
+1. Create a branch and change `variables.demo_message` in `yaffle.toml`.
 2. Open a pull request.
-3. Watch Yaffle plan the OpenTofu and Alchemy workspaces under one transient
-   environment.
-4. Approve and deploy the preview.
-5. Inspect the OpenTofu outputs and request the Cloudflare Worker's `/health`
-   endpoint.
-6. Close the pull request and watch Yaffle destroy the preview in reverse
-   dependency order.
+3. Watch Yaffle plan the selected workspaces under one `pr-{number}` environment.
+4. Approve any required gates and deploy the preview.
+5. Inspect the workspace outputs, including the materialized filename.
+6. Close the pull request and watch Yaffle tear down the preview fixtures.
 
-## Cross-engine outputs
+Production changes to the core and database fixtures retain their approval gate.
+Named-environment selection and push triggers are defined in `yaffle.toml`.
 
-Both engines already report outputs through the same immutable Yaffle output
-contract. The next adapter boundary is consumption: an engine-neutral workspace
-dependency declaration can inject an authorized output snapshot into Alchemy,
-OpenTofu, Pulumi, or a future engine without granting access to the producer's
-native state backend.
+## Previously deployed resources
 
-That keeps the product abstraction at `workspace -> outputs`, rather than
-coupling orchestration to Terraform modules or Alchemy state internals.
+Removing the former cloud workspace from source does not prove its existing
+resources were destroyed. Any previously deployed Worker, KV namespace, or
+Alchemy state-store resources require a separate, explicitly authorized cleanup.
 
 ## Validate locally
 
@@ -94,5 +68,4 @@ coupling orchestration to Terraform modules or Alchemy state internals.
 tofu -chdir=infra/preview-isolation fmt -check
 tofu -chdir=infra/preview-isolation init -backend=false -lockfile=readonly
 tofu -chdir=infra/preview-isolation validate
-pnpm typecheck
 ```

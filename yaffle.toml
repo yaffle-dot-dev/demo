@@ -1,4 +1,4 @@
-# Yaffle multi-engine orchestration demo
+# Yaffle local-only orchestration demo
 
 version = 1
 
@@ -42,16 +42,16 @@ environment = "handoff-control-261"
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
-# Production changes to core, database, and edge infrastructure require
+# Production changes to core and database fixtures require
 # approval from the linked GitHub account for lamalex.
 [[cloud.approvals]]
-workspaces = ["infra/core", "infra/database", "infra/cloudflare"]
+workspaces = ["infra/core", "infra/database"]
 environments = ["production"]
 approvers = ["github:user:lamalex"]
 
 # Keep both acceptance environments at explicit approval gates before mutation.
 [[cloud.approvals]]
-workspaces = ["infra/app", "infra/feature-flags", "infra/preview-isolation", "infra/cloudflare"]
+workspaces = ["infra/app", "infra/feature-flags", "infra/preview-isolation"]
 environments = ["handoff-candidate-262", "handoff-control-261"]
 approvers = ["github:user:lamalex"]
 
@@ -91,14 +91,3 @@ automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
 variables.environment = "{{ environment }}"
 variables.demo_message = "Automatic preview isolation is live"
-
-[[workspaces]]
-path = "infra/cloudflare"
-environments = ["*"]
-engine = { kind = "alchemy", entrypoint = "alchemy.run.ts", stack = "YaffleDemoEdge", providers = [
-  "cloudflare",
-] }
-variables.demo_message = "Hello from a Yaffle-managed Cloudflare preview"
-outputs.url = { visibility = "internal" }
-outputs.worker_name = { visibility = "internal" }
-outputs.kv_namespace_id = { visibility = "internal" }
