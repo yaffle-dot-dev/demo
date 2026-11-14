@@ -12,7 +12,7 @@ branch_patterns = ["*"]
 path = "infra/app"
 environments = ["*"]
 variables.environment = "{{ environment }}"
-variables.min_instances = 1
+variables.min_instances = 2
 variables.max_instances = 5
 variables.enable_debug = false
 
@@ -22,4 +22,4 @@ environments = ["*"]
 automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
 variables.environment = "{{ environment }}"
-variables.demo_message = "Integration Control routes this disposable demo to Environments PR #256"
+variables.demo_message = "Updated through NONPROD Integration Control; PR256 must advance the existing state"
