@@ -72,7 +72,7 @@ validation below does not push or contact a live Yaffle environment.
    ```
 
    The standalone acceptance fixture maps those exact refs to
-   `handoff-candidate-262-v3` and `handoff-control-261-v3`, respectively. These fresh
+   `handoff-candidate-262-v4` and `handoff-control-261-v4`, respectively. These fresh
    environment scopes preserve the original acceptance history, including the
    held candidate revision; they do not repair or release that revision. The canonical
    `demo/` source intentionally has no acceptance-specific declarations or triggers;
