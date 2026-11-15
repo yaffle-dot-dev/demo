@@ -1,5 +1,5 @@
 # Database Infrastructure
-# Deploys to: production only
+# Deploys to all environments after core (the slow fan-out branch).
 # Demonstrates number and boolean variables
 
 terraform {
@@ -13,6 +13,10 @@ terraform {
     random = {
       source  = "hashicorp/random"
       version = "~> 3.0"
+    }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.9"
     }
   }
 }

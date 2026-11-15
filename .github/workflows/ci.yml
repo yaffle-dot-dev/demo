@@ -12,26 +12,15 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        workspace: [core, database, app, feature-flags, sandbox, preview-isolation]
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
       - name: Set up OpenTofu
         uses: opentofu/setup-opentofu@v1
-
-      - name: Set up pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 10.33.2
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: "26.12.1"
-          cache: pnpm
-
-      - name: Install Alchemy dependencies
-        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Validate demo contract
         shell: bash
@@ -41,18 +30,14 @@ jobs:
           test -f yaffle.toml
           test -f infra/preview-isolation/main.tf
           test -f infra/preview-isolation/.terraform.lock.hcl
-          test -f infra/cloudflare/alchemy.run.ts
           grep -q '^automatic_preview_isolation = true$' yaffle.toml
           grep -q '^environments = \["\*"\]$' yaffle.toml
 
       - name: Check formatting
-        run: tofu -chdir=infra/preview-isolation fmt -check
+        run: tofu -chdir=infra/${{ matrix.workspace }} fmt -check
 
       - name: Initialize providers
-        run: tofu -chdir=infra/preview-isolation init -backend=false -input=false -lockfile=readonly
+        run: tofu -chdir=infra/${{ matrix.workspace }} init -backend=false -input=false -lockfile=readonly
 
       - name: Validate Terraform
-        run: tofu -chdir=infra/preview-isolation validate
-
-      - name: Validate Alchemy project
-        run: pnpm typecheck
+        run: tofu -chdir=infra/${{ matrix.workspace }} validate
