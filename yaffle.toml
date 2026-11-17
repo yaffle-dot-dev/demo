@@ -11,6 +11,9 @@ name = "staging"
 [[environments]]
 name = "development"
 
+[[environments]]
+name = "recovery-273"
+
 [cloud]
 
 [[cloud.triggers.github.push]]
@@ -25,6 +28,10 @@ environment = "staging"
 ref_patterns = ["refs/heads/develop"]
 environment = "development"
 
+[[cloud.triggers.github.push]]
+ref_patterns = ["refs/heads/acceptance/recovery-273"]
+environment = "recovery-273"
+
 [[cloud.triggers.github.pull_request]]
 branch_patterns = ["*"]
 
@@ -34,7 +41,7 @@ branch_patterns = ["*"]
 [[workspaces]]
 path = "infra/core"
 environments = ["*"]
-variables.test_revision = "A"
+variables.test_revision = "R1"
 variables.delay_seconds = 2
 variables.project_name = "yaffle-demo"
 variables.enable_monitoring = true
@@ -44,7 +51,7 @@ variables.retention_days = 30
 path = "infra/database"
 environments = ["*"]
 depends_on = ["infra/core"]
-variables.test_revision = "A"
+variables.test_revision = "R1"
 variables.delay_seconds = 60
 variables.instance_count = 3
 variables.enable_backups = true
@@ -53,7 +60,7 @@ variables.enable_backups = true
 path = "infra/app"
 environments = ["*"]
 depends_on = ["infra/database", "infra/feature-flags"]
-variables.test_revision = "A"
+variables.test_revision = "R1"
 variables.delay_seconds = 3
 variables.min_instances = 1
 variables.max_instances = 5
@@ -63,13 +70,13 @@ variables.enable_debug = false
 path = "infra/feature-flags"
 environments = ["*"]
 depends_on = ["infra/core"]
-variables.test_revision = "A"
+variables.test_revision = "R1"
 variables.delay_seconds = 3
 
 [[workspaces]]
 path = "infra/sandbox"
 environments = ["*"]
-variables.test_revision = "A"
+variables.test_revision = "R1"
 variables.delay_seconds = 10
 variables.sandbox_mode = true
 
@@ -77,7 +84,7 @@ variables.sandbox_mode = true
 path = "infra/preview-isolation"
 environments = ["*"]
 depends_on = ["infra/app"]
-variables.test_revision = "A"
+variables.test_revision = "R1"
 variables.delay_seconds = 2
 automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
