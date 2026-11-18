@@ -22,7 +22,7 @@ the demo itself does not create cloud resources.
 
 ## Serial-push graph and timing
 
-All six workspaces are selected in **every** named and pull-request environment.
+All six workspaces are selected in **every** named and transient environment.
 Every selected dependency is therefore included, not silently filtered out.
 There are no approval rules, including for the local-only `production` environment.
 This is an execution test fixture, not a production approval-policy example.
