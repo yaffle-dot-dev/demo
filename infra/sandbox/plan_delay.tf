@@ -13,5 +13,5 @@ variable "plan_delay_seconds" {
 
 data "external" "plan_delay" {
   count   = var.plan_delay_seconds > 0 ? 1 : 0
-  program = ["sh", "-c", "sleep ${var.plan_delay_seconds}; echo '{}'"]
+  program = ["/bin/sh", "-c", "/bin/sleep ${var.plan_delay_seconds}; echo '{}'"]
 }
