@@ -77,7 +77,7 @@ variables.delay_seconds = 3
 [[workspaces]]
 path = "infra/sandbox"
 environments = ["*"]
-variables.test_revision = "S2"
+variables.test_revision = "S12"
 variables.delay_seconds = 10
 variables.sandbox_mode = true
 variables.plan_delay_seconds = 60
