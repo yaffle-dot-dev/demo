@@ -41,7 +41,7 @@ branch_patterns = ["*"]
 [[workspaces]]
 path = "infra/core"
 environments = ["*"]
-variables.test_revision = "R10"
+variables.test_revision = "R11"
 variables.delay_seconds = 2
 variables.project_name = "yaffle-demo"
 variables.enable_monitoring = true
@@ -51,8 +51,8 @@ variables.retention_days = 30
 path = "infra/database"
 environments = ["*"]
 depends_on = ["infra/core"]
-variables.test_revision = "R10"
-variables.delay_seconds = 30
+variables.test_revision = "R11"
+variables.delay_seconds = 120
 variables.instance_count = 3
 variables.enable_backups = true
 
@@ -60,7 +60,7 @@ variables.enable_backups = true
 path = "infra/app"
 environments = ["*"]
 depends_on = ["infra/database", "infra/feature-flags"]
-variables.test_revision = "R10"
+variables.test_revision = "R11"
 variables.delay_seconds = 3
 variables.min_instances = 1
 variables.max_instances = 5
@@ -70,22 +70,22 @@ variables.enable_debug = false
 path = "infra/feature-flags"
 environments = ["*"]
 depends_on = ["infra/core"]
-variables.test_revision = "R10"
+variables.test_revision = "R11"
 variables.delay_seconds = 3
 
 [[workspaces]]
 path = "infra/sandbox"
 environments = ["*"]
-variables.test_revision = "R10"
+variables.test_revision = "R11"
 variables.delay_seconds = 10
 variables.sandbox_mode = true
-variables.plan_delay_seconds = 60
+variables.plan_delay_seconds = 0
 
 [[workspaces]]
 path = "infra/preview-isolation"
 environments = ["*"]
 depends_on = ["infra/app"]
-variables.test_revision = "R10"
+variables.test_revision = "R11"
 variables.delay_seconds = 2
 automatic_preview_isolation = true
 variables.resource_name = "yaffle-product-demo"
