@@ -80,7 +80,7 @@ environments = ["*"]
 variables.test_revision = "S2"
 variables.delay_seconds = 10
 variables.sandbox_mode = true
-variables.plan_delay_seconds = 0
+variables.plan_delay_seconds = 60
 
 [[workspaces]]
 path = "infra/preview-isolation"
