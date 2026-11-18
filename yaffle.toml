@@ -53,7 +53,7 @@ environments = ["*"]
 depends_on = ["infra/core"]
 variables.test_revision = "S2"
 variables.delay_seconds = 30
-variables.drill_slow_delete_count = 0
+variables.drill_slow_delete_count = 1
 variables.instance_count = 3
 variables.enable_backups = true
 
